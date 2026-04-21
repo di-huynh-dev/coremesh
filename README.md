@@ -1,58 +1,98 @@
-# Turborepo Tailwind CSS starter
+# ⚡ CoreMesh
 
-This Turborepo starter is maintained by the Turborepo core team.
+**A modern monorepo architecture for building scalable products with contemporary technologies.**
 
-## Using this example
+CoreMesh is designed as a centralized platform to develop multiple applications and services within a single codebase, leveraging the power of a monorepo to improve scalability, maintainability, and developer experience.
 
-Run the following command:
+The primary goal of this project is to explore and apply a **monorepo-first architecture** in real-world product development using modern tech stacks.
 
-```sh
-npx create-turbo@latest -e with-tailwind
+---
+
+## 🎯 Purpose
+
+This repository focuses on:
+
+- Applying **monorepo architecture** to build real products
+- Organizing multiple applications and services in a unified structure
+- Sharing code efficiently across projects
+- Improving development speed with modern tooling
+- Maintaining a scalable and production-ready codebase
+
+---
+
+## 🧠 Why Monorepo
+
+Traditional multi-repo setups often lead to:
+
+- Code duplication
+- Inconsistent configurations
+- Difficult dependency management
+
+CoreMesh addresses these issues by using a **monorepo approach**, where:
+
+- All applications and services live in a single repository
+- Shared logic is centralized into reusable packages
+- Changes can be coordinated across the entire system
+
+---
+
+## 🧱 Architecture Overview
+
+CoreMesh follows a **monorepo-centric architecture** combined with modular design principles:
+
+### Key principles:
+
+- **Single source of truth** for all code
+- **Modular separation** between apps, services, and shared packages
+- **Reusable components and logic** across the system
+- **Scalable structure** for future growth
+
+---
+
+## ⚙️ Tech Stack
+
+CoreMesh is built using modern technologies:
+
+- Frontend: Next.js, React
+- Backend: Node.js (NestJS / Express)
+- Monorepo Tooling: Turborepo
+- Database: MongoDB / PostgreSQL
+- DevOps: Docker, CI/CD
+
+---
+
+## 🚀 Monorepo Benefits in CoreMesh
+
+- Faster development with shared dependencies
+- Consistent tooling and configuration
+- Simplified code sharing across applications
+- Optimized builds with caching and task pipelines
+- Easier scaling from small projects to large systems
+
+---
+
+## 🔄 Development Workflow
+
+- Build multiple apps and services in parallel
+- Share code through internal packages
+- Maintain consistent standards across the entire codebase
+- Optimize performance using Turborepo caching
+
+---
+
+## 🌍 Vision
+
+CoreMesh aims to serve as a practical foundation for:
+
+- Building scalable fullstack applications
+- Experimenting with modern architectures
+- Demonstrating real-world usage of monorepo systems
+
+---
+
+## ⚡ Getting Started
+
+```bash
+pnpm install
+pnpm dev
 ```
-
-## What's inside?
-
-This Turborepo includes the following packages/apps:
-
-### Apps and Packages
-
-- `docs`: a [Next.js](https://nextjs.org/) app with [Tailwind CSS](https://tailwindcss.com/)
-- `web`: another [Next.js](https://nextjs.org/) app with [Tailwind CSS](https://tailwindcss.com/)
-- `ui`: a stub React component library with [Tailwind CSS](https://tailwindcss.com/) shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Building packages/ui
-
-This example is set up to produce compiled styles for `ui` components into the `dist` directory. The component `.tsx` files are consumed by the Next.js apps directly using `transpilePackages` in `next.config.ts`. This was chosen for several reasons:
-
-- Make sharing one `tailwind.config.ts` to apps and packages as easy as possible.
-- Make package compilation simple by only depending on the Next.js Compiler and `tailwindcss`.
-- Ensure Tailwind classes do not overwrite each other. The `ui` package uses a `ui-` prefix for it's classes.
-- Maintain clear package export boundaries.
-
-Another option is to consume `packages/ui` directly from source without building. If using this option, you will need to update the `tailwind.config.ts` in your apps to be aware of your package locations, so it can find all usages of the `tailwindcss` class names for CSS compilation.
-
-For example, in [tailwind.config.ts](packages/tailwind-config/tailwind.config.ts):
-
-```js
-  content: [
-    // app content
-    `src/**/*.{js,ts,jsx,tsx}`,
-    // include packages if not transpiling
-    "../../packages/ui/*.{js,ts,jsx,tsx}",
-  ],
-```
-
-If you choose this strategy, you can remove the `tailwindcss` and `autoprefixer` dependencies from the `ui` package.
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [Tailwind CSS](https://tailwindcss.com/) for styles
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
