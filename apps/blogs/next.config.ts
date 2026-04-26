@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+import createNextIntlPlugin from "next-intl/plugin";
+
+const withNextIntl = createNextIntlPlugin();
 
 const nextConfig: NextConfig = {
   images: {
@@ -13,8 +16,13 @@ const nextConfig: NextConfig = {
         hostname: "cdn.hailuoai.video",
         pathname: "/**",
       },
+      {
+        protocol: "https",
+        hostname: "images.unsplash.com",
+        pathname: "/**",
+      },
     ],
   },
 };
 
-export default nextConfig;
+export default withNextIntl(nextConfig);

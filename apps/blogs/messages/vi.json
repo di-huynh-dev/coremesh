@@ -1,0 +1,58 @@
+{
+  "navigation": {
+    "about": "Giới thiệu",
+    "projects": "Dự án",
+    "blog": "Blog",
+    "contact": "Liên hệ"
+  },
+  "hero": {
+    "badge": "Kinh nghiệm thực chiến • Frontend & Hệ thống",
+    "headlinePrefix": "Ngừng viết Code.",
+    "headlineHighlight": "Bắt đầu hiểu Hệ thống.",
+    "subtitle": "Một blog cá nhân về kỹ thuật phần mềm, thiết kế hệ thống và những bài học thực tế từ việc xây dựng các ứng dụng thực tiễn.",
+    "subtitleHighlight": "Không có tutorial cơ bản. Không cường điệu. Chỉ có những kiến thức thực tế thực sự quan trọng.",
+    "value1": "Case study thực tế",
+    "value2": "Tư duy thực chiến",
+    "value3": "Giải thích cặn kẽ",
+    "readArticles": "Đọc Bài viết",
+    "exploreTopics": "Khám phá Chủ đề"
+  },
+  "thinking": {
+    "title": "Cách tôi tư duy về phát triển phần mềm",
+    "subtitle": "Công cụ thay đổi. Framework tiến hóa. Nhưng các nguyên tắc đằng sau một hệ thống tốt luôn được giữ nguyên.",
+    "item1Title": "Hiệu suất là một Tính năng",
+    "item1Desc": "Tốc độ không phải là tối ưu hóa — nó là một phần của sản phẩm. Hệ thống chậm tạo ra ma sát, và ma sát sẽ giết chết trải nghiệm người dùng. Từng lớp đều quan trọng.",
+    "item1Tag": "Hiệu suất",
+    "item2Title": "Tư duy Hệ thống, Không phải Giao diện",
+    "item2Desc": "Ứng dụng không phải là các trang tĩnh. Chúng là hệ thống với trạng thái, luồng dữ liệu và các ràng buộc. Nếu chỉ nhìn vào UI, ứng dụng của bạn sẽ gãy khi mở rộng.",
+    "item2Tag": "Kiến trúc",
+    "item3Title": "Sự rõ ràng vượt trên Sự thông minh",
+    "item3Desc": "Code tốt không phải là code thông minh nhất — mà là code người khác có thể hiểu nhanh nhất. Khả năng bảo trì luôn chiến thắng những thủ thuật phức tạp.",
+    "item3Tag": "Chất lượng Code",
+    "item4Title": "Xây dựng cho sự Thay đổi",
+    "item4Desc": "Yêu cầu sẽ luôn thay đổi. Hệ thống tồn tại được là những hệ thống được thiết kế để thích ứng, không phải những hệ thống cố định cứng nhắc.",
+    "item4Tag": "Khả năng mở rộng",
+    "item5Title": "Môi trường thật (Production) là Chân lý",
+    "item5Desc": "Những gì chạy được ở máy cá nhân (local) không quan trọng. Sự hiểu biết thực sự đến từ môi trường production — nơi có các trường hợp ngoại lệ, lỗi và các sự cố bất ngờ.",
+    "item5Tag": "Thực chiến",
+    "item6Title": "Sự Đơn giản Chiến thắng dài hạn",
+    "item6Desc": "Sự phức tạp sẽ tích tụ theo thời gian. Các hệ thống đơn giản luôn dễ dàng hơn trong việc sửa lỗi, mở rộng và phát triển. Đơn giản là một quyết định thiết kế.",
+    "item6Tag": "Sự đơn giản",
+    "footerText": "Những nguyên lý định hướng mọi bài viết trên blog — không chạy theo xu hướng, mà là những lối tư duy bền vững theo thời gian."
+  },
+  "cta": {
+    "badge": "Kết nối & Theo dõi",
+    "title": "Cập nhật thông tin mới nhất",
+    "subtitle": "Tôi chia sẻ những suy nghĩ về kỹ thuật frontend, thiết kế hệ thống và phát triển phần mềm thực chiến — vượt xa những dòng code đơn thuần.",
+    "button": "Theo dõi Công việc của tôi",
+    "aboutSubtitle": "Kỹ sư Phần mềm • Tư duy Hệ thống • Xây dựng ứng dụng web mở rộng",
+    "tag1": "Phát triển Web",
+    "tag2": "Thiết kế Hệ thống",
+    "tag3": "Kỹ thuật phần mềm"
+  },
+  "footer": {
+    "description": "Viết về kỹ thuật frontend, tư duy hệ thống và xây dựng các ứng dụng web có thể mở rộng.",
+    "rights": "DiCodeWeb. Đã đăng ký bản quyền.",
+    "italicText": "Dành cho những lập trình viên muốn tư duy sâu hơn, không chỉ là gõ code nhanh hơn."
+  }
+}

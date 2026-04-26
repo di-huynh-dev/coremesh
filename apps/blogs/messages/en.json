@@ -1,0 +1,58 @@
+{
+  "navigation": {
+    "about": "About",
+    "projects": "Projects",
+    "blog": "Blog",
+    "contact": "Contact"
+  },
+  "hero": {
+    "badge": "Production Notes • Frontend & Systems",
+    "headlinePrefix": "Stop Writing Code.",
+    "headlineHighlight": "Start Understanding Systems.",
+    "subtitle": "A personal blog about engineering, system design, and real-world lessons from building production applications.",
+    "subtitleHighlight": "No tutorials. No hype. Just practical insights that actually matter.",
+    "value1": "Real-world case studies",
+    "value2": "Production mindset",
+    "value3": "No-fluff explanations",
+    "readArticles": "Read Articles",
+    "exploreTopics": "Explore Topics"
+  },
+  "thinking": {
+    "title": "How I Think About Building Software",
+    "subtitle": "Tools change. Frameworks evolve. But the principles behind good systems stay the same.",
+    "item1Title": "Performance is a Feature",
+    "item1Desc": "Speed is not an optimization — it's part of the product. Slow systems create friction, and friction kills user experience. Every layer matters.",
+    "item1Tag": "Performance",
+    "item2Title": "Think in Systems, Not Screens",
+    "item2Desc": "Apps are not pages. They are systems with state, data flow, and constraints. If you only think in UI, your app will break when it scales.",
+    "item2Tag": "Architecture",
+    "item3Title": "Clarity Over Cleverness",
+    "item3Desc": "Good code is not the smartest code — it's the code others can understand quickly. Maintainability beats clever tricks every time.",
+    "item3Tag": "Code Quality",
+    "item4Title": "Build for Change",
+    "item4Desc": "Requirements will always change. Systems that survive are designed to adapt, not ones that assume everything is fixed.",
+    "item4Tag": "Scalability",
+    "item5Title": "Production is the Truth",
+    "item5Desc": "What works locally doesn't matter. Real understanding comes from production — edge cases, failures, and unexpected behavior.",
+    "item5Tag": "Real-world",
+    "item6Title": "Simplicity Wins Long-term",
+    "item6Desc": "Complexity compounds over time. Simple systems are easier to debug, scale, and evolve. Simplicity is a design decision, not a limitation.",
+    "item6Tag": "Simplicity",
+    "footerText": "These principles guide every article on this blog — not trends, but ways of thinking that scale over time."
+  },
+  "cta": {
+    "badge": "Connect & Follow",
+    "title": "Stay in the Loop",
+    "subtitle": "I share thoughts on frontend engineering, system design, and real-world development — beyond just code.",
+    "button": "Follow My Work",
+    "aboutSubtitle": "Software Engineer • System Thinking • Building scalable web applications",
+    "tag1": "Web Development",
+    "tag2": "System Design",
+    "tag3": "Engineering"
+  },
+  "footer": {
+    "description": "Writing about frontend engineering, system thinking, and building scalable web applications.",
+    "rights": "DiCodeWeb. All rights reserved.",
+    "italicText": "Built for developers who want to think deeper, not just code faster."
+  }
+}

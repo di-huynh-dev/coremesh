@@ -1,15 +1,19 @@
-'use client';
+"use client";
 
-import { motion } from 'framer-motion';
-import { ButtonPrimary } from '@/components/ui/button-primary';
-import { ArrowRight, Github, Linkedin, Twitter, Mail } from 'lucide-react';
-import Image from 'next/image';
+import { motion } from "framer-motion";
+import { ButtonPrimary } from "@/components/ui/button-primary";
+import { ArrowRight, Github, Linkedin, Twitter, Mail } from "lucide-react";
+import Image from "next/image";
 
 const socialLinks = [
-  { href: 'https://github.com/hoodini', icon: Github, label: 'GitHub' },
-  { href: 'https://www.linkedin.com/in/%F0%9F%8E%97%EF%B8%8Fyuval-avidani-87081474/', icon: Linkedin, label: 'LinkedIn' },
-  { href: 'https://twitter.com/yuvai', icon: Twitter, label: 'Twitter' },
-  { href: 'mailto:info@yuv.ai', icon: Mail, label: 'Email' },
+  { href: "https://github.com/hoodini", icon: Github, label: "GitHub" },
+  {
+    href: "https://www.linkedin.com.in/di-huynh-dev/",
+    icon: Linkedin,
+    label: "LinkedIn",
+  },
+  { href: "https://twitter.com/yuvai", icon: Twitter, label: "Twitter" },
+  { href: "mailto:dihuynhdev.contact@gmail.com", icon: Mail, label: "Email" },
 ];
 
 export function HeroSection() {
@@ -27,7 +31,7 @@ export function HeroSection() {
           transition={{
             duration: 8,
             repeat: Infinity,
-            ease: 'easeInOut',
+            ease: "easeInOut",
           }}
         />
         {/* Secondary blue glow */}
@@ -40,7 +44,7 @@ export function HeroSection() {
           transition={{
             duration: 10,
             repeat: Infinity,
-            ease: 'easeInOut',
+            ease: "easeInOut",
             delay: 1,
           }}
         />
@@ -54,7 +58,7 @@ export function HeroSection() {
           transition={{
             duration: 12,
             repeat: Infinity,
-            ease: 'easeInOut',
+            ease: "easeInOut",
             delay: 2,
           }}
         />
@@ -100,7 +104,8 @@ export function HeroSection() {
               transition={{ duration: 0.8, delay: 0.5 }}
               className="text-lg md:text-xl text-muted-foreground max-w-xl leading-relaxed mb-8"
             >
-              Building next-generation AI solutions and empowering developers to create transformative experiences
+              Building next-generation AI solutions and empowering developers to
+              create transformative experiences
             </motion.p>
 
             {/* CTA Buttons */}
@@ -113,7 +118,11 @@ export function HeroSection() {
               <ButtonPrimary
                 size="lg"
                 className="group"
-                onClick={() => document.getElementById('projects')?.scrollIntoView({ behavior: 'smooth' })}
+                onClick={() =>
+                  document
+                    .getElementById("projects")
+                    ?.scrollIntoView({ behavior: "smooth" })
+                }
               >
                 View Projects
                 <ArrowRight className="ml-2 w-5 h-5 transition-transform group-hover:translate-x-1" />
@@ -121,7 +130,11 @@ export function HeroSection() {
               <ButtonPrimary
                 size="lg"
                 variant="outline"
-                onClick={() => document.getElementById('about')?.scrollIntoView({ behavior: 'smooth' })}
+                onClick={() =>
+                  document
+                    .getElementById("about")
+                    ?.scrollIntoView({ behavior: "smooth" })
+                }
               >
                 About Me
               </ButtonPrimary>
@@ -177,14 +190,23 @@ export function HeroSection() {
               {/* Floating badges */}
               <motion.div
                 animate={{ y: [0, -8, 0] }}
-                transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+                transition={{
+                  duration: 3,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
                 className="absolute -top-2 -right-2 px-3 py-1.5 rounded-full glass-panel-dark text-xs font-medium text-white"
               >
                 AWS AI Superstar
               </motion.div>
               <motion.div
                 animate={{ y: [0, 8, 0] }}
-                transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut', delay: 0.5 }}
+                transition={{
+                  duration: 3.5,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                  delay: 0.5,
+                }}
                 className="absolute -bottom-2 -left-2 px-3 py-1.5 rounded-full glass-panel-dark text-xs font-medium text-white"
               >
                 GitHub Star
@@ -202,12 +224,19 @@ export function HeroSection() {
         >
           <motion.div
             animate={{ y: [0, 8, 0] }}
-            transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+            transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
             className="w-6 h-10 rounded-full border-2 border-foreground/20 dark:border-white/20 flex justify-center pt-2"
           >
             <motion.div
-              animate={{ opacity: [0.5, 1, 0.5], height: ['6px', '12px', '6px'] }}
-              transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+              animate={{
+                opacity: [0.5, 1, 0.5],
+                height: ["6px", "12px", "6px"],
+              }}
+              transition={{
+                duration: 1.5,
+                repeat: Infinity,
+                ease: "easeInOut",
+              }}
               className="w-1 bg-foreground/60 dark:bg-white/60 rounded-full"
             />
           </motion.div>

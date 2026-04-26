@@ -1,52 +1,40 @@
-'use client';
+"use client";
 
-import { motion } from 'framer-motion';
-import { Star, Github, Twitter, Instagram, Youtube, Globe, ExternalLink } from 'lucide-react';
-import { ButtonPrimary } from '@/components/ui/button-primary';
+import { motion } from "framer-motion";
+import { Github, Linkedin, ExternalLink } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 const socialLinks = [
   {
-    name: 'GitHub',
-    handle: '@hoodini',
-    href: 'https://github.com/hoodini',
+    name: "GitHub",
+    handle: "@di-huynh-dev",
+    href: "https://github.com/di-huynh-dev",
     icon: Github,
-    color: '#333',
+    color: "#333",
   },
   {
-    name: 'X (Twitter)',
-    handle: '@yuvalav',
-    href: 'https://x.com/yuvalav',
-    icon: Twitter,
-    color: '#1DA1F2',
+    name: "LinkedIn",
+    handle: "DiCodeWeb",
+    href: "https://www.linkedin.com/feed/",
+    icon: Linkedin,
+    color: "#0A66C2",
   },
   {
-    name: 'Instagram',
-    handle: '@yuval_770',
-    href: 'https://instagram.com/yuval_770',
-    icon: Instagram,
-    color: '#E4405F',
-  },
-  {
-    name: 'YouTube',
-    handle: '@yuv-ai',
-    href: 'https://youtube.com/@yuv-ai',
-    icon: Youtube,
-    color: '#FF0000',
-  },
-  {
-    name: 'Website',
-    handle: 'yuv.ai',
-    href: 'https://yuv.ai',
-    icon: Globe,
-    color: '#FF4D8E',
+    name: "TikTok",
+    handle: "@dicodeweb",
+    href: "https://www.tiktok.com/@dicodeweb",
+    icon: ExternalLink,
+    color: "#000000",
   },
 ];
 
 export function CTASection() {
+  const t = useTranslations("cta");
+
   return (
     <section className="py-24 px-6 bg-gradient-to-b from-[#1C1C1E] to-[#0C0C0E] text-white">
       <div className="max-w-4xl mx-auto text-center">
-        {/* Star the Repo */}
+        {/* ===== Header ===== */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -54,52 +42,27 @@ export function CTASection() {
           transition={{ duration: 0.6 }}
           className="mb-16"
         >
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#FF9100]/20 text-[#FF9100] text-sm font-medium mb-6">
-            <Star className="w-4 h-4" />
-            Support This Project
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#FF4D8E]/20 text-[#FF4D8E] text-sm font-medium mb-6">
+            {t("badge")}
           </div>
 
           <h2 className="text-4xl md:text-5xl font-bold mb-4">
-            Found This Useful?
+            {t("title")}
           </h2>
-          <p className="text-white/60 text-lg max-w-2xl mx-auto mb-8">
-            If this boilerplate helped you ship faster, consider starring the repo on GitHub.
-            It helps others discover this project and motivates me to keep improving it!
-          </p>
 
-          <motion.a
-            href="https://github.com/hoodini/nextjs-bun-starter"
-            target="_blank"
-            rel="noopener noreferrer"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="inline-flex items-center gap-3 px-8 py-4 rounded-xl bg-white text-[#1C1C1E] font-semibold text-lg hover:bg-white/90 transition-colors"
-          >
-            <Star className="w-5 h-5 text-[#FF9100]" />
-            Star on GitHub
-            <Github className="w-5 h-5" />
-          </motion.a>
+          <p className="text-white/60 text-lg max-w-2xl mx-auto">
+            {t("subtitle")}
+          </p>
         </motion.div>
 
-        {/* Divider */}
-        <div className="w-full h-px bg-gradient-to-r from-transparent via-white/20 to-transparent mb-16" />
-
-        {/* Follow Me Section */}
+        {/* ===== Social Links ===== */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          transition={{ duration: 0.6, delay: 0.2 }}
+          transition={{ duration: 0.6 }}
         >
-          <h3 className="text-2xl md:text-3xl font-bold mb-4">
-            Connect With Me
-          </h3>
-          <p className="text-white/60 mb-8 max-w-xl mx-auto">
-            Follow along for more AI & development content, tutorials, and open-source projects
-          </p>
-
-          {/* Social Links Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-10">
             {socialLinks.map((social, index) => {
               const IconComponent = social.icon;
               return (
@@ -113,10 +76,10 @@ export function CTASection() {
                   viewport={{ once: true }}
                   transition={{ delay: index * 0.1 }}
                   whileHover={{ scale: 1.05, y: -4 }}
-                  className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-white/5 backdrop-blur-md hover:bg-white/10 border border-white/10 hover:border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] transition-all group"
+                  className="flex flex-col items-center gap-2 p-5 rounded-2xl bg-white/5 backdrop-blur-md hover:bg-white/10 border border-white/10 hover:border-white/20 shadow transition-all group"
                 >
                   <div
-                    className="w-12 h-12 rounded-full flex items-center justify-center transition-transform group-hover:scale-110"
+                    className="w-12 h-12 rounded-full flex items-center justify-center"
                     style={{ backgroundColor: `${social.color}20` }}
                   >
                     <IconComponent
@@ -124,56 +87,61 @@ export function CTASection() {
                       style={{ color: social.color }}
                     />
                   </div>
+
                   <span className="text-sm font-medium text-white/80 group-hover:text-white">
                     {social.name}
                   </span>
-                  <span className="text-xs text-white/40">
-                    {social.handle}
-                  </span>
+
+                  <span className="text-xs text-white/40">{social.handle}</span>
                 </motion.a>
               );
             })}
           </div>
 
-          {/* Linktree Button */}
+          {/* ===== Optional CTA ===== */}
           <motion.a
-            href="https://linktr.ee/yuvai"
+            href="https://github.com/di-huynh-dev"
             target="_blank"
             rel="noopener noreferrer"
             whileHover={{ scale: 1.02 }}
             className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-gradient-to-r from-[#FF4D8E] to-[#FF9100] text-white font-medium hover:opacity-90 transition-opacity"
           >
-            All My Links
+            {t("button")}
             <ExternalLink className="w-4 h-4" />
           </motion.a>
         </motion.div>
 
-        {/* About Creator */}
+        {/* ===== About ===== */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          transition={{ duration: 0.6, delay: 0.4 }}
+          transition={{ duration: 0.6, delay: 0.3 }}
           className="mt-16 pt-16 border-t border-white/10"
         >
           <div className="flex flex-col md:flex-row items-center justify-center gap-6">
             <img
-              src="https://cdn.hailuoai.video/moss/prod/2026-01-01-02/user/multi_chat_file/1767204442417679023-304191379171532808_1767204439.jpg"
-              alt="Yuval Avidani"
+              src="/avatar.png"
+              alt="DiCodeWeb"
               className="w-20 h-20 rounded-full border-2 border-[#FF4D8E]/50"
             />
+
             <div className="text-center md:text-left">
-              <h4 className="text-xl font-bold mb-1">Yuval Avidani</h4>
-              <p className="text-white/60 mb-2">AWS AI Superstar | GitHub Star | Founder of YUV.AI</p>
+              <h4 className="text-xl font-bold mb-1">DiCodeWeb</h4>
+
+              <p className="text-white/60 mb-2">
+                {t("aboutSubtitle")}
+              </p>
+
               <div className="flex items-center justify-center md:justify-start gap-2">
                 <span className="px-2 py-1 rounded-full bg-[#FF4D8E]/20 text-[#FF4D8E] text-xs font-medium">
-                  AI Builder
+                  {t("tag1")}
                 </span>
                 <span className="px-2 py-1 rounded-full bg-[#00C2FF]/20 text-[#00C2FF] text-xs font-medium">
-                  Speaker
+                  {t("tag2")}
                 </span>
                 <span className="px-2 py-1 rounded-full bg-[#FF9100]/20 text-[#FF9100] text-xs font-medium">
-                  Open Source
+                  {t("tag3")}
                 </span>
               </div>
             </div>

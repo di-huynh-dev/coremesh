@@ -1,27 +1,16 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import Image from 'next/image';
-import { useRouter, usePathname } from 'next/navigation';
-import { useSession, signIn, signOut } from 'next-auth/react';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { User, LogOut, Settings, Sun, Moon, Menu, X } from 'lucide-react';
-import { useTheme } from 'next-themes';
-import { useEffect, useState } from 'react';
+import { LanguageSwitcher } from "@/components/ui/language-switcher";
+import { Menu, Moon, Sun, X } from "lucide-react";
+import { useSession } from "next-auth/react";
+import { useLocale } from "next-intl";
+import { useTheme } from "next-themes";
+import Image from "next/image";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
-const navLinks = [
-  { href: '/#about', label: 'About' },
-  { href: '/#projects', label: 'Projects' },
-  { href: '/blog', label: 'Blog' },
-  { href: '/#contact', label: 'Contact' },
-];
+import { useTranslations } from "next-intl";
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
@@ -41,11 +30,11 @@ function ThemeToggle() {
 
   return (
     <button
-      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
       className="w-9 h-9 rounded-full bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 flex items-center justify-center transition-colors"
       aria-label="Toggle theme"
     >
-      {theme === 'dark' ? (
+      {theme === "dark" ? (
         <Sun className="w-4 h-4 text-foreground/70 hover:text-foreground transition-colors" />
       ) : (
         <Moon className="w-4 h-4 text-foreground/70 hover:text-foreground transition-colors" />
@@ -55,19 +44,28 @@ function ThemeToggle() {
 }
 
 export function Navbar() {
-  const { data: session } = useSession();
+  const sessionResult = useSession();
+  const { data: session } = sessionResult || { data: null };
   const router = useRouter();
   const pathname = usePathname();
+  const locale = useLocale();
+  const t = useTranslations("navigation");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  const navLinks = [
+    { href: "#about", label: t("about") },
+    { href: "/blog", label: t("blog") },
+    { href: "#contact", label: t("contact") },
+  ];
+
   const handleLogoClick = () => {
-    if (pathname === '/') {
+    if (pathname === `/${locale}`) {
       window.scrollTo({
         top: 0,
-        behavior: 'smooth',
+        behavior: "smooth",
       });
     } else {
-      router.push('/');
+      router.push(`/${locale}`);
     }
     setMobileMenuOpen(false);
   };
@@ -81,24 +79,27 @@ export function Navbar() {
       <nav
         className="rounded-2xl md:rounded-full px-4 md:px-6 py-3 flex items-center justify-between"
         style={{
-          background: 'var(--nav-bg, rgba(255, 255, 255, 0.7))',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
-          border: '1px solid var(--nav-border, rgba(255, 255, 255, 0.3))',
-          boxShadow: 'var(--nav-shadow, 0 8px 32px rgba(0, 0, 0, 0.08))',
+          background: "var(--nav-bg, rgba(255, 255, 255, 0.7))",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
+          border: "1px solid var(--nav-border, rgba(255, 255, 255, 0.3))",
+          boxShadow: "var(--nav-shadow, 0 8px 32px rgba(0, 0, 0, 0.08))",
         }}
       >
         {/* Logo */}
-        <button onClick={handleLogoClick} className="flex items-center gap-2 shrink-0 cursor-pointer">
+        <button
+          onClick={handleLogoClick}
+          className="flex items-center gap-2 shrink-0 cursor-pointer"
+        >
           <Image
             src="/round-avatar.svg"
-            alt="YUV.AI Logo"
+            alt="DiCodeWeb Logo"
             width={24}
             height={24}
             className="rounded-full md:w-7 md:h-7"
           />
           <span className="text-base md:text-lg font-semibold text-foreground tracking-tight">
-            YUV.AI
+            DiCodeWeb
           </span>
         </button>
 
@@ -107,7 +108,7 @@ export function Navbar() {
           {navLinks.map((link) => (
             <Link
               key={link.href}
-              href={link.href}
+              href={`/${locale}${link.href}`}
               className="text-sm font-medium text-foreground/70 hover:text-foreground transition-colors duration-200"
             >
               {link.label}
@@ -118,28 +119,42 @@ export function Navbar() {
         {/* Right Side */}
         <div className="flex items-center gap-2 md:gap-3 shrink-0">
           <ThemeToggle />
+          <LanguageSwitcher />
 
           {/* User Avatar - Desktop */}
-          <div className="hidden md:block">
+          {/* <div className="hidden md:block">
             {session?.user ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button className="relative rounded-full ring-2 ring-transparent hover:ring-[#FF4D8E]/50 transition-all duration-200">
                     <Avatar className="w-9 h-9 border-2 border-[#FF4D8E]/30">
-                      <AvatarImage src={session.user.image || undefined} alt={session.user.name || 'User'} />
+                      <AvatarImage
+                        src={session.user.image || undefined}
+                        alt={session.user.name || "User"}
+                      />
                       <AvatarFallback className="bg-gradient-to-br from-[#FF4D8E] to-[#FF9100] text-white text-sm font-medium">
-                        {session.user.name?.[0]?.toUpperCase() || 'U'}
+                        {session.user.name?.[0]?.toUpperCase() || "U"}
                       </AvatarFallback>
                     </Avatar>
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56 glass-panel-dark border-white/10">
+                <DropdownMenuContent
+                  align="end"
+                  className="w-56 glass-panel-dark border-white/10"
+                >
                   <div className="px-3 py-2">
-                    <p className="text-sm font-medium text-white">{session.user.name}</p>
-                    <p className="text-xs text-white/60 truncate">{session.user.email}</p>
+                    <p className="text-sm font-medium text-white">
+                      {session.user.name}
+                    </p>
+                    <p className="text-xs text-white/60 truncate">
+                      {session.user.email}
+                    </p>
                   </div>
                   <DropdownMenuSeparator className="bg-white/10" />
-                  <DropdownMenuItem asChild className="text-white/80 hover:text-white hover:bg-white/10 cursor-pointer">
+                  <DropdownMenuItem
+                    asChild
+                    className="text-white/80 hover:text-white hover:bg-white/10 cursor-pointer"
+                  >
                     <Link href="/profile">
                       <User className="w-4 h-4 mr-2" />
                       Profile
@@ -160,13 +175,16 @@ export function Navbar() {
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
-              <Avatar className="w-9 h-9 border-2 border-[#FF4D8E]/30 cursor-pointer hover:border-[#FF4D8E]/60 transition-colors" onClick={() => signIn('google')}>
+              <Avatar
+                className="w-9 h-9 border-2 border-[#FF4D8E]/30 cursor-pointer hover:border-[#FF4D8E]/60 transition-colors"
+                onClick={() => signIn("google")}
+              >
                 <AvatarFallback className="bg-gradient-to-br from-[#FF4D8E] to-[#FF9100] text-white text-sm font-medium">
                   YA
                 </AvatarFallback>
               </Avatar>
             )}
-          </div>
+          </div> */}
 
           {/* Mobile Menu Button */}
           <button
@@ -188,17 +206,17 @@ export function Navbar() {
         <div
           className="md:hidden mt-2 rounded-2xl p-4 space-y-1"
           style={{
-            background: 'var(--nav-bg, rgba(255, 255, 255, 0.95))',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
-            border: '1px solid var(--nav-border, rgba(255, 255, 255, 0.3))',
-            boxShadow: 'var(--nav-shadow, 0 8px 32px rgba(0, 0, 0, 0.12))',
+            background: "var(--nav-bg, rgba(255, 255, 255, 0.95))",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            border: "1px solid var(--nav-border, rgba(255, 255, 255, 0.3))",
+            boxShadow: "var(--nav-shadow, 0 8px 32px rgba(0, 0, 0, 0.12))",
           }}
         >
           {navLinks.map((link) => (
             <Link
               key={link.href}
-              href={link.href}
+              href={`/${locale}${link.href}`}
               onClick={handleLinkClick}
               className="block px-4 py-3 rounded-xl text-foreground/80 hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 transition-colors font-medium"
             >
@@ -207,23 +225,30 @@ export function Navbar() {
           ))}
 
           {/* Mobile User Section */}
-          <div className="pt-3 mt-3 border-t border-black/5 dark:border-white/10">
+          {/* <div className="pt-3 mt-3 border-t border-black/5 dark:border-white/10">
             {session?.user ? (
               <div className="space-y-1">
                 <div className="flex items-center gap-3 px-4 py-2">
                   <Avatar className="w-8 h-8 border-2 border-[#FF4D8E]/30">
-                    <AvatarImage src={session.user.image || undefined} alt={session.user.name || 'User'} />
+                    <AvatarImage
+                      src={session.user.image || undefined}
+                      alt={session.user.name || "User"}
+                    />
                     <AvatarFallback className="bg-gradient-to-br from-[#FF4D8E] to-[#FF9100] text-white text-xs font-medium">
-                      {session.user.name?.[0]?.toUpperCase() || 'U'}
+                      {session.user.name?.[0]?.toUpperCase() || "U"}
                     </AvatarFallback>
                   </Avatar>
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{session.user.name}</p>
-                    <p className="text-xs text-muted-foreground truncate">{session.user.email}</p>
+                    <p className="text-sm font-medium text-foreground truncate">
+                      {session.user.name}
+                    </p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {session.user.email}
+                    </p>
                   </div>
                 </div>
                 <Link
-                  href="/profile"
+                  href={`/${locale}/profile`}
                   onClick={handleLinkClick}
                   className="block px-4 py-3 rounded-xl text-foreground/80 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                 >
@@ -244,7 +269,7 @@ export function Navbar() {
             ) : (
               <button
                 onClick={() => {
-                  signIn('google');
+                  signIn("google");
                   setMobileMenuOpen(false);
                 }}
                 className="w-full px-4 py-3 rounded-xl bg-[#FF4D8E] text-white font-medium hover:bg-[#FF4D8E]/90 transition-colors"
@@ -252,7 +277,7 @@ export function Navbar() {
                 Sign In with Google
               </button>
             )}
-          </div>
+          </div> */}
         </div>
       )}
     </header>
