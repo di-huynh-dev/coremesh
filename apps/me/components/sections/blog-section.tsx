@@ -4,6 +4,7 @@ import { PostCard } from "@repo/ui/post-card";
 import type { BlogPost } from "@repo/ui/types/post";
 import { motion } from "framer-motion";
 import { ExternalLink } from "lucide-react";
+import { BlogNavbar } from "./blog-navbar";
 
 type BlogSectionProps = {
   posts: BlogPost[];
@@ -14,7 +15,7 @@ export function BlogSection({ posts, blogsBaseUrl }: BlogSectionProps) {
   const resolvedBlogsBaseUrl = blogsBaseUrl.replace(/\/$/, "");
 
   return (
-    <section className="px-4 py-10 md:px-8 md:py-14">
+    <section id="blog" className="px-4 py-10 md:px-8 md:py-14">
       <div className="mx-auto max-w-5xl">
         <motion.div
           initial={{ opacity: 0, y: 24 }}
@@ -41,6 +42,8 @@ export function BlogSection({ posts, blogsBaseUrl }: BlogSectionProps) {
               <ExternalLink className="h-4 w-4" />
             </a>
           </div>
+
+          <BlogNavbar blogsBaseUrl={blogsBaseUrl} />
 
           <div className="grid gap-4 lg:grid-cols-3">
             {posts.map((post, index) => (

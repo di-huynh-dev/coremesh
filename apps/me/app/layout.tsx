@@ -17,13 +17,8 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Steven Huynh", url: "https://github.com/di-huynh-dev" }],
   icons: {
-    icon: [
-      {
-        url: "https://avatars.githubusercontent.com/u/103420884?v=4",
-        type: "image/png",
-      },
-    ],
-    apple: "https://avatars.githubusercontent.com/u/103420884?v=4",
+    icon: "/round-avatar.svg",
+    apple: "/round-avatar.svg",
   },
   openGraph: {
     title: "Steven Huynh — Software Engineer",
