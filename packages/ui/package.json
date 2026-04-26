@@ -9,6 +9,11 @@
   ],
   "exports": {
     "./styles.css": "./dist/index.css",
+    "./types/post": "./dist/types/post.js",
+    "./post-card": "./dist/post-card.js",
+    "./post-list": "./dist/post-list.js",
+    "./featured-posts": "./dist/featured-posts.js",
+    "./post-filters": "./dist/post-filters.js",
     "./*": "./dist/*.js"
   },
   "license": "MIT",
@@ -21,7 +26,10 @@
     "lint": "eslint src --max-warnings 0"
   },
   "peerDependencies": {
-    "react": "^19"
+    "react": "^19",
+    "next": "^16",
+    "framer-motion": "^12",
+    "lucide-react": "^0.562.0"
   },
   "devDependencies": {
     "@repo/eslint-config": "*",

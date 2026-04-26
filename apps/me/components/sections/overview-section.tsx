@@ -1,5 +1,7 @@
 "use client";
 
+import { PostCard } from "@repo/ui/post-card";
+import type { BlogPost } from "@repo/ui/types/post";
 import { motion } from "framer-motion";
 import {
   BadgeCheck,
@@ -20,19 +22,8 @@ import {
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 
-type BlogCard = {
-  slug: string;
-  title: string;
-  excerpt: string;
-  date: string;
-  readingTime: number;
-  category: string;
-  tags?: string[];
-  image?: string;
-};
-
 type OverviewSectionProps = {
-  posts: BlogCard[];
+  posts: BlogPost[];
   blogsBaseUrl: string;
 };
 
@@ -74,10 +65,7 @@ const socialItems: SocialItem[] = [
   },
 ];
 
-export function OverviewSection({
-  posts,
-  blogsBaseUrl,
-}: OverviewSectionProps) {
+export function OverviewSection({ posts, blogsBaseUrl }: OverviewSectionProps) {
   const [time, setTime] = useState("");
   const [isSpeaking, setIsSpeaking] = useState(false);
 
@@ -292,7 +280,9 @@ export function OverviewSection({
                   target="_blank"
                   rel="noopener noreferrer"
                   className={`group flex items-center justify-between gap-4 border-border px-5 py-5 transition-colors hover:bg-muted/20 ${
-                    index < socialItems.length - 1 ? "border-b md:border-b-0" : ""
+                    index < socialItems.length - 1
+                      ? "border-b md:border-b-0"
+                      : ""
                   } ${
                     index < socialItems.length - 1
                       ? "md:border-r xl:border-r"
@@ -322,14 +312,7 @@ export function OverviewSection({
           className="mt-10"
         >
           <div className="mb-5 flex items-end justify-between gap-4">
-            <div>
-              <p className="font-mono-data text-muted-foreground">
-                from the blog
-              </p>
-              <h2 className="mt-2 text-3xl font-semibold tracking-tight text-foreground">
-                Latest writing from the blogs app
-              </h2>
-            </div>
+            <p className="font-mono-data text-muted-foreground">Blogs</p>
             <a
               href={`${resolvedBlogsBaseUrl}/blog`}
               target="_blank"
@@ -342,61 +325,14 @@ export function OverviewSection({
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            {posts.map((post) => (
-              <a
+            {posts.map((post, index) => (
+              <PostCard
                 key={post.slug}
+                post={post}
+                viewMode="grid"
                 href={`${resolvedBlogsBaseUrl}/blog/${post.slug}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group overflow-hidden rounded-[24px] border border-border bg-background transition-all hover:-translate-y-1 hover:border-foreground/20 hover:shadow-[0_18px_40px_rgba(15,23,42,0.08)]"
-              >
-                {post.image ? (
-                  <div className="relative aspect-[16/10] overflow-hidden border-b border-border bg-muted">
-                    <Image
-                      src={post.image}
-                      alt={post.title}
-                      fill
-                      className="object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-                    />
-                  </div>
-                ) : null}
-
-                <div className="p-5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                      {post.category}
-                    </span>
-                    <ExternalLink className="h-4 w-4 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                  </div>
-
-                  <h3 className="mt-4 text-xl font-semibold leading-tight text-foreground">
-                    {post.title}
-                  </h3>
-
-                  <p className="mt-3 line-clamp-3 text-sm leading-6 text-muted-foreground">
-                    {post.excerpt}
-                  </p>
-
-                  <div className="mt-5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>{post.date}</span>
-                    <span>•</span>
-                    <span>{post.readingTime} min read</span>
-                  </div>
-
-                  {post.tags?.length ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {post.tags.slice(0, 3).map((tag) => (
-                        <span
-                          key={tag}
-                          className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
-                        >
-                          #{tag}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </a>
+                index={index}
+              />
             ))}
           </div>
         </motion.div>

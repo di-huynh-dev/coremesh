@@ -6,13 +6,14 @@ import { OverviewSection } from "@/components/sections/overview-section";
 import { ProjectsSection } from "@/components/sections/projects-section";
 import { StackSection } from "@/components/sections/stack-section";
 import { getAllPosts } from "../../blogs/lib/blog";
+import type { BlogPost } from "@repo/ui/types/post";
 
 const blogsBaseUrl =
   process.env.NEXT_PUBLIC_BLOGS_URL?.replace(/\/$/, "") ??
   "http://localhost:3003/en";
 
 export default function Home() {
-  const posts = getAllPosts("en")
+  const posts: BlogPost[] = getAllPosts("en")
     .slice(0, 3)
     .map((post) => ({
       slug: post.slug,

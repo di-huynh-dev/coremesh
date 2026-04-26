@@ -1,40 +1,43 @@
-# Clone carlosdubon.dev Portfolio + GitHub Data Integration
+# TODO — Share Post List UI via Monorepo
 
-## Progress Tracker
+## Phase 1: Setup shared package `@repo/ui`
 
-### Phase 1: Foundation ✅
+- [x] Add `@repo/ui` dependency to `apps/blogs/package.json`
+- [x] Add `@repo/ui` dependency to `apps/me/package.json`
+- [x] Run `bun install` to sync workspace
+- [x] Build shared package (`packages/ui`) successfully
 
-- [x] Update `apps/me/package.json` metadata
-- [x] Rewrite `apps/me/app/globals.css` with new design system
-- [x] Update `apps/me/app/layout.tsx` metadata and fonts
+## Phase 2: Create shared UI components in `packages/ui/src`
 
-### Phase 2: Layout Components ✅
+- [x] `types/post.ts` — Shared `BlogPost` type with optional fields for flexibility
+- [x] `post-card.tsx` — Reusable `PostCard` component (list/grid variants)
+- [x] `post-list.tsx` — `PostList` with view-mode toggle
+- [x] `featured-posts.tsx` — `FeaturedPosts` section component
+- [x] `post-filters.tsx` — Search, level/tags dropdowns, sort, view toggle
+- [x] Export all from `package.json`
 
-- [x] Rewrite `apps/me/components/layout/navbar.tsx` — minimal header
-- [x] Rewrite `apps/me/components/layout/footer.tsx` — minimal footer
+## Phase 3: Refactor `apps/blogs` to consume shared UI
 
-### Phase 3: Page Sections ✅
+- [x] Update `globals.css` — remove `@import "tw-animate-css"` (handled by app)
+- [x] Refactor `app/[locale]/blog/page.tsx`:
+  - Import `PostList`, `FeaturedPosts`, `PostFilters` from `@repo/ui`
+  - Import `BlogPost` type from `@repo/ui/types/post`
+  - Keep data-fetching (`getAllPosts`) and state logic in page
+  - Delegate rendering to shared components
+- [x] Type-check `blogs` app — **PASS**
 
-- [x] Create `apps/me/components/sections/hero-section.tsx` — avatar, name, tagline
-- [x] Create `apps/me/components/sections/overview-section.tsx` — job, location, contact
-- [x] Create `apps/me/components/sections/social-section.tsx` — social links
-- [x] Create `apps/me/components/sections/about-section.tsx` — bio
-- [x] Create `apps/me/components/sections/github-calendar-section.tsx` — contributions
-- [x] Create `apps/me/components/sections/stack-section.tsx` — tech icons
-- [x] Create `apps/me/components/sections/projects-section.tsx` — GitHub repos
-- [x] Create `apps/me/components/sections/experience-section.tsx` — work history
+## Phase 4: Refactor `apps/me` to consume shared UI
 
-### Phase 4: Assembly ✅
+- [x] Update `app/page.tsx`:
+  - Import `BlogPost` type from `@repo/ui/types/post`
+  - Explicitly type posts as `BlogPost[]`
+- [x] Refactor `components/sections/overview-section.tsx`:
+  - Import `PostCard` from `@repo/ui/post-card`
+  - Replace inline post cards with `<PostCard viewMode="grid" ... />`
+  - Remove duplicated card markup
+- [x] Type-check `me` app — **PASS**
 
-- [x] Rewrite `apps/me/app/page.tsx` — assemble all sections
-- [x] Build test passed (`bun run build` — compiled successfully, all pages generated)
+## Notes
 
----
-
-## Notes for Future Customization
-
-1. **Social Links**: LinkedIn, X (Twitter), and Discord URLs are placeholders (`#`). Update them in `social-section.tsx` and `footer.tsx`.
-2. **Email**: GitHub profile shows `null` for email. Update in `footer.tsx` if desired.
-3. **Experience**: Only Estuary Solutions is listed. Add more roles in `experience-section.tsx` if needed.
-4. **GitHub Calendar**: Uses simulated contribution data (real data requires GitHub auth token). To use real data, integrate `react-github-calendar` with a PAT.
-5. **Old Components**: Previous YUV.AI sections (`boilerplate-hero`, `bun-comparison`, etc.) still exist in `components/sections/` but are unused. Safe to delete for cleanup.
+- The `PostCard` component now gracefully handles optional fields (`content`, `contentHtml`, `author`, `level`, `tags`, `image`), making it reusable across both full blog pages and summary grids.
+- The `me` app still fetches data via `../../blogs/lib/blog` cross-import; future improvement could move blog data to a shared `@repo/blog-data` package or fetch via API.
