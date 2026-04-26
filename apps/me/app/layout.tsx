@@ -30,7 +30,7 @@ export const metadata: Metadata = {
     description:
       "Love to work and build anything with Js <3. Software Engineer at Estuary Solutions.",
     type: "website",
-    url: "https://me.nextdi.io.vn/me",
+    url: "https://me.nextdi.io.vn",
   },
   twitter: {
     card: "summary_large_image",

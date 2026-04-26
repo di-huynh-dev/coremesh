@@ -1,3 +1,4 @@
+import { BlogSection } from "@/components/sections/blog-section";
 import { Footer } from "@/components/layout/footer";
 import { Navbar } from "@/components/layout/navbar";
 import { AboutSection } from "@/components/sections/about-section";
@@ -29,10 +30,11 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-background text-foreground">
       <Navbar />
-      <OverviewSection posts={posts} blogsBaseUrl={blogsBaseUrl} />
+      <OverviewSection blogsBaseUrl={blogsBaseUrl} />
       <AboutSection />
       <StackSection />
       <ExperienceSection />
+      <BlogSection posts={posts} blogsBaseUrl={blogsBaseUrl} />
       <ProjectsSection />
       <Footer />
     </main>

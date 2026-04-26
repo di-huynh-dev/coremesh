@@ -1,13 +1,10 @@
 "use client";
 
-import { PostCard } from "@repo/ui/post-card";
-import type { BlogPost } from "@repo/ui/types/post";
 import { motion } from "framer-motion";
 import {
   BadgeCheck,
   BriefcaseBusiness,
   Clock3,
-  ExternalLink,
   Globe,
   Linkedin,
   Mail,
@@ -23,7 +20,6 @@ import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 
 type OverviewSectionProps = {
-  posts: BlogPost[];
   blogsBaseUrl: string;
 };
 
@@ -65,7 +61,7 @@ const socialItems: SocialItem[] = [
   },
 ];
 
-export function OverviewSection({ posts, blogsBaseUrl }: OverviewSectionProps) {
+export function OverviewSection({ blogsBaseUrl }: OverviewSectionProps) {
   const [time, setTime] = useState("");
   const [isSpeaking, setIsSpeaking] = useState(false);
 
@@ -142,8 +138,6 @@ export function OverviewSection({ posts, blogsBaseUrl }: OverviewSectionProps) {
     utterance.onerror = () => setIsSpeaking(false);
     window.speechSynthesis.speak(utterance);
   };
-
-  const resolvedBlogsBaseUrl = blogsBaseUrl.replace(/\/$/, "");
 
   return (
     <section className="px-4 pb-10 pt-28 md:px-8 md:pb-14 md:pt-36">
@@ -297,43 +291,9 @@ export function OverviewSection({ posts, blogsBaseUrl }: OverviewSectionProps) {
                       {item.label}
                     </span>
                   </div>
-                  <ExternalLink className="h-5 w-5 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
                 </a>
               );
             })}
-          </div>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true, margin: "-60px" }}
-          transition={{ duration: 0.45, delay: 0.08 }}
-          className="mt-10"
-        >
-          <div className="mb-5 flex items-end justify-between gap-4">
-            <p className="font-mono-data text-muted-foreground">Blogs</p>
-            <a
-              href={`${resolvedBlogsBaseUrl}/blog`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hidden items-center gap-2 rounded-full border border-border px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground md:inline-flex"
-            >
-              Open blogs
-              <ExternalLink className="h-4 w-4" />
-            </a>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-3">
-            {posts.map((post, index) => (
-              <PostCard
-                key={post.slug}
-                post={post}
-                viewMode="grid"
-                href={`${resolvedBlogsBaseUrl}/blog/${post.slug}`}
-                index={index}
-              />
-            ))}
           </div>
         </motion.div>
       </div>

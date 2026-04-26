@@ -107,41 +107,74 @@ export function PostCard({
             </div>
           </div>
         ) : (
-          <div className="group bg-card hover:bg-accent/50 border rounded-lg p-6 transition-all duration-300 cursor-pointer flex flex-col h-full">
-            {post.image && (
-              <div className="w-full h-40 relative rounded-lg overflow-hidden bg-muted mb-4">
+          <div className="group bg-card hover:bg-accent/50 border rounded-lg overflow-hidden transition-all duration-300 cursor-pointer flex flex-col h-full">
+            {post.image ? (
+              <div className="relative aspect-[16/10] overflow-hidden border-b border-border bg-muted">
                 <Image
                   src={post.image}
                   alt={post.title}
                   fill
-                  className="object-cover group-hover:scale-105 transition-transform duration-300"
+                  className="object-cover transition-transform duration-500 group-hover:scale-[1.03]"
                 />
+              </div>
+            ) : (
+              <div className="relative aspect-[16/10] overflow-hidden border-b border-border bg-muted flex items-center justify-center">
+                <span className="text-xs text-muted-foreground uppercase tracking-widest">
+                  {post.category}
+                </span>
               </div>
             )}
 
-            <div className="flex items-center gap-3 mb-3 flex-wrap">
-              <span className="px-3 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary">
-                {post.category}
-              </span>
-            </div>
-
-            <h2 className="text-lg font-bold mb-2 group-hover:text-primary transition-colors line-clamp-2 flex-grow">
-              {post.title}
-            </h2>
-
-            <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
-              {post.excerpt}
-            </p>
-
-            <div className="flex items-center justify-between text-xs text-muted-foreground pt-4 border-t">
-              <div className="flex items-center gap-1">
-                <Calendar className="w-4 h-4" />
-                {post.date}
+            <div className="p-5 flex flex-col flex-grow">
+              <div className="flex items-center gap-3 mb-3 flex-wrap">
+                <span className="px-3 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary">
+                  {post.category}
+                </span>
+                {post.level &&
+                  (() => {
+                    const colors = levelColors[post.level];
+                    if (!colors) return null;
+                    return (
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs font-semibold ${colors.bg} ${colors.text}`}
+                      >
+                        {post.level}
+                      </span>
+                    );
+                  })()}
               </div>
-              <div className="flex items-center gap-1">
-                <Clock className="w-4 h-4" />
-                {post.readingTime} min
+
+              <h2 className="text-lg font-bold mb-2 group-hover:text-primary transition-colors line-clamp-2 flex-grow">
+                {post.title}
+              </h2>
+
+              <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                {post.excerpt}
+              </p>
+
+              <div className="flex items-center justify-between text-xs text-muted-foreground pt-4 border-t mt-auto">
+                <div className="flex items-center gap-1">
+                  <Calendar className="w-4 h-4" />
+                  {post.date}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Clock className="w-4 h-4" />
+                  {post.readingTime} min
+                </div>
               </div>
+
+              {post.tags && post.tags.length > 0 && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {post.tags.slice(0, 3).map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+                    >
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
