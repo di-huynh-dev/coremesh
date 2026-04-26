@@ -8,33 +8,20 @@ import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { useTranslations } from "next-intl";
 
 function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted) {
-    return (
-      <button className="w-9 h-9 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center">
-        <Sun className="w-4 h-4 text-foreground/60" />
-      </button>
-    );
-  }
+  const { resolvedTheme, setTheme } = useTheme();
 
   return (
     <button
-      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+      onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
       className="w-9 h-9 rounded-full bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 flex items-center justify-center transition-colors"
       aria-label="Toggle theme"
     >
-      {theme === "dark" ? (
+      {resolvedTheme === "dark" ? (
         <Sun className="w-4 h-4 text-foreground/70 hover:text-foreground transition-colors" />
       ) : (
         <Moon className="w-4 h-4 text-foreground/70 hover:text-foreground transition-colors" />
@@ -44,8 +31,7 @@ function ThemeToggle() {
 }
 
 export function Navbar() {
-  const sessionResult = useSession();
-  const { data: session } = sessionResult || { data: null };
+  useSession();
   const router = useRouter();
   const pathname = usePathname();
   const locale = useLocale();

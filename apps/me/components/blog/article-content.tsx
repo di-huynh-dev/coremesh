@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { BlogPost } from "@/lib/blog";
 
-// Note: Blog content HTML comes from our internal local blog post files,
+// Note: Blog content HTML comes from our own hardcoded lib/blog.ts file,
 // not from user input, so it is safe to render.
 
 interface ArticleContentProps {
@@ -36,8 +36,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
 
   // Voice & Speed settings
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoice, setSelectedVoice] =
-    useState<SpeechSynthesisVoice | null>(null);
+  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [speed, setSpeed] = useState(1);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -56,8 +55,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
       const englishVoices = availableVoices.filter((v) =>
         v.lang.startsWith("en"),
       );
-      const voicesToUse =
-        englishVoices.length > 0 ? englishVoices : availableVoices;
+      const voicesToUse = englishVoices.length > 0 ? englishVoices : availableVoices;
       setVoices(voicesToUse);
 
       if (!selectedVoice) {
@@ -111,10 +109,10 @@ export function ArticleContent({ post }: ArticleContentProps) {
       setProgress(percentage);
     };
 
-    window.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
 
-    return () => window.removeEventListener("scroll", handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
   // Initialize TTS with selected voice and speed
@@ -131,7 +129,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
 
     let wordIndex = 0;
     utterance.onboundary = (event) => {
-      if (event.name === "word") {
+      if (event.name === 'word') {
         setCurrentWordIndex(wordIndex);
         wordIndex++;
       }
@@ -156,7 +154,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
   useEffect(() => {
     initTTS();
     return () => {
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         speechSynthesis.cancel();
       }
     };
@@ -205,8 +203,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
   };
 
   // Calculate TTS progress based on word index
-  const ttsProgress =
-    words.length > 0 ? (currentWordIndex / words.length) * 100 : 0;
+  const ttsProgress = words.length > 0 ? (currentWordIndex / words.length) * 100 : 0;
 
   return (
     <>
@@ -259,12 +256,8 @@ export function ArticleContent({ post }: ArticleContentProps) {
                   <span>YA</span>
                 </div>
                 <div>
-                  <p className="font-medium text-foreground text-sm md:text-base">
-                    {post.author.name}
-                  </p>
-                  <p className="text-xs md:text-sm text-muted-foreground">
-                    Author
-                  </p>
+                  <p className="font-medium text-foreground text-sm md:text-base">{post.author.name}</p>
+                  <p className="text-xs md:text-sm text-muted-foreground">Author</p>
                 </div>
               </div>
 
@@ -407,8 +400,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
           </div>
 
           {/* Player Controls */}
-          <div
-            className="
+          <div className="
             bg-white/95
             dark:bg-[#1C1C1E]/95
             backdrop-blur-xl
@@ -420,8 +412,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
             py-3
             md:py-4
             safe-area-inset-bottom
-          "
-          >
+          ">
             <div className="flex items-center justify-between gap-2 md:gap-4 max-w-4xl mx-auto">
               {/* Left: Track Info - hide text on very small screens */}
               <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
@@ -472,7 +463,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
                 <div className="relative">
                   <button
                     onClick={() => setShowSettings(!showSettings)}
-                    className={`p-1.5 md:p-2 rounded-full transition-colors ${showSettings ? "bg-[#FF4D8E]/10 text-[#FF4D8E]" : "text-muted-foreground hover:text-foreground"}`}
+                    className={`p-1.5 md:p-2 rounded-full transition-colors ${showSettings ? 'bg-[#FF4D8E]/10 text-[#FF4D8E]' : 'text-muted-foreground hover:text-foreground'}`}
                     title="Settings"
                   >
                     <Settings className="w-4 h-4 md:w-5 md:h-5" />
@@ -482,9 +473,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
                   {showSettings && (
                     <div className="absolute bottom-full right-0 mb-3 w-64 md:w-72 p-3 md:p-4 rounded-xl md:rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-200 dark:border-white/10 shadow-2xl">
                       <div className="flex items-center justify-between mb-3 md:mb-4">
-                        <h4 className="font-semibold text-foreground text-sm md:text-base">
-                          Playback Settings
-                        </h4>
+                        <h4 className="font-semibold text-foreground text-sm md:text-base">Playback Settings</h4>
                         <button
                           onClick={() => setShowSettings(false)}
                           className="p-1 hover:bg-gray-100 dark:hover:bg-white/10 rounded-full"
@@ -526,21 +515,16 @@ export function ArticleContent({ post }: ArticleContentProps) {
                             Voice
                           </label>
                           <select
-                            value={selectedVoice?.name || ""}
+                            value={selectedVoice?.name || ''}
                             onChange={(e) => {
-                              const voice = voices.find(
-                                (v) => v.name === e.target.value,
-                              );
+                              const voice = voices.find(v => v.name === e.target.value);
                               setSelectedVoice(voice || null);
                             }}
                             className="w-full p-2 md:p-2.5 rounded-lg md:rounded-xl bg-gray-100 dark:bg-white/10 border-0 text-foreground text-xs md:text-sm focus:ring-2 focus:ring-[#FF4D8E] cursor-pointer"
                           >
                             {voices.map((voice) => (
                               <option key={voice.name} value={voice.name}>
-                                {voice.name
-                                  .replace("Microsoft ", "")
-                                  .replace("Google ", "")
-                                  .replace(" (Natural)", "")}
+                                {voice.name.replace('Microsoft ', '').replace('Google ', '').replace(' (Natural)', '')}
                               </option>
                             ))}
                           </select>

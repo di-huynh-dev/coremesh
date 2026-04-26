@@ -85,7 +85,7 @@ export function BunComparisonSection() {
             Bun vs npm
           </h2>
           <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
-            Bun is a drop-in replacement for npm that's significantly faster.
+            Bun is a drop-in replacement for npm that&apos;s significantly faster.
             Same commands, same packages, just faster.
           </p>
         </motion.div>

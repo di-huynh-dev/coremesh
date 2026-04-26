@@ -1,17 +1,16 @@
-import { posts } from "@/lib/blog/posts";
-import type { BlogLocale, BlogPost, BlogPostSource } from "@/lib/blog/types";
+import { posts } from "./blog/posts";
+import type { BlogLocale, BlogPost, BlogPostSource } from "./blog/types";
 
-export type { BlogPost } from "@/lib/blog/types";
+export type { BlogPost } from "./blog/types";
 
 function resolvePost(post: BlogPostSource, locale: BlogLocale): BlogPost {
   const localizedContent = post.translations?.[locale];
+  const { translations, ...basePost } = post;
+  void translations;
 
   if (!localizedContent) {
-    const { translations, ...basePost } = post;
     return basePost;
   }
-
-  const { translations, ...basePost } = post;
 
   return {
     ...basePost,

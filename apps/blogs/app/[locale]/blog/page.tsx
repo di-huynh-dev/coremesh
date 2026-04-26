@@ -105,7 +105,7 @@ export default function BlogPage() {
 
   // Filter and sort posts
   const filteredPosts = useMemo(() => {
-    let result = allPosts.filter((post) => {
+    const result = allPosts.filter((post) => {
       // Search filter
       const matchesSearch =
         post.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -155,7 +155,7 @@ export default function BlogPage() {
       {/* What's New Section */}
       <div className="container mx-auto px-4 md:px-6 py-12 border-b">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold">What's new</h2>
+          <h2 className="text-2xl font-bold">What&apos;s new</h2>
           <Link
             href={`/${locale}/blog`}
             className="text-primary hover:underline flex items-center gap-2"

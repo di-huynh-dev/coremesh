@@ -1,0 +1,392 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *, .night *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ========== LIGHT MODE (DEFAULT) ========== */
+:root {
+  --font-geist-sans:
+    "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Helvetica Neue", sans-serif;
+  --font-geist-mono:
+    "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
+    monospace;
+  --radius: 0.5rem;
+  --background: 0 0% 100%;
+  --foreground: 0 0% 9%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 9%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 9%;
+
+  --primary: 0 0% 9%;
+  --primary-foreground: 0 0% 98%;
+
+  --secondary: 0 0% 96%;
+  --secondary-foreground: 0 0% 9%;
+
+  --muted: 0 0% 96%;
+  --muted-foreground: 0 0% 45%;
+
+  --accent: 0 0% 96%;
+  --accent-foreground: 0 0% 9%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 0 0% 90%;
+  --input: 0 0% 90%;
+  --ring: 0 0% 64%;
+
+  --chart-1: 0 0% 9%;
+  --chart-2: 0 0% 45%;
+  --chart-3: 0 0% 64%;
+  --chart-4: 0 0% 83%;
+  --chart-5: 0 0% 96%;
+
+  --sidebar: 0 0% 98%;
+  --sidebar-foreground: 0 0% 9%;
+  --sidebar-primary: 0 0% 9%;
+  --sidebar-primary-foreground: 0 0% 98%;
+  --sidebar-accent: 0 0% 96%;
+  --sidebar-accent-foreground: 0 0% 9%;
+  --sidebar-border: 0 0% 90%;
+  --sidebar-ring: 0 0% 64%;
+}
+
+/* ========== DARK MODE ========== */
+.dark {
+  --background: 0 0% 4%;
+  --foreground: 0 0% 98%;
+
+  --card: 0 0% 4%;
+  --card-foreground: 0 0% 98%;
+
+  --popover: 0 0% 4%;
+  --popover-foreground: 0 0% 98%;
+
+  --primary: 0 0% 98%;
+  --primary-foreground: 0 0% 9%;
+
+  --secondary: 0 0% 12%;
+  --secondary-foreground: 0 0% 98%;
+
+  --muted: 0 0% 12%;
+  --muted-foreground: 0 0% 60%;
+
+  --accent: 0 0% 12%;
+  --accent-foreground: 0 0% 98%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 0 0% 15%;
+  --input: 0 0% 15%;
+  --ring: 0 0% 40%;
+
+  --chart-1: 0 0% 98%;
+  --chart-2: 0 0% 60%;
+  --chart-3: 0 0% 40%;
+  --chart-4: 0 0% 20%;
+  --chart-5: 0 0% 12%;
+
+  --sidebar: 0 0% 6%;
+  --sidebar-foreground: 0 0% 98%;
+  --sidebar-primary: 0 0% 98%;
+  --sidebar-primary-foreground: 0 0% 9%;
+  --sidebar-accent: 0 0% 12%;
+  --sidebar-accent-foreground: 0 0% 98%;
+  --sidebar-border: 0 0% 15%;
+  --sidebar-ring: 0 0% 40%;
+}
+
+.night {
+  --background: 222 47% 8%;
+  --foreground: 210 40% 98%;
+
+  --card: 222 42% 10%;
+  --card-foreground: 210 40% 98%;
+
+  --popover: 222 42% 10%;
+  --popover-foreground: 210 40% 98%;
+
+  --primary: 210 40% 98%;
+  --primary-foreground: 222 47% 10%;
+
+  --secondary: 222 30% 14%;
+  --secondary-foreground: 210 40% 98%;
+
+  --muted: 222 28% 13%;
+  --muted-foreground: 215 18% 72%;
+
+  --accent: 222 28% 13%;
+  --accent-foreground: 210 40% 98%;
+
+  --destructive: 0 72% 52%;
+  --destructive-foreground: 210 40% 98%;
+
+  --border: 218 28% 18%;
+  --input: 218 28% 18%;
+  --ring: 214 32% 58%;
+
+  --chart-1: 210 40% 98%;
+  --chart-2: 214 22% 72%;
+  --chart-3: 214 16% 52%;
+  --chart-4: 218 22% 28%;
+  --chart-5: 222 28% 16%;
+
+  --sidebar: 222 42% 9%;
+  --sidebar-foreground: 210 40% 98%;
+  --sidebar-primary: 210 40% 98%;
+  --sidebar-primary-foreground: 222 47% 10%;
+  --sidebar-accent: 222 28% 13%;
+  --sidebar-accent-foreground: 210 40% 98%;
+  --sidebar-border: 218 28% 18%;
+  --sidebar-ring: 214 32% 58%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* ========== GRID LINE DECORATIONS ========== */
+.grid-line {
+  background-image:
+    linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px),
+    linear-gradient(to bottom, hsl(var(--border)) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.grid-line-subtle {
+  background-image:
+    linear-gradient(to right, hsl(var(--border) / 0.5) 1px, transparent 1px),
+    linear-gradient(to bottom, hsl(var(--border) / 0.5) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* ========== SCREEN LINE DECORATION ========== */
+.screen-line {
+  position: relative;
+}
+
+.screen-line::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    hsl(var(--border)),
+    transparent
+  );
+}
+
+/* ========== MONOSPACE UTILITIES ========== */
+.font-mono-data {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* ========== SECTION DIVIDERS ========== */
+.section-divider {
+  border-top: 1px solid hsl(var(--border));
+}
+
+/* ========== LINK UNDERLINE ANIMATION ========== */
+.link-underline {
+  position: relative;
+  text-decoration: none;
+}
+
+.link-underline::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  width: 0;
+  height: 1px;
+  background: currentColor;
+  transition: width 0.3s ease;
+}
+
+.link-underline:hover::after {
+  width: 100%;
+}
+
+/* ========== SUBTLE HOVER LIFT ========== */
+.hover-lift-subtle {
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.hover-lift-subtle:hover {
+  transform: translateY(-2px);
+}
+
+/* ========== GITHUB CALENDAR HEATMAP COLORS ========== */
+.gh-level-0 {
+  background-color: #ebedf0;
+}
+.gh-level-1 {
+  background-color: #9be9a8;
+}
+.gh-level-2 {
+  background-color: #40c463;
+}
+.gh-level-3 {
+  background-color: #30a14e;
+}
+.gh-level-4 {
+  background-color: #216e39;
+}
+
+.dark .gh-level-0 {
+  background-color: #161b22;
+}
+.dark .gh-level-1 {
+  background-color: #0e4429;
+}
+.dark .gh-level-2 {
+  background-color: #006d32;
+}
+.dark .gh-level-3 {
+  background-color: #26a641;
+}
+.dark .gh-level-4 {
+  background-color: #39d353;
+}
+
+/* ========== ANIMATED AVATAR BORDER ========== */
+@keyframes electric-border {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px hsl(var(--border)),
+      0 0 0 4px hsl(var(--primary) / 0.3);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px hsl(var(--border)),
+      0 0 20px 4px hsl(var(--primary) / 0.5);
+  }
+}
+
+.avatar-glow {
+  animation: electric-border 3s ease-in-out infinite;
+}
+
+/* ========== SMOOTH SCROLLING ========== */
+html {
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+/* ========== SELECTION ========== */
+::selection {
+  background-color: hsl(var(--primary) / 0.15);
+  color: inherit;
+}
+
+/* ========== FOCUS VISIBLE ========== */
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* ========== SCROLLBAR ========== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+/* ========== RESPONSIVE CONTAINER ========== */
+.container-tight {
+  width: 100%;
+  max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .container-tight {
+    padding-left: 2rem;
+    padding-right: 2rem;
+  }
+}
+
+/* ========== TEXT UTILITIES ========== */
+.text-balance {
+  text-wrap: balance;
+}
