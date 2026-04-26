@@ -28,9 +28,6 @@ export function BlogSection({ posts, blogsBaseUrl }: BlogSectionProps) {
               <p className="font-mono-data text-muted-foreground">
                 from the blog
               </p>
-              <h2 className="mt-2 text-3xl font-semibold tracking-tight text-foreground">
-                Latest writing from the blogs app
-              </h2>
             </div>
             <a
               href={`${resolvedBlogsBaseUrl}/blog`}
