@@ -40,8 +40,6 @@ export function BlogSection({ posts, blogsBaseUrl }: BlogSectionProps) {
             </a>
           </div>
 
-          <BlogNavbar blogsBaseUrl={blogsBaseUrl} />
-
           <div className="grid gap-4 lg:grid-cols-3">
             {posts.map((post, index) => (
               <PostCard
