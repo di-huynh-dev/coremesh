@@ -13,9 +13,6 @@ export function Footer() {
             <p>
               © {year} <span className="text-foreground">Huynh Tien Di</span>
             </p>
-            <p className="text-xs mt-1">
-              Inspired by clean mono portfolio aesthetics.
-            </p>
           </div>
 
           <div className="flex items-center gap-2">

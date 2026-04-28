@@ -11,7 +11,6 @@ const navLinks = [
   { href: "#techstack", label: "Tech Stack", id: "techstack" },
   { href: "#experience", label: "Experience", id: "experience" },
   { href: "#blog", label: "Blog", id: "blog" },
-  { href: "#projects", label: "Projects", id: "projects" },
 ];
 
 export function Navbar() {
