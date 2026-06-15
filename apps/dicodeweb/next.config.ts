@@ -8,8 +8,19 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.join(configDir, "..", ".."),
   },
-  typescript: {
-    ignoreBuildErrors: true,
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'media.licdn.com',
+        pathname: '/**',
+      },
+      {
+        protocol: 'https',
+        hostname: 'cdn.hailuoai.video',
+        pathname: '/**',
+      },
+    ],
   },
 };
 
