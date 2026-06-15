@@ -5,10 +5,10 @@ import { Mail } from 'lucide-react';
 import { GitHubIcon, LinkedInIcon, XIcon } from '@/components/ui/social-icons';
 
 const footerLinks = [
-  { href: '#about', label: 'About' },
-  { href: '#tracks', label: 'Tracks' },
+  { href: '#features', label: 'Highlights' },
+  { href: '#questions', label: 'Questions' },
   { href: '/blog', label: 'Blog' },
-  { href: '#contact', label: 'Contact' },
+  { href: '#faq', label: 'FAQ' },
 ];
 
 const socialLinks = [
@@ -22,10 +22,7 @@ export function Footer() {
   const currentYear = new Date().getFullYear();
 
   return (
-    <footer
-      id="contact"
-      className="border-t border-[#0F2C57] bg-[#071B3A] px-6 py-16 text-[#F5F0EA]"
-    >
+    <footer className="border-t border-[#0F2C57] bg-[#071B3A] px-6 py-16 text-[#F5F0EA]">
       <div className="editorial-grid">
         <div className="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
           <div className="space-y-4">

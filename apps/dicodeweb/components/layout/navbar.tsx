@@ -6,13 +6,20 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
+import { LanguageSwitcher } from "@/components/ui/language-switcher";
+import type { HomeLocale } from "@/lib/home-content";
 
-const navLinks = [
-  { href: "/#about", label: "About" },
-  { href: "/#projects", label: "Projects" },
-  { href: "/blog", label: "Blog" },
-  { href: "/#contact", label: "Contact" },
-];
+type NavbarProps = {
+  labels?: {
+    about: string;
+    tracks: string;
+    blog: string;
+    contact: string;
+  };
+  locale?: HomeLocale;
+  localeLabel?: string;
+  onLocaleChange?: (locale: HomeLocale) => void;
+};
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
@@ -45,10 +52,21 @@ function ThemeToggle() {
   );
 }
 
-export function Navbar() {
+export function Navbar({
+  labels,
+  locale,
+  localeLabel,
+  onLocaleChange,
+}: NavbarProps = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const navLinks = [
+    { href: "/#features", label: labels?.about ?? "Highlights" },
+    { href: "/#questions", label: labels?.tracks ?? "Questions" },
+    { href: "/blog", label: labels?.blog ?? "Blog" },
+    { href: "/#faq", label: labels?.contact ?? "FAQ" },
+  ];
 
   const handleLogoClick = () => {
     if (pathname === "/") {
@@ -111,6 +129,16 @@ export function Navbar() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2 md:gap-3">
+          {locale && localeLabel && onLocaleChange ? (
+            <LanguageSwitcher
+              currentLocale={locale}
+              locales={["en", "vi", "ja"]}
+              onChange={onLocaleChange}
+              label={localeLabel}
+              className="hidden md:inline-flex"
+            />
+          ) : null}
+
           <ThemeToggle />
 
           <button
