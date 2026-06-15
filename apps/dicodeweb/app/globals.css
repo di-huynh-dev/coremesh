@@ -161,3 +161,12 @@
     border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   }
 }
+
+/* Prevent Radix UI scroll-locking layout shifts and jittering */
+html[data-scroll-locked],
+body[data-scroll-locked] {
+  overflow: visible !important;
+  margin-right: 0 !important;
+  padding-right: 0 !important;
+}
+
