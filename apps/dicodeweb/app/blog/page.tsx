@@ -7,7 +7,7 @@ import { getAllPosts } from '@/lib/blog';
 
 const categoryColors: Record<string, string> = {
   Engineering: '#071B3A',
-  Design: '#22C7E8',
+  Design: 'var(--accent)',
   Framework: '#8BD63F',
 };
 
@@ -34,7 +34,7 @@ export default function BlogPage() {
             transition={{ duration: 0.6 }}
             className="reading-width"
           >
-            <p className="mb-3 text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+            <p className="mb-3 text-sm font-medium tracking-[0.16em] text-accent uppercase">
               Journal
             </p>
             <h1 className="mb-4 text-4xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl lg:text-6xl dark:text-[#D7E2FF]">
@@ -65,7 +65,7 @@ export default function BlogPage() {
                       style={{
                         backgroundColor:
                           post.category === 'Design'
-                            ? 'rgba(34, 199, 232, 0.14)'
+                            ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
                             : post.category === 'Framework'
                               ? 'rgba(139, 214, 63, 0.18)'
                               : 'rgba(7, 27, 58, 0.08)',
@@ -80,7 +80,7 @@ export default function BlogPage() {
                     </span>
                   </div>
 
-                  <h2 className="mb-3 text-xl font-semibold text-[#071B3A] transition-colors group-hover:text-[#22C7E8] dark:text-[#D7E2FF]">
+                  <h2 className="mb-3 text-xl font-semibold text-[#071B3A] transition-colors group-hover:text-accent dark:text-[#D7E2FF]">
                     {post.title}
                   </h2>
 
@@ -93,7 +93,7 @@ export default function BlogPage() {
                       <Calendar className="h-3 w-3" />
                       {post.date}
                     </span>
-                    <span className="flex items-center gap-1 text-sm font-medium text-[#22C7E8] transition-all group-hover:gap-2">
+                    <span className="flex items-center gap-1 text-sm font-medium text-accent transition-all group-hover:gap-2">
                       Read article
                       <ArrowRight className="h-3 w-3 md:h-4 md:w-4" />
                     </span>

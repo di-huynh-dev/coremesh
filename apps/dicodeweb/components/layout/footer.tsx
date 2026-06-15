@@ -62,7 +62,7 @@ export function Footer() {
                     href={social.href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex h-10 w-10 items-center justify-center rounded-full border border-[#21446F] bg-white/5 text-[#D7E2FF]/75 transition-all hover:-translate-y-0.5 hover:border-[#22C7E8] hover:text-[#22C7E8]"
+                    className="flex h-10 w-10 items-center justify-center rounded-full border border-[#21446F] bg-white/5 text-[#D7E2FF]/75 transition-all hover:-translate-y-0.5 hover:border-accent hover:text-accent"
                     aria-label={social.label}
                   >
                     <IconComponent className="h-5 w-5" />

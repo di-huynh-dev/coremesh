@@ -29,7 +29,7 @@ export default function QuestionsPage() {
       <main className="bg-background text-foreground min-h-screen px-4 pb-20 pt-32 md:px-6 md:pt-40">
         <div className="editorial-grid">
           <div className="max-w-3xl space-y-5">
-            <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+            <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
               Question Bank
             </p>
             <h1 className="text-4xl font-bold tracking-[-0.04em] text-[#071B3A] md:text-6xl dark:text-[#F5F0EA]">
@@ -48,7 +48,7 @@ export default function QuestionsPage() {
 
               return (
                 <article key={section.title} className="paper-card rounded-[1.75rem] p-6">
-                  <Icon className="h-6 w-6 text-[#22C7E8]" />
+                  <Icon className="h-6 w-6 text-accent" />
                   <h2 className="mt-5 text-2xl font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
                     {section.title}
                   </h2>

@@ -17,13 +17,11 @@ import {
   Braces,
   BriefcaseBusiness,
   CalendarDays,
-  Check,
   CircleHelp,
   ClipboardList,
   Clock3,
   FileText,
   Layers3,
-  MessageSquareQuote,
   MoveRight,
   NotebookPen,
   ShieldCheck,
@@ -34,7 +32,7 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 
 const storageKey = 'dicodeweb-home-locale';
 
@@ -58,6 +56,45 @@ const difficultyStyles: Record<string, string> = {
 
 const statIcons: LucideIcon[] = [BookText, Layers3, Users2, Trophy];
 const latestPosts = getAllPosts().slice(0, 3);
+
+function getPreferredLocale(): HomeLocale {
+  if (typeof window === 'undefined') {
+    return 'en';
+  }
+
+  const storedLocale = window.localStorage.getItem(storageKey);
+
+  if (storedLocale && homeLocales.includes(storedLocale as HomeLocale)) {
+    return storedLocale as HomeLocale;
+  }
+
+  const browserLanguage = window.navigator.language.toLowerCase();
+
+  if (browserLanguage.startsWith('vi')) {
+    return 'vi';
+  }
+
+  if (browserLanguage.startsWith('ja')) {
+    return 'ja';
+  }
+
+  return 'en';
+}
+
+function subscribeToLocaleChange(callback: () => void) {
+  if (typeof window === 'undefined') {
+    return () => {};
+  }
+
+  const handler = () => callback();
+  window.addEventListener('storage', handler);
+  window.addEventListener('dicodeweb-locale-change', handler);
+
+  return () => {
+    window.removeEventListener('storage', handler);
+    window.removeEventListener('dicodeweb-locale-change', handler);
+  };
+}
 
 function getSupplementalContent(locale: HomeLocale) {
   if (locale === 'vi') {
@@ -495,8 +532,6 @@ function getUiLabels(locale: HomeLocale) {
     return {
       preview: 'Xem trước',
       path: 'Lộ trình',
-      socialProof: 'Phản hồi người học',
-      membership: 'Gói học',
       readArticle: 'Đọc bài viết',
     };
   }
@@ -505,8 +540,6 @@ function getUiLabels(locale: HomeLocale) {
     return {
       preview: 'プレビュー',
       path: 'ルート',
-      socialProof: '受講者の声',
-      membership: 'プラン',
       readArticle: '記事を読む',
     };
   }
@@ -514,37 +547,20 @@ function getUiLabels(locale: HomeLocale) {
   return {
     preview: 'Preview',
     path: 'Path',
-    socialProof: 'Social Proof',
-    membership: 'Membership',
     readArticle: 'Read article',
   };
 }
 
 export function HomePageShell() {
-  const [locale, setLocale] = useState<HomeLocale>('en');
+  const systemLocale = useSyncExternalStore<HomeLocale>(
+    subscribeToLocaleChange,
+    getPreferredLocale,
+    () => 'en',
+  );
+  const [localeOverride, setLocaleOverride] = useState<HomeLocale | null>(null);
   const [activeQuestionGroup, setActiveQuestionGroup] = useState(0);
   const [activeQuestionItem, setActiveQuestionItem] = useState('');
-
-  useEffect(() => {
-    const storedLocale = window.localStorage.getItem(storageKey);
-
-    if (storedLocale && homeLocales.includes(storedLocale as HomeLocale)) {
-      setLocale(storedLocale as HomeLocale);
-      return;
-    }
-
-    const browserLanguage = window.navigator.language.toLowerCase();
-
-    if (browserLanguage.startsWith('vi')) {
-      setLocale('vi');
-      return;
-    }
-
-    if (browserLanguage.startsWith('ja')) {
-      setLocale('ja');
-    }
-  }, []);
-
+  const locale = localeOverride ?? systemLocale;
   const copy = useMemo(() => homeContent[locale], [locale]);
   const supplemental = useMemo(() => getSupplementalContent(locale), [locale]);
   const uiLabels = useMemo(() => getUiLabels(locale), [locale]);
@@ -552,16 +568,13 @@ export function HomePageShell() {
     copy.questionBank.groups[activeQuestionGroup] ?? copy.questionBank.groups[0];
   const currentQuestionItem =
     currentQuestionGroup.items.find((item) => item.label === activeQuestionItem) ??
+    currentQuestionGroup.items.find((item) => item.label === currentQuestionGroup.featuredItem) ??
     currentQuestionGroup.items[0];
 
-  useEffect(() => {
-    setActiveQuestionGroup(0);
-    setActiveQuestionItem(copy.questionBank.groups[0]?.featuredItem ?? '');
-  }, [copy]);
-
   const handleLocaleChange = (nextLocale: HomeLocale) => {
-    setLocale(nextLocale);
+    setLocaleOverride(nextLocale);
     window.localStorage.setItem(storageKey, nextLocale);
+    window.dispatchEvent(new Event('dicodeweb-locale-change'));
   };
 
   return (
@@ -576,7 +589,7 @@ export function HomePageShell() {
       <main className="bg-background text-foreground min-h-screen">
         <section className="relative overflow-hidden px-4 pt-32 pb-20 md:px-6 md:pt-40 md:pb-28">
           <div className="pointer-events-none absolute inset-0">
-            <div className="absolute top-16 left-[4%] h-64 w-64 rounded-full bg-[#22C7E8]/10 blur-3xl" />
+            <div className="absolute top-16 left-[4%] h-64 w-64 rounded-full bg-accent/10 blur-3xl" />
             <div className="absolute top-20 right-[8%] h-80 w-80 rounded-full bg-[#8BD63F]/12 blur-3xl" />
             <div className="absolute bottom-10 left-1/3 h-72 w-72 rounded-full bg-[#071B3A]/6 blur-3xl dark:bg-[#D7E2FF]/8" />
           </div>
@@ -618,7 +631,7 @@ export function HomePageShell() {
                   </Link>
                 </Button>
                 <Button asChild variant="outline" size="lg" className="h-12 px-6 text-base">
-                  <Link href="#tracks">
+                  <Link href="#questions">
                     {copy.hero.secondaryCta}
                     <MoveRight className="h-4 w-4" />
                   </Link>
@@ -637,7 +650,7 @@ export function HomePageShell() {
             </div>
 
             <div className="relative">
-              <div className="absolute -inset-6 rounded-[2.5rem] bg-gradient-to-br from-[#22C7E8]/14 via-white/10 to-[#8BD63F]/18 blur-3xl" />
+              <div className="absolute -inset-6 rounded-[2.5rem] bg-gradient-to-br from-accent/14 via-white/10 to-[#8BD63F]/18 blur-3xl" />
               <div className="relative rounded-[2.4rem] border border-[#d9d0c5] bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(248,241,232,0.96))] p-4 shadow-[0_28px_70px_rgba(7,27,58,0.14)] backdrop-blur md:p-5">
                 <div className="relative overflow-hidden rounded-[2rem] border border-[#e6ddd2] bg-[#f6efe6] p-4 md:p-5">
                   <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,199,232,0.09),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(139,214,63,0.1),transparent_26%)]" />
@@ -669,7 +682,7 @@ export function HomePageShell() {
                   </div>
 
                   <div className="pointer-events-none absolute -bottom-4 left-6 rounded-2xl border border-white/70 bg-white/88 px-4 py-3 shadow-[0_18px_36px_rgba(7,27,58,0.12)] backdrop-blur md:left-8 md:px-5">
-                    <p className="text-[11px] font-semibold tracking-[0.18em] text-[#22C7E8] uppercase">
+                    <p className="text-[11px] font-semibold tracking-[0.18em] text-accent uppercase">
                       {copy.hero.snippetAction}
                     </p>
                     <p className="mt-1 text-sm font-semibold text-[#071B3A] md:text-base">
@@ -678,7 +691,7 @@ export function HomePageShell() {
                   </div>
 
                   <div className="pointer-events-none absolute top-10 -right-2 hidden rounded-2xl border border-[#d9d0c5] bg-[#071B3A] px-4 py-3 text-[#f5f0ea] shadow-[0_22px_40px_rgba(7,27,58,0.2)] lg:block">
-                    <p className="text-[11px] tracking-[0.18em] text-[#22C7E8] uppercase">
+                    <p className="text-[11px] tracking-[0.18em] text-accent uppercase">
                       {uiLabels.preview}
                     </p>
                     <p className="mt-2 max-w-[180px] text-sm leading-6 text-[#d7e2ff]">
@@ -694,7 +707,7 @@ export function HomePageShell() {
         <section id="features" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="mb-10 max-w-3xl space-y-4">
-              <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
                 {supplemental.highlights.eyebrow}
               </p>
               <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -710,7 +723,7 @@ export function HomePageShell() {
                 const Icon = card.icon;
                 return (
                   <article key={card.title} className="paper-card rounded-[1.75rem] p-6">
-                    <Icon className="h-6 w-6 text-[#22C7E8]" />
+                    <Icon className="h-6 w-6 text-accent" />
                     <h3 className="mt-5 text-2xl font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
                       {card.title}
                     </h3>
@@ -737,7 +750,7 @@ export function HomePageShell() {
         <section className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="mb-10 max-w-3xl space-y-4">
-              <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
                 {supplemental.prep.eyebrow}
               </p>
               <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -748,7 +761,7 @@ export function HomePageShell() {
             <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr]">
               <div className="paper-card rounded-[1.75rem] p-6">
                 <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
-                  <FileText className="h-4 w-4 text-[#22C7E8]" />
+                  <FileText className="h-4 w-4 text-accent" />
                   <span>{supplemental.prep.flowsTitle}</span>
                 </div>
 
@@ -760,7 +773,7 @@ export function HomePageShell() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-[11px] font-semibold tracking-[0.16em] text-[#22C7E8] uppercase">
+                          <p className="text-[11px] font-semibold tracking-[0.16em] text-accent uppercase">
                             {uiLabels.path} {index + 1}
                           </p>
                           <h3 className="mt-2 text-lg font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
@@ -786,7 +799,7 @@ export function HomePageShell() {
                       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[linear-gradient(180deg,rgba(34,199,232,0.12),rgba(139,214,63,0.12))] dark:bg-[linear-gradient(180deg,rgba(34,199,232,0.16),rgba(139,214,63,0.18))]">
                         <Icon className="h-5 w-5 text-[#071B3A] dark:text-[#D7E2FF]" />
                       </div>
-                      <p className="mt-4 text-[11px] font-semibold tracking-[0.16em] text-[#22C7E8] uppercase">
+                      <p className="mt-4 text-[11px] font-semibold tracking-[0.16em] text-accent uppercase">
                         {supplemental.prep.libraryTitle}
                       </p>
                       <h3 className="mt-2 text-xl font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
@@ -806,7 +819,7 @@ export function HomePageShell() {
         <section id="questions" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="mb-10 max-w-3xl space-y-4">
-              <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
                 {copy.questionBank.eyebrow}
               </p>
               <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -840,11 +853,11 @@ export function HomePageShell() {
 
               <div className="text-muted-foreground flex flex-wrap items-center gap-5 text-sm">
                 <div className="flex items-center gap-2">
-                  <BookText className="h-4 w-4 text-[#22C7E8]" />
+                  <BookText className="h-4 w-4 text-accent" />
                   <span>{currentQuestionGroup.totalQuestions}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Clock3 className="h-4 w-4 text-[#22C7E8]" />
+                  <Clock3 className="h-4 w-4 text-accent" />
                   <span>{currentQuestionGroup.totalHours}</span>
                 </div>
               </div>
@@ -853,7 +866,7 @@ export function HomePageShell() {
             <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
               <aside className="paper-card rounded-[1.75rem] p-5">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
-                  <Layers3 className="h-4 w-4 text-[#22C7E8]" />
+                  <Layers3 className="h-4 w-4 text-accent" />
                   <span>{currentQuestionItem?.label ?? currentQuestionGroup.featuredItem}</span>
                 </div>
 
@@ -885,7 +898,7 @@ export function HomePageShell() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                             <div>
-                              <h3 className="text-lg font-semibold text-[#071B3A] transition-colors group-hover:text-[#22C7E8] dark:text-[#F5F0EA]">
+                              <h3 className="text-lg font-semibold text-[#071B3A] transition-colors group-hover:text-accent dark:text-[#F5F0EA]">
                                 {question.title}
                               </h3>
                               <p className="text-muted-foreground mt-2 max-w-3xl text-sm leading-7">
@@ -929,7 +942,7 @@ export function HomePageShell() {
                     </p>
                     <Link
                       href="/questions"
-                      className="border-border bg-background inline-flex rounded-full border px-5 py-3 text-sm font-semibold text-[#071B3A] transition-colors hover:border-[#071B3A]/25 hover:text-[#22C7E8] dark:text-[#F5F0EA]"
+                      className="border-border bg-background inline-flex rounded-full border px-5 py-3 text-sm font-semibold text-[#071B3A] transition-colors hover:border-[#071B3A]/25 hover:text-accent dark:text-[#F5F0EA]"
                     >
                       {copy.questionBank.cta}
                     </Link>
@@ -940,64 +953,11 @@ export function HomePageShell() {
           </div>
         </section>
 
-        {/* <section className="px-4 py-16 md:px-6 md:py-24">
-          <div className="editorial-grid">
-            <div className="grid gap-6 lg:grid-cols-[1.02fr_0.98fr]">
-              <article className="paper-card rounded-[2rem] p-7 md:p-8">
-                <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
-                  {uiLabels.socialProof}
-                </p>
-                <div className="mt-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-[linear-gradient(180deg,rgba(34,199,232,0.12),rgba(139,214,63,0.12))]">
-                  <MessageSquareQuote className="h-5 w-5 text-[#071B3A]" />
-                </div>
-                <p className="mt-6 text-xl leading-9 font-medium text-[#071B3A] md:text-2xl dark:text-[#F5F0EA]">
-                  {supplemental.proof.quote}
-                </p>
-                <div className="mt-6 flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[#071B3A] text-sm font-semibold text-[#F5F0EA]">
-                    DW
-                  </div>
-                  <p className="text-sm font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
-                    {supplemental.proof.author}
-                  </p>
-                </div>
-              </article>
-
-              <article className="paper-card relative overflow-hidden rounded-[2rem] p-7 md:p-8">
-                <div className="absolute top-0 right-0 h-40 w-40 rounded-full bg-[#8BD63F]/10 blur-3xl" />
-                <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
-                  {uiLabels.membership}
-                </p>
-                <h2 className="mt-4 max-w-md text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-4xl dark:text-[#D7E2FF]">
-                  {supplemental.proof.title}
-                </h2>
-                <div className="mt-6 flex items-end gap-2">
-                  <span className="text-5xl font-black tracking-[-0.05em] text-[#071B3A] dark:text-[#F5F0EA]">
-                    {supplemental.proof.price}
-                  </span>
-                  <span className="pb-1 text-sm text-[#60708c]">{supplemental.proof.period}</span>
-                </div>
-                <div className="mt-6 space-y-3">
-                  {supplemental.proof.bullets.map((bullet) => (
-                    <div key={bullet} className="flex items-start gap-3">
-                      <Check className="mt-0.5 h-4 w-4 text-[#79C700]" />
-                      <span className="text-sm leading-7 text-[#4d5d79]">{bullet}</span>
-                    </div>
-                  ))}
-                </div>
-                <Button asChild size="lg" className="mt-8 h-12 px-6 text-base">
-                  <Link href="/blog">{supplemental.proof.cta}</Link>
-                </Button>
-              </article>
-            </div>
-          </div>
-        </section> */}
-
         <section id="blog-preview" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="mb-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
               <div className="max-w-3xl space-y-4">
-                <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+                <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
                   {supplemental.blog.eyebrow}
                 </p>
                 <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -1010,7 +970,7 @@ export function HomePageShell() {
 
               <Link
                 href="/blog"
-                className="inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors hover:text-[#22C7E8] dark:text-[#F5F0EA]"
+                className="inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors hover:text-accent dark:text-[#F5F0EA]"
               >
                 {supplemental.blog.cta}
                 <ArrowRight className="h-4 w-4" />
@@ -1037,7 +997,7 @@ export function HomePageShell() {
                     <p className="text-muted-foreground mt-3 text-sm leading-7">{post.excerpt}</p>
                     <Link
                       href={`/blog/${post.slug}`}
-                      className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors hover:text-[#22C7E8] dark:text-[#F5F0EA]"
+                      className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors hover:text-accent dark:text-[#F5F0EA]"
                     >
                       {uiLabels.readArticle}
                       <ArrowUpRight className="h-4 w-4" />
@@ -1053,7 +1013,7 @@ export function HomePageShell() {
           <div className="editorial-grid">
             <div className="grid gap-8 lg:grid-cols-[0.8fr_1.2fr]">
               <div className="space-y-4">
-                <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+                <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
                   {supplemental.faq.eyebrow}
                 </p>
                 <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -1069,7 +1029,7 @@ export function HomePageShell() {
                   >
                     <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-left text-base font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
                       <span>{item.question}</span>
-                      <BadgeCheck className="h-5 w-5 shrink-0 text-[#22C7E8] transition-transform group-open:rotate-6" />
+                      <BadgeCheck className="h-5 w-5 shrink-0 text-accent transition-transform group-open:rotate-6" />
                     </summary>
                     <p className="text-muted-foreground mt-3 max-w-3xl text-sm leading-7">
                       {item.answer}
@@ -1084,7 +1044,7 @@ export function HomePageShell() {
         <section id="contact" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="rounded-[2rem] border border-[#071B3A] bg-[#071B3A] px-6 py-10 text-[#F5F0EA] md:px-10">
-              <p className="text-sm font-medium tracking-[0.16em] text-[#22C7E8] uppercase">
+              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
                 {copy.cta.eyebrow}
               </p>
               <div className="mt-4 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">

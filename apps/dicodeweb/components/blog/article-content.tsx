@@ -198,7 +198,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
       {/* Reading Progress Bar - Fixed at very top */}
       <div className="fixed top-0 left-0 right-0 z-[200] h-1 bg-border/60">
         <div
-          className="h-full bg-linear-to-r from-[#071B3A] via-[#22C7E8] to-[#8BD63F] transition-all duration-100 ease-out"
+          className="h-full bg-linear-to-r from-[#071B3A] via-accent to-[#8BD63F] transition-all duration-100 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -215,7 +215,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
 
           <header className="mb-8 md:mb-12">
             <div className="flex flex-wrap items-center gap-2 md:gap-3 mb-4 md:mb-6">
-              <span className="rounded-full bg-[#22C7E8]/12 px-3 py-1 text-xs font-medium text-[#071B3A] md:text-sm dark:text-[#41D7F9]">
+              <span className="rounded-full bg-accent/12 px-3 py-1 text-xs font-medium text-[#071B3A] md:text-sm dark:text-accent">
                 {post.category}
               </span>
               <span className="text-xs md:text-sm text-muted-foreground">
@@ -297,7 +297,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
               [&>p:first-of-type]:mb-6
               md:[&>p:first-of-type]:mb-8
 
-              prose-a:text-[#22C7E8]
+              prose-a:text-accent
               prose-a:no-underline
               hover:prose-a:underline
 
@@ -305,7 +305,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
               prose-strong:font-semibold
 
               prose-code:text-[#071B3A]
-              prose-code:bg-[#22C7E8]/10
+              prose-code:bg-accent/10
               prose-code:px-1
               md:prose-code:px-1.5
               prose-code:py-0.5
@@ -326,9 +326,9 @@ export function ArticleContent({ post }: ArticleContentProps) {
               prose-pre:text-xs
               md:prose-pre:text-sm
 
-              prose-blockquote:border-l-[#22C7E8]
+              prose-blockquote:border-l-accent
               prose-blockquote:border-l-4
-              prose-blockquote:bg-[#22C7E8]/7
+              prose-blockquote:bg-accent/7
               prose-blockquote:py-3
               md:prose-blockquote:py-4
               prose-blockquote:px-4
@@ -359,7 +359,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
           <footer className="mt-12 md:mt-16 pt-6 md:pt-8 border-t border-border">
             <Link
               href="/blog"
-              className="inline-flex items-center gap-2 text-sm font-medium text-[#22C7E8] hover:underline md:text-base"
+              className="inline-flex items-center gap-2 text-sm font-medium text-accent hover:underline md:text-base"
             >
               <ArrowLeft className="w-4 h-4" />
               More articles
@@ -372,7 +372,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
         <div className="fixed bottom-0 left-0 right-0 z-[200]">
           <div className="h-1 cursor-pointer bg-border">
             <div
-              className="h-full bg-[#22C7E8] transition-all duration-300"
+              className="h-full bg-accent transition-all duration-300"
               style={{ width: `${ttsProgress}%` }}
             />
           </div>
@@ -434,7 +434,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
                 <div className="relative">
                   <button
                     onClick={() => setShowSettings(!showSettings)}
-                    className={`rounded-full p-1.5 transition-colors md:p-2 ${showSettings ? 'bg-[#22C7E8]/10 text-[#22C7E8]' : 'text-muted-foreground hover:text-foreground'}`}
+                    className={`rounded-full p-1.5 transition-colors md:p-2 ${showSettings ? 'bg-accent/10 text-accent' : 'text-muted-foreground hover:text-foreground'}`}
                     title="Settings"
                   >
                     <Settings className="w-4 h-4 md:w-5 md:h-5" />
@@ -455,7 +455,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
                       <div className="mb-4 md:mb-5">
                         <label className="text-xs md:text-sm font-medium text-foreground mb-2 md:mb-3 flex items-center justify-between">
                           <span>Speed</span>
-                          <span className="text-[#22C7E8]">{speed}x</span>
+                          <span className="text-accent">{speed}x</span>
                         </label>
                         <input
                           type="range"
@@ -467,7 +467,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
                             const newSpeed = parseFloat(e.target.value);
                             setSpeed(newSpeed);
                           }}
-                          className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted accent-[#22C7E8]"
+                          className="h-2 w-full cursor-pointer appearance-none rounded-full bg-muted accent-accent"
                         />
                         <div className="flex justify-between text-xs text-muted-foreground mt-1 md:mt-2">
                           <span>0.5x</span>
@@ -488,7 +488,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
                               const voice = voices.find(v => v.name === e.target.value);
                               setSelectedVoice(voice || null);
                             }}
-                            className="w-full cursor-pointer rounded-lg border border-border bg-card p-2 text-xs text-foreground focus:ring-2 focus:ring-[#22C7E8] md:rounded-xl md:p-2.5 md:text-sm"
+                            className="w-full cursor-pointer rounded-lg border border-border bg-card p-2 text-xs text-foreground focus:ring-2 focus:ring-accent md:rounded-xl md:p-2.5 md:text-sm"
                           >
                             {voices.map((voice) => (
                               <option key={voice.name} value={voice.name}>
