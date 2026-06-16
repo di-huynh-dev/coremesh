@@ -3,18 +3,17 @@
 import { motion } from 'framer-motion';
 import {
   ArrowRight,
-  Atom,
   BookOpen,
   Languages,
   Layers3,
   Rocket,
-  Server,
   Sparkles,
   Workflow,
 } from 'lucide-react';
 import Link from 'next/link';
 import { startTransition, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ClassicRoadmapJourney } from '@/components/roadmap/classic-roadmap-journey';
+import { SvglLibraryIcon, findLibraryIconId, getRoadmapLibraryIconIds } from '@/components/roadmap/svgl-library-icon';
 import { LanguageSwitcher } from '@/components/ui/language-switcher';
 import { homeLocales, type HomeLocale } from '@/lib/home-content';
 import { getRoadmapDocument, getRoadmapPageCopy, roadmapCatalog, type RoadmapId } from '@/lib/roadmap-content';
@@ -29,10 +28,10 @@ const fadeUp = (delay = 0) => ({
 
 function RoadmapIcon({ roadmapId, className }: { roadmapId: RoadmapId; className?: string }) {
   if (roadmapId === 'react') {
-    return <Atom className={className} />;
+    return <SvglLibraryIcon id="react" size={className?.includes('h-7') ? 28 : 16} className={className} />;
   }
 
-  return <Server className={className} />;
+  return <SvglLibraryIcon id="nestjs" size={className?.includes('h-7') ? 28 : 16} className={className} />;
 }
 
 function PreviewRailRow({
@@ -55,13 +54,14 @@ function PreviewRailRow({
         {items.map((item, index) => (
           <div key={`${label}-${item}`} className="flex items-center gap-2.5">
             <span
-              className="rounded-full border px-3 py-1.5 text-sm font-medium"
+              className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium"
               style={{
                 borderColor: index === 1 ? accent : 'var(--border)',
                 background: index === 1 ? `${accent}14` : 'var(--card)',
                 color: index === 1 ? accent : 'var(--foreground)',
               }}
             >
+              {findLibraryIconId(item) ? <SvglLibraryIcon id={findLibraryIconId(item)!} size={16} className="h-4 w-4" /> : null}
               {item}
             </span>
             {index < items.length - 1 ? <span className="h-px w-5 bg-border" /> : null}
@@ -286,11 +286,20 @@ export default function RoadmapPage() {
                     {roadmapCopy.skills.map((skill) => (
                       <span
                         key={`${roadmap.id}-${skill}`}
-                        className="rounded-full border px-3 py-1 text-xs font-semibold"
+                        className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold"
                         style={{ borderColor: roadmap.theme.border, background: roadmap.theme.soft, color: roadmap.theme.accent }}
                       >
+                        {findLibraryIconId(skill) ? <SvglLibraryIcon id={findLibraryIconId(skill)!} size={14} className="h-3.5 w-3.5" /> : null}
                         {skill}
                       </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap items-center gap-2.5">
+                    {getRoadmapLibraryIconIds(roadmap.id).map((iconId) => (
+                      <div key={`${roadmap.id}-${iconId}`} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-border/70 bg-white/80 shadow-sm dark:bg-white/5">
+                        <SvglLibraryIcon id={iconId} size={20} className="h-5 w-5" />
+                      </div>
                     ))}
                   </div>
 

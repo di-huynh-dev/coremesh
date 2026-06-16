@@ -1,5 +1,6 @@
-import { ArrowRight, Atom, Braces, CheckCircle2, Server } from 'lucide-react';
+import { ArrowRight, Braces, CheckCircle2 } from 'lucide-react';
 import Link from 'next/link';
+import { SvglLibraryIcon, findLibraryIconId, getRoadmapLibraryIconIds } from '@/components/roadmap/svgl-library-icon';
 import type {
   RoadmapDocument,
   RoadmapId,
@@ -13,10 +14,10 @@ const DESKTOP_CENTER_X = DESKTOP_PATH_WIDTH / 2;
 
 function RoadmapIcon({ roadmapId, className }: { roadmapId: RoadmapId; className?: string }) {
   if (roadmapId === 'react') {
-    return <Atom className={className} />;
+    return <SvglLibraryIcon id="react" size={className?.includes('h-7') ? 28 : 16} className={className} />;
   }
 
-  return <Server className={className} />;
+  return <SvglLibraryIcon id="nestjs" size={className?.includes('h-7') ? 28 : 16} className={className} />;
 }
 
 function buildTopicDistribution(totalTopics: number, milestoneCount: number) {
@@ -160,7 +161,8 @@ function MilestonePreview({
       <div className="rounded-[1.2rem] border border-border/70 bg-white/80 p-3 dark:bg-white/5">
         <div className="space-y-2">
           {[primaryTag, secondaryTag, tertiaryTag].map((tag) => (
-            <div key={tag} className="rounded-xl border px-3 py-2 text-xs font-semibold" style={{ borderColor: `${accent}45`, background: `${accent}10`, color: accent }}>
+            <div key={tag} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold" style={{ borderColor: `${accent}45`, background: `${accent}10`, color: accent }}>
+              {findLibraryIconId(tag) ? <SvglLibraryIcon id={findLibraryIconId(tag)!} size={14} className="h-3.5 w-3.5" /> : null}
               {tag}
             </div>
           ))}
@@ -184,7 +186,8 @@ function MilestonePreview({
     return (
       <div className="grid grid-cols-2 gap-2 rounded-[1.2rem] border border-border/70 bg-white/80 p-3 dark:bg-white/5">
         {[primaryTag, secondaryTag, tertiaryTag, milestone.step].map((tag) => (
-          <div key={tag} className="flex min-h-12 items-center justify-center rounded-xl border px-2 text-center text-[11px] font-semibold" style={{ borderColor: `${accent}45`, color: accent }}>
+          <div key={tag} className="flex min-h-12 items-center justify-center gap-1.5 rounded-xl border px-2 text-center text-[11px] font-semibold" style={{ borderColor: `${accent}45`, color: accent }}>
+            {findLibraryIconId(tag) ? <SvglLibraryIcon id={findLibraryIconId(tag)!} size={14} className="h-3.5 w-3.5" /> : null}
             {tag}
           </div>
         ))}
@@ -196,7 +199,8 @@ function MilestonePreview({
     <div className="rounded-[1.2rem] border border-border/70 bg-white/80 p-3 dark:bg-white/5">
       <div className="mb-2 grid grid-cols-3 gap-2">
         {[primaryTag, secondaryTag, tertiaryTag].map((tag) => (
-          <div key={tag} className="rounded-lg px-2 py-1 text-center text-[11px] font-semibold" style={{ background: `${accent}14`, color: accent }}>
+          <div key={tag} className="inline-flex items-center justify-center gap-1.5 rounded-lg px-2 py-1 text-center text-[11px] font-semibold" style={{ background: `${accent}14`, color: accent }}>
+            {findLibraryIconId(tag) ? <SvglLibraryIcon id={findLibraryIconId(tag)!} size={12} className="h-3 w-3" /> : null}
             {tag}
           </div>
         ))}
@@ -238,9 +242,10 @@ function DesktopMilestoneCard({
             {milestone.tags.map((tag) => (
               <span
                 key={`${milestone.step}-${tag}`}
-                className="rounded-full border px-3 py-1 text-xs font-semibold"
+                className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold"
                 style={{ borderColor: roadmap.theme.border, background: roadmap.theme.soft, color: roadmap.theme.accent }}
               >
+                {findLibraryIconId(tag) ? <SvglLibraryIcon id={findLibraryIconId(tag)!} size={14} className="h-3.5 w-3.5" /> : null}
                 {tag}
               </span>
             ))}
@@ -316,6 +321,14 @@ export function ClassicRoadmapJourney({ roadmapId, roadmap, content, copy }: Cla
               <div key={stat} className="flex items-center gap-2 rounded-full bg-white/80 px-3 py-1.5 text-sm font-medium shadow-sm dark:bg-white/6">
                 <div className="h-2.5 w-2.5 rounded-full" style={{ background: roadmap.theme.accent }} />
                 {stat}
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 pt-1">
+            {getRoadmapLibraryIconIds(roadmapId).map((iconId) => (
+              <div key={`${roadmapId}-${iconId}`} className="flex h-11 w-11 items-center justify-center rounded-2xl border border-border/70 bg-white/85 shadow-sm dark:bg-white/6">
+                <SvglLibraryIcon id={iconId} size={20} className="h-5 w-5" />
               </div>
             ))}
           </div>
@@ -453,13 +466,22 @@ export function ClassicRoadmapJourney({ roadmapId, roadmap, content, copy }: Cla
 
           <p className="mt-3 text-sm leading-7 text-muted-foreground">{copy.detail.skillMapDescription}</p>
 
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            {getRoadmapLibraryIconIds(roadmapId).map((iconId) => (
+              <div key={`skill-${roadmapId}-${iconId}`} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-border/70 bg-white/80 dark:bg-white/6">
+                <SvglLibraryIcon id={iconId} size={18} className="h-4.5 w-4.5" />
+              </div>
+            ))}
+          </div>
+
           <div className="mt-5 flex flex-wrap items-center gap-3">
             {content.previewNodes.map((node, index) => (
               <div key={`${roadmapId}-${node}`} className="flex items-center gap-3">
                 <div
-                  className="rounded-full border px-3 py-1.5 text-sm font-semibold"
+                  className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-semibold"
                   style={{ borderColor: roadmap.theme.border, background: roadmap.theme.soft, color: roadmap.theme.accent }}
                 >
+                  {findLibraryIconId(node) ? <SvglLibraryIcon id={findLibraryIconId(node)!} size={16} className="h-4 w-4" /> : null}
                   {node}
                 </div>
                 {index < content.previewNodes.length - 1 ? <ArrowRight className="h-4 w-4 text-muted-foreground" /> : null}
