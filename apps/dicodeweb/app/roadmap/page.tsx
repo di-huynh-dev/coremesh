@@ -1,22 +1,24 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import {
-  ArrowRight,
-  BookOpen,
-  Languages,
-  Layers3,
-  Rocket,
-  Sparkles,
-  Workflow,
-} from 'lucide-react';
+import { ArrowRight, BookOpen, Languages, Layers3, Rocket, Sparkles, Workflow } from 'lucide-react';
 import Link from 'next/link';
 import { startTransition, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ClassicRoadmapJourney } from '@/components/roadmap/classic-roadmap-journey';
-import { SvglLibraryIcon, findLibraryIconId, getRoadmapLibraryIconIds } from '@/components/roadmap/svgl-library-icon';
+import {
+  SvglLibraryIcon,
+  findLibraryIconId,
+  getRoadmapLibraryIconIds,
+} from '@/components/roadmap/svgl-library-icon';
 import { LanguageSwitcher } from '@/components/ui/language-switcher';
 import { homeLocales, type HomeLocale } from '@/lib/home-content';
-import { getRoadmapDocument, getRoadmapPageCopy, roadmapCatalog, type RoadmapId } from '@/lib/roadmap-content';
+import {
+  defaultRoadmapId,
+  getRoadmapDocument,
+  getRoadmapPageCopy,
+  roadmapCatalog,
+  type RoadmapId,
+} from '@/lib/roadmap-content';
 import { getPreferredLocale, setPreferredLocale, subscribeToLocaleChange } from '@/lib/site-locale';
 
 const fadeUp = (delay = 0) => ({
@@ -28,24 +30,41 @@ const fadeUp = (delay = 0) => ({
 
 function RoadmapIcon({ roadmapId, className }: { roadmapId: RoadmapId; className?: string }) {
   if (roadmapId === 'react') {
-    return <SvglLibraryIcon id="react" size={className?.includes('h-7') ? 28 : 16} className={className} />;
+    return (
+      <SvglLibraryIcon
+        id="react"
+        size={className?.includes('h-7') ? 28 : 16}
+        className={className}
+      />
+    );
   }
 
-  return <SvglLibraryIcon id="nestjs" size={className?.includes('h-7') ? 28 : 16} className={className} />;
+  return (
+    <SvglLibraryIcon
+      id="nestjs"
+      size={className?.includes('h-7') ? 28 : 16}
+      className={className}
+    />
+  );
 }
 
 function PreviewRailRow({
   label,
   items,
   accent,
+  highlightedIndex = 1,
 }: {
   label: string;
   items: string[];
   accent: string;
+  highlightedIndex?: number | null;
 }) {
   return (
-    <div className="grid gap-3 rounded-[1.25rem] border border-border/70 bg-white/75 p-3 dark:bg-white/5 lg:grid-cols-[120px_1fr] lg:items-center">
-      <div className="inline-flex w-fit items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold" style={{ background: `${accent}1A`, color: accent }}>
+    <div className="border-border/70 grid gap-3 rounded-[1.25rem] border bg-white/75 p-3 lg:grid-cols-[120px_1fr] lg:items-center dark:bg-white/5">
+      <div
+        className="inline-flex w-fit items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold"
+        style={{ background: `${accent}1A`, color: accent }}
+      >
         <span className="h-2 w-2 rounded-full" style={{ background: accent }} />
         {label}
       </div>
@@ -56,15 +75,17 @@ function PreviewRailRow({
             <span
               className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium"
               style={{
-                borderColor: index === 1 ? accent : 'var(--border)',
-                background: index === 1 ? `${accent}14` : 'var(--card)',
-                color: index === 1 ? accent : 'var(--foreground)',
+                borderColor: index === highlightedIndex ? accent : 'var(--border)',
+                background: index === highlightedIndex ? `${accent}14` : 'var(--card)',
+                color: index === highlightedIndex ? accent : 'var(--foreground)',
               }}
             >
-              {findLibraryIconId(item) ? <SvglLibraryIcon id={findLibraryIconId(item)!} size={16} className="h-4 w-4" /> : null}
+              {findLibraryIconId(item) ? (
+                <SvglLibraryIcon id={findLibraryIconId(item)!} size={16} className="h-4 w-4" />
+              ) : null}
               {item}
             </span>
-            {index < items.length - 1 ? <span className="h-px w-5 bg-border" /> : null}
+            {index < items.length - 1 ? <span className="bg-border h-px w-5" /> : null}
           </div>
         ))}
       </div>
@@ -73,20 +94,33 @@ function PreviewRailRow({
 }
 
 export default function RoadmapPage() {
-  const locale = useSyncExternalStore<HomeLocale>(subscribeToLocaleChange, getPreferredLocale, () => 'en');
+  const locale = useSyncExternalStore<HomeLocale>(
+    subscribeToLocaleChange,
+    getPreferredLocale,
+    () => 'en',
+  );
   const copy = getRoadmapPageCopy(locale);
-  const [selectedRoadmapId, setSelectedRoadmapId] = useState<RoadmapId>('react');
+  const [selectedRoadmapId, setSelectedRoadmapId] = useState<RoadmapId>(defaultRoadmapId);
   const detailRef = useRef<HTMLElement>(null);
   const catalogRef = useRef<HTMLElement>(null);
   const shouldScrollToDetailRef = useRef(false);
 
-  const selectedRoadmap = getRoadmapDocument(selectedRoadmapId);
+  const activeRoadmapId = roadmapCatalog.some((roadmap) => roadmap.id === selectedRoadmapId)
+    ? selectedRoadmapId
+    : defaultRoadmapId;
+  const selectedRoadmap = getRoadmapDocument(activeRoadmapId);
   const selectedContent = selectedRoadmap.locales[locale];
-  const otherRoadmapId = selectedRoadmapId === 'react' ? 'nestjs' : 'react';
+  const otherRoadmapId = activeRoadmapId === 'react' ? 'nestjs' : 'react';
   const otherRoadmap = getRoadmapDocument(otherRoadmapId);
   const otherContent = otherRoadmap.locales[locale];
-  const totalMilestones = roadmapCatalog.reduce((total, roadmap) => total + roadmap.totals.milestones, 0);
-  const totalQuestions = roadmapCatalog.reduce((total, roadmap) => total + roadmap.totals.questions, 0);
+  const totalMilestones = roadmapCatalog.reduce(
+    (total, roadmap) => total + roadmap.totals.milestones,
+    0,
+  );
+  const totalQuestions = roadmapCatalog.reduce(
+    (total, roadmap) => total + roadmap.totals.questions,
+    0,
+  );
 
   useEffect(() => {
     if (!shouldScrollToDetailRef.current) {
@@ -98,7 +132,7 @@ export default function RoadmapPage() {
   }, [selectedRoadmapId]);
 
   const handleSelectRoadmap = (roadmapId: RoadmapId) => {
-    if (roadmapId === selectedRoadmapId) {
+    if (roadmapId === activeRoadmapId) {
       detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
@@ -153,7 +187,9 @@ export default function RoadmapPage() {
             <div className="flex flex-col gap-3 sm:flex-row">
               <button
                 type="button"
-                onClick={() => catalogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                onClick={() =>
+                  catalogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }
                 className="inline-flex items-center justify-center gap-2 rounded-full px-6 py-3.5 text-sm font-semibold transition-transform hover:-translate-y-0.5"
                 style={{ background: 'var(--secondary)', color: 'var(--secondary-foreground)' }}
               >
@@ -163,8 +199,10 @@ export default function RoadmapPage() {
 
               <button
                 type="button"
-                onClick={() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                className="border-border inline-flex items-center justify-center gap-2 rounded-full border px-6 py-3.5 text-sm font-semibold transition-colors hover:bg-muted"
+                onClick={() =>
+                  detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }
+                className="border-border hover:bg-muted inline-flex items-center justify-center gap-2 rounded-full border px-6 py-3.5 text-sm font-semibold transition-colors"
               >
                 {copy.hero.secondaryCta}
               </button>
@@ -175,24 +213,38 @@ export default function RoadmapPage() {
             <div className="paper-card rounded-[2rem] border border-white/60 p-5 shadow-[0_24px_80px_rgba(15,68,122,0.12)] md:p-6">
               <div className="mb-5 flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-sm font-semibold text-[#071B3A] dark:text-[#F5F0EA]">{copy.hero.previewTitle}</p>
-                  <p className="text-muted-foreground mt-1 max-w-lg text-sm leading-6">{copy.hero.previewDescription}</p>
-                </div>
-
-                <div
-                  className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold"
-                  style={{ borderColor: selectedRoadmap.theme.border, background: selectedRoadmap.theme.soft, color: selectedRoadmap.theme.accent }}
-                >
-                  <RoadmapIcon roadmapId={selectedRoadmapId} className="h-3.5 w-3.5" />
-                  {selectedContent.shortName}
+                  <p className="text-sm font-semibold text-[#071B3A] dark:text-[#F5F0EA]">
+                    {copy.hero.previewTitle}
+                  </p>
+                  <p className="text-muted-foreground mt-1 max-w-lg text-sm leading-6">
+                    {copy.hero.previewDescription}
+                  </p>
                 </div>
               </div>
 
               <div className="space-y-3">
-                <PreviewRailRow label={selectedContent.track} items={selectedContent.previewNodes} accent={selectedRoadmap.theme.accent} />
-                <PreviewRailRow label={otherContent.track} items={otherContent.previewNodes} accent={otherRoadmap.theme.accent} />
-                <PreviewRailRow label={copy.hero.practiceRow.label} items={copy.hero.practiceRow.items} accent="#FF9A4A" />
-                <PreviewRailRow label={copy.hero.deliveryRow.label} items={copy.hero.deliveryRow.items} accent="#8BD63F" />
+                <PreviewRailRow
+                  label={selectedContent.track}
+                  items={selectedContent.previewNodes}
+                  accent={selectedRoadmap.theme.accent}
+                />
+                <PreviewRailRow
+                  label={otherContent.track}
+                  items={otherContent.previewNodes}
+                  accent={otherRoadmap.theme.accent}
+                />
+                <PreviewRailRow
+                  label={copy.hero.practiceRow.label}
+                  items={copy.hero.practiceRow.items}
+                  accent="#FF9A4A"
+                  highlightedIndex={null}
+                />
+                <PreviewRailRow
+                  label={copy.hero.deliveryRow.label}
+                  items={copy.hero.deliveryRow.items}
+                  accent="#8BD63F"
+                  highlightedIndex={null}
+                />
               </div>
             </div>
           </motion.div>
@@ -206,12 +258,18 @@ export default function RoadmapPage() {
               const Icon = item.icon;
 
               return (
-                <motion.div key={item.label} {...fadeUp(index * 0.05)} className="flex items-center gap-3 rounded-[1.25rem] border border-border/70 bg-white/70 px-4 py-4 dark:bg-white/5">
+                <motion.div
+                  key={item.label}
+                  {...fadeUp(index * 0.05)}
+                  className="border-border/70 flex items-center gap-3 rounded-[1.25rem] border bg-white/70 px-4 py-4 dark:bg-white/5"
+                >
                   <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#8BD63F]/14 text-[#0F447A]">
                     <Icon className="h-5 w-5" />
                   </div>
                   <div>
-                    <div className="text-xl font-bold text-[#071B3A] dark:text-[#F5F0EA]">{item.value}</div>
+                    <div className="text-xl font-bold text-[#071B3A] dark:text-[#F5F0EA]">
+                      {item.value}
+                    </div>
                     <div className="text-muted-foreground text-sm">{item.label}</div>
                   </div>
                 </motion.div>
@@ -221,18 +279,22 @@ export default function RoadmapPage() {
         </div>
       </section>
 
-      <section ref={catalogRef} className="px-4 pb-12 scroll-mt-32">
+      <section ref={catalogRef} className="scroll-mt-32 px-4 pb-12">
         <div className="editorial-grid">
           <motion.div {...fadeUp(0)} className="mb-8 max-w-3xl space-y-3">
-            <p className="text-sm font-semibold tracking-[0.16em] uppercase text-[#79C700]">{copy.catalog.eyebrow}</p>
-            <h2 className="text-3xl font-bold tracking-tight text-[#071B3A] md:text-4xl dark:text-[#F5F0EA]">{copy.catalog.title}</h2>
+            <p className="text-sm font-semibold tracking-[0.16em] text-[#79C700] uppercase">
+              {copy.catalog.eyebrow}
+            </p>
+            <h2 className="text-3xl font-bold tracking-tight text-[#071B3A] md:text-4xl dark:text-[#F5F0EA]">
+              {copy.catalog.title}
+            </h2>
             <p className="text-muted-foreground text-base leading-7">{copy.catalog.description}</p>
           </motion.div>
 
-          <div className="grid gap-6 lg:grid-cols-2">
+          <div className="grid gap-6 lg:grid-cols-3">
             {roadmapCatalog.map((roadmap, index) => {
               const roadmapCopy = roadmap.locales[locale];
-              const isSelected = roadmap.id === selectedRoadmapId;
+              const isSelected = roadmap.id === activeRoadmapId;
 
               return (
                 <motion.button
@@ -240,7 +302,7 @@ export default function RoadmapPage() {
                   type="button"
                   {...fadeUp(index * 0.08)}
                   onClick={() => handleSelectRoadmap(roadmap.id)}
-                  className="paper-card paper-card-hover text-left rounded-[1.9rem] p-6"
+                  className="paper-card paper-card-hover rounded-[1.9rem] p-6 text-left"
                   style={{
                     borderColor: isSelected ? roadmap.theme.border : undefined,
                     boxShadow: isSelected ? `0 18px 48px ${roadmap.theme.glow}` : undefined,
@@ -259,7 +321,10 @@ export default function RoadmapPage() {
                       </div>
 
                       <div>
-                        <div className="text-sm font-semibold" style={{ color: roadmap.theme.accent }}>
+                        <div
+                          className="text-sm font-semibold"
+                          style={{ color: roadmap.theme.accent }}
+                        >
                           {roadmapCopy.role}
                         </div>
                         <h3 className="mt-1 text-2xl font-bold text-[#071B3A] dark:text-[#F5F0EA]">
@@ -280,16 +345,28 @@ export default function RoadmapPage() {
                     </div>
                   </div>
 
-                  <p className="text-muted-foreground min-h-[84px] text-base leading-7">{roadmapCopy.summary}</p>
+                  <p className="text-muted-foreground min-h-[84px] text-base leading-7">
+                    {roadmapCopy.summary}
+                  </p>
 
                   <div className="mt-5 flex flex-wrap gap-2">
                     {roadmapCopy.skills.map((skill) => (
                       <span
                         key={`${roadmap.id}-${skill}`}
                         className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold"
-                        style={{ borderColor: roadmap.theme.border, background: roadmap.theme.soft, color: roadmap.theme.accent }}
+                        style={{
+                          borderColor: roadmap.theme.border,
+                          background: roadmap.theme.soft,
+                          color: roadmap.theme.accent,
+                        }}
                       >
-                        {findLibraryIconId(skill) ? <SvglLibraryIcon id={findLibraryIconId(skill)!} size={14} className="h-3.5 w-3.5" /> : null}
+                        {findLibraryIconId(skill) ? (
+                          <SvglLibraryIcon
+                            id={findLibraryIconId(skill)!}
+                            size={14}
+                            className="h-3.5 w-3.5"
+                          />
+                        ) : null}
                         {skill}
                       </span>
                     ))}
@@ -297,7 +374,10 @@ export default function RoadmapPage() {
 
                   <div className="mt-5 flex flex-wrap items-center gap-2.5">
                     {getRoadmapLibraryIconIds(roadmap.id).map((iconId) => (
-                      <div key={`${roadmap.id}-${iconId}`} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-border/70 bg-white/80 shadow-sm dark:bg-white/5">
+                      <div
+                        key={`${roadmap.id}-${iconId}`}
+                        className="border-border/70 flex h-10 w-10 items-center justify-center rounded-2xl border bg-white/80 shadow-sm dark:bg-white/5"
+                      >
                         <SvglLibraryIcon id={iconId} size={20} className="h-5 w-5" />
                       </div>
                     ))}
@@ -309,44 +389,86 @@ export default function RoadmapPage() {
                       roadmapCopy.topicCountText,
                       roadmapCopy.questionCountText,
                     ].map((stat) => (
-                      <div key={stat} className="rounded-2xl border border-border/70 bg-white/75 px-4 py-3 text-sm font-medium dark:bg-white/5">
+                      <div
+                        key={stat}
+                        className="border-border/70 rounded-2xl border bg-white/75 px-4 py-3 text-sm font-medium dark:bg-white/5"
+                      >
                         {stat}
                       </div>
                     ))}
                   </div>
 
-                  <div className="mt-6 inline-flex items-center gap-2 text-sm font-semibold" style={{ color: roadmap.theme.accent }}>
+                  <div
+                    className="mt-6 inline-flex items-center gap-2 text-sm font-semibold"
+                    style={{ color: roadmap.theme.accent }}
+                  >
                     {copy.catalog.action}
                     <ArrowRight className="h-4 w-4" />
                   </div>
                 </motion.button>
               );
             })}
-          </div>
 
-          <motion.div {...fadeUp(0.14)} className="mt-6 flex flex-col gap-3 rounded-[1.5rem] border border-dashed border-border px-5 py-4 md:flex-row md:items-center md:justify-between">
-            <p className="text-sm font-semibold text-[#071B3A] dark:text-[#F5F0EA]">{copy.catalog.comingSoon}</p>
-            <div className="flex flex-wrap gap-2">
-              {copy.catalog.comingSoonItems.map((item) => (
-                <span key={item} className="rounded-full bg-muted px-3 py-1.5 text-sm text-muted-foreground">
-                  {item}
-                </span>
-              ))}
-            </div>
-          </motion.div>
+            <motion.div
+              {...fadeUp(0.16)}
+              className="paper-card rounded-[1.9rem] border border-dashed p-6 text-left"
+            >
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-[1.25rem] bg-[#8BD63F]/14 text-[#0F447A]">
+                    <Workflow className="h-7 w-7" />
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-semibold text-[#79C700]">
+                      {copy.catalog.comingSoon}
+                    </div>
+                    <h3 className="mt-1 text-2xl font-bold text-[#071B3A] dark:text-[#F5F0EA]">
+                      {copy.catalog.fullStackCard.title}
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="text-muted-foreground rounded-full border border-dashed px-3 py-1 text-xs font-semibold">
+                  {copy.catalog.fullStackCard.status}
+                </div>
+              </div>
+
+              <p className="text-muted-foreground min-h-[84px] text-base leading-7">
+                {copy.catalog.fullStackCard.summary}
+              </p>
+
+              <div className="mt-5 flex flex-wrap gap-2">
+                {copy.catalog.fullStackCard.items.map((item) => (
+                  <span
+                    key={`fullstack-${item}`}
+                    className="inline-flex items-center gap-2 rounded-full border border-[#8BD63F]/30 bg-[#8BD63F]/10 px-3 py-1 text-xs font-semibold text-[#0F447A]"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+
+              <div className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-[#79C700]">
+                {copy.catalog.fullStackCard.action}
+                <ArrowRight className="h-4 w-4" />
+              </div>
+            </motion.div>
+          </div>
         </div>
       </section>
 
-      <section ref={detailRef} className="px-4 pb-16 scroll-mt-32">
+      <section ref={detailRef} className="scroll-mt-32 px-4 pb-16">
         <div className="editorial-grid">
-          <motion.div {...fadeUp(0)}>
+          <div>
             <ClassicRoadmapJourney
-              roadmapId={selectedRoadmapId}
+              key={activeRoadmapId}
+              roadmapId={activeRoadmapId}
               roadmap={selectedRoadmap}
               content={selectedContent}
               copy={copy}
             />
-          </motion.div>
+          </div>
         </div>
       </section>
 
@@ -355,7 +477,10 @@ export default function RoadmapPage() {
           <motion.div
             {...fadeUp(0)}
             className="overflow-hidden rounded-[2rem] border border-[#8BD63F]/30 px-6 py-8 md:px-8 md:py-10"
-            style={{ background: 'linear-gradient(135deg, rgba(139,214,63,0.12) 0%, rgba(89,166,255,0.08) 52%, rgba(255,122,122,0.08) 100%)' }}
+            style={{
+              background:
+                'linear-gradient(135deg, rgba(139,214,63,0.12) 0%, rgba(89,166,255,0.08) 52%, rgba(255,122,122,0.08) 100%)',
+            }}
           >
             <div className="grid gap-6 lg:grid-cols-[1fr_auto] lg:items-center">
               <div className="space-y-3">
@@ -363,14 +488,20 @@ export default function RoadmapPage() {
                   <Rocket className="h-3.5 w-3.5" />
                   DiCodeWeb
                 </div>
-                <h2 className="text-3xl font-bold tracking-tight text-[#071B3A] dark:text-[#F5F0EA]">{copy.cta.title}</h2>
-                <p className="max-w-3xl text-base leading-7 text-muted-foreground">{copy.cta.description}</p>
+                <h2 className="text-3xl font-bold tracking-tight text-[#071B3A] dark:text-[#F5F0EA]">
+                  {copy.cta.title}
+                </h2>
+                <p className="text-muted-foreground max-w-3xl text-base leading-7">
+                  {copy.cta.description}
+                </p>
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row">
                 <button
                   type="button"
-                  onClick={() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  onClick={() =>
+                    detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }
                   className="inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-semibold transition-transform hover:-translate-y-0.5"
                   style={{ background: 'var(--secondary)', color: 'var(--secondary-foreground)' }}
                 >
@@ -380,7 +511,7 @@ export default function RoadmapPage() {
 
                 <Link
                   href="/questions"
-                  className="border-border inline-flex items-center justify-center gap-2 rounded-full border px-5 py-3 text-sm font-semibold transition-colors hover:bg-muted"
+                  className="border-border hover:bg-muted inline-flex items-center justify-center gap-2 rounded-full border px-5 py-3 text-sm font-semibold transition-colors"
                 >
                   {copy.cta.secondary}
                 </Link>

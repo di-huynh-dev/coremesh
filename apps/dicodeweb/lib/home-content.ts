@@ -1212,8 +1212,8 @@ export const homeContent: Record<HomeLocale, HomeCopy> = {
       brand: "DiCodeWeb",
       description:
         "Learn modern frontend development through expert-led notes, hands-on projects, interview prep, and clear roadmaps designed for real product work.",
-      primaryCta: "Explore Courses",
-      secondaryCta: "View Roadmaps",
+      primaryCta: "Explore Questions",
+      secondaryCta: "Follow the Roadmap",
       snippetTabs: ["HTML", "CSS", "JavaScript", "React"],
       snippetTitle: "Keep Coding. Keep Growing.",
       snippetQuote: "Build. Ship. Get hired.",
@@ -1334,8 +1334,8 @@ export const homeContent: Record<HomeLocale, HomeCopy> = {
       brand: "DiCodeWeb",
       description:
         "Học frontend hiện đại qua bài giảng có chiều sâu, dự án thực chiến, luyện phỏng vấn và lộ trình rõ ràng cho công việc sản phẩm thực tế.",
-      primaryCta: "Khám phá khóa học",
-      secondaryCta: "Xem lộ trình",
+      primaryCta: "Khám phá câu hỏi",
+      secondaryCta: "Theo lộ trình",
       snippetTabs: ["HTML", "CSS", "JavaScript", "React"],
       snippetTitle: "Cứ code tiếp. Cứ tiến bộ.",
       snippetQuote: "Xây dựng. Ra mắt. Đi làm.",
@@ -1457,8 +1457,8 @@ export const homeContent: Record<HomeLocale, HomeCopy> = {
       brand: "DiCodeWeb",
       description:
         "実務に近いフロントエンド学習を、専門的な講義ノート、実践プロジェクト、面接対策、明確なロードマップで進められます。",
-      primaryCta: "コースを見る",
-      secondaryCta: "ロードマップを見る",
+      primaryCta: "問題を見る",
+      secondaryCta: "ロードマップをたどる",
       snippetTabs: ["HTML", "CSS", "JavaScript", "React"],
       snippetTitle: "書き続ける。伸び続ける。",
       snippetQuote: "作る。届ける。仕事につなげる。",

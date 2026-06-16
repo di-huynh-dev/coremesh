@@ -7,7 +7,12 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState, useSyncExternalStore } from 'react';
 import { LanguageSwitcher } from '@/components/ui/language-switcher';
-import type { HomeLocale } from '@/lib/home-content';
+import { homeLocales, type HomeLocale } from '@/lib/home-content';
+import {
+  getPreferredLocale,
+  setPreferredLocale,
+  subscribeToLocaleChange,
+} from '@/lib/site-locale';
 
 type NavbarProps = {
   labels?: {
@@ -21,6 +26,35 @@ type NavbarProps = {
   locale?: HomeLocale;
   localeLabel?: string;
   onLocaleChange?: (locale: HomeLocale) => void;
+};
+
+const defaultNavbarCopy: Record<
+  HomeLocale,
+  {
+    localeLabel: string;
+    questions: string;
+    roadmap: string;
+    blog: string;
+  }
+> = {
+  en: {
+    localeLabel: 'Language',
+    questions: 'Questions',
+    roadmap: 'Roadmap',
+    blog: 'Blog',
+  },
+  vi: {
+    localeLabel: 'Ngôn ngữ',
+    questions: 'Câu hỏi',
+    roadmap: 'Lộ trình',
+    blog: 'Blog',
+  },
+  ja: {
+    localeLabel: '言語',
+    questions: '質問',
+    roadmap: 'ロードマップ',
+    blog: 'ブログ',
+  },
 };
 
 function ThemeToggle() {
@@ -54,10 +88,21 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
   const router = useRouter();
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const systemLocale = useSyncExternalStore<HomeLocale>(
+    subscribeToLocaleChange,
+    getPreferredLocale,
+    () => 'en',
+  );
+  const activeLocale = locale ?? systemLocale;
+  const activeCopy = defaultNavbarCopy[activeLocale];
+  const handleLocaleUpdate = onLocaleChange ?? setPreferredLocale;
   const navLinks = [
-    { href: '/questions', label: labels?.questions ?? labels?.tracks ?? 'Questions' },
-    { href: '/roadmap', label: labels?.roadmap ?? 'Lộ trình' },
-    { href: '/blog', label: labels?.blog ?? 'Blog' },
+    {
+      href: '/questions',
+      label: labels?.questions ?? labels?.tracks ?? activeCopy.questions,
+    },
+    { href: '/roadmap', label: labels?.roadmap ?? activeCopy.roadmap },
+    { href: '/blog', label: labels?.blog ?? activeCopy.blog },
   ];
 
   const handleLogoClick = () => {
@@ -90,7 +135,7 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
       >
         <button onClick={handleLogoClick} className="flex shrink-0 items-center gap-3 rounded-full">
           <Image
-            src="/d-logo.webp"
+            src="/d-logo.svg"
             alt="Dicodeweb"
             width={64}
             height={64}
@@ -122,15 +167,13 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
         </div>
 
         <div className="flex shrink-0 items-center gap-2 md:gap-3">
-          {locale && localeLabel && onLocaleChange ? (
-            <LanguageSwitcher
-              currentLocale={locale}
-              locales={['en', 'vi', 'ja']}
-              onChange={onLocaleChange}
-              label={localeLabel}
-              className="hidden md:inline-flex"
-            />
-          ) : null}
+          <LanguageSwitcher
+            currentLocale={activeLocale}
+            locales={homeLocales}
+            onChange={handleLocaleUpdate}
+            label={localeLabel ?? activeCopy.localeLabel}
+            className="hidden md:inline-flex"
+          />
 
           <ThemeToggle />
 
@@ -151,6 +194,14 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
             background: 'var(--nav-bg)',
           }}
         >
+          <LanguageSwitcher
+            currentLocale={activeLocale}
+            locales={homeLocales}
+            onChange={handleLocaleUpdate}
+            label={localeLabel ?? activeCopy.localeLabel}
+            className="mb-3 w-fit"
+          />
+
           {navLinks.map((link) => (
             <Link
               key={link.href}

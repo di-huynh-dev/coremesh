@@ -52,8 +52,9 @@ export async function generateMetadata(): Promise<Metadata> {
     ],
     authors: [{ name: 'DiCodeWeb', url: 'https://dicodeweb.local' }],
     icons: {
-      icon: [{ url: '/d-logo.webp', type: 'image/webp' }],
-      apple: '/d-logo.webp',
+      icon: [{ url: '/d-logo.svg', type: 'image/svg+xml' }],
+      shortcut: '/d-logo.svg',
+      apple: '/d-logo.svg',
     },
     openGraph: {
       title: content.title,

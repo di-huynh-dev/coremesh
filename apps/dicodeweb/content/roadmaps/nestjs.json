@@ -9,171 +9,207 @@
     "strong": "#3A1519"
   },
   "totals": {
-    "weeks": 4,
-    "topics": 28,
+    "weeks": 6,
+    "topics": 34,
     "questions": 12,
-    "milestones": 4
+    "milestones": 6
   },
   "locales": {
     "vi": {
-      "name": "NestJS 2025 Roadmap",
-      "shortName": "NestJS 2025",
+      "name": "NestJS Roadmap",
+      "shortName": "NestJS Roadmap",
       "track": "Backend",
       "role": "Backend Developer",
-      "level": "Fresher -> Senior",
-      "summary": "Lộ trình này bám theo bài '2025 NestJS BE Roadmap: Beginner to Senior Level' trên DEV, chia hành trình thành 4 stage: Fresher, Junior, Mid-Level và Senior.",
-      "durationText": "4 cấp độ",
-      "topicCountText": "28 trọng tâm",
+      "level": "Production Backend Path",
+      "summary": "Backend track để xây API, authentication, database workflows, services, queues và production-ready architecture.",
+      "durationText": "6 phase học",
+      "topicCountText": "34 trọng tâm",
       "questionCountText": "12 project gợi ý",
-      "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "PostgreSQL", "Microservices"],
-      "previewNodes": ["Node.js", "NestJS", "PostgreSQL"],
+      "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "Docker", "Microservices"],
+      "previewNodes": ["TypeScript", "NestJS", "Microservices"],
       "milestones": [
         {
           "step": "01",
-          "title": "Fresher (Entry-Level)",
-          "description": "Nền tảng bắt đầu với Modules, Controllers, Services, Dependency Injection, Decorators, REST APIs bằng DTOs, validation, database integration và CRUD basics.",
-          "tags": ["NestJS", "TypeScript", "DTOs"]
+          "title": "Node.js + TypeScript Foundation",
+          "description": "Xây nền với runtime Node.js, async flow, module system, TypeScript types, interfaces, classes và tư duy backend bằng JavaScript hiện đại.",
+          "tags": ["Node.js", "TypeScript", "Async"]
         },
         {
           "step": "02",
-          "title": "Junior Developer",
-          "description": "Level này đi vào Middleware, Guards, Interceptors, Pipes, JWT authentication, RBAC, error handling, Swagger và testing với Jest trên các ứng dụng thật hơn.",
-          "tags": ["Guards", "JWT", "Swagger"]
+          "title": "NestJS Core",
+          "description": "Đi qua modules, controllers, providers, dependency injection, DTOs và validation để hiểu trục kiến trúc cốt lõi của NestJS.",
+          "tags": ["Modules", "Controllers", "Providers"]
         },
         {
           "step": "03",
-          "title": "Mid-Level Developer",
-          "description": "Tập trung vào microservices, OAuth2/SSO, Redis caching, WebSockets, database optimization, Docker/cloud deployment, CI/CD và mentoring.",
-          "tags": ["Microservices", "Redis", "Docker"]
+          "title": "Database & Prisma",
+          "description": "Làm việc với PostgreSQL, Prisma schema, CRUD services, relations và data flow giữa API layer với database layer.",
+          "tags": ["PostgreSQL", "Prisma", "CRUD"]
         },
         {
           "step": "04",
-          "title": "Senior Developer",
-          "description": "Chặng senior bao phủ system design, DDD, CQRS/Event Sourcing, tracing/logging, event-driven architecture, security, DevOps mastery, open source và leadership.",
-          "tags": ["DDD", "CQRS", "OpenTelemetry"]
+          "title": "Authentication & Authorization",
+          "description": "Thiết kế JWT auth, refresh token flow, guards, roles và access control cho backend có user session rõ ràng hơn.",
+          "tags": ["JWT", "Guards", "Roles"]
+        },
+        {
+          "step": "05",
+          "title": "Production Backend",
+          "description": "Chuẩn hóa config, logging, error handling, testing, Swagger và Docker để backend dễ debug, dễ tài liệu hóa và sẵn sàng production hơn.",
+          "tags": ["Config", "Docker", "Swagger"]
+        },
+        {
+          "step": "06",
+          "title": "Advanced Architecture",
+          "description": "Mở rộng với queues, caching, WebSocket, microservices và deployment để backend chịu tải tốt hơn, container hóa tốt hơn và linh hoạt hơn khi scale.",
+          "tags": ["Queues", "Caching", "Deployment"]
         }
       ],
       "outcomes": [
-        "Có một roadmap NestJS 2025 rõ ràng từ entry-level đến senior-level dựa trên bài viết nguồn.",
-        "Biết thứ tự học từ REST API cơ bản, guards, testing đến microservices, DDD và event-driven systems.",
-        "Có 12 project gợi ý xuyên suốt 4 stage để biến phần học lý thuyết thành practice cụ thể hơn.",
-        "Dễ map hơn giữa mục tiêu nghề nghiệp backend và các kỹ năng NestJS cần học tiếp theo."
+        "Có một NestJS roadmap rõ ràng từ foundation tới production architecture.",
+        "Đi từ API basics sang database workflows, auth, testing và microservices.",
+        "Bám sát các kỹ năng backend thường xuất hiện trong real-world project và interview.",
+        "Tạo nền tảng tốt hơn để build production-ready backend bằng TypeScript."
       ],
       "support": {
         "title": "Phù hợp cho ai?",
-        "description": "Phù hợp với người học backend bằng TypeScript muốn có một progression rõ ràng từ Fresher tới Senior thay vì chỉ học rời từng feature trong NestJS.",
+        "description": "Phù hợp với người muốn học backend TypeScript bài bản, từ CRUD API cơ bản tới auth, database, queues và system-level backend concerns.",
         "items": [
           "Node.js developer muốn chuyển sang backend có structure tốt hơn với NestJS",
-          "Frontend/fullstack developer muốn mở rộng sang backend TypeScript bài bản",
-          "Người đang cần roadmap nghề nghiệp từ CRUD API cơ bản tới microservices và system design"
+          "Frontend hoặc fullstack developer muốn mở rộng sang API, auth và database workflows",
+          "Người cần backend roadmap rõ để vừa build project vừa chuẩn bị interview"
         ]
       }
     },
     "en": {
-      "name": "NestJS 2025 Roadmap",
-      "shortName": "NestJS 2025",
+      "name": "NestJS Roadmap",
+      "shortName": "NestJS Roadmap",
       "track": "Backend",
       "role": "Backend Developer",
-      "level": "Fresher -> Senior",
-      "summary": "This roadmap follows the DEV article '2025 NestJS BE Roadmap: Beginner to Senior Level' and organizes the journey into four stages: Fresher, Junior, Mid-Level, and Senior.",
-      "durationText": "4 段階",
-      "topicCountText": "28 学習領域",
-      "questionCountText": "12 推奨プロジェクト",
-      "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "PostgreSQL", "Microservices"],
-      "previewNodes": ["Node.js", "NestJS", "PostgreSQL"],
+      "level": "Production Backend Path",
+      "summary": "Backend track for building APIs, authentication, database workflows, services, queues, and production-ready architecture.",
+      "durationText": "6 learning phases",
+      "topicCountText": "34 focus areas",
+      "questionCountText": "12 project ideas",
+      "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "Docker", "Microservices"],
+      "previewNodes": ["TypeScript", "NestJS", "Microservices"],
       "milestones": [
         {
           "step": "01",
-          "title": "Fresher (Entry-Level)",
-          "description": "Begin with Modules, Controllers, Services, Dependency Injection, Decorators, REST APIs with DTOs, validation, database integration, and CRUD fundamentals.",
-          "tags": ["NestJS", "TypeScript", "DTOs"]
+          "title": "Node.js + TypeScript Foundation",
+          "description": "Build the base with the Node.js runtime, async flow, the module system, TypeScript types, interfaces, classes, and the core backend mindset in modern JavaScript.",
+          "tags": ["Node.js", "TypeScript", "Async"]
         },
         {
           "step": "02",
-          "title": "Junior Developer",
-          "description": "Move into Middleware, Guards, Interceptors, Pipes, JWT auth, RBAC, exception handling, Swagger, and Jest-based testing for more real-world applications.",
-          "tags": ["Guards", "JWT", "Swagger"]
+          "title": "NestJS Core",
+          "description": "Work through modules, controllers, providers, dependency injection, DTOs, and validation so the core NestJS architecture becomes second nature.",
+          "tags": ["Modules", "Controllers", "Providers"]
         },
         {
           "step": "03",
-          "title": "Mid-Level Developer",
-          "description": "Focus on microservices, OAuth2/SSO, Redis caching, WebSockets, advanced database work, Docker/cloud deployment, CI/CD, and mentoring responsibilities.",
-          "tags": ["Microservices", "Redis", "Docker"]
+          "title": "Database & Prisma",
+          "description": "Use PostgreSQL, Prisma schema design, CRUD services, relations, and the data flow between your API layer and database layer.",
+          "tags": ["PostgreSQL", "Prisma", "CRUD"]
         },
         {
           "step": "04",
-          "title": "Senior Developer",
-          "description": "Cover system design, DDD, CQRS/Event Sourcing, tracing and logging, event-driven architecture, security, DevOps mastery, open source, and leadership.",
-          "tags": ["DDD", "CQRS", "OpenTelemetry"]
+          "title": "Authentication & Authorization",
+          "description": "Design JWT auth, refresh token flows, guards, roles, and access control for backends with clearer user session and permission boundaries.",
+          "tags": ["JWT", "Guards", "Roles"]
+        },
+        {
+          "step": "05",
+          "title": "Production Backend",
+          "description": "Standardize config, logging, error handling, testing, Swagger, and Docker so the backend is easier to debug, document, and run in production.",
+          "tags": ["Config", "Docker", "Swagger"]
+        },
+        {
+          "step": "06",
+          "title": "Advanced Architecture",
+          "description": "Expand into queues, caching, WebSocket, microservices, and deployment so the backend becomes more scalable, container-friendly, and resilient under real production load.",
+          "tags": ["Queues", "Caching", "Deployment"]
         }
       ],
       "outcomes": [
-        "Follow a NestJS 2025 progression from entry-level foundations to senior-level architecture concerns.",
-        "See a clearer sequence from CRUD APIs and guards into testing, microservices, DDD, and event-driven systems.",
-        "Use the 12 suggested projects from the article as practical anchors across the four stages.",
-        "Map backend career growth more easily onto concrete NestJS topics and responsibilities."
+        "Follow a NestJS roadmap from foundation through production architecture.",
+        "Move from API basics into database workflows, auth, testing, and microservices.",
+        "Stay close to the backend skills that show up in real-world projects and interviews.",
+        "Build a stronger path toward shipping production-ready TypeScript backends."
       ],
       "support": {
         "title": "Who is this for?",
-        "description": "A strong fit for TypeScript backend learners who want a staged progression from Fresher to Senior instead of learning NestJS features in isolation.",
+        "description": "A strong fit for learners who want a structured TypeScript backend path, from basic CRUD APIs into auth, database workflows, queues, and system-level backend concerns.",
         "items": [
           "Node.js developers moving into a more structured NestJS backend stack",
-          "Frontend or fullstack developers expanding into production-minded TypeScript backend work",
-          "Backend learners who want a career-oriented roadmap from CRUD APIs to microservices and system design"
+          "Frontend or fullstack developers expanding into APIs, auth, and database workflows",
+          "Developers who want a clear backend roadmap for both projects and interview prep"
         ]
       }
     },
     "ja": {
-      "name": "NestJS 2025 Roadmap",
-      "shortName": "NestJS 2025",
+      "name": "NestJS Roadmap",
+      "shortName": "NestJS Roadmap",
       "track": "バックエンド",
       "role": "バックエンド開発者",
-      "level": "Fresher -> Senior",
-      "summary": "このロードマップは DEV の記事 '2025 NestJS BE Roadmap: Beginner to Senior Level' をベースに、Fresher、Junior、Mid-Level、Senior の 4 段階で整理しています。",
-      "durationText": "4 levels",
-      "topicCountText": "28 key areas",
-      "questionCountText": "12 suggested projects",
-      "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "PostgreSQL", "Microservices"],
-      "previewNodes": ["Node.js", "NestJS", "PostgreSQL"],
+      "level": "Production Backend Path",
+      "summary": "API、authentication、database workflows、services、queues、production-ready architecture を身につけるための backend track です。",
+      "durationText": "6 フェーズ",
+      "topicCountText": "34 重点項目",
+      "questionCountText": "12 project ideas",
+      "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "Docker", "Microservices"],
+      "previewNodes": ["TypeScript", "NestJS", "Microservices"],
       "milestones": [
         {
           "step": "01",
-          "title": "Fresher (Entry-Level)",
-          "description": "Modules、Controllers、Services、Dependency Injection、Decorators、DTO を使った REST API、validation、database integration、CRUD の基礎から始めます。",
-          "tags": ["NestJS", "TypeScript", "DTOs"]
+          "title": "Node.js + TypeScript Foundation",
+          "description": "Node.js runtime、async flow、module system、TypeScript の types、interfaces、classes を通して backend の土台を固めます。",
+          "tags": ["Node.js", "TypeScript", "Async"]
         },
         {
           "step": "02",
-          "title": "Junior Developer",
-          "description": "Middleware、Guards、Interceptors、Pipes、JWT auth、RBAC、exception handling、Swagger、Jest testing に進み、より実務的な API を扱います。",
-          "tags": ["Guards", "JWT", "Swagger"]
+          "title": "NestJS Core",
+          "description": "modules、controllers、providers、dependency injection、DTOs、validation を通して NestJS の中核構造を理解します。",
+          "tags": ["Modules", "Controllers", "Providers"]
         },
         {
           "step": "03",
-          "title": "Mid-Level Developer",
-          "description": "microservices、OAuth2/SSO、Redis caching、WebSockets、database optimization、Docker/cloud deployment、CI/CD、mentoring を学びます。",
-          "tags": ["Microservices", "Redis", "Docker"]
+          "title": "Database & Prisma",
+          "description": "PostgreSQL、Prisma schema、CRUD services、relations、そして API layer と database layer のつながりを学びます。",
+          "tags": ["PostgreSQL", "Prisma", "CRUD"]
         },
         {
           "step": "04",
-          "title": "Senior Developer",
-          "description": "system design、DDD、CQRS/Event Sourcing、tracing/logging、event-driven architecture、security、DevOps mastery、open source、leadership を整理します。",
-          "tags": ["DDD", "CQRS", "OpenTelemetry"]
+          "title": "Authentication & Authorization",
+          "description": "JWT auth、refresh token flow、guards、roles、access control を通して user session と権限設計を整理します。",
+          "tags": ["JWT", "Guards", "Roles"]
+        },
+        {
+          "step": "05",
+          "title": "Production Backend",
+          "description": "config、logging、error handling、testing、Swagger、Docker を整えて、production backend を運用しやすくします。",
+          "tags": ["Config", "Docker", "Swagger"]
+        },
+        {
+          "step": "06",
+          "title": "Advanced Architecture",
+          "description": "queues、caching、WebSocket、microservices、deployment を通して、より scalable で container-friendly な backend に広げます。",
+          "tags": ["Queues", "Caching", "Deployment"]
         }
       ],
       "outcomes": [
-        "entry-level から senior-level までの NestJS 2025 ロードマップを段階的に追えます。",
-        "CRUD API や guards から testing、microservices、DDD、event-driven systems まで順序立てて進めます。",
-        "記事内の 12 suggested projects を各段階の実践テーマとして使えます。",
-        "backend career growth を NestJS の具体的なトピックと責務に結びつけやすくなります。"
+        "foundation から production architecture まで進める NestJS roadmap です。",
+        "API basics から database workflows、auth、testing、microservices まで順番に学べます。",
+        "real-world project と interview に近い backend skill に沿って進められます。",
+        "production-ready な TypeScript backend を作る土台を強化できます。"
       ],
       "support": {
         "title": "こんな人におすすめ",
-        "description": "TypeScript backend を学ぶ人で、NestJS の機能を単発で学ぶのではなく Fresher から Senior までの progression を欲しい人に向いています。",
+        "description": "basic CRUD API から auth、database workflows、queues、system-level backend concerns まで、構造的に TypeScript backend を学びたい人に向いています。",
         "items": [
           "より structure のある NestJS backend に進みたい Node.js developer",
-          "production-minded な TypeScript backend に広げたい frontend / fullstack developer",
-          "CRUD API から microservices、system design まで career-oriented な roadmap が欲しい学習者"
+          "APIs、auth、database workflows まで広げたい frontend / fullstack developer",
+          "project と interview prep の両方に使える backend roadmap が欲しい人"
         ]
       }
     }

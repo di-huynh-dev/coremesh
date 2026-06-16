@@ -647,7 +647,7 @@ export function HomePageShell() {
       />
 
       <main ref={mainRef} className="bg-background text-foreground min-h-screen">
-        <section className="relative overflow-hidden px-4 pt-32 pb-20 md:px-6 md:pt-40 md:pb-28">
+        <section className="relative overflow-hidden px-4 pt-32 pb-12 md:px-6 md:pt-40 md:pb-16">
           <div className="pointer-events-none absolute inset-0">
             <div className="bg-accent/10 absolute top-16 left-[4%] h-64 w-64 rounded-full blur-3xl" />
             <div className="absolute top-20 right-[8%] h-80 w-80 rounded-full bg-[#8BD63F]/12 blur-3xl" />
@@ -764,7 +764,7 @@ export function HomePageShell() {
           </div>
         </section>
 
-        <section id="features" className="px-4 py-16 md:px-6 md:py-24">
+        <section id="features" className="px-4 py-8 md:px-6 md:py-14">
           <div className="editorial-grid">
             <div className="scroll-reveal mb-10 max-w-3xl space-y-4">
               <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
@@ -810,7 +810,7 @@ export function HomePageShell() {
           </div>
         </section>
 
-        <section className="px-4 py-16 md:px-6 md:py-24">
+        <section className="px-4 py-8 md:px-6 md:py-14">
           <div className="editorial-grid">
             <div className="scroll-reveal mb-10 max-w-3xl space-y-4">
               <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
@@ -882,7 +882,7 @@ export function HomePageShell() {
           </div>
         </section>
 
-        <section id="questions" className="px-4 py-16 md:px-6 md:py-24">
+        <section id="questions" className="px-4 py-8 md:px-6 md:py-14">
           <div className="editorial-grid">
             <div className="scroll-reveal mb-10 max-w-3xl space-y-4">
               <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
@@ -1019,7 +1019,7 @@ export function HomePageShell() {
           </div>
         </section>
 
-        <section id="blog-preview" className="px-4 py-16 md:px-6 md:py-24">
+        <section id="blog-preview" className="px-4 py-8 md:px-6 md:py-14">
           <div className="editorial-grid">
             <div className="mb-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
               <div className="scroll-reveal max-w-3xl space-y-4">
@@ -1078,7 +1078,7 @@ export function HomePageShell() {
           </div>
         </section>
 
-        <section id="faq" className="px-4 py-16 md:px-6 md:py-24">
+        <section id="faq" className="px-4 py-8 md:px-6 md:py-14">
           <div className="editorial-grid">
             <div className="grid gap-8 lg:grid-cols-[0.8fr_1.2fr]">
               <div className="scroll-reveal space-y-4">
@@ -1110,7 +1110,7 @@ export function HomePageShell() {
           </div>
         </section>
 
-        <section id="contact" className="px-4 py-16 md:px-6 md:py-24">
+        <section id="contact" className="px-4 py-8 md:px-6 md:py-14">
           <div className="editorial-grid">
             <div className="rounded-[2rem] border border-[#071B3A] bg-[#071B3A] px-6 py-10 text-[#F5F0EA] md:px-10">
               <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">

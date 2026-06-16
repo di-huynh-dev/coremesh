@@ -10,278 +10,431 @@
   },
   "totals": {
     "weeks": 10,
-    "topics": 32,
+    "topics": 30,
     "questions": 140,
     "milestones": 10
   },
   "locales": {
     "vi": {
-      "name": "React.gg Modern React Roadmap",
-      "shortName": "React.gg React",
+      "name": "React Roadmap",
+      "shortName": "React Roadmap",
       "track": "Frontend",
       "role": "Frontend Developer",
-      "level": "Comprehensive",
-      "summary": "Lộ trình này bám theo 10 section công khai trên react.gg: từ Big Picture, mô tả UI, state, effects, tối ưu, custom hooks cho đến concurrent rendering, React on the Server và interview prep.",
-      "durationText": "10 chặng theo react.gg",
-      "topicCountText": "32 bài học",
+      "level": "Modern UI Path",
+      "summary": "Frontend track để xây modern UI, làm chủ hooks, performance, server components và interview prep.",
+      "durationText": "10 chặng học",
+      "topicCountText": "30 trọng tâm",
       "questionCountText": "140+ bài thực hành",
-      "skills": ["JavaScript", "React", "JSX", "useState", "Custom Hooks", "Next.js"],
-      "previewNodes": ["JavaScript", "React", "Next.js"],
+      "skills": [
+        "JavaScript",
+        "React",
+        "JSX",
+        "Hooks",
+        "Performance",
+        "Next.js"
+      ],
+      "previewNodes": [
+        "TypeScript",
+        "React",
+        "Next.js"
+      ],
       "milestones": [
         {
           "step": "01",
-          "title": "The Big Picture",
-          "description": "Bắt đầu với Why?, Thinking in React, Imperative vs. Declarative và Pure Functions để hiểu tại sao React hoạt động theo mô hình hiện đại này.",
-          "tags": ["JavaScript", "Thinking in React", "Pure Functions"]
+          "title": "Mental Model",
+          "description": "Xây nền tư duy với Why React, Thinking in React, declarative UI và pure functions để hiểu component-based rendering hoạt động ra sao.",
+          "tags": [
+            "JavaScript",
+            "Thinking in React",
+            "Pure Functions"
+          ]
         },
         {
           "step": "02",
-          "title": "Describing UI",
-          "description": "Đi qua Components, JSX, Elements vs. Components và Props để mô tả UI bằng component tree rõ ràng và có thể tái sử dụng.",
-          "tags": ["React", "JSX", "Components"]
+          "title": "JSX & Components",
+          "description": "Đi qua JSX, component composition, props và cách mô tả UI bằng một component tree rõ ràng, dễ tái sử dụng.",
+          "tags": [
+            "React",
+            "JSX",
+            "Components"
+          ]
         },
         {
           "step": "03",
-          "title": "Bringing React to Life",
-          "description": "Học Handling Events, Preserving Values with useState, Using useState và When React Renders để làm UI có tương tác thực sự.",
-          "tags": ["useState", "Events", "Rendering"]
+          "title": "State & Events",
+          "description": "Học event handling, useState, controlled interaction và hiểu khi nào React re-render để UI thực sự sống động.",
+          "tags": [
+            "useState",
+            "Events",
+            "Rendering"
+          ]
         },
         {
           "step": "04",
-          "title": "Escaping React",
-          "description": "Section này đi vào Reality Check, Managing Effects, Preserving Values with useRef và Teleportation vs. Context cho các tình huống vượt khỏi flow thuần render.",
-          "tags": ["useEffect", "useRef", "Context"]
+          "title": "Effects, Refs, Context",
+          "description": "Làm việc với useEffect, useRef, context và các tình huống cần đồng bộ React với môi trường bên ngoài.",
+          "tags": [
+            "useEffect",
+            "useRef",
+            "Context"
+          ]
         },
         {
           "step": "05",
-          "title": "Optimizing React",
-          "description": "Tập trung vào Complex State with useReducer, Referential Equality, useMemo/useCallback, useLayoutEffect/useSyncExternalStore và useEffectEvent để tối ưu app production.",
-          "tags": ["useReducer", "useMemo", "useSyncExternalStore"]
+          "title": "Performance & Optimization",
+          "description": "Tối ưu production app bằng useReducer, referential equality, memoization, store sync và những kỹ thuật giảm render không cần thiết.",
+          "tags": [
+            "useReducer",
+            "useMemo",
+            "Optimization"
+          ]
         },
         {
           "step": "06",
           "title": "Custom Hooks",
-          "description": "Học cách trừu tượng hóa reactive logic thành custom hooks rõ ràng, tái sử dụng được và gần với tình huống production hơn.",
-          "tags": ["Custom Hooks", "Abstraction", "Reuse"]
+          "description": "Tách reactive logic thành custom hooks sạch hơn, dễ tái sử dụng hơn và phù hợp với codebase lớn hơn.",
+          "tags": [
+            "Custom Hooks",
+            "Abstraction",
+            "Reuse"
+          ]
         },
         {
           "step": "07",
-          "title": "Rebuilding useHooks",
-          "description": "Củng cố kiến thức bằng cách rebuild các hook thực tế như useScript, useEventListener, useFetch, useMouse, useIdle và nhiều hooks khác từ hệ useHooks.",
-          "tags": ["useHooks", "useFetch", "Practice"]
+          "title": "Practical Hooks",
+          "description": "Củng cố bằng các hook thực tế như data fetching, event listener, idle state, mouse state và nhiều pattern hay gặp trong app thật.",
+          "tags": [
+            "Practical Hooks",
+            "useFetch",
+            "Practice"
+          ]
         },
         {
           "step": "08",
           "title": "Concurrent Rendering",
-          "description": "Bao phủ useDeferredValue, startTransition, useTransition, Actions, useOptimistic và Composing Boundaries để hiểu concurrent React hiện đại.",
-          "tags": ["useTransition", "useOptimistic", "Actions"]
+          "description": "Hiểu useDeferredValue, startTransition, useTransition, actions và optimistic UI trong mô hình concurrent React hiện đại.",
+          "tags": [
+            "useTransition",
+            "useOptimistic",
+            "Actions"
+          ]
         },
         {
           "step": "09",
-          "title": "React on the Server",
-          "description": "Đi qua Why Server Components?, Composing the Network và Server Actions để nắm phần React v19 chạy phía server.",
-          "tags": ["Server Components", "Server Actions", "Next.js"]
+          "title": "Server Components / Next.js Bridge",
+          "description": "Bắc cầu sang Next.js với server components, server actions và cách chia ranh giới client/server trong React hiện đại.",
+          "tags": [
+            "Server Components",
+            "Server Actions",
+            "Next.js"
+          ]
         },
         {
           "step": "10",
-          "title": "React Interview Questions",
-          "description": "Kết thúc lộ trình bằng interview prep với 50+ câu hỏi và 90+ challenges, đúng tinh thần react.gg dùng practice để khóa kiến thức.",
-          "tags": ["Interview Prep", "Challenges", "Quiz"]
+          "title": "Interview Prep",
+          "description": "Khóa kiến thức bằng interview prep, challenge và practice items để biến phần học thành khả năng giải thích và triển khai thật.",
+          "tags": [
+            "Interview Prep",
+            "Challenges",
+            "Quiz"
+          ]
         }
       ],
       "outcomes": [
-        "Có một lộ trình React rõ ràng đúng theo 10 section công khai của react.gg.",
-        "Đi từ foundation đến React v19 features như Actions, Concurrent Rendering và Server Components.",
-        "Có đủ practice items để vừa học lý thuyết vừa kiểm tra lại qua challenges và interview prep.",
-        "Xây nền tảng tốt hơn để ship React app production-ready thay vì chỉ làm tutorial đơn lẻ."
+        "Có một React roadmap rõ ràng từ mental model tới interview prep.",
+        "Đi từ UI fundamentals đến hooks, concurrent rendering và server components.",
+        "Nối phần học React với practice-heavy interview prep thay vì chỉ học lý thuyết.",
+        "Xây nền tốt hơn để ship modern frontend app production-ready."
       ],
       "support": {
         "title": "Phù hợp cho ai?",
-        "description": "Phù hợp với người đã biết JavaScript cơ bản và muốn học React hiện đại theo đúng progression mà react.gg đang public trên landing page của họ.",
+        "description": "Phù hợp với người đã biết JavaScript cơ bản và muốn học React hiện đại theo một progression rõ ràng, có thứ tự và dễ bám theo.",
         "items": [
           "Người muốn có roadmap React mạch lạc thay vì nhảy giữa nhiều tutorial rời rạc",
-          "Frontend developer muốn cập nhật React v19 như Actions, Server Components, Transitions",
-          "Người cần practice-heavy roadmap với interview questions và challenges đi kèm"
+          "Frontend developer muốn cập nhật hooks hiện đại, server components và performance thinking",
+          "Người đang chuẩn bị question bank và interview prep cho vị trí frontend"
         ]
       }
     },
     "en": {
-      "name": "React.gg Modern React Roadmap",
-      "shortName": "React.gg React",
+      "name": "React Roadmap",
+      "shortName": "React Roadmap",
       "track": "Frontend",
       "role": "Frontend Developer",
-      "level": "Comprehensive",
-      "summary": "This roadmap follows the 10 public sections highlighted on react.gg, moving from the big-picture mental model into UI description, state, effects, optimization, custom hooks, concurrent rendering, React on the Server, and interview prep.",
-      "durationText": "10 セクション",
-      "topicCountText": "32 レッスン",
-      "questionCountText": "140+ 実践項目",
-      "skills": ["JavaScript", "React", "JSX", "useState", "Custom Hooks", "Next.js"],
-      "previewNodes": ["JavaScript", "React", "Next.js"],
+      "level": "Modern UI Path",
+      "summary": "Frontend track for building modern UI, mastering hooks, performance, server components, and interview prep.",
+      "durationText": "10 learning stages",
+      "topicCountText": "30 focus areas",
+      "questionCountText": "140+ practice items",
+      "skills": [
+        "JavaScript",
+        "React",
+        "JSX",
+        "Hooks",
+        "Performance",
+        "Next.js"
+      ],
+      "previewNodes": [
+        "TypeScript",
+        "React",
+        "Next.js"
+      ],
       "milestones": [
         {
           "step": "01",
-          "title": "The Big Picture",
-          "description": "Start with Why?, Thinking in React, Imperative vs. Declarative, and Pure Functions to build the right mental model for modern React.",
-          "tags": ["JavaScript", "Thinking in React", "Pure Functions"]
+          "title": "Mental Model",
+          "description": "Build the foundation with Why React, Thinking in React, declarative UI, and pure functions so the component mental model feels natural.",
+          "tags": [
+            "JavaScript",
+            "Thinking in React",
+            "Pure Functions"
+          ]
         },
         {
           "step": "02",
-          "title": "Describing UI",
-          "description": "Work through Components, JSX, Elements vs. Components, and Props so you can describe UI with reusable component structure.",
-          "tags": ["React", "JSX", "Components"]
+          "title": "JSX & Components",
+          "description": "Work through JSX, component composition, props, and the structure needed to describe UI with reusable component trees.",
+          "tags": [
+            "React",
+            "JSX",
+            "Components"
+          ]
         },
         {
           "step": "03",
-          "title": "Bringing React to Life",
-          "description": "Cover Handling Events, Preserving Values with useState, Using useState, and When React Renders to make your UI interactive.",
-          "tags": ["useState", "Events", "Rendering"]
+          "title": "State & Events",
+          "description": "Learn event handling, useState, interaction patterns, and how React rendering works once your UI becomes dynamic.",
+          "tags": [
+            "useState",
+            "Events",
+            "Rendering"
+          ]
         },
         {
           "step": "04",
-          "title": "Escaping React",
-          "description": "Move into Reality Check, Managing Effects, Preserving Values with useRef, and Teleportation vs. Context for the cases where pure rendering is not enough.",
-          "tags": ["useEffect", "useRef", "Context"]
+          "title": "Effects, Refs, Context",
+          "description": "Use effects, refs, and context for the situations where React has to coordinate with external state, browser APIs, and shared data.",
+          "tags": [
+            "useEffect",
+            "useRef",
+            "Context"
+          ]
         },
         {
           "step": "05",
-          "title": "Optimizing React",
-          "description": "Study Complex State with useReducer, Referential Equality, useMemo/useCallback, useLayoutEffect/useSyncExternalStore, and useEffectEvent to reason about production performance.",
-          "tags": ["useReducer", "useMemo", "useSyncExternalStore"]
+          "title": "Performance & Optimization",
+          "description": "Optimize production apps with reducers, referential equality, memoization, store syncing, and techniques that prevent unnecessary rendering.",
+          "tags": [
+            "useReducer",
+            "useMemo",
+            "Optimization"
+          ]
         },
         {
           "step": "06",
           "title": "Custom Hooks",
-          "description": "Learn how to extract reactive logic into custom hooks that are easier to reuse and reason about across a larger app.",
-          "tags": ["Custom Hooks", "Abstraction", "Reuse"]
+          "description": "Extract reactive logic into custom hooks that are easier to reuse, reason about, and scale across a larger codebase.",
+          "tags": [
+            "Custom Hooks",
+            "Abstraction",
+            "Reuse"
+          ]
         },
         {
           "step": "07",
-          "title": "Rebuilding useHooks",
-          "description": "Reinforce the material by rebuilding practical hooks like useScript, useEventListener, useFetch, useMouse, useIdle, and more from the useHooks ecosystem.",
-          "tags": ["useHooks", "useFetch", "Practice"]
+          "title": "Practical Hooks",
+          "description": "Reinforce the material with practical hooks for fetching, events, idle state, mouse state, and patterns that show up in real apps.",
+          "tags": [
+            "Practical Hooks",
+            "useFetch",
+            "Practice"
+          ]
         },
         {
           "step": "08",
           "title": "Concurrent Rendering",
-          "description": "Cover useDeferredValue, startTransition, useTransition, Actions, useOptimistic, and Composing Boundaries to understand the modern concurrent model.",
-          "tags": ["useTransition", "useOptimistic", "Actions"]
+          "description": "Understand useDeferredValue, startTransition, useTransition, actions, and optimistic UI in the modern concurrent React model.",
+          "tags": [
+            "useTransition",
+            "useOptimistic",
+            "Actions"
+          ]
         },
         {
           "step": "09",
-          "title": "React on the Server",
-          "description": "Walk through Why Server Components?, Composing the Network, and Server Actions to understand server-side React in the React v19 era.",
-          "tags": ["Server Components", "Server Actions", "Next.js"]
+          "title": "Server Components / Next.js Bridge",
+          "description": "Bridge into Next.js through server components, server actions, and better client/server boundaries for modern React apps.",
+          "tags": [
+            "Server Components",
+            "Server Actions",
+            "Next.js"
+          ]
         },
         {
           "step": "10",
-          "title": "React Interview Questions",
-          "description": "Close the journey with interview prep built around 50+ questions and 90+ challenges, matching the public positioning on react.gg.",
-          "tags": ["Interview Prep", "Challenges", "Quiz"]
+          "title": "Interview Prep",
+          "description": "Lock in the material with interview prep, challenges, and practice items so knowledge turns into explanation and implementation skill.",
+          "tags": [
+            "Interview Prep",
+            "Challenges",
+            "Quiz"
+          ]
         }
       ],
       "outcomes": [
-        "Follow a React roadmap aligned to the 10 public react.gg course sections.",
-        "Move from foundations into React v19 topics like Actions, Concurrent Rendering, and Server Components.",
-        "Pair concept learning with practice-heavy material including challenges and interview prep.",
-        "Build a stronger path toward shipping modern, production-ready React apps."
+        "Follow a React roadmap from mental model through interview prep.",
+        "Move from UI fundamentals into hooks, concurrent rendering, and server components.",
+        "Connect concept learning to practice-heavy interview preparation.",
+        "Build a stronger path toward shipping modern, production-ready frontend apps."
       ],
       "support": {
         "title": "Who is this for?",
-        "description": "A strong fit for developers who already know basic JavaScript and want a modern React progression based on the public structure described on react.gg.",
+        "description": "A strong fit for developers who already know basic JavaScript and want a modern React progression with a clear, structured learning order.",
         "items": [
           "Learners who want a coherent React roadmap instead of disconnected tutorials",
-          "Frontend developers catching up on React v19 features like Actions, Server Components, and Transitions",
-          "Developers who prefer challenge-heavy learning with interview prep built in"
+          "Frontend developers catching up on modern hooks, server components, and performance thinking",
+          "Developers preparing for question-bank style interview prep in frontend roles"
         ]
       }
     },
     "ja": {
-      "name": "React.gg Modern React Roadmap",
-      "shortName": "React.gg React",
+      "name": "React Roadmap",
+      "shortName": "React Roadmap",
       "track": "フロントエンド",
       "role": "フロントエンド開発者",
-      "level": "Comprehensive",
-      "summary": "このロードマップは react.gg の公開ページにある 10 個の section をベースに、Big Picture から UI 記述、state、effects、最適化、custom hooks、concurrent rendering、React on the Server、interview prep まで順番にたどります。",
-      "durationText": "10 sections",
-      "topicCountText": "32 lessons",
-      "questionCountText": "140+ practice items",
-      "skills": ["JavaScript", "React", "JSX", "useState", "Custom Hooks", "Next.js"],
-      "previewNodes": ["JavaScript", "React", "Next.js"],
+      "level": "Modern UI Path",
+      "summary": "modern UI を作り、hooks、performance、server components、interview prep を身につけるための frontend track です。",
+      "durationText": "10 ステップ",
+      "topicCountText": "30 重点項目",
+      "questionCountText": "140+ 演習項目",
+      "skills": [
+        "JavaScript",
+        "React",
+        "JSX",
+        "Hooks",
+        "Performance",
+        "Next.js"
+      ],
+      "previewNodes": [
+        "TypeScript",
+        "React",
+        "Next.js"
+      ],
       "milestones": [
         {
           "step": "01",
-          "title": "The Big Picture",
-          "description": "Why?, Thinking in React, Imperative vs. Declarative, Pure Functions から始めて、modern React の土台となる考え方を整理します。",
-          "tags": ["JavaScript", "Thinking in React", "Pure Functions"]
+          "title": "Mental Model",
+          "description": "Why React、Thinking in React、declarative UI、pure functions から始めて、component ベースの考え方を固めます。",
+          "tags": [
+            "JavaScript",
+            "Thinking in React",
+            "Pure Functions"
+          ]
         },
         {
           "step": "02",
-          "title": "Describing UI",
-          "description": "Components, JSX, Elements vs. Components, Props を通して、UI を component tree として表現する感覚を固めます。",
-          "tags": ["React", "JSX", "Components"]
+          "title": "JSX & Components",
+          "description": "JSX、component composition、props を通して、再利用しやすい UI 構造を組み立てられるようにします。",
+          "tags": [
+            "React",
+            "JSX",
+            "Components"
+          ]
         },
         {
           "step": "03",
-          "title": "Bringing React to Life",
-          "description": "Handling Events, Preserving Values with useState, Using useState, When React Renders によって UI をインタラクティブにします。",
-          "tags": ["useState", "Events", "Rendering"]
+          "title": "State & Events",
+          "description": "event handling、useState、インタラクション設計、そして React の render の流れを理解します。",
+          "tags": [
+            "useState",
+            "Events",
+            "Rendering"
+          ]
         },
         {
           "step": "04",
-          "title": "Escaping React",
-          "description": "Reality Check, Managing Effects, Preserving Values with useRef, Teleportation vs. Context を学び、純粋な render だけでは足りない場面に対応します。",
-          "tags": ["useEffect", "useRef", "Context"]
+          "title": "Effects, Refs, Context",
+          "description": "effects、refs、context を使って、外部状態や browser APIs と React をつなぐ場面に対応します。",
+          "tags": [
+            "useEffect",
+            "useRef",
+            "Context"
+          ]
         },
         {
           "step": "05",
-          "title": "Optimizing React",
-          "description": "useReducer、Referential Equality、useMemo/useCallback、useLayoutEffect/useSyncExternalStore、useEffectEvent を通して production 性能を考えます。",
-          "tags": ["useReducer", "useMemo", "useSyncExternalStore"]
+          "title": "Performance & Optimization",
+          "description": "reducers、referential equality、memoization、store sync などを通して production app の最適化を学びます。",
+          "tags": [
+            "useReducer",
+            "useMemo",
+            "Optimization"
+          ]
         },
         {
           "step": "06",
           "title": "Custom Hooks",
-          "description": "reactive logic を custom hooks として切り出し、再利用性と見通しを高める考え方を身につけます。",
-          "tags": ["Custom Hooks", "Abstraction", "Reuse"]
+          "description": "reactive logic を custom hooks として切り出し、再利用性と見通しを高めます。",
+          "tags": [
+            "Custom Hooks",
+            "Abstraction",
+            "Reuse"
+          ]
         },
         {
           "step": "07",
-          "title": "Rebuilding useHooks",
-          "description": "useScript、useEventListener、useFetch、useMouse、useIdle などの practical hooks を作り直しながら理解を深めます。",
-          "tags": ["useHooks", "useFetch", "Practice"]
+          "title": "Practical Hooks",
+          "description": "fetching、events、idle state、mouse state などの practical hooks を通して理解を深めます。",
+          "tags": [
+            "Practical Hooks",
+            "useFetch",
+            "Practice"
+          ]
         },
         {
           "step": "08",
           "title": "Concurrent Rendering",
-          "description": "useDeferredValue、startTransition、useTransition、Actions、useOptimistic、Composing Boundaries を通して concurrent React を学びます。",
-          "tags": ["useTransition", "useOptimistic", "Actions"]
+          "description": "useDeferredValue、startTransition、useTransition、actions、optimistic UI を通して concurrent React を理解します。",
+          "tags": [
+            "useTransition",
+            "useOptimistic",
+            "Actions"
+          ]
         },
         {
           "step": "09",
-          "title": "React on the Server",
-          "description": "Why Server Components?, Composing the Network, Server Actions を通じて、React v19 時代の server-side React を整理します。",
-          "tags": ["Server Components", "Server Actions", "Next.js"]
+          "title": "Server Components / Next.js Bridge",
+          "description": "server components、server actions、client/server boundary を通して Next.js とのつながりを整理します。",
+          "tags": [
+            "Server Components",
+            "Server Actions",
+            "Next.js"
+          ]
         },
         {
           "step": "10",
-          "title": "React Interview Questions",
-          "description": "最後は 50+ questions と 90+ challenges を軸にした interview prep で知識を固定します。",
-          "tags": ["Interview Prep", "Challenges", "Quiz"]
+          "title": "Interview Prep",
+          "description": "interview prep、challenges、practice items を通して、知識を説明力と実装力に変えていきます。",
+          "tags": [
+            "Interview Prep",
+            "Challenges",
+            "Quiz"
+          ]
         }
       ],
       "outcomes": [
-        "react.gg の公開 10 section に沿った React ロードマップをたどれます。",
-        "基礎から Actions、Concurrent Rendering、Server Components まで段階的に進めます。",
-        "challenge と interview prep を組み合わせた practice-heavy な学習フローになります。",
-        "modern で production-ready な React app を作るための土台を強化できます。"
+        "mental model から interview prep まで一貫して進める React roadmap です。",
+        "UI fundamentals から hooks、concurrent rendering、server components まで段階的に学べます。",
+        "概念理解を practice-heavy な interview prep へつなげられます。",
+        "modern で production-ready な frontend app を作る土台を強化できます。"
       ],
       "support": {
         "title": "こんな人におすすめ",
-        "description": "基本的な JavaScript は理解していて、react.gg の公開構成をベースに modern React を系統立てて学びたい人に向いています。",
+        "description": "基本的な JavaScript は理解していて、modern React を段階的かつ体系的に学びたい人に向いています。",
         "items": [
           "断片的な tutorial ではなく一貫した React roadmap が欲しい学習者",
-          "Actions、Server Components、Transitions など React v19 に追いつきたい frontend developer",
-          "challenge と interview prep を重視した学び方をしたい人"
+          "modern hooks、server components、performance thinking を整理したい frontend developer",
+          "question-bank 型の interview prep を進めたい人"
         ]
       }
     }
