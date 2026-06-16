@@ -1,12 +1,11 @@
 'use client';
 
+import { MDXContent } from '@content-collections/mdx/react';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Play, Pause, Square, Volume2, SkipBack, Settings, X } from 'lucide-react';
 import { BlogPost } from '@/lib/blog';
-
-// Note: Blog content HTML comes from our own hardcoded lib/blog.ts file,
-// not from user input, so it is safe to render.
+import { blogMdxComponents } from '@/components/blog/mdx-components';
 
 interface ArticleContentProps {
   post: BlogPost;
@@ -38,13 +37,16 @@ export function ArticleContent({ post }: ArticleContentProps) {
   // Refs
   const articleRef = useRef<HTMLDivElement>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const ttsSupported =
-    typeof window !== 'undefined' && 'speechSynthesis' in window;
+  const [ttsSupported, setTtsSupported] = useState(false);
   const words = post.content
     ? post.content.split(/\s+/).filter((word) => word.length > 0)
     : [];
 
   // Load available voices
+  useEffect(() => {
+    setTtsSupported('speechSynthesis' in window);
+  }, []);
+
   useEffect(() => {
     if (!ttsSupported) return;
 
@@ -204,7 +206,7 @@ export function ArticleContent({ post }: ArticleContentProps) {
       </div>
 
       <main className="min-h-screen pb-24 pt-24 md:pb-32 md:pt-32">
-        <article className="reading-width mx-auto px-4 md:px-0">
+        <article className="reading-width mx-auto px-4 md:px-0" data-pagefind-body>
           <Link
             href="/blog"
             className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6 md:mb-8"
@@ -297,6 +299,13 @@ export function ArticleContent({ post }: ArticleContentProps) {
               [&>p:first-of-type]:mb-6
               md:[&>p:first-of-type]:mb-8
 
+              [&>div:first-of-type]:text-base
+              md:[&>div:first-of-type]:text-xl
+              [&>div:first-of-type]:text-muted-foreground
+              [&>div:first-of-type]:leading-relaxed
+              [&>div:first-of-type]:mb-6
+              md:[&>div:first-of-type]:mb-8
+
               prose-a:text-accent
               prose-a:no-underline
               hover:prose-a:underline
@@ -317,14 +326,12 @@ export function ArticleContent({ post }: ArticleContentProps) {
               prose-code:after:content-none
 
               prose-pre:bg-[#071B3A]
-              prose-pre:border
-              prose-pre:border-[#0F2C57]
-              prose-pre:rounded-lg
-              md:prose-pre:rounded-xl
+              prose-pre:border-0
+              prose-pre:rounded-xl
               prose-pre:my-6
               md:prose-pre:my-8
-              prose-pre:text-xs
-              md:prose-pre:text-sm
+              prose-pre:p-0
+              prose-pre:shadow-[0_10px_30px_rgba(7,27,58,0.08)]
 
               prose-blockquote:border-l-accent
               prose-blockquote:border-l-4
@@ -352,9 +359,35 @@ export function ArticleContent({ post }: ArticleContentProps) {
               prose-li:leading-relaxed
               prose-li:text-sm
               md:prose-li:text-base
+
+              prose-table:my-8
+              prose-table:w-full
+              prose-table:overflow-hidden
+              prose-table:rounded-[1.25rem]
+              prose-table:border
+              prose-table:border-border
+              prose-table:bg-card
+              prose-thead:border-border
+              prose-th:border-border
+              prose-th:bg-muted/70
+              prose-th:px-4
+              prose-th:py-3
+              prose-th:text-left
+              prose-th:text-xs
+              prose-th:font-semibold
+              prose-th:tracking-[0.12em]
+              prose-th:text-muted-foreground
+              prose-th:uppercase
+              prose-td:border-border
+              prose-td:px-4
+              prose-td:py-3.5
+              prose-td:text-sm
+              prose-td:leading-7
+              md:prose-td:text-base
             "
-            dangerouslySetInnerHTML={{ __html: post.contentHtml }}
-          />
+          >
+            <MDXContent code={post.code} components={blogMdxComponents} />
+          </div>
 
           <footer className="mt-12 md:mt-16 pt-6 md:pt-8 border-t border-border">
             <Link

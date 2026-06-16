@@ -1,0 +1,59 @@
+---
+title: Why We Chose Bun Over npm for This Boilerplate
+excerpt: Exploring the performance gains and workflow simplifications that made Bun the right default for our frontend starter.
+category: Engineering
+date: January 5, 2025
+publishedAt: 2025-01-05T00:00:00.000Z
+readingTime: 5
+level: Starter
+tags:
+  - Bun
+  - Tooling
+  - Performance
+author:
+  name: DiCodeWeb Editorial
+---
+
+When we build a learning-focused boilerplate, every decision compounds. The package manager is one of those decisions that shows up on day one, in CI, in onboarding, and every time a developer adds or updates a dependency.
+
+For this starter, Bun gave us the cleanest tradeoff between speed and simplicity.
+
+## Speed That Actually Changes Workflow
+
+Bun is fast enough that install time stops feeling like background friction and starts disappearing from the workflow entirely.
+
+```bash
+bun install
+bun run dev
+```
+
+That sounds small, but it changes how often people are willing to reset, retry, or spin up a project from scratch. In learning environments, that matters even more because setup friction becomes dropout friction.
+
+## Native TypeScript Support
+
+One of Bun's biggest practical wins is that it reduces toolchain ceremony. It can run TypeScript directly for many common workflows, which means fewer “why is this script failing?” moments when a project is still young.
+
+That makes it especially nice for educational repos and internal starters, where clarity is often more valuable than maximal ecosystem compatibility.
+
+## Fewer Moving Parts
+
+When your package manager, runtime, and script runner are aligned, the project surface area gets smaller.
+
+That means fewer special cases in documentation, fewer assumptions for contributors, and fewer places where the setup diverges between machines.
+
+## What We Still Watch Carefully
+
+Bun is not “always use this everywhere” advice. The tradeoff depends on:
+
+- team familiarity
+- CI environment constraints
+- package compatibility
+- deployment targets
+
+For us, the tooling experience was strong enough that Bun became a default worth teaching.
+
+## The Real Reason It Won
+
+The best tool is often the one that makes the happy path feel obvious.
+
+Bun did that for this project. It removed enough setup drag that we could spend more energy on the parts learners actually came here for: React, UI architecture, and shipping product work faster.
