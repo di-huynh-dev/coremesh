@@ -9,10 +9,10 @@
     "strong": "#0D2342"
   },
   "totals": {
-    "weeks": 10,
-    "topics": 30,
-    "questions": 140,
-    "milestones": 10
+    "weeks": 14,
+    "topics": 124,
+    "questions": 65,
+    "milestones": 14
   },
   "locales": {
     "vi": {
@@ -20,49 +20,65 @@
       "shortName": "React Roadmap",
       "track": "Frontend",
       "role": "Frontend Developer",
-      "level": "Modern UI Path",
-      "summary": "Frontend track để xây modern UI, làm chủ hooks, performance, server components và interview prep.",
-      "durationText": "10 chặng học",
-      "topicCountText": "30 trọng tâm",
-      "questionCountText": "140+ bài thực hành",
+      "level": "React Product Path",
+      "summary": "Lộ trình React đầy đủ hơn cho frontend hiện đại: bắt đầu từ JavaScript/TypeScript, mental model và component fundamentals, sau đó đi sâu vào state architecture, data fetching, performance, testing, bridge sang Next.js và kết thúc bằng interview prep.",
+      "durationText": "14 chặng học",
+      "topicCountText": "124 trọng tâm",
+      "questionCountText": "65 bài thực hành",
       "skills": [
         "JavaScript",
+        "TypeScript",
         "React",
-        "JSX",
         "Hooks",
-        "Performance",
+        "State Management",
+        "Data Fetching",
+        "Forms",
+        "Testing",
         "Next.js"
       ],
       "previewNodes": [
         "TypeScript",
         "React",
+        "State Architecture",
+        "Data Fetching",
+        "Testing",
         "Next.js"
       ],
       "milestones": [
         {
           "step": "01",
-          "title": "Mental Model",
-          "description": "Xây nền tư duy với Why React, Thinking in React, declarative UI và pure functions để hiểu component-based rendering hoạt động ra sao.",
+          "title": "JavaScript & TypeScript for React",
+          "description": "Củng cố modern JavaScript trước khi vào React: scope, closure, hoisting, this, thao tác array/object, promise, async/await, modules, destructuring, spread/rest và phần TypeScript cơ bản gồm type, interface, union, generic, typing props, API response, event handlers và utility types nền tảng.",
           "tags": [
             "JavaScript",
-            "Thinking in React",
-            "Pure Functions"
+            "TypeScript",
+            "Async"
           ]
         },
         {
           "step": "02",
-          "title": "JSX & Components",
-          "description": "Đi qua JSX, component composition, props và cách mô tả UI bằng một component tree rõ ràng, dễ tái sử dụng.",
+          "title": "React Mental Model",
+          "description": "Đặt mental model đúng ngay từ đầu với declarative UI, component tree, props down events up, pure rendering, render vs commit, state as snapshot, data flow và cách nghĩ controlled vs uncontrolled theo tinh thần Thinking in React.",
           "tags": [
-            "React",
-            "JSX",
-            "Components"
+            "Thinking in React",
+            "Data Flow",
+            "Pure Rendering"
           ]
         },
         {
           "step": "03",
-          "title": "State & Events",
-          "description": "Học event handling, useState, controlled interaction và hiểu khi nào React re-render để UI thực sự sống động.",
+          "title": "JSX, Components & Composition",
+          "description": "Đi qua JSX rules, component, props, children, conditional rendering, lists and keys, composition, reusable UI components và phân biệt presentational với container components để bắt đầu xây UI có cấu trúc.",
+          "tags": [
+            "JSX",
+            "Components",
+            "Composition"
+          ]
+        },
+        {
+          "step": "04",
+          "title": "State, Events & Rendering",
+          "description": "Làm chủ useState, event handling, derived state, batching, rendering behavior, local state vs shared state, lifting state up và các lỗi state phổ biến để hiểu vì sao component re-render và state nên được đặt ở đâu.",
           "tags": [
             "useState",
             "Events",
@@ -70,89 +86,120 @@
           ]
         },
         {
-          "step": "04",
-          "title": "Effects, Refs, Context",
-          "description": "Làm việc với useEffect, useRef, context và các tình huống cần đồng bộ React với môi trường bên ngoài.",
+          "step": "05",
+          "title": "Effects, Refs & Escape Hatches",
+          "description": "Học useEffect đúng bản chất là đồng bộ với hệ thống bên ngoài, nắm cleanup, dependency array, tránh unnecessary effects, useRef, DOM refs, previous value pattern, external subscriptions và race condition basics.",
           "tags": [
             "useEffect",
             "useRef",
-            "Context"
-          ]
-        },
-        {
-          "step": "05",
-          "title": "Performance & Optimization",
-          "description": "Tối ưu production app bằng useReducer, referential equality, memoization, store sync và những kỹ thuật giảm render không cần thiết.",
-          "tags": [
-            "useReducer",
-            "useMemo",
-            "Optimization"
+            "Escape Hatches"
           ]
         },
         {
           "step": "06",
-          "title": "Custom Hooks",
-          "description": "Tách reactive logic thành custom hooks sạch hơn, dễ tái sử dụng hơn và phù hợp với codebase lớn hơn.",
+          "title": "Forms, Validation & User Input",
+          "description": "Xây milestone riêng cho form theo hướng React 2026 với controlled inputs, form state, validation, error UX, async submit, pending state, optimistic UI, useActionState, useOptimistic và form accessibility.",
           "tags": [
-            "Custom Hooks",
-            "Abstraction",
-            "Reuse"
+            "Forms",
+            "Validation",
+            "Optimistic UI"
           ]
         },
         {
           "step": "07",
-          "title": "Practical Hooks",
-          "description": "Củng cố bằng các hook thực tế như data fetching, event listener, idle state, mouse state và nhiều pattern hay gặp trong app thật.",
+          "title": "Custom Hooks & Reusable Logic",
+          "description": "Tách logic lặp lại thành custom hooks có cấu trúc với hook composition, data hook vs UI hook, useDebounce, useLocalStorage, useDisclosure, usePrevious, useClickOutside và các lỗi hook thường gặp khi scale codebase.",
           "tags": [
-            "Practical Hooks",
-            "useFetch",
-            "Practice"
+            "Custom Hooks",
+            "Reuse",
+            "Abstraction"
           ]
         },
         {
           "step": "08",
-          "title": "Concurrent Rendering",
-          "description": "Hiểu useDeferredValue, startTransition, useTransition, actions và optimistic UI trong mô hình concurrent React hiện đại.",
+          "title": "Real-world UI Components",
+          "description": "Chốt roadmap bằng component thực chiến kiểu interview/frontend job: component API design, controlled/uncontrolled components, accessibility, keyboard navigation, focus management, responsive layout, loading/error/empty states và compound components pattern.",
           "tags": [
-            "useTransition",
-            "useOptimistic",
-            "Actions"
+            "UI Components",
+            "Accessibility",
+            "Component API"
           ]
         },
         {
           "step": "09",
-          "title": "Server Components / Next.js Bridge",
-          "description": "Bắc cầu sang Next.js với server components, server actions và cách chia ranh giới client/server trong React hiện đại.",
+          "title": "State Architecture",
+          "description": "Mở rộng từ local state sang state architecture với when local state is enough, context boundaries, useReducer, server state vs client state, URL state, form state, global state, tổng quan Zustand/Redux Toolkit và cách ra quyết định state placement.",
           "tags": [
-            "Server Components",
-            "Server Actions",
-            "Next.js"
+            "State Architecture",
+            "Context",
+            "Zustand"
           ]
         },
         {
           "step": "10",
-          "title": "Interview Prep",
-          "description": "Khóa kiến thức bằng interview prep, challenge và practice items để biến phần học thành khả năng giải thích và triển khai thật.",
+          "title": "Data Fetching, Routing & App Structure",
+          "description": "Đi vào fetching patterns, loading/error/empty states, pagination, infinite query, cache mindset, routing, layouts, API integration, folder structure và feature-based architecture để app không chỉ chạy được mà còn có tổ chức.",
+          "tags": [
+            "Data Fetching",
+            "Routing",
+            "Architecture"
+          ]
+        },
+        {
+          "step": "11",
+          "title": "Performance & Optimization",
+          "description": "Học performance theo hướng React 2026: rendering cost, memoization, React.memo, useMemo, useCallback, React Compiler mindset, list virtualization, code splitting, lazy loading, Core Web Vitals basics, profiling, useTransition và useDeferredValue, với trọng tâm là đo trước khi tối ưu.",
+          "tags": [
+            "Performance",
+            "Profiling",
+            "React Compiler"
+          ]
+        },
+        {
+          "step": "12",
+          "title": "Testing React Apps",
+          "description": "Bổ sung testing như một phần bắt buộc của roadmap với unit test, component test, React Testing Library, user-event testing, mock API, accessibility test, E2E basics with Playwright và nguyên tắc test user behavior thay vì implementation details.",
+          "tags": [
+            "Testing",
+            "RTL",
+            "Playwright"
+          ]
+        },
+        {
+          "step": "13",
+          "title": "Modern React & Next.js Bridge",
+          "description": "Đưa React sang mức advanced/bridge với Suspense, Error Boundary, Server Components, client/server boundary, Server Actions concept, streaming, hydration basics, use, useActionState, useOptimistic và cách nối sang Next.js App Router.",
+          "tags": [
+            "Suspense",
+            "Server Components",
+            "Next.js"
+          ]
+        },
+        {
+          "step": "14",
+          "title": "React Interview Prep",
+          "description": "Biến toàn bộ kiến thức thành năng lực trả lời phỏng vấn với explain rendering, explain hooks, debug effects, optimize re-renders, build component live, discuss state architecture, review accessibility, React quiz và mock interview notes.",
           "tags": [
             "Interview Prep",
-            "Challenges",
-            "Quiz"
+            "UI Coding",
+            "Architecture"
           ]
         }
       ],
       "outcomes": [
-        "Có một React roadmap rõ ràng từ mental model tới interview prep.",
-        "Đi từ UI fundamentals đến hooks, concurrent rendering và server components.",
-        "Nối phần học React với practice-heavy interview prep thay vì chỉ học lý thuyết.",
-        "Xây nền tốt hơn để ship modern frontend app production-ready."
+        "Đi từ nền JavaScript/TypeScript đủ dùng cho React thay vì nhảy thẳng vào hooks khi nền còn hổng.",
+        "Hiểu React theo đúng mental model rồi mở rộng dần sang state architecture, data fetching, performance và testing.",
+        "Xây được UI thực tế với component composition, forms, custom hooks, global state decisions và app structure rõ ràng hơn.",
+        "Sẵn sàng hơn cho bài tập interview frontend nhờ nhóm real-world UI components, architecture prompts, quiz và mock interview practice.",
+        "Có cầu nối rõ ràng từ React core sang Modern React và Next.js App Router thay vì học rời rạc."
       ],
       "support": {
         "title": "Phù hợp cho ai?",
-        "description": "Phù hợp với người đã biết JavaScript cơ bản và muốn học React hiện đại theo một progression rõ ràng, có thứ tự và dễ bám theo.",
+        "description": "Phù hợp với người muốn học React có thứ tự rõ ràng, thực dụng, bám sát công việc frontend thực tế từ core fundamentals đến state architecture, testing, Next.js bridge và interview preparation.",
         "items": [
-          "Người muốn có roadmap React mạch lạc thay vì nhảy giữa nhiều tutorial rời rạc",
-          "Frontend developer muốn cập nhật hooks hiện đại, server components và performance thinking",
-          "Người đang chuẩn bị question bank và interview prep cho vị trí frontend"
+          "Người đã biết JavaScript cơ bản nhưng còn hổng nền khi bắt đầu học React",
+          "Frontend developer muốn hệ thống lại mental model, state, effects, forms, data fetching và performance theo React hiện đại",
+          "Người đang luyện interview hoặc UI coding cần một roadmap đi đến cả component practice, testing và architecture discussion"
         ]
       }
     },
@@ -161,49 +208,65 @@
       "shortName": "React Roadmap",
       "track": "Frontend",
       "role": "Frontend Developer",
-      "level": "Modern UI Path",
-      "summary": "Frontend track for building modern UI, mastering hooks, performance, server components, and interview prep.",
-      "durationText": "10 learning stages",
-      "topicCountText": "30 focus areas",
-      "questionCountText": "140+ practice items",
+      "level": "React Product Path",
+      "summary": "A fuller React roadmap for modern frontend work: start with enough JavaScript and TypeScript, build the right mental model, then move through components, state architecture, data fetching, performance, testing, the Next.js bridge, and interview preparation.",
+      "durationText": "14 learning stages",
+      "topicCountText": "124 focus areas",
+      "questionCountText": "65 practice items",
       "skills": [
         "JavaScript",
+        "TypeScript",
         "React",
-        "JSX",
         "Hooks",
-        "Performance",
+        "State Management",
+        "Data Fetching",
+        "Forms",
+        "Testing",
         "Next.js"
       ],
       "previewNodes": [
         "TypeScript",
         "React",
+        "State Architecture",
+        "Data Fetching",
+        "Testing",
         "Next.js"
       ],
       "milestones": [
         {
           "step": "01",
-          "title": "Mental Model",
-          "description": "Build the foundation with Why React, Thinking in React, declarative UI, and pure functions so the component mental model feels natural.",
+          "title": "JavaScript & TypeScript for React",
+          "description": "Cover the JavaScript foundation React learners actually need: scope, closure, hoisting, this, array and object manipulation, promises, async/await, modules, destructuring, spread/rest, plus TypeScript basics like type, interface, union, generic, typing props, API responses, event handlers, and core utility types.",
           "tags": [
             "JavaScript",
-            "Thinking in React",
-            "Pure Functions"
+            "TypeScript",
+            "Async"
           ]
         },
         {
           "step": "02",
-          "title": "JSX & Components",
-          "description": "Work through JSX, component composition, props, and the structure needed to describe UI with reusable component trees.",
+          "title": "React Mental Model",
+          "description": "Start React the right way with declarative UI, component trees, props down events up, pure rendering, render vs commit, state as snapshot, data flow, and controlled vs uncontrolled thinking inspired by Thinking in React.",
           "tags": [
-            "React",
-            "JSX",
-            "Components"
+            "Thinking in React",
+            "Data Flow",
+            "Pure Rendering"
           ]
         },
         {
           "step": "03",
-          "title": "State & Events",
-          "description": "Learn event handling, useState, interaction patterns, and how React rendering works once your UI becomes dynamic.",
+          "title": "JSX, Components & Composition",
+          "description": "Work through JSX rules, components, props, children, conditional rendering, lists and keys, composition, reusable UI components, and the distinction between presentational and container components.",
+          "tags": [
+            "JSX",
+            "Components",
+            "Composition"
+          ]
+        },
+        {
+          "step": "04",
+          "title": "State, Events & Rendering",
+          "description": "Learn useState, event handling, derived state, state update batching, rendering behavior, local vs shared state, lifting state up, and the common mistakes that cause confusing re-renders and messy state placement.",
           "tags": [
             "useState",
             "Events",
@@ -211,89 +274,120 @@
           ]
         },
         {
-          "step": "04",
-          "title": "Effects, Refs, Context",
-          "description": "Use effects, refs, and context for the situations where React has to coordinate with external state, browser APIs, and shared data.",
+          "step": "05",
+          "title": "Effects, Refs & Escape Hatches",
+          "description": "Treat effects as synchronization with external systems, then build strong intuition for cleanup, dependency arrays, avoiding unnecessary effects, refs, DOM access, previous-value patterns, subscriptions, and race condition basics.",
           "tags": [
             "useEffect",
             "useRef",
-            "Context"
-          ]
-        },
-        {
-          "step": "05",
-          "title": "Performance & Optimization",
-          "description": "Optimize production apps with reducers, referential equality, memoization, store syncing, and techniques that prevent unnecessary rendering.",
-          "tags": [
-            "useReducer",
-            "useMemo",
-            "Optimization"
+            "Escape Hatches"
           ]
         },
         {
           "step": "06",
-          "title": "Custom Hooks",
-          "description": "Extract reactive logic into custom hooks that are easier to reuse, reason about, and scale across a larger codebase.",
+          "title": "Forms, Validation & User Input",
+          "description": "Give forms their own modern milestone with controlled inputs, form state, validation, async submit, pending state, optimistic UI, useActionState, useOptimistic, better error UX, and accessible form patterns.",
           "tags": [
-            "Custom Hooks",
-            "Abstraction",
-            "Reuse"
+            "Forms",
+            "Validation",
+            "Optimistic UI"
           ]
         },
         {
           "step": "07",
-          "title": "Practical Hooks",
-          "description": "Reinforce the material with practical hooks for fetching, events, idle state, mouse state, and patterns that show up in real apps.",
+          "title": "Custom Hooks & Reusable Logic",
+          "description": "Extract repeated logic into custom hooks through hook composition, data hooks vs UI hooks, useDebounce, useLocalStorage, useDisclosure, usePrevious, useClickOutside, and the mistakes teams commonly make when abstracting too early or too loosely.",
           "tags": [
-            "Practical Hooks",
-            "useFetch",
-            "Practice"
+            "Custom Hooks",
+            "Reuse",
+            "Abstraction"
           ]
         },
         {
           "step": "08",
-          "title": "Concurrent Rendering",
-          "description": "Understand useDeferredValue, startTransition, useTransition, actions, and optimistic UI in the modern concurrent React model.",
+          "title": "Real-world UI Components",
+          "description": "Finish with the most interview-relevant and job-relevant layer: component API design, controlled vs uncontrolled components, accessibility, keyboard navigation, focus management, responsive layout, state variants, and compound components patterns.",
           "tags": [
-            "useTransition",
-            "useOptimistic",
-            "Actions"
+            "UI Components",
+            "Accessibility",
+            "Component API"
           ]
         },
         {
           "step": "09",
-          "title": "Server Components / Next.js Bridge",
-          "description": "Bridge into Next.js through server components, server actions, and better client/server boundaries for modern React apps.",
+          "title": "State Architecture",
+          "description": "Expand beyond local state into state architecture: when local state is enough, context boundaries, reducers, server vs client state, URL state, form state, global state, a practical overview of Zustand and Redux Toolkit, and better state placement decisions.",
           "tags": [
-            "Server Components",
-            "Server Actions",
-            "Next.js"
+            "State Architecture",
+            "Context",
+            "Zustand"
           ]
         },
         {
           "step": "10",
-          "title": "Interview Prep",
-          "description": "Lock in the material with interview prep, challenges, and practice items so knowledge turns into explanation and implementation skill.",
+          "title": "Data Fetching, Routing & App Structure",
+          "description": "Cover fetching patterns, loading/error/empty states, pagination, infinite query, cache mindset, routing, layouts, API integration, folder structure, and feature-based architecture so the app stays maintainable as it grows.",
+          "tags": [
+            "Data Fetching",
+            "Routing",
+            "Architecture"
+          ]
+        },
+        {
+          "step": "11",
+          "title": "Performance & Optimization",
+          "description": "Teach performance with a 2026 mindset: rendering cost, memoization, React.memo, useMemo, useCallback, React Compiler mindset, virtualization, code splitting, lazy loading, Core Web Vitals basics, profiling, useTransition, and useDeferredValue, with strong emphasis on measuring before optimizing.",
+          "tags": [
+            "Performance",
+            "Profiling",
+            "React Compiler"
+          ]
+        },
+        {
+          "step": "12",
+          "title": "Testing React Apps",
+          "description": "Make testing a core milestone with unit tests, component tests, React Testing Library, user-event testing, mocked APIs, accessibility tests, Playwright basics, and the principle of testing user behavior instead of implementation details.",
+          "tags": [
+            "Testing",
+            "RTL",
+            "Playwright"
+          ]
+        },
+        {
+          "step": "13",
+          "title": "Modern React & Next.js Bridge",
+          "description": "Treat modern React as an advanced bridge section with Suspense, Error Boundaries, Server Components, client/server boundaries, Server Actions concepts, streaming, hydration basics, use, useActionState, useOptimistic, and the Next.js App Router mental model.",
+          "tags": [
+            "Suspense",
+            "Server Components",
+            "Next.js"
+          ]
+        },
+        {
+          "step": "14",
+          "title": "React Interview Prep",
+          "description": "Turn the roadmap into interview-ready explanation and coding skill through render explanations, hook explanations, effect debugging, re-render optimization, live component building, state architecture discussion, accessibility review, quizzes, and mock interview notes.",
           "tags": [
             "Interview Prep",
-            "Challenges",
-            "Quiz"
+            "UI Coding",
+            "Architecture"
           ]
         }
       ],
       "outcomes": [
-        "Follow a React roadmap from mental model through interview prep.",
-        "Move from UI fundamentals into hooks, concurrent rendering, and server components.",
-        "Connect concept learning to practice-heavy interview preparation.",
-        "Build a stronger path toward shipping modern, production-ready frontend apps."
+        "Build from enough JavaScript and TypeScript for React instead of jumping into hooks with shaky fundamentals.",
+        "Understand React through the right mental model, then extend that into state architecture, data fetching, performance, and testing.",
+        "Ship more practical UI with composition, forms, custom hooks, global state decisions, and clearer app structure.",
+        "Prepare more directly for frontend interviews through real-world UI components, architecture prompts, quizzes, and mock interview practice.",
+        "Bridge more cleanly from React core concepts into modern React patterns and the Next.js App Router."
       ],
       "support": {
         "title": "Who is this for?",
-        "description": "A strong fit for developers who already know basic JavaScript and want a modern React progression with a clear, structured learning order.",
+        "description": "A strong fit for learners who want a practical React progression that mirrors real frontend work from core fundamentals through architecture, testing, the Next.js bridge, and interview prep.",
         "items": [
-          "Learners who want a coherent React roadmap instead of disconnected tutorials",
-          "Frontend developers catching up on modern hooks, server components, and performance thinking",
-          "Developers preparing for question-bank style interview prep in frontend roles"
+          "Learners who know basic JavaScript but still have gaps before React starts feeling solid",
+          "Frontend developers who want to reset their mental model around state, effects, forms, data fetching, and performance in modern React",
+          "People preparing for frontend interviews or UI coding rounds who want one path covering components, testing, and architecture discussion"
         ]
       }
     },
@@ -302,49 +396,65 @@
       "shortName": "React Roadmap",
       "track": "フロントエンド",
       "role": "フロントエンド開発者",
-      "level": "Modern UI Path",
-      "summary": "modern UI を作り、hooks、performance、server components、interview prep を身につけるための frontend track です。",
-      "durationText": "10 ステップ",
-      "topicCountText": "30 重点項目",
-      "questionCountText": "140+ 演習項目",
+      "level": "React Product Path",
+      "summary": "JavaScript と TypeScript の基礎から始め、mental model、components、state architecture、data fetching、performance、testing、Next.js bridge、interview prep まで広げる React 学習ルートです。",
+      "durationText": "14 ステージ",
+      "topicCountText": "124 重点項目",
+      "questionCountText": "65 演習項目",
       "skills": [
         "JavaScript",
+        "TypeScript",
         "React",
-        "JSX",
         "Hooks",
-        "Performance",
+        "State Management",
+        "Data Fetching",
+        "Forms",
+        "Testing",
         "Next.js"
       ],
       "previewNodes": [
         "TypeScript",
         "React",
+        "State Architecture",
+        "Data Fetching",
+        "Testing",
         "Next.js"
       ],
       "milestones": [
         {
           "step": "01",
-          "title": "Mental Model",
-          "description": "Why React、Thinking in React、declarative UI、pure functions から始めて、component ベースの考え方を固めます。",
+          "title": "JavaScript & TypeScript for React",
+          "description": "React に入る前に必要な JavaScript / TypeScript を固めます。scope、closure、hoisting、this、array / object 操作、Promise、async/await、modules、destructuring、spread/rest、そして type、interface、union、generic、props や API response の typing まで扱います。",
           "tags": [
             "JavaScript",
-            "Thinking in React",
-            "Pure Functions"
+            "TypeScript",
+            "Async"
           ]
         },
         {
           "step": "02",
-          "title": "JSX & Components",
-          "description": "JSX、component composition、props を通して、再利用しやすい UI 構造を組み立てられるようにします。",
+          "title": "React Mental Model",
+          "description": "Thinking in React の考え方に沿って、declarative UI、component tree、props down events up、pure rendering、render vs commit、state as snapshot、data flow を理解します。",
           "tags": [
-            "React",
-            "JSX",
-            "Components"
+            "Thinking in React",
+            "Data Flow",
+            "Pure Rendering"
           ]
         },
         {
           "step": "03",
-          "title": "State & Events",
-          "description": "event handling、useState、インタラクション設計、そして React の render の流れを理解します。",
+          "title": "JSX, Components & Composition",
+          "description": "JSX rules、components、props、children、conditional rendering、lists and keys、composition、reusable UI components、presentational と container の違いを学びます。",
+          "tags": [
+            "JSX",
+            "Components",
+            "Composition"
+          ]
+        },
+        {
+          "step": "04",
+          "title": "State, Events & Rendering",
+          "description": "useState、event handling、derived state、batching、rendering behavior、local state と shared state、lifting state up、よくある state mistakes を整理します。",
           "tags": [
             "useState",
             "Events",
@@ -352,89 +462,120 @@
           ]
         },
         {
-          "step": "04",
-          "title": "Effects, Refs, Context",
-          "description": "effects、refs、context を使って、外部状態や browser APIs と React をつなぐ場面に対応します。",
+          "step": "05",
+          "title": "Effects, Refs & Escape Hatches",
+          "description": "useEffect を外部システムとの同期として捉え、cleanup、dependency array、不要な effect の回避、useRef、DOM refs、previous value pattern、subscriptions、race condition basics を学びます。",
           "tags": [
             "useEffect",
             "useRef",
-            "Context"
-          ]
-        },
-        {
-          "step": "05",
-          "title": "Performance & Optimization",
-          "description": "reducers、referential equality、memoization、store sync などを通して production app の最適化を学びます。",
-          "tags": [
-            "useReducer",
-            "useMemo",
-            "Optimization"
+            "Escape Hatches"
           ]
         },
         {
           "step": "06",
-          "title": "Custom Hooks",
-          "description": "reactive logic を custom hooks として切り出し、再利用性と見通しを高めます。",
+          "title": "Forms, Validation & User Input",
+          "description": "controlled inputs、form state、validation、async submit、pending state、optimistic UI、useActionState、useOptimistic、form accessibility を React 2026 向けにまとめて学びます。",
           "tags": [
-            "Custom Hooks",
-            "Abstraction",
-            "Reuse"
+            "Forms",
+            "Validation",
+            "Optimistic UI"
           ]
         },
         {
           "step": "07",
-          "title": "Practical Hooks",
-          "description": "fetching、events、idle state、mouse state などの practical hooks を通して理解を深めます。",
+          "title": "Custom Hooks & Reusable Logic",
+          "description": "hook composition、data hook と UI hook の違い、useDebounce、useLocalStorage、useDisclosure、usePrevious、useClickOutside といった reusable logic の作り方を学びます。",
           "tags": [
-            "Practical Hooks",
-            "useFetch",
-            "Practice"
+            "Custom Hooks",
+            "Reuse",
+            "Abstraction"
           ]
         },
         {
           "step": "08",
-          "title": "Concurrent Rendering",
-          "description": "useDeferredValue、startTransition、useTransition、actions、optimistic UI を通して concurrent React を理解します。",
+          "title": "Real-world UI Components",
+          "description": "最後は component API design、controlled / uncontrolled components、accessibility、keyboard navigation、focus management、responsive layout、compound components pattern など、実務と interview に近い UI components に集中します。",
           "tags": [
-            "useTransition",
-            "useOptimistic",
-            "Actions"
+            "UI Components",
+            "Accessibility",
+            "Component API"
           ]
         },
         {
           "step": "09",
-          "title": "Server Components / Next.js Bridge",
-          "description": "server components、server actions、client/server boundary を通して Next.js とのつながりを整理します。",
+          "title": "State Architecture",
+          "description": "local state で十分な場面、context boundaries、useReducer、server state と client state、URL state、form state、global state、Zustand / Redux Toolkit の概要、state placement decisions を整理します。",
           "tags": [
-            "Server Components",
-            "Server Actions",
-            "Next.js"
+            "State Architecture",
+            "Context",
+            "Zustand"
           ]
         },
         {
           "step": "10",
-          "title": "Interview Prep",
-          "description": "interview prep、challenges、practice items を通して、知識を説明力と実装力に変えていきます。",
+          "title": "Data Fetching, Routing & App Structure",
+          "description": "fetching patterns、loading / error / empty states、pagination、infinite query、cache mindset、routing、layouts、API integration、folder structure、feature-based architecture を学びます。",
+          "tags": [
+            "Data Fetching",
+            "Routing",
+            "Architecture"
+          ]
+        },
+        {
+          "step": "11",
+          "title": "Performance & Optimization",
+          "description": "rendering cost、memoization、React.memo、useMemo、useCallback、React Compiler mindset、list virtualization、code splitting、lazy loading、Core Web Vitals basics、profiling、useTransition、useDeferredValue を、計測してから最適化する姿勢で学びます。",
+          "tags": [
+            "Performance",
+            "Profiling",
+            "React Compiler"
+          ]
+        },
+        {
+          "step": "12",
+          "title": "Testing React Apps",
+          "description": "unit test、component test、React Testing Library、user-event testing、mock API、accessibility test、Playwright の基本、そして implementation details ではなく user behavior を test する考え方を学びます。",
+          "tags": [
+            "Testing",
+            "RTL",
+            "Playwright"
+          ]
+        },
+        {
+          "step": "13",
+          "title": "Modern React & Next.js Bridge",
+          "description": "Suspense、Error Boundary、Server Components、client/server boundary、Server Actions concept、streaming、hydration basics、use、useActionState、useOptimistic、Next.js App Router bridge を advanced section として扱います。",
+          "tags": [
+            "Suspense",
+            "Server Components",
+            "Next.js"
+          ]
+        },
+        {
+          "step": "14",
+          "title": "React Interview Prep",
+          "description": "rendering explanation、hooks explanation、effect debugging、re-render optimization、live component building、state architecture discussion、accessibility review、quiz、mock interview notes を通して interview 対応力へ変換します。",
           "tags": [
             "Interview Prep",
-            "Challenges",
-            "Quiz"
+            "UI Coding",
+            "Architecture"
           ]
         }
       ],
       "outcomes": [
-        "mental model から interview prep まで一貫して進める React roadmap です。",
-        "UI fundamentals から hooks、concurrent rendering、server components まで段階的に学べます。",
-        "概念理解を practice-heavy な interview prep へつなげられます。",
-        "modern で production-ready な frontend app を作る土台を強化できます。"
+        "React の前提になる JavaScript / TypeScript を十分に固めてから進めます。",
+        "declarative UI、state snapshot、data flow を軸にしつつ、state architecture、data fetching、performance、testing まで広げられます。",
+        "components、forms、custom hooks、global state decisions、app structure を通して実務に近い UI を作れるようになります。",
+        "Tabs、Modal、Dropdown、Data Table、File Explorer などの UI practice に加え、architecture prompts や mock interview までつなげられます。",
+        "React core から modern React と Next.js App Router への橋渡しも見通しよく学べます。"
       ],
       "support": {
         "title": "こんな人におすすめ",
-        "description": "基本的な JavaScript は理解していて、modern React を段階的かつ体系的に学びたい人に向いています。",
+        "description": "抽象的すぎる roadmap ではなく、実際の frontend 開発に近い順序で core から architecture、testing、Next.js bridge、interview prep まで学びたい人に向いています。",
         "items": [
-          "断片的な tutorial ではなく一貫した React roadmap が欲しい学習者",
-          "modern hooks、server components、performance thinking を整理したい frontend developer",
-          "question-bank 型の interview prep を進めたい人"
+          "基本的な JavaScript は分かるが React に入る前の土台に不安がある人",
+          "modern React の state、effects、forms、data fetching、performance を整理し直したい frontend developer",
+          "UI coding や frontend interview に向けて component practice、testing、architecture discussion まで強化したい人"
         ]
       }
     }

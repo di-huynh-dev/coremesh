@@ -9,10 +9,10 @@
     "strong": "#3A1519"
   },
   "totals": {
-    "weeks": 6,
-    "topics": 34,
-    "questions": 12,
-    "milestones": 6
+    "weeks": 11,
+    "topics": 66,
+    "questions": 20,
+    "milestones": 11
   },
   "locales": {
     "vi": {
@@ -21,62 +21,92 @@
       "track": "Backend",
       "role": "Backend Developer",
       "level": "Production Backend Path",
-      "summary": "Backend track để xây API, authentication, database workflows, services, queues và production-ready architecture.",
-      "durationText": "6 phase học",
-      "topicCountText": "34 trọng tâm",
-      "questionCountText": "12 project gợi ý",
+      "summary": "Backend track để xây API, authentication, database workflows, services, queues và production-ready architecture theo progression từ core NestJS tới advanced backend patterns.",
+      "durationText": "11 chặng học",
+      "topicCountText": "66 trọng tâm",
+      "questionCountText": "20 practice flows",
       "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "Docker", "Microservices"],
-      "previewNodes": ["TypeScript", "NestJS", "Microservices"],
+      "previewNodes": ["TypeScript", "NestJS", "Docker"],
       "milestones": [
         {
           "step": "01",
           "title": "Node.js + TypeScript Foundation",
-          "description": "Xây nền với runtime Node.js, async flow, module system, TypeScript types, interfaces, classes và tư duy backend bằng JavaScript hiện đại.",
+          "description": "Xây nền với runtime Node.js, async flow, module system, TypeScript types, interfaces, classes và tư duy backend bằng JavaScript hiện đại để chuẩn bị cho NestJS.",
           "tags": ["Node.js", "TypeScript", "Async"]
         },
         {
           "step": "02",
-          "title": "NestJS Core",
-          "description": "Đi qua modules, controllers, providers, dependency injection, DTOs và validation để hiểu trục kiến trúc cốt lõi của NestJS.",
-          "tags": ["Modules", "Controllers", "Providers"]
+          "title": "NestJS Core Architecture",
+          "description": "Học thật chắc Modules, Controllers, Providers, Services, Dependency Injection, DTO, feature/shared/config module và project structure. Practice: Todo API, Users module, Posts module và refactor controller logic vào service.",
+          "tags": ["Modules", "Controllers", "Dependency Injection"]
         },
         {
           "step": "03",
-          "title": "Database & Prisma",
-          "description": "Làm việc với PostgreSQL, Prisma schema, CRUD services, relations và data flow giữa API layer với database layer.",
-          "tags": ["PostgreSQL", "Prisma", "CRUD"]
+          "title": "Validation, Pipes & Error Handling",
+          "description": "Bao phủ DTO validation, class-validator, class-transformer, ValidationPipe, ParseIntPipe, custom pipe, exception filters, error format và global error handling. Practice: validate create user DTO, custom validation pipe và standardize API errors.",
+          "tags": ["ValidationPipe", "class-validator", "Exception Filters"]
         },
         {
           "step": "04",
-          "title": "Authentication & Authorization",
-          "description": "Thiết kế JWT auth, refresh token flow, guards, roles và access control cho backend có user session rõ ràng hơn.",
-          "tags": ["JWT", "Guards", "Roles"]
+          "title": "Request Lifecycle & Cross-cutting Concerns",
+          "description": "Đi qua middleware, guards, interceptors, pipes, filters, ExecutionContext, custom decorators và setup ở global/controller/route level. Practice: logging middleware, response transform interceptor, CurrentUser decorator, role guard và request timing interceptor.",
+          "tags": ["Guards", "Interceptors", "ExecutionContext"]
         },
         {
           "step": "05",
-          "title": "Production Backend",
-          "description": "Chuẩn hóa config, logging, error handling, testing, Swagger và Docker để backend dễ debug, dễ tài liệu hóa và sẵn sàng production hơn.",
-          "tags": ["Config", "Docker", "Swagger"]
+          "title": "Database with Prisma & PostgreSQL",
+          "description": "Làm việc với database modeling, Prisma schema, migration, CRUD, relations, pagination, filtering, sorting, transactions, seed data và repository/service pattern. Practice: Blog CMS API, Course API, user/profile relation, pagination API và transaction order flow.",
+          "tags": ["PostgreSQL", "Prisma", "Transactions"]
         },
         {
           "step": "06",
-          "title": "Advanced Architecture",
-          "description": "Mở rộng với queues, caching, WebSocket, microservices và deployment để backend chịu tải tốt hơn, container hóa tốt hơn và linh hoạt hơn khi scale.",
-          "tags": ["Queues", "Caching", "Deployment"]
+          "title": "Authentication",
+          "description": "Học register/login, password hashing, JWT access token, refresh token, cookie vs Authorization header, AuthGuard, current user, logout, token rotation basics và session strategy overview. Practice: Auth API, refresh token flow, protected profile route và React login integration.",
+          "tags": ["JWT", "Refresh Token", "AuthGuard"]
+        },
+        {
+          "step": "07",
+          "title": "Authorization & RBAC",
+          "description": "Thiết kế roles, permissions, RBAC, policy-based access, public route decorator, admin-only routes, ownership check và resource-level permission. Practice: Admin dashboard API, owner-can-edit-own-post, moderator role và permission matrix.",
+          "tags": ["RBAC", "Permissions", "Roles"]
+        },
+        {
+          "step": "08",
+          "title": "API Documentation & Developer Experience",
+          "description": "Chuẩn hóa Swagger/OpenAPI, API versioning, response examples, DTO documentation, error docs, Postman/Insomnia collection và API contract cho frontend. Practice: generate Swagger docs, write API contract và document auth endpoints.",
+          "tags": ["Swagger", "OpenAPI", "API Contract"]
+        },
+        {
+          "step": "09",
+          "title": "Testing NestJS",
+          "description": "Bao phủ unit test services, controller test, mock providers, e2e test, test auth guard, test validation, test database flow và test với fake repository. Practice: test AuthService, test UserController, e2e login flow và e2e CRUD flow.",
+          "tags": ["Unit Test", "E2E", "Mock Providers"]
+        },
+        {
+          "step": "10",
+          "title": "Production Backend",
+          "description": "Đi vào config management, logging, CORS, Helmet, rate limiting, file upload, health checks, Docker basics, deploy API, deploy database, environment strategy và monitoring basics. Practice: Dockerize NestJS, deploy NestJS + PostgreSQL, add health check, rate limiting và file upload validation.",
+          "tags": ["Docker", "Helmet", "Rate Limiting"]
+        },
+        {
+          "step": "11",
+          "title": "Advanced NestJS Architecture",
+          "description": "Mở rộng với caching, Redis, queues, background jobs, events, WebSocket, scheduler, CQRS overview, microservices overview, RabbitMQ/Kafka/gRPC overview và monorepo architecture. Practice: notification queue, realtime chat, cache product list, scheduled cleanup job và mini microservice.",
+          "tags": ["Redis", "Queues", "Microservices"]
         }
       ],
       "outcomes": [
-        "Có một NestJS roadmap rõ ràng từ foundation tới production architecture.",
-        "Đi từ API basics sang database workflows, auth, testing và microservices.",
-        "Bám sát các kỹ năng backend thường xuất hiện trong real-world project và interview.",
-        "Tạo nền tảng tốt hơn để build production-ready backend bằng TypeScript."
+        "Có một NestJS roadmap rõ ràng từ foundation tới production và advanced architecture.",
+        "Đi từ core NestJS sang validation, request lifecycle, Prisma/PostgreSQL, auth, RBAC và testing.",
+        "Bám sát các concern production như Docker, Helmet, rate limiting, health checks và deployment.",
+        "Có đủ practice flows để nối phần học NestJS với project thực tế và interview prep."
       ],
       "support": {
         "title": "Phù hợp cho ai?",
-        "description": "Phù hợp với người muốn học backend TypeScript bài bản, từ CRUD API cơ bản tới auth, database, queues và system-level backend concerns.",
+        "description": "Phù hợp với người muốn học backend TypeScript bài bản, từ NestJS core architecture tới auth, database workflows, Docker, testing và advanced backend patterns.",
         "items": [
           "Node.js developer muốn chuyển sang backend có structure tốt hơn với NestJS",
-          "Frontend hoặc fullstack developer muốn mở rộng sang API, auth và database workflows",
+          "Frontend hoặc fullstack developer muốn mở rộng sang API, auth, Prisma và production backend",
           "Người cần backend roadmap rõ để vừa build project vừa chuẩn bị interview"
         ]
       }
@@ -87,12 +117,12 @@
       "track": "Backend",
       "role": "Backend Developer",
       "level": "Production Backend Path",
-      "summary": "Backend track for building APIs, authentication, database workflows, services, queues, and production-ready architecture.",
-      "durationText": "6 learning phases",
-      "topicCountText": "34 focus areas",
-      "questionCountText": "12 project ideas",
+      "summary": "Backend track for building APIs, authentication, database workflows, services, queues, and production-ready architecture through a progression from core NestJS to advanced backend patterns.",
+      "durationText": "11 learning stages",
+      "topicCountText": "66 focus areas",
+      "questionCountText": "20 practice flows",
       "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "Docker", "Microservices"],
-      "previewNodes": ["TypeScript", "NestJS", "Microservices"],
+      "previewNodes": ["TypeScript", "NestJS", "Docker"],
       "milestones": [
         {
           "step": "01",
@@ -102,47 +132,77 @@
         },
         {
           "step": "02",
-          "title": "NestJS Core",
-          "description": "Work through modules, controllers, providers, dependency injection, DTOs, and validation so the core NestJS architecture becomes second nature.",
-          "tags": ["Modules", "Controllers", "Providers"]
+          "title": "NestJS Core Architecture",
+          "description": "Master Modules, Controllers, Providers, Services, Dependency Injection, DTOs, feature/shared/config modules, and project structure. Practice: Todo API, Users module, Posts module, and refactoring controller logic into services.",
+          "tags": ["Modules", "Controllers", "Dependency Injection"]
         },
         {
           "step": "03",
-          "title": "Database & Prisma",
-          "description": "Use PostgreSQL, Prisma schema design, CRUD services, relations, and the data flow between your API layer and database layer.",
-          "tags": ["PostgreSQL", "Prisma", "CRUD"]
+          "title": "Validation, Pipes & Error Handling",
+          "description": "Cover DTO validation, class-validator, class-transformer, ValidationPipe, ParseIntPipe, custom pipes, exception filters, error formatting, and global error handling. Practice: validate a create-user DTO, build a custom validation pipe, and standardize API errors.",
+          "tags": ["ValidationPipe", "class-validator", "Exception Filters"]
         },
         {
           "step": "04",
-          "title": "Authentication & Authorization",
-          "description": "Design JWT auth, refresh token flows, guards, roles, and access control for backends with clearer user session and permission boundaries.",
-          "tags": ["JWT", "Guards", "Roles"]
+          "title": "Request Lifecycle & Cross-cutting Concerns",
+          "description": "Work through middleware, guards, interceptors, pipes, filters, ExecutionContext, custom decorators, and global/controller/route-level setup. Practice: logging middleware, response-transform interceptor, CurrentUser decorator, role guard, and request-timing interceptor.",
+          "tags": ["Guards", "Interceptors", "ExecutionContext"]
         },
         {
           "step": "05",
-          "title": "Production Backend",
-          "description": "Standardize config, logging, error handling, testing, Swagger, and Docker so the backend is easier to debug, document, and run in production.",
-          "tags": ["Config", "Docker", "Swagger"]
+          "title": "Database with Prisma & PostgreSQL",
+          "description": "Use database modeling, Prisma schema design, migrations, CRUD, relations, pagination, filtering, sorting, transactions, seed data, and the repository/service pattern. Practice: Blog CMS API, Course API, user/profile relation, pagination API, and transaction order flow.",
+          "tags": ["PostgreSQL", "Prisma", "Transactions"]
         },
         {
           "step": "06",
-          "title": "Advanced Architecture",
-          "description": "Expand into queues, caching, WebSocket, microservices, and deployment so the backend becomes more scalable, container-friendly, and resilient under real production load.",
-          "tags": ["Queues", "Caching", "Deployment"]
+          "title": "Authentication",
+          "description": "Learn register/login, password hashing, JWT access tokens, refresh tokens, cookies vs Authorization headers, AuthGuard, current user, logout, token rotation basics, and session strategy overview. Practice: Auth API, refresh token flow, protected profile route, and React login integration.",
+          "tags": ["JWT", "Refresh Token", "AuthGuard"]
+        },
+        {
+          "step": "07",
+          "title": "Authorization & RBAC",
+          "description": "Design roles, permissions, RBAC, policy-based access, a public-route decorator, admin-only routes, ownership checks, and resource-level permissions. Practice: Admin dashboard API, owner-can-edit-own-post flow, moderator role, and a permission matrix.",
+          "tags": ["RBAC", "Permissions", "Roles"]
+        },
+        {
+          "step": "08",
+          "title": "API Documentation & Developer Experience",
+          "description": "Standardize Swagger/OpenAPI, API versioning, response examples, DTO documentation, error docs, Postman/Insomnia collections, and frontend-facing API contracts. Practice: generate Swagger docs, write an API contract, and document auth endpoints.",
+          "tags": ["Swagger", "OpenAPI", "API Contract"]
+        },
+        {
+          "step": "09",
+          "title": "Testing NestJS",
+          "description": "Cover unit testing services, controller testing, mock providers, e2e tests, testing auth guards, testing validation, testing database flow, and fake repositories. Practice: test AuthService, test UserController, e2e login flow, and e2e CRUD flow.",
+          "tags": ["Unit Test", "E2E", "Mock Providers"]
+        },
+        {
+          "step": "10",
+          "title": "Production Backend",
+          "description": "Move into config management, logging, CORS, Helmet, rate limiting, file upload, health checks, Docker basics, deploying the API, deploying the database, environment strategy, and monitoring basics. Practice: Dockerize NestJS, deploy NestJS + PostgreSQL, add health checks, rate limiting, and file-upload validation.",
+          "tags": ["Docker", "Helmet", "Rate Limiting"]
+        },
+        {
+          "step": "11",
+          "title": "Advanced NestJS Architecture",
+          "description": "Expand into caching, Redis, queues, background jobs, events, WebSocket, schedulers, a CQRS overview, a microservices overview, RabbitMQ/Kafka/gRPC overviews, and monorepo architecture. Practice: notification queue, realtime chat, cached product lists, scheduled cleanup jobs, and a mini microservice.",
+          "tags": ["Redis", "Queues", "Microservices"]
         }
       ],
       "outcomes": [
-        "Follow a NestJS roadmap from foundation through production architecture.",
-        "Move from API basics into database workflows, auth, testing, and microservices.",
-        "Stay close to the backend skills that show up in real-world projects and interviews.",
-        "Build a stronger path toward shipping production-ready TypeScript backends."
+        "Follow a NestJS roadmap from foundation through production and advanced architecture.",
+        "Move from core NestJS into validation, request lifecycle, Prisma/PostgreSQL, auth, RBAC, and testing.",
+        "Stay close to production concerns like Docker, Helmet, rate limiting, health checks, and deployment.",
+        "Use practice flows to connect NestJS learning with real projects and interview prep."
       ],
       "support": {
         "title": "Who is this for?",
-        "description": "A strong fit for learners who want a structured TypeScript backend path, from basic CRUD APIs into auth, database workflows, queues, and system-level backend concerns.",
+        "description": "A strong fit for learners who want a structured TypeScript backend path from NestJS core architecture into auth, database workflows, Docker, testing, and advanced backend patterns.",
         "items": [
           "Node.js developers moving into a more structured NestJS backend stack",
-          "Frontend or fullstack developers expanding into APIs, auth, and database workflows",
+          "Frontend or fullstack developers expanding into APIs, auth, Prisma, and production backend work",
           "Developers who want a clear backend roadmap for both projects and interview prep"
         ]
       }
@@ -153,12 +213,12 @@
       "track": "バックエンド",
       "role": "バックエンド開発者",
       "level": "Production Backend Path",
-      "summary": "API、authentication、database workflows、services、queues、production-ready architecture を身につけるための backend track です。",
-      "durationText": "6 フェーズ",
-      "topicCountText": "34 重点項目",
-      "questionCountText": "12 project ideas",
+      "summary": "core NestJS から advanced backend patterns まで進みながら、API、authentication、database workflows、queues、production-ready architecture を身につけるための backend track です。",
+      "durationText": "11 ステージ",
+      "topicCountText": "66 重点項目",
+      "questionCountText": "20 practice flows",
       "skills": ["Node.js", "TypeScript", "NestJS", "Prisma", "Docker", "Microservices"],
-      "previewNodes": ["TypeScript", "NestJS", "Microservices"],
+      "previewNodes": ["TypeScript", "NestJS", "Docker"],
       "milestones": [
         {
           "step": "01",
@@ -168,47 +228,77 @@
         },
         {
           "step": "02",
-          "title": "NestJS Core",
-          "description": "modules、controllers、providers、dependency injection、DTOs、validation を通して NestJS の中核構造を理解します。",
-          "tags": ["Modules", "Controllers", "Providers"]
+          "title": "NestJS Core Architecture",
+          "description": "Modules、Controllers、Providers、Services、Dependency Injection、DTO、feature/shared/config module、project structure を固めます。Practice: Todo API、Users module、Posts module、controller logic の service への分離。",
+          "tags": ["Modules", "Controllers", "Dependency Injection"]
         },
         {
           "step": "03",
-          "title": "Database & Prisma",
-          "description": "PostgreSQL、Prisma schema、CRUD services、relations、そして API layer と database layer のつながりを学びます。",
-          "tags": ["PostgreSQL", "Prisma", "CRUD"]
+          "title": "Validation, Pipes & Error Handling",
+          "description": "DTO validation、class-validator、class-transformer、ValidationPipe、ParseIntPipe、custom pipe、exception filters、error format、global error handling を学びます。Practice: create-user DTO validation、custom validation pipe、API errors の standardization。",
+          "tags": ["ValidationPipe", "class-validator", "Exception Filters"]
         },
         {
           "step": "04",
-          "title": "Authentication & Authorization",
-          "description": "JWT auth、refresh token flow、guards、roles、access control を通して user session と権限設計を整理します。",
-          "tags": ["JWT", "Guards", "Roles"]
+          "title": "Request Lifecycle & Cross-cutting Concerns",
+          "description": "middleware、guards、interceptors、pipes、filters、ExecutionContext、custom decorators、global/controller/route-level setup を整理します。Practice: logging middleware、response transform interceptor、CurrentUser decorator、role guard、request timing interceptor。",
+          "tags": ["Guards", "Interceptors", "ExecutionContext"]
         },
         {
           "step": "05",
-          "title": "Production Backend",
-          "description": "config、logging、error handling、testing、Swagger、Docker を整えて、production backend を運用しやすくします。",
-          "tags": ["Config", "Docker", "Swagger"]
+          "title": "Database with Prisma & PostgreSQL",
+          "description": "database modeling、Prisma schema、migration、CRUD、relations、pagination、filtering、sorting、transactions、seed data、repository/service pattern を扱います。Practice: Blog CMS API、Course API、user/profile relation、pagination API、transaction order flow。",
+          "tags": ["PostgreSQL", "Prisma", "Transactions"]
         },
         {
           "step": "06",
-          "title": "Advanced Architecture",
-          "description": "queues、caching、WebSocket、microservices、deployment を通して、より scalable で container-friendly な backend に広げます。",
-          "tags": ["Queues", "Caching", "Deployment"]
+          "title": "Authentication",
+          "description": "register/login、password hashing、JWT access token、refresh token、cookie vs Authorization header、AuthGuard、current user、logout、token rotation basics、session strategy overview を学びます。Practice: Auth API、refresh token flow、protected profile route、React login integration。",
+          "tags": ["JWT", "Refresh Token", "AuthGuard"]
+        },
+        {
+          "step": "07",
+          "title": "Authorization & RBAC",
+          "description": "roles、permissions、RBAC、policy-based access、public route decorator、admin-only routes、ownership check、resource-level permission を設計します。Practice: Admin dashboard API、owner can edit own post、moderator role、permission matrix。",
+          "tags": ["RBAC", "Permissions", "Roles"]
+        },
+        {
+          "step": "08",
+          "title": "API Documentation & Developer Experience",
+          "description": "Swagger/OpenAPI、API versioning、response examples、DTO documentation、error docs、Postman/Insomnia collection、frontend 向け API contract を整えます。Practice: Swagger docs generation、API contract、auth endpoints の documentation。",
+          "tags": ["Swagger", "OpenAPI", "API Contract"]
+        },
+        {
+          "step": "09",
+          "title": "Testing NestJS",
+          "description": "unit test services、controller test、mock providers、e2e test、auth guard test、validation test、database flow test、fake repository を通して testing fundamentals を固めます。Practice: AuthService test、UserController test、e2e login flow、e2e CRUD flow。",
+          "tags": ["Unit Test", "E2E", "Mock Providers"]
+        },
+        {
+          "step": "10",
+          "title": "Production Backend",
+          "description": "config management、logging、CORS、Helmet、rate limiting、file upload、health checks、Docker basics、API/database deploy、environment strategy、monitoring basics を押さえます。Practice: Dockerize NestJS、NestJS + PostgreSQL deploy、health check、rate limiting、file upload validation。",
+          "tags": ["Docker", "Helmet", "Rate Limiting"]
+        },
+        {
+          "step": "11",
+          "title": "Advanced NestJS Architecture",
+          "description": "caching、Redis、queues、background jobs、events、WebSocket、scheduler、CQRS overview、microservices overview、RabbitMQ/Kafka/gRPC overview、monorepo architecture に進みます。Practice: notification queue、realtime chat、cached product list、scheduled cleanup job、mini microservice。",
+          "tags": ["Redis", "Queues", "Microservices"]
         }
       ],
       "outcomes": [
-        "foundation から production architecture まで進める NestJS roadmap です。",
-        "API basics から database workflows、auth、testing、microservices まで順番に学べます。",
-        "real-world project と interview に近い backend skill に沿って進められます。",
-        "production-ready な TypeScript backend を作る土台を強化できます。"
+        "foundation から production、advanced architecture まで進める NestJS roadmap です。",
+        "core NestJS から validation、request lifecycle、Prisma/PostgreSQL、auth、RBAC、testing まで段階的に学べます。",
+        "Docker、Helmet、rate limiting、health checks、deployment といった production concerns に近い流れで進められます。",
+        "practice flows を通して NestJS の学びを real projects と interview prep につなげられます。"
       ],
       "support": {
         "title": "こんな人におすすめ",
-        "description": "basic CRUD API から auth、database workflows、queues、system-level backend concerns まで、構造的に TypeScript backend を学びたい人に向いています。",
+        "description": "NestJS core architecture から auth、database workflows、Docker、testing、advanced backend patterns まで、構造的に TypeScript backend を学びたい人に向いています。",
         "items": [
           "より structure のある NestJS backend に進みたい Node.js developer",
-          "APIs、auth、database workflows まで広げたい frontend / fullstack developer",
+          "API、auth、Prisma、production backend work まで広げたい frontend / fullstack developer",
           "project と interview prep の両方に使える backend roadmap が欲しい人"
         ]
       }

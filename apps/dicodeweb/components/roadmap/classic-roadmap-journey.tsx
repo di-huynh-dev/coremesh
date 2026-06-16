@@ -12,7 +12,7 @@ import type {
   RoadmapPageCopy,
 } from '@/lib/roadmap-content';
 
-const DESKTOP_NODE_HEIGHT = 248;
+const DESKTOP_NODE_HEIGHT = 320;
 const DESKTOP_PATH_WIDTH = 132;
 const DESKTOP_CENTER_X = DESKTOP_PATH_WIDTH / 2;
 
@@ -530,37 +530,6 @@ export function ClassicRoadmapJourney({
           <div className="relative z-10">
             {content.milestones.map((milestone, index) => {
               const isLeft = index % 2 === 0;
-              const isLast = index === content.milestones.length - 1;
-
-              if (isLast) {
-                return (
-                  <div
-                    key={`${roadmapId}-${milestone.step}`}
-                    className="flex flex-col items-center justify-center gap-5"
-                    style={{ minHeight: DESKTOP_NODE_HEIGHT }}
-                  >
-                    <div className="relative flex w-[14%] shrink-0 items-center justify-center">
-                      <div
-                        className="relative z-10 flex h-14 w-14 items-center justify-center rounded-full border-[6px] bg-white text-sm font-bold shadow-[0_12px_30px_rgba(15,68,122,0.10)]"
-                        style={{ borderColor: roadmap.theme.soft, color: roadmap.theme.accent }}
-                      >
-                        {milestone.step}
-                      </div>
-                    </div>
-
-                    <div className="w-[43%] min-w-0">
-                      <DesktopMilestoneCard
-                        milestone={milestone}
-                        index={index}
-                        roadmap={roadmap}
-                        topics={topicsByMilestone[index] ?? 0}
-                        actionLabel={copy.detail.studyAction}
-                        topicUnitLabel={copy.detail.topicUnitLabel}
-                      />
-                    </div>
-                  </div>
-                );
-              }
 
               return (
                 <div
