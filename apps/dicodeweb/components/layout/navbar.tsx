@@ -1,20 +1,22 @@
-"use client";
+'use client';
 
-import { Menu, Moon, Sun, X } from "lucide-react";
-import { useTheme } from "next-themes";
-import Image from "next/image";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useState, useSyncExternalStore } from "react";
-import { LanguageSwitcher } from "@/components/ui/language-switcher";
-import type { HomeLocale } from "@/lib/home-content";
+import { Menu, Moon, Sun, X } from 'lucide-react';
+import { useTheme } from 'next-themes';
+import Image from 'next/image';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
+import { useState, useSyncExternalStore } from 'react';
+import { LanguageSwitcher } from '@/components/ui/language-switcher';
+import type { HomeLocale } from '@/lib/home-content';
 
 type NavbarProps = {
   labels?: {
-    about: string;
-    tracks: string;
-    blog: string;
-    contact: string;
+    about?: string;
+    tracks?: string;
+    questions?: string;
+    roadmap?: string;
+    blog?: string;
+    contact?: string;
   };
   locale?: HomeLocale;
   localeLabel?: string;
@@ -26,56 +28,46 @@ function ThemeToggle() {
   const mounted = useSyncExternalStore(
     () => () => {},
     () => true,
-    () => false
+    () => false,
   );
 
   if (!mounted) {
     return (
-      <button className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card">
-        <Sun className="h-4 w-4 text-muted-foreground" />
+      <button className="border-border bg-card flex h-10 w-10 items-center justify-center rounded-full border">
+        <Sun className="text-muted-foreground h-4 w-4" />
       </button>
     );
   }
 
   return (
     <button
-      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-      className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:text-foreground"
+      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      className="border-border bg-card text-muted-foreground hover:text-foreground flex h-10 w-10 items-center justify-center rounded-full border transition-colors"
       aria-label="Toggle theme"
     >
-      {theme === "dark" ? (
-        <Sun className="h-4 w-4" />
-      ) : (
-        <Moon className="h-4 w-4" />
-      )}
+      {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
   );
 }
 
-export function Navbar({
-  labels,
-  locale,
-  localeLabel,
-  onLocaleChange,
-}: NavbarProps = {}) {
+export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarProps = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navLinks = [
-    { href: "/#features", label: labels?.about ?? "Highlights" },
-    { href: "/#questions", label: labels?.tracks ?? "Questions" },
-    { href: "/blog", label: labels?.blog ?? "Blog" },
-    { href: "/#faq", label: labels?.contact ?? "FAQ" },
+    { href: '/questions', label: labels?.questions ?? labels?.tracks ?? 'Questions' },
+    { href: '/roadmap', label: labels?.roadmap ?? 'Lộ trình' },
+    { href: '/blog', label: labels?.blog ?? 'Blog' },
   ];
 
   const handleLogoClick = () => {
-    if (pathname === "/") {
+    if (pathname === '/') {
       window.scrollTo({
         top: 0,
-        behavior: "smooth",
+        behavior: 'smooth',
       });
     } else {
-      router.push("/");
+      router.push('/');
     }
     setMobileMenuOpen(false);
   };
@@ -89,26 +81,23 @@ export function Navbar({
       <nav
         className="flex items-center justify-between rounded-full px-4 py-3 md:px-6"
         style={{
-          background: "var(--nav-bg)",
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
-          border: "1px solid var(--nav-border)",
-          boxShadow: "var(--nav-shadow)",
+          background: 'var(--nav-bg)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          border: '1px solid var(--nav-border)',
+          boxShadow: 'var(--nav-shadow)',
         }}
       >
-        <button
-          onClick={handleLogoClick}
-          className="flex shrink-0 items-center gap-3 rounded-full"
-        >
+        <button onClick={handleLogoClick} className="flex shrink-0 items-center gap-3 rounded-full">
           <Image
             src="/d-logo.webp"
             alt="Dicodeweb"
             width={64}
             height={64}
-            className="h-10 w-10 rounded-full border border-border bg-card p-1 md:h-12 md:w-12"
+            className="border-border bg-card h-10 w-10 rounded-full border p-1 md:h-12 md:w-12"
           />
           <span
-            className="hidden items-baseline text-[1.9rem] font-extrabold leading-none tracking-[-0.06em] md:inline-flex"
+            className="hidden items-baseline text-[1.9rem] leading-none font-extrabold tracking-[-0.06em] md:inline-flex"
             aria-label="DiCodeWeb"
           >
             <span className="text-[#0F447A]">DiCode</span>
@@ -121,7 +110,11 @@ export function Navbar({
             <Link
               key={link.href}
               href={link.href}
-              className="text-sm font-medium text-muted-foreground transition-colors duration-200 hover:text-[#071B3A] dark:hover:text-[#AAF85D]"
+              className={`text-sm font-medium transition-colors duration-200 ${
+                pathname === link.href
+                  ? 'font-semibold text-[#071B3A] dark:text-[#AAF85D]'
+                  : 'text-muted-foreground hover:text-[#071B3A] dark:hover:text-[#AAF85D]'
+              }`}
             >
               {link.label}
             </Link>
@@ -132,7 +125,7 @@ export function Navbar({
           {locale && localeLabel && onLocaleChange ? (
             <LanguageSwitcher
               currentLocale={locale}
-              locales={["en", "vi", "ja"]}
+              locales={['en', 'vi', 'ja']}
               onChange={onLocaleChange}
               label={localeLabel}
               className="hidden md:inline-flex"
@@ -143,14 +136,10 @@ export function Navbar({
 
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="rounded-full border border-border bg-card p-2 text-muted-foreground transition-colors hover:text-foreground md:hidden"
+            className="border-border bg-card text-muted-foreground hover:text-foreground rounded-full border p-2 transition-colors md:hidden"
             aria-label="Toggle menu"
           >
-            {mobileMenuOpen ? (
-              <X className="h-5 w-5" />
-            ) : (
-              <Menu className="h-5 w-5" />
-            )}
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
         </div>
       </nav>
@@ -159,7 +148,7 @@ export function Navbar({
         <div
           className="paper-card mt-2 space-y-1 rounded-3xl p-4 md:hidden"
           style={{
-            background: "var(--nav-bg)",
+            background: 'var(--nav-bg)',
           }}
         >
           {navLinks.map((link) => (
@@ -167,7 +156,7 @@ export function Navbar({
               key={link.href}
               href={link.href}
               onClick={handleLinkClick}
-              className="block rounded-2xl px-4 py-3 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              className="text-muted-foreground hover:bg-muted hover:text-foreground block rounded-2xl px-4 py-3 font-medium transition-colors"
             >
               {link.label}
             </Link>

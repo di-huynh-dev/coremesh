@@ -1,0 +1,217 @@
+{
+  "id": "nestjs",
+  "icon": "server",
+  "theme": {
+    "accent": "#FF7A7A",
+    "soft": "rgba(255, 122, 122, 0.12)",
+    "border": "rgba(255, 122, 122, 0.24)",
+    "glow": "rgba(255, 122, 122, 0.24)",
+    "strong": "#3A1519"
+  },
+  "totals": {
+    "weeks": 7,
+    "topics": 18,
+    "questions": 48,
+    "milestones": 6
+  },
+  "locales": {
+    "vi": {
+      "name": "NestJS Roadmap",
+      "shortName": "NestJS",
+      "track": "Backend",
+      "role": "Backend Developer",
+      "level": "Intermediate",
+      "summary": "Đi từ kiến trúc module, DI và REST API đến validation, database, auth, testing và cách triển khai backend TypeScript bài bản.",
+      "durationText": "7 tuần",
+      "topicCountText": "18 chủ đề",
+      "questionCountText": "48 câu hỏi",
+      "skills": ["Modules", "REST API", "Validation", "Auth", "Testing"],
+      "previewNodes": ["Backend", "NestJS", "Kiến trúc API"],
+      "milestones": [
+        {
+          "step": "01",
+          "title": "Nest core concepts",
+          "description": "Hiểu module, controller, provider, dependency injection và vòng đời request trong NestJS.",
+          "tags": ["Modules", "Controllers", "DI"]
+        },
+        {
+          "step": "02",
+          "title": "HTTP và data contracts",
+          "description": "Thiết kế REST endpoints, DTOs, validation và response shape rõ ràng cho backend dễ mở rộng.",
+          "tags": ["DTO", "Validation", "REST"]
+        },
+        {
+          "step": "03",
+          "title": "Business logic và persistence",
+          "description": "Tách service layer, repository layer và kết nối database theo cấu trúc có thể test được.",
+          "tags": ["Services", "Repository", "Database"]
+        },
+        {
+          "step": "04",
+          "title": "Auth, guards và security",
+          "description": "Xây xác thực, phân quyền, guards, interceptors và xử lý lỗi nhất quán cho hệ thống API.",
+          "tags": ["Auth", "Guards", "Interceptors"]
+        },
+        {
+          "step": "05",
+          "title": "Testing và observability",
+          "description": "Viết unit test, e2e test, logging và theo dõi luồng request để backend đáng tin cậy hơn.",
+          "tags": ["Unit Test", "E2E", "Logging"]
+        },
+        {
+          "step": "06",
+          "title": "Deployment và scaling",
+          "description": "Chuẩn bị config, environment, health checks và các bước deploy backend TypeScript ổn định hơn.",
+          "tags": ["Config", "Deploy", "Monitoring"]
+        }
+      ],
+      "outcomes": [
+        "Tạo được REST API có cấu trúc tốt với NestJS và TypeScript.",
+        "Biết tổ chức service, module, validation và persistence rõ ràng cho dự án backend.",
+        "Có nền tảng để mở rộng sang auth, background jobs, microservices hoặc GraphQL.",
+        "Tự tin hơn khi đọc codebase NestJS thực tế hoặc đi phỏng vấn backend Node.js."
+      ],
+      "support": {
+        "title": "Phù hợp cho ai?",
+        "description": "Rất hợp với người đã viết Node.js cơ bản và muốn chuyển sang một framework có cấu trúc rõ ràng, dễ scale cho team.",
+        "items": [
+          "Frontend developer muốn mở rộng sang fullstack bằng TypeScript",
+          "Node.js learner cần một kiến trúc backend dễ bảo trì hơn Express thuần",
+          "Người chuẩn bị phỏng vấn backend và muốn ôn lại validation, auth, testing"
+        ]
+      }
+    },
+    "en": {
+      "name": "NestJS Roadmap",
+      "shortName": "NestJS",
+      "track": "Backend",
+      "role": "Backend Developer",
+      "level": "Intermediate",
+      "summary": "Move from modules, dependency injection, and REST APIs into validation, persistence, authentication, testing, and structured TypeScript backend delivery.",
+      "durationText": "7 weeks",
+      "topicCountText": "18 topics",
+      "questionCountText": "48 questions",
+      "skills": ["Modules", "REST API", "Validation", "Auth", "Testing"],
+      "previewNodes": ["Backend", "NestJS", "API Architecture"],
+      "milestones": [
+        {
+          "step": "01",
+          "title": "Nest core concepts",
+          "description": "Learn modules, controllers, providers, dependency injection, and how Nest handles request lifecycles.",
+          "tags": ["Modules", "Controllers", "DI"]
+        },
+        {
+          "step": "02",
+          "title": "HTTP and data contracts",
+          "description": "Design REST endpoints, DTOs, validation rules, and cleaner response shapes for maintainable APIs.",
+          "tags": ["DTO", "Validation", "REST"]
+        },
+        {
+          "step": "03",
+          "title": "Business logic and persistence",
+          "description": "Separate services, repositories, and database access in a way that stays testable and easier to evolve.",
+          "tags": ["Services", "Repository", "Database"]
+        },
+        {
+          "step": "04",
+          "title": "Auth, guards, and security",
+          "description": "Build authentication, authorization, guards, interceptors, and consistent error handling around your API.",
+          "tags": ["Auth", "Guards", "Interceptors"]
+        },
+        {
+          "step": "05",
+          "title": "Testing and observability",
+          "description": "Add unit tests, e2e coverage, logging, and request tracing so the backend becomes more dependable.",
+          "tags": ["Unit Test", "E2E", "Logging"]
+        },
+        {
+          "step": "06",
+          "title": "Deployment and scaling",
+          "description": "Prepare configuration, environments, health checks, and deployment practices for stable backend releases.",
+          "tags": ["Config", "Deploy", "Monitoring"]
+        }
+      ],
+      "outcomes": [
+        "Ship a better-structured REST API with NestJS and TypeScript.",
+        "Organize services, modules, validation, and persistence more clearly in backend projects.",
+        "Build a stronger base for auth, background jobs, microservices, or GraphQL later on.",
+        "Feel more prepared for real NestJS codebases and backend Node.js interviews."
+      ],
+      "support": {
+        "title": "Who is this for?",
+        "description": "Great for developers who already know the basics of Node.js and want a framework with stronger structure and clearer scaling paths.",
+        "items": [
+          "Frontend developers expanding into TypeScript fullstack work",
+          "Node.js learners who want more maintainable architecture than plain Express",
+          "Backend interview learners reviewing validation, auth, and testing"
+        ]
+      }
+    },
+    "ja": {
+      "name": "NestJS Roadmap",
+      "shortName": "NestJS",
+      "track": "バックエンド",
+      "role": "バックエンド開発者",
+      "level": "Intermediate",
+      "summary": "module、dependency injection、REST API から始めて、validation、database、auth、testing、安定した TypeScript backend 運用まで学べるロードマップです。",
+      "durationText": "7週間",
+      "topicCountText": "18トピック",
+      "questionCountText": "48問",
+      "skills": ["Modules", "REST API", "Validation", "Auth", "Testing"],
+      "previewNodes": ["バックエンド", "NestJS", "API設計"],
+      "milestones": [
+        {
+          "step": "01",
+          "title": "Nest core concepts",
+          "description": "module、controller、provider、dependency injection、request lifecycle の基本を理解します。",
+          "tags": ["Modules", "Controllers", "DI"]
+        },
+        {
+          "step": "02",
+          "title": "HTTP and data contracts",
+          "description": "REST endpoint、DTO、validation、response shape を整理して保守しやすい API を設計します。",
+          "tags": ["DTO", "Validation", "REST"]
+        },
+        {
+          "step": "03",
+          "title": "Business logic and persistence",
+          "description": "service layer、repository layer、database access を分離し、テストしやすい構成にします。",
+          "tags": ["Services", "Repository", "Database"]
+        },
+        {
+          "step": "04",
+          "title": "Auth, guards, and security",
+          "description": "authentication、authorization、guards、interceptors、error handling を API 全体に組み込みます。",
+          "tags": ["Auth", "Guards", "Interceptors"]
+        },
+        {
+          "step": "05",
+          "title": "Testing and observability",
+          "description": "unit test、e2e、logging、request tracing を追加して信頼できる backend に近づけます。",
+          "tags": ["Unit Test", "E2E", "Logging"]
+        },
+        {
+          "step": "06",
+          "title": "Deployment and scaling",
+          "description": "config、environment、health check、deployment の流れを整えて安定したリリースにつなげます。",
+          "tags": ["Config", "Deploy", "Monitoring"]
+        }
+      ],
+      "outcomes": [
+        "NestJS と TypeScript で構造化された REST API を組み立てられます。",
+        "backend project で service、module、validation、persistence をより整理して扱えます。",
+        "auth、background jobs、microservices、GraphQL へ進むための土台を作れます。",
+        "実務の NestJS codebase や backend Node.js interview への準備を進めやすくなります。"
+      ],
+      "support": {
+        "title": "こんな人におすすめ",
+        "description": "Node.js の基礎はあるが、より構造化された framework で backend を育てたい人に向いています。",
+        "items": [
+          "TypeScript fullstack に広げたい frontend developer",
+          "plain Express より保守しやすい backend architecture を求める Node.js 学習者",
+          "validation、auth、testing を整理して復習したい backend interview 学習者"
+        ]
+      }
+    }
+  }
+}

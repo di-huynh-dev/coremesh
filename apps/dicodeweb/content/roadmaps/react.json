@@ -1,0 +1,217 @@
+{
+  "id": "react",
+  "icon": "atom",
+  "theme": {
+    "accent": "#59A6FF",
+    "soft": "rgba(89, 166, 255, 0.12)",
+    "border": "rgba(89, 166, 255, 0.24)",
+    "glow": "rgba(89, 166, 255, 0.22)",
+    "strong": "#0D2342"
+  },
+  "totals": {
+    "weeks": 8,
+    "topics": 24,
+    "questions": 72,
+    "milestones": 6
+  },
+  "locales": {
+    "vi": {
+      "name": "ReactJS Roadmap",
+      "shortName": "ReactJS",
+      "track": "Frontend",
+      "role": "Frontend Developer",
+      "level": "Intermediate",
+      "summary": "Học React theo đúng nhịp đi làm: từ component, state, hooks đến data fetching, tối ưu hiệu năng và các pattern production.",
+      "durationText": "8 tuần",
+      "topicCountText": "24 chủ đề",
+      "questionCountText": "72 câu hỏi",
+      "skills": ["JSX", "State", "Hooks", "Data Fetching", "Performance"],
+      "previewNodes": ["Frontend", "ReactJS", "UI production"],
+      "milestones": [
+        {
+          "step": "01",
+          "title": "React foundations",
+          "description": "Nắm JSX, props, component tree và cách React mô tả giao diện theo tư duy khai báo.",
+          "tags": ["JSX", "Props", "Composition"]
+        },
+        {
+          "step": "02",
+          "title": "State và interactive UI",
+          "description": "Làm chủ state local, events, controlled inputs và cách tách UI state cho dễ bảo trì.",
+          "tags": ["useState", "Events", "Forms"]
+        },
+        {
+          "step": "03",
+          "title": "Data flow và hooks",
+          "description": "Hiểu data flow một chiều, lifting state up và dùng hooks để chia sẻ logic gọn gàng hơn.",
+          "tags": ["Hooks", "Context", "Custom Hooks"]
+        },
+        {
+          "step": "04",
+          "title": "Effects và async work",
+          "description": "Dùng `useEffect`, refs và các pattern async an toàn để đồng bộ UI với network và browser APIs.",
+          "tags": ["useEffect", "Refs", "Async"]
+        },
+        {
+          "step": "05",
+          "title": "App architecture",
+          "description": "Tổ chức feature, route, data fetching và reusable patterns để codebase React lớn vẫn dễ mở rộng.",
+          "tags": ["Architecture", "Routing", "Patterns"]
+        },
+        {
+          "step": "06",
+          "title": "Performance và interview prep",
+          "description": "Tối ưu render, code-splitting, profiling và luyện các câu hỏi React thường gặp trong phỏng vấn.",
+          "tags": ["Memoization", "Profiling", "Interview"]
+        }
+      ],
+      "outcomes": [
+        "Tự tin xây UI production bằng React theo tư duy component rõ ràng.",
+        "Biết khi nào nên dùng state local, context, custom hooks hay tách feature module.",
+        "Đọc, debug và tối ưu được các vấn đề render chậm hoặc logic hooks rối.",
+        "Có nền tảng tốt để học tiếp Next.js, system design và frontend interview."
+      ],
+      "support": {
+        "title": "Phù hợp cho ai?",
+        "description": "Phù hợp nếu bạn đã biết HTML, CSS, JavaScript cơ bản và muốn đi vào React theo hướng làm sản phẩm thật.",
+        "items": [
+          "Người mới chuyển từ JavaScript thuần sang React",
+          "Frontend junior muốn viết component sạch và tái sử dụng tốt hơn",
+          "Người ôn interview React nhưng còn hổng nền tảng hooks và performance"
+        ]
+      }
+    },
+    "en": {
+      "name": "ReactJS Roadmap",
+      "shortName": "ReactJS",
+      "track": "Frontend",
+      "role": "Frontend Developer",
+      "level": "Intermediate",
+      "summary": "Learn React with a production-minded progression, from components and state to data fetching, performance work, and common architecture patterns.",
+      "durationText": "8 weeks",
+      "topicCountText": "24 topics",
+      "questionCountText": "72 questions",
+      "skills": ["JSX", "State", "Hooks", "Data Fetching", "Performance"],
+      "previewNodes": ["Frontend", "ReactJS", "Production UI"],
+      "milestones": [
+        {
+          "step": "01",
+          "title": "React foundations",
+          "description": "Understand JSX, props, component trees, and the declarative model React uses to describe UI.",
+          "tags": ["JSX", "Props", "Composition"]
+        },
+        {
+          "step": "02",
+          "title": "State and interactive UI",
+          "description": "Build confidence with local state, events, controlled inputs, and clean UI state boundaries.",
+          "tags": ["useState", "Events", "Forms"]
+        },
+        {
+          "step": "03",
+          "title": "Data flow and hooks",
+          "description": "Work through one-way data flow, lifting state up, and reusable logic with custom hooks.",
+          "tags": ["Hooks", "Context", "Custom Hooks"]
+        },
+        {
+          "step": "04",
+          "title": "Effects and async work",
+          "description": "Use effects, refs, and safe async patterns to coordinate UI with networks and browser APIs.",
+          "tags": ["useEffect", "Refs", "Async"]
+        },
+        {
+          "step": "05",
+          "title": "App architecture",
+          "description": "Organize features, routes, data loading, and reusable patterns so larger React codebases stay maintainable.",
+          "tags": ["Architecture", "Routing", "Patterns"]
+        },
+        {
+          "step": "06",
+          "title": "Performance and interview prep",
+          "description": "Practice render optimization, profiling, code splitting, and common React interview discussions.",
+          "tags": ["Memoization", "Profiling", "Interview"]
+        }
+      ],
+      "outcomes": [
+        "Build production-ready React UI with a clearer component model.",
+        "Know when to reach for local state, context, custom hooks, and feature modules.",
+        "Debug hook-heavy code and reason about render performance with more confidence.",
+        "Create a stronger base for Next.js, frontend system design, and React interviews."
+      ],
+      "support": {
+        "title": "Who is this for?",
+        "description": "A strong fit if you already know HTML, CSS, and basic JavaScript and want a more practical path into modern React work.",
+        "items": [
+          "Developers moving from vanilla JavaScript into React",
+          "Junior frontend engineers who want cleaner and more reusable components",
+          "Interview prep learners who still feel shaky on hooks and performance"
+        ]
+      }
+    },
+    "ja": {
+      "name": "ReactJS Roadmap",
+      "shortName": "ReactJS",
+      "track": "フロントエンド",
+      "role": "フロントエンド開発者",
+      "level": "Intermediate",
+      "summary": "コンポーネント、state、hooks から data fetching、パフォーマンス最適化、実務的な設計パターンまで段階的に学べる React ロードマップです。",
+      "durationText": "8週間",
+      "topicCountText": "24トピック",
+      "questionCountText": "72問",
+      "skills": ["JSX", "State", "Hooks", "Data Fetching", "Performance"],
+      "previewNodes": ["フロントエンド", "ReactJS", "実務UI"],
+      "milestones": [
+        {
+          "step": "01",
+          "title": "React foundations",
+          "description": "JSX、props、component tree、そして宣言的 UI モデルの基本を理解します。",
+          "tags": ["JSX", "Props", "Composition"]
+        },
+        {
+          "step": "02",
+          "title": "State and interactive UI",
+          "description": "local state、events、controlled inputs を使い、扱いやすい UI state の分け方を学びます。",
+          "tags": ["useState", "Events", "Forms"]
+        },
+        {
+          "step": "03",
+          "title": "Data flow and hooks",
+          "description": "一方向データフロー、state の持ち上げ、custom hooks によるロジック共有を整理します。",
+          "tags": ["Hooks", "Context", "Custom Hooks"]
+        },
+        {
+          "step": "04",
+          "title": "Effects and async work",
+          "description": "effects、refs、安全な async パターンを使って UI とブラウザ API を同期します。",
+          "tags": ["useEffect", "Refs", "Async"]
+        },
+        {
+          "step": "05",
+          "title": "App architecture",
+          "description": "feature、routing、data loading、再利用パターンを整理し、大きな React コードベースでも保守しやすくします。",
+          "tags": ["Architecture", "Routing", "Patterns"]
+        },
+        {
+          "step": "06",
+          "title": "Performance and interview prep",
+          "description": "render 最適化、profiling、code splitting、React 面接でよく問われる論点を練習します。",
+          "tags": ["Memoization", "Profiling", "Interview"]
+        }
+      ],
+      "outcomes": [
+        "実務で使える React UI をより明確な component モデルで組み立てられます。",
+        "local state、context、custom hooks、feature module の使い分けがしやすくなります。",
+        "hooks が多いコードでも読み解きやすく、render performance を説明しやすくなります。",
+        "Next.js、frontend system design、React 面接に進むための基盤を作れます。"
+      ],
+      "support": {
+        "title": "こんな人におすすめ",
+        "description": "HTML、CSS、基本的な JavaScript を理解していて、React を実務寄りに学びたい人に向いています。",
+        "items": [
+          "vanilla JavaScript から React に移行したい人",
+          "より再利用しやすい component 設計を身につけたい junior frontend engineer",
+          "hooks や performance に不安がある React interview 学習者"
+        ]
+      }
+    }
+  }
+}

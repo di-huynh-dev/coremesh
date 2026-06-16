@@ -8,6 +8,7 @@ import { getAllPosts } from '@/lib/blog';
 import { homeContent, homeLocales, type HomeLocale } from '@/lib/home-content';
 import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import type { LucideIcon } from 'lucide-react';
 import {
   ArrowRight,
@@ -32,11 +33,11 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 const storageKey = 'dicodeweb-home-locale';
 
-gsap.registerPlugin(useGSAP);
+gsap.registerPlugin(useGSAP, ScrollTrigger);
 
 type AnimatedStatProps = {
   value: string;
@@ -141,11 +142,13 @@ function getSupplementalContent(locale: HomeLocale) {
         paths: [
           {
             title: 'Lộ trình phỏng vấn frontend',
-            detail: 'Đi từ câu hỏi nền tảng đến UI coding, gỡ lỗi và thiết kế hệ thống theo nhịp tăng dần.',
+            detail:
+              'Đi từ câu hỏi nền tảng đến UI coding, gỡ lỗi và thiết kế hệ thống theo nhịp tăng dần.',
           },
           {
             title: 'Lộ trình nâng độ chắc JavaScript',
-            detail: 'Closures, luồng bất đồng bộ, utility functions và các tình huống hỏi tiếp thường gặp.',
+            detail:
+              'Closures, luồng bất đồng bộ, utility functions và các tình huống hỏi tiếp thường gặp.',
           },
           {
             title: 'Lộ trình React theo tư duy production',
@@ -159,7 +162,11 @@ function getSupplementalContent(locale: HomeLocale) {
             detail: 'Điều hướng bằng bàn phím, semantics và quản lý focus',
           },
           { icon: Braces, title: 'JavaScript', detail: 'Async, closures, utilities và debugging' },
-          { icon: Zap, title: 'Performance', detail: 'Rendering, caching, Core Web Vitals và profiling' },
+          {
+            icon: Zap,
+            title: 'Performance',
+            detail: 'Rendering, caching, Core Web Vitals và profiling',
+          },
           {
             icon: ClipboardList,
             title: 'System design',
@@ -266,11 +273,13 @@ function getSupplementalContent(locale: HomeLocale) {
           },
           {
             title: 'JavaScript 理解を深めるルート',
-            detail: 'クロージャ、非同期制御、ユーティリティ関数、よくある深掘り質問まで整理しています。',
+            detail:
+              'クロージャ、非同期制御、ユーティリティ関数、よくある深掘り質問まで整理しています。',
           },
           {
             title: 'React 実務力ルート',
-            detail: 'Hooks、状態の責務分離、描画パフォーマンス、コンポーネント設計を実務目線で学べます。',
+            detail:
+              'Hooks、状態の責務分離、描画パフォーマンス、コンポーネント設計を実務目線で学べます。',
           },
         ],
         topics: [
@@ -279,8 +288,16 @@ function getSupplementalContent(locale: HomeLocale) {
             title: 'Accessibility',
             detail: 'キーボード操作、セマンティクス、フォーカス管理',
           },
-          { icon: Braces, title: 'JavaScript', detail: '非同期処理、クロージャ、ユーティリティ、デバッグ' },
-          { icon: Zap, title: 'Performance', detail: '描画、キャッシュ、Core Web Vitals、プロファイリング' },
+          {
+            icon: Braces,
+            title: 'JavaScript',
+            detail: '非同期処理、クロージャ、ユーティリティ、デバッグ',
+          },
+          {
+            icon: Zap,
+            title: 'Performance',
+            detail: '描画、キャッシュ、Core Web Vitals、プロファイリング',
+          },
           {
             icon: ClipboardList,
             title: 'System design',
@@ -577,6 +594,49 @@ export function HomePageShell() {
     window.dispatchEvent(new Event('dicodeweb-locale-change'));
   };
 
+  const mainRef = useRef<HTMLElement>(null);
+
+  useGSAP(
+    () => {
+      // Hero entrance — stagger children
+      gsap.from('.hero-animate > *', {
+        y: 32,
+        opacity: 0,
+        duration: 0.7,
+        stagger: 0.12,
+        ease: 'power3.out',
+        clearProps: 'all',
+      });
+
+      // Hero image card
+      gsap.from('.hero-card', {
+        y: 40,
+        opacity: 0,
+        duration: 0.9,
+        delay: 0.3,
+        ease: 'power3.out',
+        clearProps: 'all',
+      });
+
+      // Scroll-triggered fade-up for section headings and cards
+      gsap.utils.toArray<Element>('.scroll-reveal').forEach((el) => {
+        gsap.from(el, {
+          scrollTrigger: {
+            trigger: el,
+            start: 'top 88%',
+            toggleActions: 'play none none none',
+          },
+          y: 30,
+          opacity: 0,
+          duration: 0.6,
+          ease: 'power2.out',
+          clearProps: 'all',
+        });
+      });
+    },
+    { scope: mainRef },
+  );
+
   return (
     <>
       <Navbar
@@ -586,16 +646,16 @@ export function HomePageShell() {
         onLocaleChange={handleLocaleChange}
       />
 
-      <main className="bg-background text-foreground min-h-screen">
+      <main ref={mainRef} className="bg-background text-foreground min-h-screen">
         <section className="relative overflow-hidden px-4 pt-32 pb-20 md:px-6 md:pt-40 md:pb-28">
           <div className="pointer-events-none absolute inset-0">
-            <div className="absolute top-16 left-[4%] h-64 w-64 rounded-full bg-accent/10 blur-3xl" />
+            <div className="bg-accent/10 absolute top-16 left-[4%] h-64 w-64 rounded-full blur-3xl" />
             <div className="absolute top-20 right-[8%] h-80 w-80 rounded-full bg-[#8BD63F]/12 blur-3xl" />
             <div className="absolute bottom-10 left-1/3 h-72 w-72 rounded-full bg-[#071B3A]/6 blur-3xl dark:bg-[#D7E2FF]/8" />
           </div>
 
           <div className="editorial-grid relative grid gap-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
-            <div className="space-y-8">
+            <div className="hero-animate space-y-8">
               <div className="flex flex-col gap-4">
                 <LanguageSwitcher
                   currentLocale={locale}
@@ -649,8 +709,8 @@ export function HomePageShell() {
               </div>
             </div>
 
-            <div className="relative">
-              <div className="absolute -inset-6 rounded-[2.5rem] bg-gradient-to-br from-accent/14 via-white/10 to-[#8BD63F]/18 blur-3xl" />
+            <div className="hero-card relative">
+              <div className="from-accent/14 absolute -inset-6 rounded-[2.5rem] bg-gradient-to-br via-white/10 to-[#8BD63F]/18 blur-3xl" />
               <div className="relative rounded-[2.4rem] border border-[#d9d0c5] bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(248,241,232,0.96))] p-4 shadow-[0_28px_70px_rgba(7,27,58,0.14)] backdrop-blur md:p-5">
                 <div className="relative overflow-hidden rounded-[2rem] border border-[#e6ddd2] bg-[#f6efe6] p-4 md:p-5">
                   <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,199,232,0.09),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(139,214,63,0.1),transparent_26%)]" />
@@ -682,7 +742,7 @@ export function HomePageShell() {
                   </div>
 
                   <div className="pointer-events-none absolute -bottom-4 left-6 rounded-2xl border border-white/70 bg-white/88 px-4 py-3 shadow-[0_18px_36px_rgba(7,27,58,0.12)] backdrop-blur md:left-8 md:px-5">
-                    <p className="text-[11px] font-semibold tracking-[0.18em] text-accent uppercase">
+                    <p className="text-accent text-[11px] font-semibold tracking-[0.18em] uppercase">
                       {copy.hero.snippetAction}
                     </p>
                     <p className="mt-1 text-sm font-semibold text-[#071B3A] md:text-base">
@@ -691,7 +751,7 @@ export function HomePageShell() {
                   </div>
 
                   <div className="pointer-events-none absolute top-10 -right-2 hidden rounded-2xl border border-[#d9d0c5] bg-[#071B3A] px-4 py-3 text-[#f5f0ea] shadow-[0_22px_40px_rgba(7,27,58,0.2)] lg:block">
-                    <p className="text-[11px] tracking-[0.18em] text-accent uppercase">
+                    <p className="text-accent text-[11px] tracking-[0.18em] uppercase">
                       {uiLabels.preview}
                     </p>
                     <p className="mt-2 max-w-[180px] text-sm leading-6 text-[#d7e2ff]">
@@ -706,8 +766,8 @@ export function HomePageShell() {
 
         <section id="features" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
-            <div className="mb-10 max-w-3xl space-y-4">
-              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
+            <div className="scroll-reveal mb-10 max-w-3xl space-y-4">
+              <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
                 {supplemental.highlights.eyebrow}
               </p>
               <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -722,8 +782,11 @@ export function HomePageShell() {
               {supplemental.highlights.cards.map((card) => {
                 const Icon = card.icon;
                 return (
-                  <article key={card.title} className="paper-card rounded-[1.75rem] p-6">
-                    <Icon className="h-6 w-6 text-accent" />
+                  <article
+                    key={card.title}
+                    className="scroll-reveal paper-card rounded-[1.75rem] p-6"
+                  >
+                    <Icon className="text-accent h-6 w-6" />
                     <h3 className="mt-5 text-2xl font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
                       {card.title}
                     </h3>
@@ -749,8 +812,8 @@ export function HomePageShell() {
 
         <section className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
-            <div className="mb-10 max-w-3xl space-y-4">
-              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
+            <div className="scroll-reveal mb-10 max-w-3xl space-y-4">
+              <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
                 {supplemental.prep.eyebrow}
               </p>
               <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -761,7 +824,7 @@ export function HomePageShell() {
             <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr]">
               <div className="paper-card rounded-[1.75rem] p-6">
                 <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
-                  <FileText className="h-4 w-4 text-accent" />
+                  <FileText className="text-accent h-4 w-4" />
                   <span>{supplemental.prep.flowsTitle}</span>
                 </div>
 
@@ -773,7 +836,7 @@ export function HomePageShell() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-[11px] font-semibold tracking-[0.16em] text-accent uppercase">
+                          <p className="text-accent text-[11px] font-semibold tracking-[0.16em] uppercase">
                             {uiLabels.path} {index + 1}
                           </p>
                           <h3 className="mt-2 text-lg font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
@@ -795,11 +858,14 @@ export function HomePageShell() {
                   const Icon = topic.icon;
 
                   return (
-                    <article key={topic.title} className="paper-card rounded-[1.75rem] p-6">
+                    <article
+                      key={topic.title}
+                      className="scroll-reveal paper-card rounded-[1.75rem] p-6"
+                    >
                       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[linear-gradient(180deg,rgba(34,199,232,0.12),rgba(139,214,63,0.12))] dark:bg-[linear-gradient(180deg,rgba(34,199,232,0.16),rgba(139,214,63,0.18))]">
                         <Icon className="h-5 w-5 text-[#071B3A] dark:text-[#D7E2FF]" />
                       </div>
-                      <p className="mt-4 text-[11px] font-semibold tracking-[0.16em] text-accent uppercase">
+                      <p className="text-accent mt-4 text-[11px] font-semibold tracking-[0.16em] uppercase">
                         {supplemental.prep.libraryTitle}
                       </p>
                       <h3 className="mt-2 text-xl font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
@@ -818,8 +884,8 @@ export function HomePageShell() {
 
         <section id="questions" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
-            <div className="mb-10 max-w-3xl space-y-4">
-              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
+            <div className="scroll-reveal mb-10 max-w-3xl space-y-4">
+              <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
                 {copy.questionBank.eyebrow}
               </p>
               <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -853,11 +919,11 @@ export function HomePageShell() {
 
               <div className="text-muted-foreground flex flex-wrap items-center gap-5 text-sm">
                 <div className="flex items-center gap-2">
-                  <BookText className="h-4 w-4 text-accent" />
+                  <BookText className="text-accent h-4 w-4" />
                   <span>{currentQuestionGroup.totalQuestions}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Clock3 className="h-4 w-4 text-accent" />
+                  <Clock3 className="text-accent h-4 w-4" />
                   <span>{currentQuestionGroup.totalHours}</span>
                 </div>
               </div>
@@ -866,7 +932,7 @@ export function HomePageShell() {
             <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
               <aside className="paper-card rounded-[1.75rem] p-5">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
-                  <Layers3 className="h-4 w-4 text-accent" />
+                  <Layers3 className="text-accent h-4 w-4" />
                   <span>{currentQuestionItem?.label ?? currentQuestionGroup.featuredItem}</span>
                 </div>
 
@@ -898,7 +964,7 @@ export function HomePageShell() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                             <div>
-                              <h3 className="text-lg font-semibold text-[#071B3A] transition-colors group-hover:text-accent dark:text-[#F5F0EA]">
+                              <h3 className="group-hover:text-accent text-lg font-semibold text-[#071B3A] transition-colors dark:text-[#F5F0EA]">
                                 {question.title}
                               </h3>
                               <p className="text-muted-foreground mt-2 max-w-3xl text-sm leading-7">
@@ -942,7 +1008,7 @@ export function HomePageShell() {
                     </p>
                     <Link
                       href="/questions"
-                      className="border-border bg-background inline-flex rounded-full border px-5 py-3 text-sm font-semibold text-[#071B3A] transition-colors hover:border-[#071B3A]/25 hover:text-accent dark:text-[#F5F0EA]"
+                      className="border-border bg-background hover:text-accent inline-flex rounded-full border px-5 py-3 text-sm font-semibold text-[#071B3A] transition-colors hover:border-[#071B3A]/25 dark:text-[#F5F0EA]"
                     >
                       {copy.questionBank.cta}
                     </Link>
@@ -956,8 +1022,8 @@ export function HomePageShell() {
         <section id="blog-preview" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="mb-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-              <div className="max-w-3xl space-y-4">
-                <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
+              <div className="scroll-reveal max-w-3xl space-y-4">
+                <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
                   {supplemental.blog.eyebrow}
                 </p>
                 <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -970,7 +1036,7 @@ export function HomePageShell() {
 
               <Link
                 href="/blog"
-                className="inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors hover:text-accent dark:text-[#F5F0EA]"
+                className="hover:text-accent inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors dark:text-[#F5F0EA]"
               >
                 {supplemental.blog.cta}
                 <ArrowRight className="h-4 w-4" />
@@ -979,7 +1045,10 @@ export function HomePageShell() {
 
             <div className="grid gap-6 lg:grid-cols-3">
               {latestPosts.map((post) => (
-                <article key={post.slug} className="paper-card overflow-hidden rounded-[1.75rem]">
+                <article
+                  key={post.slug}
+                  className="scroll-reveal paper-card overflow-hidden rounded-[1.75rem]"
+                >
                   <div className="h-40 bg-[linear-gradient(135deg,rgba(34,199,232,0.08),rgba(139,214,63,0.12),rgba(7,27,58,0.04))]" />
                   <div className="p-6">
                     <div className="flex flex-wrap items-center gap-3 text-xs font-semibold">
@@ -997,7 +1066,7 @@ export function HomePageShell() {
                     <p className="text-muted-foreground mt-3 text-sm leading-7">{post.excerpt}</p>
                     <Link
                       href={`/blog/${post.slug}`}
-                      className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors hover:text-accent dark:text-[#F5F0EA]"
+                      className="hover:text-accent mt-5 inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors dark:text-[#F5F0EA]"
                     >
                       {uiLabels.readArticle}
                       <ArrowUpRight className="h-4 w-4" />
@@ -1012,8 +1081,8 @@ export function HomePageShell() {
         <section id="faq" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="grid gap-8 lg:grid-cols-[0.8fr_1.2fr]">
-              <div className="space-y-4">
-                <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
+              <div className="scroll-reveal space-y-4">
+                <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
                   {supplemental.faq.eyebrow}
                 </p>
                 <h2 className="text-3xl font-bold tracking-[-0.03em] text-[#071B3A] md:text-5xl dark:text-[#D7E2FF]">
@@ -1021,7 +1090,7 @@ export function HomePageShell() {
                 </h2>
               </div>
 
-              <div className="paper-card rounded-[1.75rem] p-3 md:p-4">
+              <div className="scroll-reveal paper-card rounded-[1.75rem] p-3 md:p-4">
                 {supplemental.faq.items.map((item, index) => (
                   <details
                     key={item.question}
@@ -1029,7 +1098,7 @@ export function HomePageShell() {
                   >
                     <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-left text-base font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
                       <span>{item.question}</span>
-                      <BadgeCheck className="h-5 w-5 shrink-0 text-accent transition-transform group-open:rotate-6" />
+                      <BadgeCheck className="text-accent h-5 w-5 shrink-0 transition-transform group-open:rotate-6" />
                     </summary>
                     <p className="text-muted-foreground mt-3 max-w-3xl text-sm leading-7">
                       {item.answer}
@@ -1044,7 +1113,7 @@ export function HomePageShell() {
         <section id="contact" className="px-4 py-16 md:px-6 md:py-24">
           <div className="editorial-grid">
             <div className="rounded-[2rem] border border-[#071B3A] bg-[#071B3A] px-6 py-10 text-[#F5F0EA] md:px-10">
-              <p className="text-sm font-medium tracking-[0.16em] text-accent uppercase">
+              <p className="text-accent text-sm font-medium tracking-[0.16em] uppercase">
                 {copy.cta.eyebrow}
               </p>
               <div className="mt-4 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">

@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 import { Mail } from 'lucide-react';
 import { GitHubIcon, LinkedInIcon, XIcon } from '@/components/ui/social-icons';
@@ -63,10 +64,9 @@ const footerContent: Record<HomeLocale, FooterCopy> = {
       'A premium editorial learning system for developers and digital creators who want practical depth without visual noise.',
     navigate: 'Navigate',
     links: [
-      { href: '#features', label: 'Highlights' },
-      { href: '#questions', label: 'Questions' },
+      { href: '/questions', label: 'Questions' },
       { href: '/blog', label: 'Blog' },
-      { href: '#faq', label: 'FAQ' },
+      { href: '/faq', label: 'FAQ' },
     ],
     connect: 'Connect',
     copyright: 'DiCodeWeb. All rights reserved.',
@@ -77,10 +77,9 @@ const footerContent: Record<HomeLocale, FooterCopy> = {
       'Hệ thống học tập biên tập cao cấp dành cho lập trình viên và nhà sáng tạo số muốn đào sâu thực tế mà không bị nhiễu thị giác.',
     navigate: 'Điều hướng',
     links: [
-      { href: '#features', label: 'Điểm nhấn' },
-      { href: '#questions', label: 'Câu hỏi' },
+      { href: '/questions', label: 'Câu hỏi' },
       { href: '/blog', label: 'Blog' },
-      { href: '#faq', label: 'Hỏi đáp' },
+      { href: '/faq', label: 'Hỏi đáp' },
     ],
     connect: 'Kết nối',
     copyright: 'DiCodeWeb. Mọi quyền được bảo lưu.',
@@ -91,10 +90,9 @@ const footerContent: Record<HomeLocale, FooterCopy> = {
       '実践的な深さを求める開発者やデジタルクリエイターのための、プレミアムなエディトリアル学習システム。',
     navigate: 'ナビゲート',
     links: [
-      { href: '#features', label: 'ハイライト' },
-      { href: '#questions', label: '質問' },
+      { href: '/questions', label: '質問' },
       { href: '/blog', label: 'ブログ' },
-      { href: '#faq', label: 'よくある質問' },
+      { href: '/faq', label: 'よくある質問' },
     ],
     connect: '接続',
     copyright: 'DiCodeWeb. 全著作権所有。',
@@ -103,10 +101,9 @@ const footerContent: Record<HomeLocale, FooterCopy> = {
 };
 
 const socialLinks = [
-  { href: 'https://github.com', icon: GitHubIcon, label: 'GitHub' },
-  { href: 'https://www.linkedin.com', icon: LinkedInIcon, label: 'LinkedIn' },
-  { href: 'https://twitter.com', icon: XIcon, label: 'X' },
-  { href: 'mailto:hello@dicodeweb.com', icon: Mail, label: 'Email' },
+  { href: 'https://github.com/di-huynh-dev', icon: GitHubIcon, label: 'GitHub' },
+  { href: 'https://www.linkedin.com/in/huynhtiendi/', icon: LinkedInIcon, label: 'LinkedIn' },
+  { href: 'mailto:dihuynhdev.contact@gmail.com', icon: Mail, label: 'Email' },
 ];
 
 export function Footer() {
@@ -124,6 +121,13 @@ export function Footer() {
         <div className="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
           <div className="space-y-4">
             <Link href="/" className="inline-flex items-center gap-3">
+              <Image
+                src="/d-logo.webp"
+                alt="DiCodeWeb"
+                width={48}
+                height={48}
+                className="h-10 w-10 rounded-full border border-[#21446F] bg-white/5 p-1"
+              />
               <div className="inline-flex items-baseline text-[1.9rem] leading-none font-extrabold tracking-[-0.06em]">
                 <span className="text-[#D7E2FF]">DiCode</span>
                 <span className="text-[#79C700]">Web</span>
