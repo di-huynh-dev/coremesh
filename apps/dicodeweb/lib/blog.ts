@@ -9,6 +9,11 @@ export type TopicCluster = {
   label: string;
   posts: BlogPost[];
 };
+export type SeriesNavigation = {
+  series: BlogSeries;
+  previous: BlogPost | null;
+  next: BlogPost | null;
+};
 
 export function getAllPosts() {
   return [...allPosts].sort(
@@ -113,5 +118,30 @@ export function getTopicCluster(currentPost: BlogPost, limit = 5): TopicCluster 
   return {
     label,
     posts: ensureCurrentPostInSlice(matchingPosts, currentPost, limit),
+  };
+}
+
+export function getSeriesNavigation(currentPost: BlogPost): SeriesNavigation | null {
+  if (!currentPost.series?.slug) {
+    return null;
+  }
+
+  const posts = getAllPosts();
+  const series = getSeriesBySlug(currentPost.series.slug, posts);
+
+  if (!series || series.posts.length < 2) {
+    return null;
+  }
+
+  const currentIndex = series.posts.findIndex((post) => post.slug === currentPost.slug);
+
+  if (currentIndex === -1) {
+    return null;
+  }
+
+  return {
+    series,
+    previous: series.posts[currentIndex - 1] ?? null,
+    next: series.posts[currentIndex + 1] ?? null,
   };
 }

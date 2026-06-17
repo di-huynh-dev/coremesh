@@ -1,8 +1,8 @@
 import { MDXContent } from '@content-collections/mdx/react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, ArrowRight, BookOpen, Clock, Layers3, Sparkles } from 'lucide-react';
-import { SeriesItem, WhatsNewCard } from '@/components/blog/blog-cards';
+import { ArrowLeft, ArrowRight, Layers3, Sparkles } from 'lucide-react';
+import { BlogListItem, SeriesItem, WhatsNewCard } from '@/components/blog/blog-cards';
 import { blogMdxComponents } from '@/components/blog/mdx-components';
 import { getAllPosts, getAllSeries, getAllSeriesSlugs, getSeriesBySlug } from '@/lib/blog';
 
@@ -163,53 +163,9 @@ export default async function BlogSeriesPage({ params }: BlogSeriesPageProps) {
             </Link>
           </div>
 
-          <div className="space-y-4">
-            {series.posts.map((post, index) => (
-              <Link
-                key={post.slug}
-                href={`/blog/${post.slug}`}
-                className="group grid gap-4 rounded-[1.55rem] border border-border bg-background p-5 transition-all hover:border-accent/35 hover:shadow-[0_18px_45px_rgba(15,68,122,0.08)] md:grid-cols-[72px_minmax(0,1fr)_32px] md:items-center"
-              >
-                <div className="flex h-14 w-14 items-center justify-center rounded-[1.2rem] bg-[#071B3A] text-lg font-semibold text-[#F5F0EA]">
-                  {post.series?.position ?? index + 1}
-                </div>
-
-                <div className="min-w-0">
-                  <div className="mb-2 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-                    <span className="inline-flex items-center gap-1.5">
-                      <BookOpen className="h-4 w-4" />
-                      {post.category}
-                    </span>
-                    <span className="inline-flex items-center gap-1.5">
-                      <Clock className="h-4 w-4" />
-                      {post.readingTime} min
-                    </span>
-                    <span>{post.date}</span>
-                  </div>
-
-                  <h3 className="text-2xl font-semibold tracking-[-0.03em] text-[#202124] transition-colors group-hover:text-[#071B3A] dark:text-[#F5F7FB] md:text-[2rem]">
-                    {post.title}
-                  </h3>
-                  <p className="mt-2 text-base leading-8 text-muted-foreground">{post.excerpt}</p>
-
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    {post.tags.slice(0, 3).map((tag) => (
-                      <span
-                        key={tag}
-                        className="border-b border-current pb-0.5 text-sm text-[#202124] dark:text-[#E7EDF8]"
-                      >
-                        #{tag.toLowerCase().replace(/[^a-z0-9]+/g, '')}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="hidden items-center justify-center md:flex">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors group-hover:border-accent/45 group-hover:text-accent">
-                    <ArrowRight className="h-5 w-5" />
-                  </span>
-                </div>
-              </Link>
+          <div className="space-y-3">
+            {series.posts.map((post) => (
+              <BlogListItem key={post.slug} post={post} />
             ))}
           </div>
         </section>

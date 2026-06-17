@@ -1,5 +1,6 @@
 'use client';
 
+import { FeaturedPostCard } from '@/components/blog/blog-cards';
 import { Footer } from '@/components/layout/footer';
 import { Navbar } from '@/components/layout/navbar';
 import { Button } from '@/components/ui/button';
@@ -17,7 +18,6 @@ import {
   BookText,
   Braces,
   BriefcaseBusiness,
-  CalendarDays,
   CircleHelp,
   ClipboardList,
   Clock3,
@@ -1045,34 +1045,9 @@ export function HomePageShell() {
 
             <div className="grid gap-6 lg:grid-cols-3">
               {latestPosts.map((post) => (
-                <article
-                  key={post.slug}
-                  className="scroll-reveal paper-card overflow-hidden rounded-[1.75rem]"
-                >
-                  <div className="h-40 bg-[linear-gradient(135deg,rgba(34,199,232,0.08),rgba(139,214,63,0.12),rgba(7,27,58,0.04))]" />
-                  <div className="p-6">
-                    <div className="flex flex-wrap items-center gap-3 text-xs font-semibold">
-                      <span className="rounded-full bg-[#071B3A] px-3 py-1 text-[#F5F0EA]">
-                        {post.category}
-                      </span>
-                      <span className="flex items-center gap-1 text-[#60708c]">
-                        <CalendarDays className="h-3.5 w-3.5" />
-                        {post.date}
-                      </span>
-                    </div>
-                    <h3 className="mt-4 text-xl font-semibold text-[#071B3A] dark:text-[#D7E2FF]">
-                      {post.title}
-                    </h3>
-                    <p className="text-muted-foreground mt-3 text-sm leading-7">{post.excerpt}</p>
-                    <Link
-                      href={`/blog/${post.slug}`}
-                      className="hover:text-accent mt-5 inline-flex items-center gap-2 text-sm font-semibold text-[#071B3A] transition-colors dark:text-[#F5F0EA]"
-                    >
-                      {uiLabels.readArticle}
-                      <ArrowUpRight className="h-4 w-4" />
-                    </Link>
-                  </div>
-                </article>
+                <div key={post.slug} className="scroll-reveal">
+                  <FeaturedPostCard post={post} cta={uiLabels.readArticle} />
+                </div>
               ))}
             </div>
           </div>

@@ -18,6 +18,7 @@ export default [
       "Frontend Architecture"
     ],
     "level": "Intermediate",
+    "image": "/images/blog/shadcn-banner.png",
     "series": {
       "slug": "frontend-systems",
       "position": 2
@@ -53,6 +54,7 @@ export default [
       "App Router"
     ],
     "level": "Advanced",
+    "image": "/images/blog/nextjs-authorization-banner.png",
     "series": {
       "slug": "nextjs-in-practice",
       "position": 2
@@ -85,6 +87,7 @@ export default [
       "Server Components"
     ],
     "level": "Advanced",
+    "image": "/images/blog/nextjs-app-router-banner.png",
     "series": {
       "slug": "nextjs-in-practice",
       "position": 1
@@ -116,6 +119,7 @@ export default [
       "Performance"
     ],
     "level": "Starter",
+    "image": "/images/blog/bun-banner.png",
     "series": {
       "slug": "frontend-systems",
       "position": 1

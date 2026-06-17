@@ -18,6 +18,7 @@ type SortMode = 'newest' | 'oldest' | 'title';
 
 const FEATURED_COUNT = 3;
 const PAGE_SIZE = 6;
+const PAGEFIND_BUNDLE_PATH = '/pagefind/pagefind.js';
 
 function normalizeUrlToSlug(url: string) {
   return url.replace(/^\/+|\/+$/g, '').replace(/^blog\//, '');
@@ -68,9 +69,8 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
       }
 
       try {
-        // @ts-expect-error pagefind is generated at runtime in /public/pagefind.
         const pagefind = (await import(
-          /* webpackIgnore: true */ '/pagefind/pagefind.js'
+          /* webpackIgnore: true */ PAGEFIND_BUNDLE_PATH
         )) as PagefindModule;
 
         const response = await pagefind.search(query.trim());
@@ -172,8 +172,8 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
-        <div className="border-border bg-card rounded-md border p-6 shadow-[0_16px_45px_rgba(15,68,122,0.05)] md:p-8">
+      <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
+        <div className="rounded-md border border-transparent bg-transparent p-0 md:p-0">
           <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 className="text-3xl font-semibold tracking-[-0.03em] text-[#202124] dark:text-[#F5F7FB]">
@@ -201,7 +201,7 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
             </div>
           </div>
 
-          <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center">
+          <div className="border-border bg-card mb-4 flex flex-col gap-3 rounded-md border p-4 shadow-[0_16px_45px_rgba(15,68,122,0.05)] xl:flex-row xl:items-center md:p-5">
             <label className="border-border bg-background text-muted-foreground flex flex-1 items-center gap-3 rounded-[1.1rem] border px-4 py-3 text-sm">
               <Search className="h-4 w-4" />
 
@@ -287,7 +287,7 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
 
         <aside
           id="browse-series"
-          className="border-border bg-card rounded-md border p-6 shadow-[0_16px_45px_rgba(15,68,122,0.05)] xl:sticky"
+          className="border-border/80 bg-card/65 rounded-md border p-5 shadow-[0_12px_32px_rgba(15,68,122,0.04)] backdrop-blur-sm xl:sticky"
           style={{ top: 'var(--site-nav-offset, 96px)' }}
         >
           <div className="mb-6 flex items-start justify-between gap-4">

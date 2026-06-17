@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import Script from 'next/script';
-import { getPostBySlug, getAllSlugs, getTopicCluster } from '@/lib/blog';
+import { getPostBySlug, getAllSlugs, getSeriesNavigation, getTopicCluster } from '@/lib/blog';
 import { ArticleContent } from '@/components/blog/article-content';
 
 interface BlogPostPageProps {
@@ -45,6 +45,7 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
   }
 
   const topicCluster = getTopicCluster(post);
+  const seriesNavigation = getSeriesNavigation(post);
 
   const structuredData = {
     '@context': 'https://schema.org',
@@ -75,7 +76,11 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
-      <ArticleContent post={post} topicCluster={topicCluster} />
+      <ArticleContent
+        post={post}
+        topicCluster={topicCluster}
+        seriesNavigation={seriesNavigation}
+      />
     </>
   );
 }

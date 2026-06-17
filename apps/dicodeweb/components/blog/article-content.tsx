@@ -1,74 +1,131 @@
 'use client';
 
 import { MDXContent } from '@content-collections/mdx/react';
-import { useEffect, useState, useRef, useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Play, Pause, Square, Volume2, SkipBack, Settings, X } from 'lucide-react';
-import { BlogPost, TopicCluster } from '@/lib/blog';
+import {
+  ArrowLeft,
+  ListTree,
+  Pause,
+  Play,
+  Settings,
+  SkipBack,
+  Square,
+  Volume2,
+  X,
+} from 'lucide-react';
+import { BlogPost, SeriesNavigation, TopicCluster } from '@/lib/blog';
 import { blogMdxComponents } from '@/components/blog/mdx-components';
+import { FeaturedPostCard } from '@/components/blog/blog-cards';
 
 interface ArticleContentProps {
   post: BlogPost;
   topicCluster: TopicCluster | null;
+  seriesNavigation: SeriesNavigation | null;
 }
 
-function TopicClusterRail({
-  currentSlug,
-  topicCluster,
-}: {
-  currentSlug: string;
-  topicCluster: TopicCluster;
-}) {
+type TocItem = {
+  id: string;
+  text: string;
+  level: 2 | 3;
+};
+
+function createHeadingId(value: string, counts: Map<string, number>) {
+  const normalized = value
+    .toLowerCase()
+    .trim()
+    .replace(/[`*_~]/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .replace(/\s+/g, '-');
+  const base = normalized || 'section';
+  const duplicateCount = counts.get(base) ?? 0;
+  counts.set(base, duplicateCount + 1);
+
+  return duplicateCount === 0 ? base : `${base}-${duplicateCount}`;
+}
+
+function extractTocItems(content: string): TocItem[] {
+  const withoutFrontmatter = content.replace(/^---[\s\S]*?---/, '').trim();
+  const lines = withoutFrontmatter.split(/\r?\n/);
+  const items: TocItem[] = [];
+  const headingCounts = new Map<string, number>();
+  let inCodeBlock = false;
+
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      continue;
+    }
+
+    const match = /^(##|###)\s+(.+)$/.exec(line.trim());
+
+    if (!match) {
+      continue;
+    }
+
+    const level = match[1].length as 2 | 3;
+    const text = match[2]
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[`*_~]/g, '')
+      .replace(/<[^>]+>/g, '')
+      .trim();
+
+    if (!text) {
+      continue;
+    }
+
+    items.push({
+      id: createHeadingId(text, headingCounts),
+      text,
+      level,
+    });
+  }
+
+  return items;
+}
+
+function TableOfContentsRail({ items, activeId }: { items: TocItem[]; activeId: string | null }) {
   return (
-    <aside className="hidden lg:block">
-      <div
-        className="sticky w-[220px] overflow-y-auto pr-2"
-        style={{
-          top: 'var(--site-nav-offset, 96px)',
-          maxHeight: 'calc(100vh - var(--site-nav-offset, 96px) - 1rem)',
-        }}
-      >
-        <h2 className="text-[1.05rem] leading-tight font-semibold text-[#202124] dark:text-[#F5F7FB]">
-          {topicCluster.label}
-        </h2>
-
+    <aside
+      className="hidden self-start xl:sticky xl:block"
+      style={{
+        top: 'var(--site-nav-offset, 96px)',
+      }}
+    >
+      <div className="w-[240px]">
+        <div className="mb-4 flex items-center gap-2 text-[#202124] dark:text-[#F5F7FB]">
+          <ListTree className="text-accent h-4 w-4" />
+          <h2 className="text-sm font-semibold tracking-[0.08em] uppercase">Contents</h2>
+        </div>
         <nav
-          aria-label={`Posts about ${topicCluster.label}`}
-          className="mt-3 border-t border-[#DADCE0] pt-4 dark:border-white/12"
+          aria-label="Table of contents"
+          className="toc-scroll overflow-y-auto border-l border-border pr-1 pl-3"
+          style={{ maxHeight: 'calc(100vh - var(--site-nav-offset, 96px) - 6rem)' }}
         >
-          <ol className="relative space-y-1.5 before:absolute before:top-2 before:bottom-2 before:left-0 before:w-px before:bg-[#DADCE0] dark:before:bg-white/12">
-            {topicCluster.posts.map((relatedPost) => {
-              const isActive = relatedPost.slug === currentSlug;
-              const titleClasses = isActive
-                ? 'font-medium text-[#202124] dark:text-[#F5F7FB]'
-                : 'font-normal text-[#5F6368] hover:text-[#202124] dark:text-[#9AA0A6] dark:hover:text-[#F5F7FB]';
-
-              const content = (
-                <div className="relative block py-1.5 pl-5">
-                  {isActive ? (
-                    <span
-                      aria-hidden="true"
-                      className="absolute top-1 bottom-1 left-0 w-0.5 bg-[#202124] dark:bg-[#F5F7FB]"
-                    />
-                  ) : null}
-
-                  <span
-                    className={`line-clamp-1 block text-[0.96rem] leading-7 transition-colors ${titleClasses}`}
-                  >
-                    {relatedPost.title}
-                  </span>
-                </div>
-              );
+          <ol className="space-y-1">
+            {items.map((item) => {
+              const isActive = item.id === activeId;
 
               return (
-                <li key={relatedPost.slug}>
-                  {isActive ? (
-                    <div aria-current="page">{content}</div>
-                  ) : (
-                    <Link href={`/blog/${relatedPost.slug}`} className="block">
-                      {content}
-                    </Link>
-                  )}
+                <li key={item.id}>
+                  <a
+                    href={`#${item.id}`}
+                    className={`block rounded-sm px-3 py-1.5 text-sm leading-6 transition-colors ${
+                      item.level === 3 ? 'ml-4' : ''
+                    } ${
+                      isActive
+                        ? 'border-l-2 border-accent bg-accent/[0.05] font-semibold text-accent'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {item.text}
+                  </a>
                 </li>
               );
             })}
@@ -79,13 +136,16 @@ function TopicClusterRail({
   );
 }
 
-export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
+export function ArticleContent({ post, topicCluster, seriesNavigation }: ArticleContentProps) {
   const authorInitials = post.author.name
     .split(' ')
     .map((part) => part[0])
     .join('')
     .slice(0, 2)
     .toUpperCase();
+
+  const tocItems = useMemo(() => extractTocItems(post.content), [post.content]);
+  const [activeHeadingId, setActiveHeadingId] = useState<string | null>(null);
 
   // Reading progress
   const [progress, setProgress] = useState(0);
@@ -111,6 +171,23 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
     () => false,
   );
   const words = post.content ? post.content.split(/\s+/).filter((word) => word.length > 0) : [];
+  const seriesNavigationSlugs = useMemo(
+    () =>
+      new Set(
+        [seriesNavigation?.previous?.slug, seriesNavigation?.next?.slug].filter(
+          (slug): slug is string => Boolean(slug),
+        ),
+      ),
+    [seriesNavigation?.next?.slug, seriesNavigation?.previous?.slug],
+  );
+  const relatedPosts = useMemo(
+    () =>
+      (topicCluster?.posts ?? [])
+        .filter((relatedPost) => relatedPost.slug !== post.slug)
+        .filter((relatedPost) => !seriesNavigationSlugs.has(relatedPost.slug))
+        .slice(0, 2),
+    [post.slug, seriesNavigationSlugs, topicCluster],
+  );
 
   useEffect(() => {
     if (!ttsSupported) return;
@@ -119,18 +196,18 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
       const availableVoices = speechSynthesis.getVoices();
       if (availableVoices.length === 0) return;
 
-      const englishVoices = availableVoices.filter((v) => v.lang.startsWith('en'));
+      const englishVoices = availableVoices.filter((voice) => voice.lang.startsWith('en'));
       const voicesToUse = englishVoices.length > 0 ? englishVoices : availableVoices;
       setVoices(voicesToUse);
 
       if (!selectedVoice) {
         const preferredVoice =
           voicesToUse.find(
-            (v) =>
-              v.name.includes('Google') ||
-              v.name.includes('Microsoft') ||
-              v.name.includes('Natural') ||
-              v.name.includes('Samantha'),
+            (voice) =>
+              voice.name.includes('Google') ||
+              voice.name.includes('Microsoft') ||
+              voice.name.includes('Natural') ||
+              voice.name.includes('Samantha'),
           ) || voicesToUse[0];
         setSelectedVoice(preferredVoice);
       }
@@ -148,6 +225,45 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
       }
     };
   }, [ttsSupported, selectedVoice]);
+
+  useEffect(() => {
+    if (tocItems.length === 0) {
+      return;
+    }
+
+    const handleActiveHeading = () => {
+      const headings = tocItems
+        .map((item) => document.getElementById(item.id))
+        .filter((heading): heading is HTMLElement => Boolean(heading));
+
+      if (headings.length === 0) {
+        setActiveHeadingId(tocItems[0]?.id ?? null);
+        return;
+      }
+
+      const offset = 140;
+      let activeId = headings[0]?.id ?? null;
+
+      for (const heading of headings) {
+        if (heading.getBoundingClientRect().top - offset <= 0) {
+          activeId = heading.id;
+        } else {
+          break;
+        }
+      }
+
+      setActiveHeadingId(activeId);
+    };
+
+    window.addEventListener('scroll', handleActiveHeading, { passive: true });
+    window.addEventListener('resize', handleActiveHeading);
+    handleActiveHeading();
+
+    return () => {
+      window.removeEventListener('scroll', handleActiveHeading);
+      window.removeEventListener('resize', handleActiveHeading);
+    };
+  }, [tocItems]);
 
   // Reading Progress Bar (scroll-based)
   useEffect(() => {
@@ -264,11 +380,11 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
 
   // Calculate TTS progress based on word index
   const ttsProgress = words.length > 0 ? (currentWordIndex / words.length) * 100 : 0;
-  const hasTopicCluster = Boolean(topicCluster && topicCluster.posts.length > 1);
+  const hasToc = tocItems.length > 0;
+  const currentActiveHeadingId = activeHeadingId ?? tocItems[0]?.id ?? null;
 
   return (
     <>
-      {/* Reading Progress Bar - Fixed at very top */}
       <div className="bg-border/60 fixed top-0 right-0 left-0 z-[200] h-1">
         <div
           className="via-accent h-full bg-linear-to-r from-[#071B3A] to-[#8BD63F] transition-all duration-100 ease-out"
@@ -279,17 +395,17 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
       <main className="min-h-screen pt-24 pb-24 md:pt-32 md:pb-32">
         <div
           className={
-            hasTopicCluster
-              ? 'editorial-grid lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start lg:gap-10 xl:grid-cols-[220px_minmax(0,1fr)] xl:gap-14'
+            hasToc
+              ? 'editorial-grid xl:grid xl:grid-cols-[250px_minmax(0,1fr)] xl:items-start xl:gap-10'
               : 'reading-width mx-auto px-4 md:px-0'
           }
         >
-          {hasTopicCluster && topicCluster ? (
-            <TopicClusterRail currentSlug={post.slug} topicCluster={topicCluster} />
+          {hasToc ? (
+            <TableOfContentsRail items={tocItems} activeId={currentActiveHeadingId} />
           ) : null}
 
-          <article className={hasTopicCluster ? 'min-w-0' : undefined} data-pagefind-body>
-            <div className={hasTopicCluster ? 'mx-auto max-w-[760px]' : ''}>
+          <article className="min-w-0" data-pagefind-body>
+            <div className={hasToc ? 'mx-auto max-w-[760px]' : ''}>
               <Link
                 href="/blog"
                 className="text-muted-foreground hover:text-foreground mb-6 inline-flex items-center gap-2 text-sm transition-colors md:mb-8"
@@ -299,14 +415,20 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
               </Link>
 
               <header className="mb-8 md:mb-12">
-                <div className="mb-4 flex flex-wrap items-center gap-2 md:mb-6 md:gap-3">
-                  <span className="bg-accent/12 dark:text-accent rounded-full px-3 py-1 text-xs font-medium text-[#071B3A] md:text-sm">
-                    {post.category}
-                  </span>
+                <div className="text-muted-foreground mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-medium uppercase md:mb-6 md:gap-x-5">
+                  <span className="text-[#071B3A] dark:text-[#D7E2FF]">{post.category}</span>
                   <span className="text-muted-foreground text-xs md:text-sm">
                     {post.readingTime} min read
                   </span>
                   <span className="text-muted-foreground text-xs md:text-sm">{post.date}</span>
+                  {seriesNavigation ? (
+                    <Link
+                      href={`/blog/series/${seriesNavigation.series.slug}`}
+                      className="text-accent hover:text-[#071B3A] text-xs font-medium transition-colors md:text-sm"
+                    >
+                      {seriesNavigation.series.title}
+                    </Link>
+                  ) : null}
                 </div>
 
                 <h1 className="mb-4 text-3xl leading-tight font-bold tracking-[-0.03em] text-[#071B3A] md:mb-6 md:text-5xl dark:text-[#D7E2FF]">
@@ -333,7 +455,7 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
                   {ttsSupported && !showPlayer && (
                     <button
                       onClick={handlePlay}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[#8BD63F] px-4 py-2.5 text-[#071B3A] transition-colors hover:bg-[#7BC335] sm:w-auto"
+                      className="border-border text-muted-foreground hover:text-foreground hover:border-accent/35 inline-flex w-full items-center justify-center gap-2 rounded-full border px-4 py-2.5 transition-colors sm:w-auto"
                     >
                       <Volume2 className="h-4 w-4" />
                       <span className="text-sm font-medium">Listen</span>
@@ -344,19 +466,62 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
 
               <div
                 ref={articleRef}
-                className="blog-prose prose prose-sm md:prose-lg prose-headings:font-semibold prose-headings:text-foreground prose-h2:text-xl md:prose-h2:text-2xl prose-h2:mt-10 md:prose-h2:mt-14 prose-h2:mb-4 md:prose-h2:mb-6 prose-h3:text-lg md:prose-h3:text-xl prose-h3:mt-8 md:prose-h3:mt-10 prose-h3:mb-3 md:prose-h3:mb-4 prose-p:text-sm md:prose-p:text-base prose-p:text-foreground prose-p:leading-relaxed md:prose-p:leading-[1.8] prose-p:mb-4 md:prose-p:mb-6 [&>p:first-of-type]:text-muted-foreground [&>div:first-of-type]:text-muted-foreground prose-a:text-accent prose-a:no-underline hover:prose-a:underline prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[#24324A] prose-code:bg-[#EEF1F5] prose-code:border prose-code:border-[#DEE4EE] prose-code:px-1.5 md:prose-code:px-2 prose-code:py-0.5 prose-code:rounded-md prose-code:font-medium prose-code:text-xs md:prose-code:text-sm prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:border-0 prose-pre:my-6 md:prose-pre:my-8 prose-pre:p-0 prose-pre:rounded-none prose-pre:shadow-none prose-blockquote:border-l-accent prose-blockquote:border-l-4 prose-blockquote:bg-accent/7 prose-blockquote:py-3 md:prose-blockquote:py-4 prose-blockquote:px-4 md:prose-blockquote:px-6 prose-blockquote:rounded-r-lg md:prose-blockquote:rounded-r-xl prose-blockquote:not-italic prose-blockquote:my-6 md:prose-blockquote:my-8 prose-blockquote:text-foreground prose-ul:my-4 md:prose-ul:my-6 prose-ul:space-y-2 md:prose-ul:space-y-3 prose-ol:my-4 md:prose-ol:my-6 prose-ol:space-y-2 md:prose-ol:space-y-3 prose-li:text-foreground/80 prose-li:leading-relaxed prose-li:text-sm md:prose-li:text-base prose-table:my-8 prose-table:w-full prose-table:overflow-hidden prose-table:rounded-[1.25rem] prose-table:border prose-table:border-border prose-table:bg-card prose-thead:border-border prose-th:border-border prose-th:bg-muted/70 prose-th:px-4 prose-th:py-3 prose-th:text-left prose-th:text-xs prose-th:font-semibold prose-th:tracking-[0.12em] prose-th:text-muted-foreground prose-th:uppercase prose-td:border-border prose-td:px-4 prose-td:py-3.5 prose-td:text-sm prose-td:leading-7 md:prose-td:text-base max-w-none [&>div:first-of-type]:mb-6 [&>div:first-of-type]:text-base [&>div:first-of-type]:leading-relaxed md:[&>div:first-of-type]:mb-8 md:[&>div:first-of-type]:text-xl [&>p:first-of-type]:mb-6 [&>p:first-of-type]:text-base [&>p:first-of-type]:leading-relaxed md:[&>p:first-of-type]:mb-8 md:[&>p:first-of-type]:text-xl"
+                className="blog-prose prose prose-sm md:prose-lg prose-headings:scroll-mt-28 prose-headings:font-semibold prose-headings:text-foreground prose-h2:text-xl md:prose-h2:text-2xl prose-h2:mt-10 md:prose-h2:mt-14 prose-h2:mb-4 md:prose-h2:mb-6 prose-h3:text-lg md:prose-h3:text-xl prose-h3:mt-8 md:prose-h3:mt-10 prose-h3:mb-3 md:prose-h3:mb-4 prose-p:text-sm md:prose-p:text-base prose-p:text-foreground prose-p:leading-relaxed md:prose-p:leading-[1.8] prose-p:mb-4 md:prose-p:mb-6 [&>p:first-of-type]:text-muted-foreground [&>div:first-of-type]:text-muted-foreground prose-a:text-accent prose-a:no-underline hover:prose-a:underline prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[#24324A] prose-code:bg-[#EEF1F5] prose-code:border prose-code:border-[#DEE4EE] prose-code:px-1.5 md:prose-code:px-2 prose-code:py-0.5 prose-code:rounded-md prose-code:font-medium prose-code:text-xs md:prose-code:text-sm prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:border-0 prose-pre:my-6 md:prose-pre:my-8 prose-pre:p-0 prose-pre:rounded-none prose-pre:shadow-none prose-blockquote:border-l-accent prose-blockquote:border-l-4 prose-blockquote:bg-accent/7 prose-blockquote:py-3 md:prose-blockquote:py-4 prose-blockquote:px-4 md:prose-blockquote:px-6 prose-blockquote:rounded-r-lg md:prose-blockquote:rounded-r-xl prose-blockquote:not-italic prose-blockquote:my-6 md:prose-blockquote:my-8 prose-blockquote:text-foreground prose-ul:my-4 md:prose-ul:my-6 prose-ul:space-y-2 md:prose-ul:space-y-3 prose-ol:my-4 md:prose-ol:my-6 prose-ol:space-y-2 md:prose-ol:space-y-3 prose-li:text-foreground/80 prose-li:leading-relaxed prose-li:text-sm md:prose-li:text-base prose-table:my-8 prose-table:w-full prose-table:overflow-hidden prose-table:rounded-[1.25rem] prose-table:border prose-table:border-border prose-table:bg-card prose-thead:border-border prose-th:border-border prose-th:bg-muted/70 prose-th:px-4 prose-th:py-3 prose-th:text-left prose-th:text-xs prose-th:font-semibold prose-th:tracking-[0.12em] prose-th:text-muted-foreground prose-th:uppercase prose-td:border-border prose-td:px-4 prose-td:py-3.5 prose-td:text-sm prose-td:leading-7 md:prose-td:text-base max-w-none [&>div:first-of-type]:mb-6 [&>div:first-of-type]:text-base [&>div:first-of-type]:leading-relaxed md:[&>div:first-of-type]:mb-8 md:[&>div:first-of-type]:text-xl [&>p:first-of-type]:mb-6 [&>p:first-of-type]:text-base [&>p:first-of-type]:leading-relaxed md:[&>p:first-of-type]:mb-8 md:[&>p:first-of-type]:text-xl"
               >
                 <MDXContent code={post.code} components={blogMdxComponents} />
               </div>
 
-              <footer className="border-border mt-12 border-t pt-6 md:mt-16 md:pt-8">
-                <Link
-                  href="/blog"
-                  className="text-accent inline-flex items-center gap-2 text-sm font-medium hover:underline md:text-base"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                  More articles
-                </Link>
+              <footer className="border-border mt-12 border-t pt-8 md:mt-16 md:pt-10">
+                <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                  <div>
+                    <p className="text-muted-foreground text-xs font-semibold tracking-[0.14em] uppercase">
+                      Keep reading
+                    </p>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-[#202124] dark:text-[#F5F7FB]">
+                      Better navigation for the next step.
+                    </h2>
+                    {seriesNavigation ? (
+                      <p className="text-muted-foreground mt-2 text-sm leading-7">
+                        This article is part of{' '}
+                        <Link
+                          href={`/blog/series/${seriesNavigation.series.slug}`}
+                          className="text-accent hover:underline"
+                        >
+                          {seriesNavigation.series.title}
+                        </Link>
+                        , so you can keep moving through the same learning path.
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <Link
+                    href="/blog"
+                    className="text-accent inline-flex items-center gap-2 text-sm font-medium hover:underline md:text-base"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                    More articles
+                  </Link>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {seriesNavigation?.previous ? (
+                    <FeaturedPostCard
+                      post={seriesNavigation.previous}
+                      label="Previous in series"
+                    />
+                  ) : null}
+
+                  {seriesNavigation?.next ? (
+                    <FeaturedPostCard post={seriesNavigation.next} label="Next in series" />
+                  ) : null}
+
+                  {relatedPosts[0] ? (
+                    <FeaturedPostCard
+                      post={relatedPosts[0]}
+                      label={topicCluster ? `Related from ${topicCluster.label}` : 'Related article'}
+                    />
+                  ) : null}
+                </div>
               </footer>
             </div>
           </article>
@@ -419,7 +584,11 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
                 <div className="relative">
                   <button
                     onClick={() => setShowSettings(!showSettings)}
-                    className={`rounded-full p-1.5 transition-colors md:p-2 ${showSettings ? 'bg-accent/10 text-accent' : 'text-muted-foreground hover:text-foreground'}`}
+                    className={`rounded-full p-1.5 transition-colors md:p-2 ${
+                      showSettings
+                        ? 'bg-accent/10 text-accent'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
                     title="Settings"
                   >
                     <Settings className="h-4 w-4 md:h-5 md:w-5" />
@@ -450,8 +619,8 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
                           max="2"
                           step="0.25"
                           value={speed}
-                          onChange={(e) => {
-                            const newSpeed = parseFloat(e.target.value);
+                          onChange={(event) => {
+                            const newSpeed = parseFloat(event.target.value);
                             setSpeed(newSpeed);
                           }}
                           className="bg-muted accent-accent h-2 w-full cursor-pointer appearance-none rounded-full"
@@ -471,8 +640,8 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
                           </label>
                           <select
                             value={selectedVoice?.name || ''}
-                            onChange={(e) => {
-                              const voice = voices.find((v) => v.name === e.target.value);
+                            onChange={(event) => {
+                              const voice = voices.find((item) => item.name === event.target.value);
                               setSelectedVoice(voice || null);
                             }}
                             className="border-border bg-card text-foreground focus:ring-accent w-full cursor-pointer rounded-lg border p-2 text-xs focus:ring-2 md:rounded-xl md:p-2.5 md:text-sm"
@@ -496,7 +665,6 @@ export function ArticleContent({ post, topicCluster }: ArticleContentProps) {
                   )}
                 </div>
 
-                {/* Close Button */}
                 <button
                   onClick={handleStop}
                   className="text-muted-foreground hover:text-foreground p-1.5 transition-colors md:p-2"
