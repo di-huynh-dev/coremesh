@@ -5,7 +5,7 @@ import { useTheme } from 'next-themes';
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { LanguageSwitcher } from '@/components/ui/language-switcher';
 import { homeLocales, type HomeLocale } from '@/lib/home-content';
 import {
@@ -88,6 +88,7 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
   const router = useRouter();
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const headerRef = useRef<HTMLElement>(null);
   const systemLocale = useSyncExternalStore<HomeLocale>(
     subscribeToLocaleChange,
     getPreferredLocale,
@@ -121,8 +122,35 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
     setMobileMenuOpen(false);
   };
 
+  useEffect(() => {
+    const updateNavOffset = () => {
+      if (!headerRef.current) return;
+
+      const { bottom } = headerRef.current.getBoundingClientRect();
+      const offset = Math.ceil(bottom + 12);
+      document.documentElement.style.setProperty('--site-nav-offset', `${offset}px`);
+    };
+
+    updateNavOffset();
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateNavOffset();
+    });
+
+    if (headerRef.current) {
+      resizeObserver.observe(headerRef.current);
+    }
+
+    window.addEventListener('resize', updateNavOffset);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateNavOffset);
+    };
+  }, [mobileMenuOpen]);
+
   return (
-    <header className="fixed top-4 left-1/2 z-50 w-[calc(100%-2rem)] max-w-6xl -translate-x-1/2">
+    <header ref={headerRef} className="fixed top-4 left-1/2 z-50 w-[calc(100%-2rem)] max-w-6xl -translate-x-1/2">
       <nav
         className="flex items-center justify-between rounded-full px-4 py-3 md:px-6"
         style={{

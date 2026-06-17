@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
-import { getPostBySlug, getAllSlugs } from '@/lib/blog';
+import Script from 'next/script';
+import { getPostBySlug, getAllSlugs, getTopicCluster } from '@/lib/blog';
 import { ArticleContent } from '@/components/blog/article-content';
 
 interface BlogPostPageProps {
@@ -43,6 +44,8 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
     notFound();
   }
 
+  const topicCluster = getTopicCluster(post);
+
   const structuredData = {
     '@context': 'https://schema.org',
     '@type': 'BlogPosting',
@@ -67,11 +70,12 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
 
   return (
     <>
-      <script
+      <Script
+        id={`blog-post-structured-data-${post.slug}`}
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
-      <ArticleContent post={post} />
+      <ArticleContent post={post} topicCluster={topicCluster} />
     </>
   );
 }

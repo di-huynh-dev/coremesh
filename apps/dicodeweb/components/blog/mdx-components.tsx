@@ -1,7 +1,8 @@
 import Link from 'next/link';
-import type { ReactNode } from 'react';
+import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import type { MDXComponents } from 'mdx/types';
 import { AlertCircle, CheckCircle2, Lightbulb, TriangleAlert } from 'lucide-react';
+import { CodeBlock } from '@/components/blog/code-block';
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(' ');
@@ -180,12 +181,16 @@ export const blogMdxComponents: MDXComponents = {
     );
   },
   blockquote: ({ children, ...props }) => <blockquote {...props}>{children}</blockquote>,
-  // Use div instead of p to avoid invalid nesting when MDX wraps block-level
-  // custom components (Callout, Steps, etc.) inside a paragraph element.
+  pre: ({ children, ...props }) => (
+    <CodeBlock {...(props as ComponentPropsWithoutRef<'pre'>)}>{children}</CodeBlock>
+  ),
   p: ({ children, ...props }) => (
-    <div className="mb-4 md:mb-6 leading-relaxed md:leading-[1.8] text-sm md:text-base text-foreground" {...(props as React.HTMLAttributes<HTMLDivElement>)}>
+    <p
+      className="mb-4 text-sm leading-relaxed text-foreground md:mb-6 md:text-base md:leading-[1.8]"
+      {...props}
+    >
       {children}
-    </div>
+    </p>
   ),
   Callout,
   Steps,

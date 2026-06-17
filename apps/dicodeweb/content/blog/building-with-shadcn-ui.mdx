@@ -1,6 +1,6 @@
 ---
-title: "Building Production UIs with shadcn/ui"
-excerpt: "A practical look at why source-owned UI, accessible primitives, and local styling create a better long-term system than black-box component libraries."
+title: 'Building Production UIs with shadcn/ui'
+excerpt: 'A practical look at why source-owned UI, accessible primitives, and local styling create a better long-term system than black-box component libraries.'
 category: Design
 date: January 3, 2025
 publishedAt: 2025-01-03T00:00:00.000Z
@@ -11,6 +11,9 @@ tags:
   - Design Systems
   - Accessibility
   - Frontend Architecture
+series:
+  slug: frontend-systems
+  position: 2
 author:
   name: DiCodeWeb Editorial
 ---
@@ -26,17 +29,20 @@ That is the main reason `shadcn/ui` feels different. It gives you components as 
     {
       label: 'Ownership',
       value: '100%',
-      detail: 'Every component lives in your repo, so debugging and refactoring stay under your control.',
+      detail:
+        'Every component lives in your repo, so debugging and refactoring stay under your control.',
     },
     {
       label: 'Typical payoff',
       value: '3-6 mo',
-      detail: 'The real return shows up once the product starts accumulating variants and product edge cases.',
+      detail:
+        'The real return shows up once the product starts accumulating variants and product edge cases.',
     },
     {
       label: 'Biggest win',
       value: 'Clarity',
-      detail: 'You keep the accessibility substrate while preserving authorship over API and visuals.',
+      detail:
+        'You keep the accessibility substrate while preserving authorship over API and visuals.',
     },
   ]}
 />
@@ -143,10 +149,8 @@ Those are not "nice extras." They are part of whether the component is productio
 That last line matters. Accessible primitives reduce risk, but they do not replace thinking.
 
 <Callout type="tip" title="What experienced teams do differently">
-  <p>
-    They stop treating accessibility as a QA phase and start treating it as a component API
-    concern. That shift usually prevents more regressions than any late-stage patching effort.
-  </p>
+  They stop treating accessibility as a QA phase and start treating it as a component API concern.
+  That shift usually prevents more regressions than any late-stage patching effort.
 </Callout>
 
 ## Styling Feels Better When It Stays Near the Component
@@ -192,12 +196,12 @@ That local clarity is a huge advantage when onboarding teammates or reviewing UI
 
 Here is the failure mode I see most often:
 
-| Decision | Short-term benefit | Long-term cost |
-| --- | --- | --- |
-| Keep every generated prop | Faster setup | Bloated component API |
-| Add variants for every request | Fewer one-off components | Hard-to-reason styling matrix |
-| Never delete old patterns | Avoid refactor today | Inconsistent design system later |
-| Skip accessibility review | Faster delivery | Expensive regressions |
+| Decision                       | Short-term benefit       | Long-term cost                   |
+| ------------------------------ | ------------------------ | -------------------------------- |
+| Keep every generated prop      | Faster setup             | Bloated component API            |
+| Add variants for every request | Fewer one-off components | Hard-to-reason styling matrix    |
+| Never delete old patterns      | Avoid refactor today     | Inconsistent design system later |
+| Skip accessibility review      | Faster delivery          | Expensive regressions            |
 
 The fix is simple, but not always easy: treat copied components like product code, not like sacred vendor code.
 
@@ -215,22 +219,16 @@ Then I would do three passes:
 
 <Steps>
   <Step number="01" title="Simplify first">
-    <p>
-      Delete props and variants the product does not need yet. A shorter API is usually easier to
-      maintain than a theoretically flexible one.
-    </p>
+    Delete props and variants the product does not need yet. A shorter API is usually easier to
+    maintain than a theoretically flexible one.
   </Step>
   <Step number="02" title="Normalize the visual language">
-    <p>
-      Align radius, spacing, typography, and color tokens with the rest of the product so every
-      copied primitive starts sounding like the same design system.
-    </p>
+    Align radius, spacing, typography, and color tokens with the rest of the product so every copied
+    primitive starts sounding like the same design system.
   </Step>
   <Step number="03" title="Stress test under real usage">
-    <p>
-      Try loading states, long labels, destructive actions, mobile layout, and keyboard-only flows
-      before declaring the component done.
-    </p>
+    Try loading states, long labels, destructive actions, mobile layout, and keyboard-only flows
+    before declaring the component done.
   </Step>
 </Steps>
 
@@ -247,11 +245,8 @@ With `shadcn/ui`, the more useful question becomes:
 That framing leads to healthier architecture. You borrow the difficult accessibility substrate, but you keep authorship over the product experience.
 
 <Callout type="warning" title="Common scaling trap">
-  <p>
-    If every engineer adds a new variant for every new screen, the design system will feel fast for
-    two weeks and chaotic for six months. Copying components is easy. Curating them is the real
-    job.
-  </p>
+  If every engineer adds a new variant for every new screen, the design system will feel fast for
+  two weeks and chaotic for six months. Copying components is easy. Curating them is the real job.
 </Callout>
 
 ## When I Would Not Recommend It
@@ -268,10 +263,8 @@ I would be more cautious if:
 In those cases, a more opinionated system may create less operational drift.
 
 <Callout type="success" title="Where it shines">
-  <p>
-    This stack is especially strong for teams that care about shipping quickly without giving up
-    code ownership, accessibility, or the ability to evolve the design system inside the product.
-  </p>
+  This stack is especially strong for teams that care about shipping quickly without giving up code
+  ownership, accessibility, or the ability to evolve the design system inside the product.
 </Callout>
 
 ## Final Take

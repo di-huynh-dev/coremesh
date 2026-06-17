@@ -11,6 +11,18 @@ type HastNode = {
   value?: string;
 };
 
+function toClassNames(className: unknown) {
+  if (Array.isArray(className)) {
+    return className.filter((value): value is string => typeof value === 'string');
+  }
+
+  if (typeof className === 'string') {
+    return className.split(' ');
+  }
+
+  return [];
+}
+
 function getLanguage(className: unknown) {
   const classNames = Array.isArray(className)
     ? className
@@ -42,9 +54,27 @@ export function rehypeShiki() {
       tasks.push(
         codeToHtml(source, {
           lang: language,
-          theme: 'github-light',
+          theme: 'github-dark-default',
         }).then((html) => {
           const fragment = fromHtml(html, { fragment: true });
+          const preNode = ((fragment.children as unknown) as HastNode[]).find(
+            (child) => child.type === 'element' && child.tagName === 'pre',
+          );
+
+          if (preNode) {
+            preNode.properties = {
+              ...preNode.properties,
+              className: [...toClassNames(preNode.properties?.className), 'blog-shiki'],
+              'data-language': language,
+              style: {
+                ...(typeof preNode.properties?.style === 'object' && preNode.properties?.style
+                  ? (preNode.properties.style as Record<string, unknown>)
+                  : {}),
+                backgroundColor: 'transparent',
+              },
+            };
+          }
+
           parent.children ??= [];
           parent.children.splice(index, 1, ...((fragment.children as unknown) as HastNode[]));
         }),

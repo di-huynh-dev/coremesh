@@ -1,5 +1,5 @@
 import { BlogIndex } from '@/components/blog/blog-index';
-import { getAllPosts } from '@/lib/blog';
+import { getAllPosts, getAllSeries } from '@/lib/blog';
 
 export const metadata = {
   title: 'Blog | DiCodeWeb',
@@ -9,11 +9,12 @@ export const metadata = {
 
 export default function BlogPage() {
   const posts = getAllPosts();
+  const series = getAllSeries(posts).filter((seriesEntry) => seriesEntry.posts.length > 0);
 
   return (
     <main className="bg-background min-h-screen">
       <div className="editorial-grid pt-24 md:pt-32">
-        <BlogIndex posts={posts} />
+        <BlogIndex posts={posts} series={series} />
       </div>
     </main>
   );

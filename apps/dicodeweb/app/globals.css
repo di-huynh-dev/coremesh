@@ -48,7 +48,7 @@
   --secondary-foreground: #fef9f2;
   --muted: #f2ede7;
   --muted-foreground: #64748b;
-  --accent: #22c7e8;
+  --accent: #0F447A;
   --accent-foreground: #071b3a;
   --destructive: #ba1a1a;
   --border: #e2ddd5;
@@ -57,6 +57,7 @@
   --nav-bg: rgba(254, 249, 242, 0.92);
   --nav-border: rgba(7, 27, 58, 0.1);
   --nav-shadow: 0 4px 20px rgba(7, 27, 58, 0.05);
+  --site-nav-offset: 96px;
   --paper-shadow: 0 4px 20px rgba(7, 27, 58, 0.05);
   --paper-shadow-hover: 0 12px 28px rgba(7, 27, 58, 0.08);
 }
@@ -160,6 +161,78 @@
     color: var(--secondary);
     border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   }
+
+  .blog-prose .code-block-shell {
+    position: relative;
+    margin-block: 1.75rem;
+    overflow: hidden;
+    border-radius: 1.45rem;
+    border: 1px solid rgba(19, 25, 39, 0.1);
+    background:
+      radial-gradient(circle at top right, rgba(255, 255, 255, 0.06), transparent 28%),
+      linear-gradient(180deg, #2f3140 0%, #272a36 100%);
+    box-shadow: 0 18px 40px rgba(12, 18, 33, 0.14);
+  }
+
+  .blog-prose .blog-code-pre {
+    margin: 0 !important;
+    overflow-x: auto;
+    background: transparent !important;
+    color: inherit !important;
+    padding: 1.4rem 0 1.25rem !important;
+  }
+
+  .blog-prose .blog-code-pre code {
+    display: block;
+    min-width: max-content;
+    counter-reset: line;
+    background: transparent !important;
+    color: inherit !important;
+    padding: 0 0 0.15rem !important;
+    font-size: 0.875rem !important;
+    line-height: 0.2 !important;
+    tab-size: 2;
+    white-space: pre;
+  }
+
+  .blog-prose .blog-code-pre .line {
+    position: relative;
+    display: block;
+    min-height: 1.55em;
+    padding-left: 3.9rem;
+    padding-right: 1.4rem;
+    counter-increment: line;
+  }
+
+  .blog-prose .blog-code-pre .line::before {
+    content: counter(line);
+    position: absolute;
+    left: 1.4rem;
+    top: 0;
+    width: 1.5rem;
+    color: rgba(215, 226, 255, 0.44);
+    font-size: 0.73rem;
+    font-weight: 500;
+    text-align: right;
+    user-select: none;
+  }
+
+  .blog-prose .blog-code-pre .line > span {
+    display: inline;
+  }
+
+  .blog-prose .blog-code-pre::-webkit-scrollbar {
+    height: 10px;
+  }
+
+  .blog-prose .blog-code-pre::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .blog-prose .blog-code-pre::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(215, 226, 255, 0.18);
+  }
 }
 
 /* Prevent Radix UI scroll-locking layout shifts and jittering */
@@ -169,4 +242,3 @@ body[data-scroll-locked] {
   margin-right: 0 !important;
   padding-right: 0 !important;
 }
-

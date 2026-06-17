@@ -12,6 +12,15 @@ import { fromHtml } from "hast-util-from-html";
 import { toString } from "hast-util-to-string";
 import { codeToHtml } from "shiki";
 import { visit } from "unist-util-visit";
+function toClassNames(className) {
+  if (Array.isArray(className)) {
+    return className.filter((value) => typeof value === "string");
+  }
+  if (typeof className === "string") {
+    return className.split(" ");
+  }
+  return [];
+}
 function getLanguage(className) {
   const classNames = Array.isArray(className) ? className : typeof className === "string" ? className.split(" ") : [];
   const languageClass = classNames.find((name) => name.startsWith("language-"));
@@ -33,9 +42,23 @@ function rehypeShiki() {
       tasks.push(
         codeToHtml(source, {
           lang: language,
-          theme: "github-light"
+          theme: "github-dark-default"
         }).then((html) => {
           const fragment = fromHtml(html, { fragment: true });
+          const preNode = fragment.children.find(
+            (child) => child.type === "element" && child.tagName === "pre"
+          );
+          if (preNode) {
+            preNode.properties = {
+              ...preNode.properties,
+              className: [...toClassNames(preNode.properties?.className), "blog-shiki"],
+              "data-language": language,
+              style: {
+                ...typeof preNode.properties?.style === "object" && preNode.properties?.style ? preNode.properties.style : {},
+                backgroundColor: "transparent"
+              }
+            };
+          }
           parent.children ??= [];
           parent.children.splice(index, 1, ...fragment.children);
         })
@@ -46,6 +69,38 @@ function rehypeShiki() {
 }
 
 // content-collections.ts
+var postLevelSchema = z.enum(["Starter", "Intermediate", "Advanced"]);
+var mdxOptions = {
+  remarkPlugins: [remarkGfm],
+  rehypePlugins: [
+    rehypeSlug,
+    rehypeShiki,
+    [
+      rehypeAutolinkHeadings,
+      {
+        behavior: "append",
+        properties: {
+          className: ["anchor-link"],
+          ariaLabel: "Link to section"
+        },
+        content: {
+          type: "text",
+          value: "#"
+        }
+      }
+    ],
+    [
+      rehypeExternalLinks,
+      {
+        target: "_blank",
+        rel: ["noopener", "noreferrer"]
+      }
+    ]
+  ]
+};
+function createPlainContent(content) {
+  return content.replace(/^---[\s\S]*?---/, "").replace(/`{1,3}[^`]*`{1,3}/g, " ").replace(/[#>*_\-\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+}
 var blogPosts = defineCollection({
   name: "posts",
   directory: "content/blog",
@@ -64,49 +119,48 @@ var blogPosts = defineCollection({
       avatar: z.string().optional()
     }),
     tags: z.array(z.string()).default([]),
-    level: z.enum(["Starter", "Intermediate", "Advanced"]).default("Intermediate"),
-    image: z.string().optional()
+    level: postLevelSchema.default("Intermediate"),
+    image: z.string().optional(),
+    series: z.object({
+      slug: z.string(),
+      position: z.number().int().positive().optional()
+    }).optional()
   }),
   transform: async (document, context) => {
-    const mdx = await compileMDX(context, document, {
-      remarkPlugins: [remarkGfm],
-      rehypePlugins: [
-        rehypeSlug,
-        rehypeShiki,
-        [
-          rehypeAutolinkHeadings,
-          {
-            behavior: "append",
-            properties: {
-              className: ["anchor-link"],
-              ariaLabel: "Link to section"
-            },
-            content: {
-              type: "text",
-              value: "#"
-            }
-          }
-        ],
-        [
-          rehypeExternalLinks,
-          {
-            target: "_blank",
-            rel: ["noopener", "noreferrer"]
-          }
-        ]
-      ]
-    });
-    const plainContent = document.content.replace(/^---[\s\S]*?---/, "").replace(/`{1,3}[^`]*`{1,3}/g, " ").replace(/[#>*_\-\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+    const code = await compileMDX(context, document, mdxOptions);
     return {
       ...document,
       slug: document.slug ?? document._meta.path,
-      code: mdx,
-      plainContent
+      code,
+      plainContent: createPlainContent(document.content)
+    };
+  }
+});
+var blogSeries = defineCollection({
+  name: "series",
+  directory: "content/series",
+  include: "**/*.mdx",
+  schema: z.object({
+    title: z.string(),
+    slug: z.string().optional(),
+    description: z.string(),
+    level: postLevelSchema.default("Intermediate"),
+    order: z.number().int().positive().default(1),
+    updatedAt: z.string().optional(),
+    content: z.string()
+  }),
+  transform: async (document, context) => {
+    const code = await compileMDX(context, document, mdxOptions);
+    return {
+      ...document,
+      slug: document.slug ?? document._meta.path,
+      code,
+      plainContent: createPlainContent(document.content)
     };
   }
 });
 var content_collections_default = defineConfig({
-  content: [blogPosts]
+  content: [blogPosts, blogSeries]
 });
 export {
   content_collections_default as default

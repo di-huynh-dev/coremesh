@@ -4,7 +4,6 @@ import { PostCard } from "@repo/ui/post-card";
 import type { BlogPost } from "@repo/ui/types/post";
 import { motion } from "framer-motion";
 import { ExternalLink } from "lucide-react";
-import { BlogNavbar } from "./blog-navbar";
 
 type BlogSectionProps = {
   posts: BlogPost[];
