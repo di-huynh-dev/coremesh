@@ -1,9 +1,20 @@
 'use client';
 
-import type { BlogPost, BlogSeries } from '@/lib/blog';
+import type { HomeLocale } from '@/lib/home-content';
+import { resolvePostForLocale, type BlogPost, type BlogSeries } from '@/lib/blog';
+import {
+  formatBlogCategory,
+  formatBlogDate,
+  formatBlogLevel,
+  formatBlogReadingTime,
+  formatSeriesPostCount,
+  getBlogUiCopy,
+} from '@/lib/blog-localization';
+import { getPreferredLocale, subscribeToLocaleChange } from '@/lib/site-locale';
 import { ArrowRight, BookOpen, Flame } from 'lucide-react';
 import Link from 'next/link';
 import Image from 'next/image';
+import { useSyncExternalStore } from 'react';
 
 const CATEGORY_ACCENTS: Record<string, { background: string; accent: string; soft: string }> = {
   Engineering: {
@@ -24,20 +35,20 @@ const CATEGORY_ACCENTS: Record<string, { background: string; accent: string; sof
 };
 
 export function formatHashTag(tag: string) {
-  return `#${tag.toLowerCase().replace(/[^a-z0-9]+/g, '')}`;
+  return `#${tag.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')}`;
+}
+
+function useActiveLocale() {
+  return useSyncExternalStore<HomeLocale>(subscribeToLocaleChange, getPreferredLocale, () => 'en');
 }
 
 function getPostSurface(post: BlogPost) {
   return CATEGORY_ACCENTS[post.category] ?? CATEGORY_ACCENTS.Framework;
 }
 
-function ThumbnailArtwork({
-  post,
-  compact = false,
-}: {
-  post: BlogPost;
-  compact?: boolean;
-}) {
+function ThumbnailArtwork({ post, compact = false }: { post: BlogPost; compact?: boolean }) {
+  const locale = useActiveLocale();
+  const displayPost = resolvePostForLocale(post, locale);
   const surface = getPostSurface(post);
 
   if (post.image) {
@@ -45,7 +56,7 @@ function ThumbnailArtwork({
       <>
         <Image
           src={post.image}
-          alt={post.title}
+          alt={displayPost.title}
           fill
           sizes={compact ? '(max-width: 768px) 100vw, 188px' : '(max-width: 1280px) 100vw, 33vw'}
           className="object-cover"
@@ -57,10 +68,7 @@ function ThumbnailArtwork({
 
   return (
     <>
-      <div
-        className="absolute inset-0"
-        style={{ background: surface.background }}
-      />
+      <div className="absolute inset-0" style={{ background: surface.background }} />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_20%,rgba(255,255,255,0.18),transparent_28%),radial-gradient(circle_at_15%_80%,rgba(255,255,255,0.08),transparent_34%)]" />
       <div className="absolute inset-0 opacity-30">
         <div className="absolute top-5 left-10 h-px w-18 rotate-12 bg-white/40" />
@@ -70,7 +78,7 @@ function ThumbnailArtwork({
       {compact ? (
         <div className="absolute bottom-3 left-4 max-w-[130px]">
           <p className="line-clamp-2 text-[9px] leading-[1.35] font-semibold text-white">
-            {post.title}
+            {displayPost.title}
           </p>
         </div>
       ) : null}
@@ -92,13 +100,16 @@ export function PostThumbnail({ post }: { post: BlogPost }) {
 export function FeaturedPostCard({
   post,
   label,
-  cta = 'Keep reading',
+  cta,
 }: {
   post: BlogPost;
   label?: string;
   cta?: string;
 }) {
-  const primaryTag = post.tags[0] ?? post.category;
+  const locale = useActiveLocale();
+  const copy = getBlogUiCopy(locale);
+  const displayPost = resolvePostForLocale(post, locale);
+  const primaryTag = displayPost.tags[0] ?? displayPost.category;
 
   return (
     <Link
@@ -114,20 +125,22 @@ export function FeaturedPostCard({
 
       <div className="flex h-[calc(100%-11rem)] flex-col p-5">
         <div className="text-muted-foreground flex items-center gap-3 text-xs font-medium uppercase">
-          <span>{label ?? post.category}</span>
+          <span>{label ?? formatBlogCategory(displayPost.category, locale)}</span>
           {label ? null : <span className="h-1 w-1 rounded-full bg-current/40" />}
-          <span>{post.readingTime} min read</span>
+          <span>{formatBlogReadingTime(displayPost.readingTime, locale)}</span>
         </div>
 
         <h3 className="mt-4 pr-8 text-[1.45rem] leading-[1.3] font-semibold tracking-[-0.02em] text-[#202124] transition-colors group-hover:text-[#071B3A] dark:text-[#F5F7FB]">
-          {post.title}
+          {displayPost.title}
         </h3>
 
-        <p className="text-muted-foreground mt-3 line-clamp-3 text-sm leading-7">{post.excerpt}</p>
+        <p className="text-muted-foreground mt-3 line-clamp-3 text-sm leading-7">
+          {displayPost.excerpt}
+        </p>
 
         <div className="text-muted-foreground mt-auto flex items-center justify-between gap-3 pt-5 text-sm">
           <div className="flex flex-wrap items-center gap-4">
-            <span>{post.date}</span>
+            <span>{formatBlogDate(displayPost.publishedAt, locale)}</span>
 
             <span className="border-b border-current pb-0.5 font-medium text-[#202124] dark:text-[#E7EDF8]">
               {formatHashTag(primaryTag)}
@@ -135,7 +148,7 @@ export function FeaturedPostCard({
           </div>
 
           <span className="text-accent inline-flex items-center gap-2 font-medium">
-            {cta}
+            {cta ?? copy.keepReadingCta}
             <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-1" />
           </span>
         </div>
@@ -145,12 +158,17 @@ export function FeaturedPostCard({
 }
 
 export function WhatsNewCard({ post }: { post: BlogPost }) {
-  return <FeaturedPostCard post={post} label="What&apos;s new" cta="Read article" />;
+  const locale = useActiveLocale();
+  const copy = getBlogUiCopy(locale);
+
+  return <FeaturedPostCard post={post} label={copy.whatsNewLabel} cta={copy.readArticle} />;
 }
 
 export function BlogListItem({ post }: { post: BlogPost; seriesTitle?: string }) {
-  const primaryTag = post.tags[0] ?? post.category;
-  const secondaryTag = post.tags[1];
+  const locale = useActiveLocale();
+  const displayPost = resolvePostForLocale(post, locale);
+  const primaryTag = displayPost.tags[0] ?? displayPost.category;
+  const secondaryTag = displayPost.tags[1];
 
   return (
     <article className="group border-border bg-card rounded-[10px] border transition-colors hover:border-[#C9D1DC]">
@@ -162,23 +180,23 @@ export function BlogListItem({ post }: { post: BlogPost; seriesTitle?: string })
 
         <div className="min-w-0 flex-1">
           <div className="text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-medium uppercase">
-            <span>{post.category}</span>
-            <span>{post.readingTime} min read</span>
-            <span>{post.date}</span>
+            <span>{formatBlogCategory(displayPost.category, locale)}</span>
+            <span>{formatBlogReadingTime(displayPost.readingTime, locale)}</span>
+            <span>{formatBlogDate(displayPost.publishedAt, locale)}</span>
           </div>
 
-          <h3 className="mt-3 line-clamp-2 text-[1.35rem] leading-[1.25] font-semibold tracking-[-0.02em] text-[#202124] dark:text-[#F5F7FB] md:text-[1.55rem]">
-            {post.title}
+          <h3 className="mt-3 line-clamp-2 text-[1.35rem] leading-[1.25] font-semibold tracking-[-0.02em] text-[#202124] md:text-[1.55rem] dark:text-[#F5F7FB]">
+            {displayPost.title}
           </h3>
 
           <p className="text-muted-foreground mt-3 line-clamp-2 max-w-3xl text-sm leading-7">
-            {post.excerpt}
+            {displayPost.excerpt}
           </p>
 
           <div className="text-muted-foreground mt-5 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm">
             <span className="flex items-center gap-2 text-[#5b6a81] dark:text-[#A9B0BD]">
               <Flame className="h-4 w-4 text-[#A9B0BD]" />
-              <span>{post.level}</span>
+              <span>{formatBlogLevel(displayPost.level, locale)}</span>
             </span>
 
             <span className="border-b border-[#202124]/70 pb-0.5 text-[#202124] dark:border-white/70 dark:text-[#F5F7FB]">
@@ -202,6 +220,8 @@ export function BlogListItem({ post }: { post: BlogPost; seriesTitle?: string })
 }
 
 export function SeriesItem({ index, series }: { index: number; series: BlogSeries }) {
+  const locale = useActiveLocale();
+
   return (
     <Link
       href={`/blog/series/${series.slug}`}
@@ -221,7 +241,7 @@ export function SeriesItem({ index, series }: { index: number; series: BlogSerie
         </p>
 
         <p className="text-muted-foreground mt-2 text-xs font-medium tracking-[0.14em] uppercase">
-          {series.posts.length} posts
+          {formatSeriesPostCount(series.posts.length, locale)}
         </p>
       </div>
 

@@ -1,0 +1,697 @@
+[
+  {
+    "id": "css-box-stacking",
+    "title": "CSS Box Model & Stacking Context",
+    "category": "css",
+    "difficulty": "Medium",
+    "description": "Master the visual formatting model, margin collapsing, and the mechanics of the CSS stacking context.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "If a div has standard box-sizing (content-box) with 'width: 100px', 'padding: 10px', and 'border: 5px solid black', what is its final rendered outer width?",
+        "options": [
+          { "id": "o1", "text": "100px" },
+          { "id": "o2", "text": "115px" },
+          { "id": "o3", "text": "130px" },
+          { "id": "o4", "text": "120px" }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "In standard content-box sizing, outer width = width + left/right padding + left/right border. Thus, 100px + 20px (padding) + 10px (border) = 130px. In border-box, the outer width would remain 100px.",
+        "slug": "box-sizing-width-calculation"
+      },
+      {
+        "id": "q2",
+        "text": "What is the default value of the box-sizing property in standard user agent stylesheets?",
+        "options": [
+          { "id": "o1", "text": "border-box" },
+          { "id": "o2", "text": "content-box" },
+          { "id": "o3", "text": "padding-box" },
+          { "id": "o4", "text": "margin-box" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The default box-sizing value is content-box. Most modern CSS resets change this globally to border-box for easier layout styling.",
+        "slug": "default-box-sizing"
+      },
+      {
+        "id": "q3",
+        "text": "Which of the following scenarios will NOT cause vertical margin collapsing?",
+        "options": [
+          { "id": "o1", "text": "Adjacent sibling block elements in the normal flow." },
+          { "id": "o2", "text": "A parent block element and its first child block element, where the parent has no padding or borders." },
+          { "id": "o3", "text": "Two adjacent flex items inside a row flex container." },
+          { "id": "o4", "text": "An empty block element with no border, padding, or height." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Margin collapsing only occurs for block-level elements in normal document flow. Flex items, grid items, absolutely positioned elements, and float elements never collapse margins.",
+        "slug": "margin-collapsing-rules"
+      },
+      {
+        "id": "q4",
+        "text": "What is the rendering effect of applying 'margin-top: -10px' to a static, non-positioned block element?",
+        "options": [
+          { "id": "o1", "text": "A margin of 10px is added to the top, pushing sibling elements down." },
+          { "id": "o2", "text": "The element shifts upwards by 10px, and subsequent siblings in normal flow are pulled upwards with it." },
+          { "id": "o3", "text": "The element shifts upwards by 10px, but subsequent siblings remain in their original positions." },
+          { "id": "o4", "text": "Nothing happens, as negative margins are invalid in CSS." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Applying a negative margin-top to a block element pulls it upwards in the document flow. Because it remains in normal flow, all subsequent static sibling elements are pulled up along with it, unlike transforms or relative positioning.",
+        "slug": "negative-margins-behavior"
+      },
+      {
+        "id": "q5",
+        "text": "What happens if you define width and height properties on a standard inline element like <span>?",
+        "options": [
+          { "id": "o1", "text": "The element scales to the defined width and height." },
+          { "id": "o2", "text": "Width and height are ignored entirely by the layout engine." },
+          { "id": "o3", "text": "Only height is respected, while width is ignored." },
+          { "id": "o4", "text": "The browser automatically sets display: inline-block." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Elements with display: inline do not respect width or height properties. To apply sizing, their display property must be changed to inline-block, block, flex, grid, etc.",
+        "slug": "inline-element-sizing"
+      },
+      {
+        "id": "q6",
+        "text": "Which of the following does NOT trigger a new stacking context on an element?",
+        "options": [
+          { "id": "o1", "text": "position: fixed or position: sticky" },
+          { "id": "o2", "text": "opacity: 0.9" },
+          { "id": "o3", "text": "position: absolute with z-index: auto" },
+          { "id": "o4", "text": "transform: translateZ(0)" }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Absolutely or relatively positioned elements only trigger a new stacking context when their z-index is set to a value other than 'auto'. In contrast, fixed positioning, sticky positioning, opacity < 1, and transforms create stacking contexts automatically.",
+        "slug": "stacking-context-triggers"
+      },
+      {
+        "id": "q7",
+        "text": "Child A (z-index: 999) resides inside Parent A (z-index: 1). Child B (z-index: 2) resides inside Parent B (z-index: 3). If both parents are relative positioned siblings, how do the children render?",
+        "options": [
+          { "id": "o1", "text": "Child A renders on top because 999 is greater than 2." },
+          { "id": "o2", "text": "Child B renders on top because Parent B's stacking context is higher than Parent A's." },
+          { "id": "o3", "text": "They blend together based on source order." },
+          { "id": "o4", "text": "The browser triggers a layout error due to nested z-indexes." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Parent-level stacking contexts are resolved first. Because Parent B (z-index: 3) renders on top of Parent A (z-index: 1), everything inside Parent B—regardless of its local z-index—renders above everything in Parent A. Child A's z-index of 999 is local and cannot break out.",
+        "slug": "nested-z-index-trap"
+      },
+      {
+        "id": "q8",
+        "text": "What is the primary utility of the 'isolation: isolate' property in CSS?",
+        "options": [
+          { "id": "o1", "text": "It isolates CSS variables from being inherited by children." },
+          { "id": "o2", "text": "It creates a new stacking context without requiring position or z-index changes." },
+          { "id": "o3", "text": "It forces an element to render on its own paint thread to prevent reflows." },
+          { "id": "o4", "text": "It blocks cross-origin content frames from styling." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The 'isolation: isolate' property creates a new stacking context on the target element. This is extremely useful for preventing internal child z-indexes (like modal backdrops) from bleeding out and overlapping unrelated elements on the page.",
+        "slug": "css-isolation-property"
+      },
+      {
+        "id": "q9",
+        "text": "Why is there a small horizontal gap between inline-block elements in a row, and how can you clean it up?",
+        "options": [
+          { "id": "o1", "text": "It is a rendering bug; it must be fixed using negative margins." },
+          { "id": "o2", "text": "It is caused by whitespace/newlines in the HTML file; it can be fixed by removing spaces between tags or setting font-size: 0 on the parent container." },
+          { "id": "o3", "text": "It is caused by the box-sizing rule; it is fixed by setting box-sizing: border-box." },
+          { "id": "o4", "text": "It is standard padding; it is removed using padding: 0." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Because display: inline-block behaves like text, any whitespace, spaces, or line breaks between elements in the HTML source code are rendered as a single text space. Removing the spacing in markup or setting font-size: 0 on the parent removes the gap.",
+        "slug": "inline-block-gap"
+      },
+      {
+        "id": "q10",
+        "text": "Which CSS property can you apply to add an outer ring around an element without affecting its layout flow or page spacing?",
+        "options": [
+          { "id": "o1", "text": "border-width" },
+          { "id": "o2", "text": "outline" },
+          { "id": "o3", "text": "margin" },
+          { "id": "o4", "text": "padding-top" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Outlines do not take up space in the layout or affect the element dimensions, meaning they never trigger reflows. Box-shadows (inset or outset) behave similarly, while borders do alter layout math.",
+        "slug": "border-vs-outline-flow"
+      }
+    ]
+  },
+  {
+    "id": "css-flexbox",
+    "title": "Flexbox Layout Engine",
+    "category": "css",
+    "difficulty": "Easy",
+    "description": "Test your knowledge on flex directions, alignment axes, flex grow/shrink math, and automatic margins.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "Which combination of properties aligns flex items centrally along both the main and cross axes?",
+        "options": [
+          { "id": "o1", "text": "justify-items: center; align-content: center;" },
+          { "id": "o2", "text": "justify-content: center; align-items: center;" },
+          { "id": "o3", "text": "align-self: center; justify-self: center;" },
+          { "id": "o4", "text": "text-align: center; vertical-align: middle;" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "In Flexbox, justify-content manages alignment along the main axis, and align-items manages alignment along the cross axis. Setting both to center centers items horizontally and vertically.",
+        "slug": "flexbox-centering"
+      },
+      {
+        "id": "q2",
+        "text": "What does the shorthand 'flex: 1' expand to in CSS?",
+        "options": [
+          { "id": "o1", "text": "flex-grow: 1; flex-shrink: 0; flex-basis: auto;" },
+          { "id": "o2", "text": "flex-grow: 1; flex-shrink: 1; flex-basis: 0%;" },
+          { "id": "o3", "text": "flex-grow: 1; flex-shrink: 1; flex-basis: auto;" },
+          { "id": "o4", "text": "flex-grow: 0; flex-shrink: 1; flex-basis: 0%;" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The 'flex: 1' shorthand resolves to 'flex-grow: 1', 'flex-shrink: 1', and 'flex-basis: 0%'. This makes the flex item grow and shrink dynamically while ignoring its content's default size.",
+        "slug": "flex-one-shorthand"
+      },
+      {
+        "id": "q3",
+        "text": "What is the difference between setting flex-basis to 'auto' versus '0' on a flex item?",
+        "options": [
+          { "id": "o1", "text": "They behave identically in all layouts." },
+          { "id": "o2", "text": "flex-basis: auto calculates space distribution based on content width, whereas flex-basis: 0 treats item width as zero, distributing space equally." },
+          { "id": "o3", "text": "flex-basis: 0 disables flex-shrink completely." },
+          { "id": "o4", "text": "flex-basis: auto prevents the element from growing." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "With flex-basis: auto, space allocation math starts with the element's actual size (e.g. content/width). With flex-basis: 0, the item's baseline size is treated as zero, meaning extra space distribution calculations are independent of content size.",
+        "slug": "flex-basis-comparison"
+      },
+      {
+        "id": "q4",
+        "text": "What happens if you apply 'margin-left: auto' to a single flex item inside a row flex container?",
+        "options": [
+          { "id": "o1", "text": "The margin is ignored since Flexbox handles placement." },
+          { "id": "o2", "text": "It collapses to 0px." },
+          { "id": "o3", "text": "It consumes all available free space on the left, pushing that item to the far right of the container." },
+          { "id": "o4", "text": "It centers the item inside the container." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Auto margins inside Flexbox are extremely powerful. They absorb all remaining free space in that direction, allowing a single flex item to be pushed to the side, overriding justify-content alignments.",
+        "slug": "flexbox-auto-margins"
+      },
+      {
+        "id": "q5",
+        "text": "When does the 'align-content' property have an effect on flex items?",
+        "options": [
+          { "id": "o1", "text": "Only when the flex container has flex-wrap: wrap (or wrap-reverse) and contains multiple rows of items." },
+          { "id": "o2", "text": "Always, regardless of wrap settings." },
+          { "id": "o3", "text": "Only in single-line row layouts." },
+          { "id": "o4", "text": "Only when display: inline-flex is used." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "The align-content property aligns multiple rows/lines of a flex container's cross-axis. If there is only a single line of flex items, align-content has no effect; align-items must be used instead.",
+        "slug": "align-content-wrap"
+      },
+      {
+        "id": "q6",
+        "text": "How is the shrinking distribution of flex items calculated when container width is insufficient?",
+        "options": [
+          { "id": "o1", "text": "All items shrink by the exact same amount of pixels." },
+          { "id": "o2", "text": "Items shrink proportionally based on their flex-shrink factor multiplied by their flex-basis." },
+          { "id": "o3", "text": "Only items with the largest flex-basis will shrink." },
+          { "id": "o4", "text": "Proportions are calculated using font size." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Flexbox calculates shrinking based on the scaled shrink factor (flex-shrink * flex-basis). This prevents larger items from shrinking too drastically compared to smaller items.",
+        "slug": "flex-shrink-math"
+      },
+      {
+        "id": "q7",
+        "text": "If you set 'display: flex' on a parent, what is the default value of its flex-direction?",
+        "options": [
+          { "id": "o1", "text": "row" },
+          { "id": "o2", "text": "column" },
+          { "id": "o3", "text": "row-reverse" },
+          { "id": "o4", "text": "auto" }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "By default, a flex container lays out its items horizontally, meaning the initial value of flex-direction is 'row'.",
+        "slug": "default-flex-direction"
+      },
+      {
+        "id": "q8",
+        "text": "If a flex container is set to 'flex-direction: column', which property aligns items horizontally?",
+        "options": [
+          { "id": "o1", "text": "justify-content" },
+          { "id": "o2", "text": "align-items" },
+          { "id": "o3", "text": "justify-items" },
+          { "id": "o4", "text": "text-align" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Under flex-direction: column, the cross axis becomes horizontal (left-to-right). Since align-items controls cross-axis alignment, it is used to center or stretch items horizontally.",
+        "slug": "column-direction-alignment"
+      },
+      {
+        "id": "q9",
+        "text": "What is the default value of the flex 'order' property for all flex items?",
+        "options": [
+          { "id": "o1", "text": "1" },
+          { "id": "o2", "text": "0" },
+          { "id": "o3", "text": "-1" },
+          { "id": "o4", "text": "auto" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "By default, all flex items have an order of 0. Giving an item an order value of -1 moves it before other items, and positive values move it after.",
+        "slug": "flex-order-default"
+      },
+      {
+        "id": "q10",
+        "text": "Under 'flex-wrap: nowrap', what happens if the combined flex-basis of all items exceeds the container's width?",
+        "options": [
+          { "id": "o1", "text": "The overflow items wrap onto a new line anyway." },
+          { "id": "o2", "text": "The elements will shrink according to their flex-shrink values, or overflow the container if flex-shrink is 0." },
+          { "id": "o3", "text": "The browser throws a rendering layout exception." },
+          { "id": "o4", "text": "The container automatically expands to wrap the page." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Under flex-wrap: nowrap, items must remain on a single line. The browser attempts to shrink items using their flex-shrink factors. If shrink factors are set to 0, items will overflow the container boundaries.",
+        "slug": "flex-wrap-overflow"
+      }
+    ]
+  },
+  {
+    "id": "css-grid",
+    "title": "CSS Grid Layout Engine",
+    "category": "css",
+    "difficulty": "Medium",
+    "description": "Master two-dimensional layouts, template areas, auto-fill vs auto-fit, and implicit grid generation.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is the primary design difference between Flexbox and CSS Grid?",
+        "options": [
+          { "id": "o1", "text": "Grid is for content, while Flexbox is strictly for layout." },
+          { "id": "o2", "text": "Flexbox is one-dimensional (handles rows OR columns), whereas Grid is two-dimensional (handles rows AND columns simultaneously)." },
+          { "id": "o3", "text": "Grid only works in modern mobile browsers." },
+          { "id": "o4", "text": "Flexbox does not support grid alignment settings." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Flexbox was designed for one-dimensional layouts (working along a single line). CSS Grid is a two-dimensional layout engine, meaning it aligns columns and rows at the same time.",
+        "slug": "grid-vs-flexbox-dimensions"
+      },
+      {
+        "id": "q2",
+        "text": "In a grid container, how do you define areas by naming layouts and placing items within them?",
+        "options": [
+          { "id": "o1", "text": "grid-template-rows and grid-column-start" },
+          { "id": "o2", "text": "grid-template-areas on parent, and grid-area on children" },
+          { "id": "o3", "text": "grid-name-definition and template-place" },
+          { "id": "o4", "text": "grid-row-gap and align-self" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "CSS Grid allows you to define layout templates by naming areas via 'grid-template-areas' on the container, then assigning grid items to those areas using 'grid-area: [areaName]' on child elements.",
+        "slug": "grid-template-areas-flow"
+      },
+      {
+        "id": "q3",
+        "text": "What is the behavior of 'grid-template-columns: repeat(3, minmax(100px, 1fr))'?",
+        "options": [
+          { "id": "o1", "text": "Creates 3 columns, each locked at exactly 100px." },
+          { "id": "o2", "text": "Creates 3 columns. Each column shrinks down to a minimum of 100px and expands to share remaining space equally." },
+          { "id": "o3", "text": "Creates 3 columns that will always expand to fill the entire body width." },
+          { "id": "o4", "text": "Creates a layout that breaks on viewport sizing." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The minmax(100px, 1fr) function defines a size range. Each of the 3 columns will shrink no lower than 100px and grow dynamically to fill available free space using the fractional unit (1fr) equally.",
+        "slug": "minmax-columns-function"
+      },
+      {
+        "id": "q4",
+        "text": "What is the difference between auto-fill and auto-fit inside a grid repeat() function?",
+        "options": [
+          { "id": "o1", "text": "auto-fill collapses empty tracks, while auto-fit keeps empty tracks open." },
+          { "id": "o2", "text": "auto-fill adds as many tracks as possible (even if empty), while auto-fit collapses empty tracks, stretching active tracks to fill remaining space." },
+          { "id": "o3", "text": "They perform exactly the same layout calculation." },
+          { "id": "o4", "text": "auto-fit only works for horizontal grid alignments." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Both options create as many tracks as fit the width. However, if there are empty tracks left, auto-fill preserves them (causing elements to stay left-aligned), while auto-fit collapses those empty tracks to 0px, causing the populated tracks to stretch and fill the container.",
+        "slug": "auto-fill-vs-auto-fit"
+      },
+      {
+        "id": "q5",
+        "text": "What does the '1fr' unit represent inside a CSS Grid container template?",
+        "options": [
+          { "id": "o1", "text": "100% of the container width." },
+          { "id": "o2", "text": "One fraction of the free, remaining space inside the container after fixed items are calculated." },
+          { "id": "o3", "text": "The size of the largest grid element." },
+          { "id": "o4", "text": "A fluid container percentage." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The 'fr' (fraction) unit represents a fraction of the remaining free space in the grid container. If column template is '1fr 2fr', the first column gets 1/3 of the free space, and the second gets 2/3.",
+        "slug": "fractional-unit-calculation"
+      },
+      {
+        "id": "q6",
+        "text": "What is the implicit grid in CSS Grid layout mechanics?",
+        "options": [
+          { "id": "o1", "text": "The grid defined explicitly using grid-template columns and rows." },
+          { "id": "o2", "text": "The hidden grids generated by child nesting blocks." },
+          { "id": "o3", "text": "Tracks automatically created by the browser to hold items placed outside the explicit grid boundaries." },
+          { "id": "o4", "text": "The layout overlay rendered by Chrome DevTools." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "If you place a grid item outside the defined columns/rows (e.g. placing item on row 4 when you only defined 2 rows), the browser automatically generates new tracks to hold it. This is the implicit grid, configured via grid-auto-rows and grid-auto-columns.",
+        "slug": "implicit-vs-explicit-grid"
+      },
+      {
+        "id": "q7",
+        "text": "What does setting 'grid-auto-flow: row dense' do to grid item placements?",
+        "options": [
+          { "id": "o1", "text": "It forces all items into a single dense row." },
+          { "id": "o2", "text": "It instructs the auto-placement algorithm to backfill layout gaps/holes with smaller items that fit, even if it changes visual order." },
+          { "id": "o3", "text": "It compresses text density inside cells." },
+          { "id": "o4", "text": "It disables flex wrapping inside grid layout structures." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "By default, grid items are placed in order, potentially leaving gaps if a large item doesn't fit on a line. 'dense' attempts to fill in those earlier empty spaces with smaller items that fit, maximizing layout density.",
+        "slug": "grid-auto-flow-dense"
+      },
+      {
+        "id": "q8",
+        "text": "In a 4-column grid, what does 'grid-column: 1 / -1' do to an element?",
+        "options": [
+          { "id": "o1", "text": "Positions it on column 1 and spans it backwards." },
+          { "id": "o2", "text": "Spans the item across all columns from the first grid line to the very last grid line." },
+          { "id": "o3", "text": "Hides the element from rendering." },
+          { "id": "o4", "text": "Positions the element on the middle grid column." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The value '-1' in grid line placement refers to the last grid line. Therefore, '1 / -1' spans an item across the entire grid row, from the first line to the final line.",
+        "slug": "grid-line-span-negative"
+      },
+      {
+        "id": "q9",
+        "text": "How does using grid placement values (like grid-row/grid-column) affect screen reader accessibility order?",
+        "options": [
+          { "id": "o1", "text": "Accessibility screen reader order automatically syncs with the visual placements." },
+          { "id": "o2", "text": "It has no impact, because screen readers always follow the order of elements in the DOM." },
+          { "id": "o3", "text": "The browser completely locks focus navigation on grid elements." },
+          { "id": "o4", "text": "Visual changes only apply to mobile screen readers." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "CSS Grid handles layout, but accessibility, DOM navigation, and screen readers follow the DOM order of the HTML file. Changing visual placement does not alter reading or keyboard focus order, which can cause accessibility issues if mismatch occurs.",
+        "slug": "grid-accessibility-dom-order"
+      },
+      {
+        "id": "q10",
+        "text": "If a grid cell is empty, does the 'gap' (grid-gap) space collapse around it?",
+        "options": [
+          { "id": "o1", "text": "Yes, empty cells result in collapsed gap pixels." },
+          { "id": "o2", "text": "No, gap spaces are maintained as gutters between tracks, regardless of whether cells are populated." },
+          { "id": "o3", "text": "Gaps only collapse vertically." },
+          { "id": "o4", "text": "Gaps only collapse on mobile device widths." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Grid gaps act as gutters between grid tracks. Gaps are determined by track count and track sizes. Unless a track collapses to 0px (e.g. via auto-fit), the gap gutters are always preserved.",
+        "slug": "grid-gap-collapse"
+      }
+    ]
+  },
+  {
+    "id": "css-specificity-cascade",
+    "title": "Selectors, Specificity & Cascade",
+    "category": "css",
+    "difficulty": "Medium",
+    "description": "Deep dive into selector priority scoring, pseudo-classes, inherited variables, and Cascade Layers.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is the specificity calculation score of the CSS selector '#sidebar .menu-list li a:hover'?",
+        "options": [
+          { "id": "o1", "text": "ID: 1, Class/Pseudo-class: 1, Element: 2 (1, 1, 2)" },
+          { "id": "o2", "text": "ID: 1, Class/Pseudo-class: 2, Element: 2 (1, 2, 2)" },
+          { "id": "o3", "text": "ID: 1, Class/Pseudo-class: 0, Element: 4 (1, 0, 4)" },
+          { "id": "o4", "text": "ID: 0, Class/Pseudo-class: 3, Element: 2 (0, 3, 2)" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Specificity is calculated as: ID selectors (1: '#sidebar'), Class and Pseudo-class selectors (2: '.menu-list', ':hover'), and Element/Pseudo-element selectors (2: 'li', 'a'). Hence the score is 1,2,2.",
+        "slug": "specificity-calculation"
+      },
+      {
+        "id": "q2",
+        "text": "Where do inline styles rank in specificity, and how can they be overridden?",
+        "options": [
+          { "id": "o1", "text": "They rank below IDs, and can be overridden by any class selector." },
+          { "id": "o2", "text": "They rank above all selector selectors, and can only be overridden by declarations with the '!important' flag." },
+          { "id": "o3", "text": "They cannot be overridden under any circumstances." },
+          { "id": "o4", "text": "They rank below media queries." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Inline styles applied directly to HTML tags have higher specificity than any stylesheet selectors. They can only be overridden by applying the '!important' declaration to rules in your CSS.",
+        "slug": "inline-style-precedence"
+      },
+      {
+        "id": "q3",
+        "text": "What does the modern CSS parent selector ':has()' achieve?",
+        "options": [
+          { "id": "o1", "text": "Checks if an element has a specific class variable in JavaScript." },
+          { "id": "o2", "text": "Selects a parent element if it contains one or more child elements matching the passed selector." },
+          { "id": "o3", "text": "Checks if an element has active styling overrides." },
+          { "id": "o4", "text": "Checks if an element contains text nodes." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The ':has()' pseudo-class allows styling a parent element based on its descendants (e.g. 'card:has(img)' styles only card wrappers containing an image). This solved a long-standing CSS limitation.",
+        "slug": "has-pseudo-class"
+      },
+      {
+        "id": "q4",
+        "text": "What is the difference between the ':focus' and ':focus-within' pseudo-classes?",
+        "options": [
+          { "id": "o1", "text": "They are identical." },
+          { "id": "o2", "text": "':focus' applies only to forms, while ':focus-within' applies to inputs." },
+          { "id": "o3", "text": "':focus' applies to the focused element itself, while ':focus-within' applies to an element if either itself or any of its descendants have focus." },
+          { "id": "o4", "text": "':focus-within' only works inside shadow DOM nodes." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "':focus' targets the specific element currently holding user focus. ':focus-within' targets a parent element if any of its nested children gain focus, allowing you to highlight container fields or groups dynamically.",
+        "slug": "focus-within-pseudo-class"
+      },
+      {
+        "id": "q5",
+        "text": "What is the primary benefit of Cascade Layers (@layer) in modern CSS?",
+        "options": [
+          { "id": "o1", "text": "It structures grid templates into virtual layered sheets." },
+          { "id": "o2", "text": "It lets developers control specificity and cascading precedence, enabling custom style layers to override specificity checks." },
+          { "id": "o3", "text": "It acts as a hardware-acceleration layer for GPU transitions." },
+          { "id": "o4", "text": "It prevents inline style loading entirely." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Cascade Layers (@layer) give developers control over the cascade priority. Rules in a higher layer (e.g., custom user styles) win over lower layers (e.g., utility frameworks) regardless of selector specificity score.",
+        "slug": "cascade-layers-utility"
+      },
+      {
+        "id": "q6",
+        "text": "Which of the following CSS properties is naturally inherited by child elements from their parent?",
+        "options": [
+          { "id": "o1", "text": "margin" },
+          { "id": "o2", "text": "font-family" },
+          { "id": "o3", "text": "padding" },
+          { "id": "o4", "text": "border" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Typography properties (like color, font-family, font-size, line-height) and text layouts are inherited by child elements. Layout structures like margins, paddings, and borders are not inherited.",
+        "slug": "css-property-inheritance"
+      },
+      {
+        "id": "q7",
+        "text": "If style A is '#box { color: red !important; }' and style B is 'div { color: blue !important; }', which color is applied to '<div id=\"box\">'?",
+        "options": [
+          { "id": "o1", "text": "Blue, because element selectors run faster." },
+          { "id": "o2", "text": "Red, because specificity breaks the tie between multiple !important declarations." },
+          { "id": "o3", "text": "Both colors are blended." },
+          { "id": "o4", "text": "Purple, due to inheritance." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "When multiple CSS declarations for the same property have the '!important' flag, the browser resolves the tie using selector specificity. Since '#box' (ID selector) has higher specificity than 'div' (element selector), red wins.",
+        "slug": "important-specificity-tie"
+      },
+      {
+        "id": "q8",
+        "text": "Which attribute selector targets an anchor tag <a> whose 'href' starts exactly with 'https'?",
+        "options": [
+          { "id": "o1", "text": "a[href*=\"https\"]" },
+          { "id": "o2", "text": "a[href^=\"https\"]" },
+          { "id": "o3", "text": "a[href$=\"https\"]" },
+          { "id": "o4", "text": "a[href~=\"https\"]" }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The '^=' selector matches attributes starting with the specified string. '*=' matches any substring, and '$=' matches string suffix endings.",
+        "slug": "attribute-selectors-matching"
+      },
+      {
+        "id": "q9",
+        "text": "What is the specificity value assigned to the universal selector (*)?",
+        "options": [
+          { "id": "o1", "text": "0,0,0,0" },
+          { "id": "o2", "text": "0,0,0,1" },
+          { "id": "o3", "text": "0,0,1,0" },
+          { "id": "o4", "text": "1,0,0,0" }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "The universal selector '*' has no specificity impact (0,0,0,0). Similarly, pseudo-classes like ':not()', ':is()', and ':where()' do not add specificity on their own (though selectors inside ':not()' and ':is()' do).",
+        "slug": "universal-selector-specificity"
+      },
+      {
+        "id": "q10",
+        "text": "What is the key grammatical difference between using a single colon (:before) vs double colons (::before) in CSS?",
+        "options": [
+          { "id": "o1", "text": "Double colons only work in Next.js applications." },
+          { "id": "o2", "text": "Single colon is for pseudo-classes (element states), whereas double colons are for pseudo-elements (virtual elements)." },
+          { "id": "o3", "text": "Single colon is faster to compile in the browser." },
+          { "id": "o4", "text": "Double colons disable animations." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "CSS3 introduced the double-colon syntax (e.g. ::before, ::after, ::placeholder) to clearly distinguish pseudo-elements (which create elements) from pseudo-classes (e.g. :hover, :active, which describe states). Browsers still support single-colon legacy syntax for backward compatibility.",
+        "slug": "pseudo-class-vs-pseudo-element"
+      }
+    ]
+  },
+  {
+    "id": "css-modern-layouts",
+    "title": "Modern Layouts & Performance",
+    "category": "css",
+    "difficulty": "Hard",
+    "description": "Test your skills on container queries, fluid typography, GPU rendering layers, and browser layout thrashing.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is the primary architectural difference between Media Queries and Container Queries?",
+        "options": [
+          { "id": "o1", "text": "Media queries only style mobile screen displays." },
+          { "id": "o2", "text": "Media queries query the viewport dimensions, while Container queries query the size of a designated ancestor/parent element container." },
+          { "id": "o3", "text": "Container queries require JavaScript compilers to load." },
+          { "id": "o4", "text": "Media queries only style elements with absolute positioning." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Media queries adapt layouts based on the browser viewport width/height. Container queries (@container) evaluate the size of the component's parent card/wrapper, making components truly self-contained and modular.",
+        "slug": "container-queries-vs-media"
+      },
+      {
+        "id": "q2",
+        "text": "How does the 'font-size: clamp(1rem, 2.5vw, 2rem)' syntax evaluate fluid typography sizing?",
+        "options": [
+          { "id": "o1", "text": "It randomly cycles between sizes." },
+          { "id": "o2", "text": "It locks the font size at exactly 2.5% of the viewport width." },
+          { "id": "o3", "text": "It sets a minimum of 1rem, a maximum of 2rem, and allows the font size to scale fluidly at 2.5vw in between." },
+          { "id": "o4", "text": "It divides the viewport sizing by three." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "The clamp() function takes three arguments: minimum value, preferred value, and maximum value. It locks sizes within the boundaries while scaling fluidly according to the dynamic viewport unit (vw) in the middle.",
+        "slug": "clamp-typography-fluid"
+      },
+      {
+        "id": "q3",
+        "text": "How does setting 'will-change: transform' optimize web animation performance in modern browsers?",
+        "options": [
+          { "id": "o1", "text": "It forces immediate execution of CSS styles." },
+          { "id": "o2", "text": "It hints to the browser that an animation is coming, prompting it to promote the element to a composite layer for GPU rendering." },
+          { "id": "o3", "text": "It disables browser reflows completely." },
+          { "id": "o4", "text": "It changes DOM properties to speed up execution." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The 'will-change' property tells the browser what properties are going to change. For layout/transform adjustments, the browser pre-renders the element onto a separate composited GPU layer, avoiding expensive recalculations and repaints during scroll or animation.",
+        "slug": "will-change-gpu-acceleration"
+      },
+      {
+        "id": "q4",
+        "text": "What is layout thrashing (forced synchronous layout) and how does it happen in code?",
+        "options": [
+          { "id": "o1", "text": "An error that occurs when too many CSS classes are loaded simultaneously." },
+          { "id": "o2", "text": "A performance bottleneck caused by repeatedly reading layout values (e.g. element.offsetHeight) and writing styles (e.g. element.style.height) in succession within a single frame loop." },
+          { "id": "o3", "text": "A situation where flex items wrap and collapse continuously." },
+          { "id": "o4", "text": "A security issue related to CSS variables." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "When JavaScript writes style changes, the browser schedules a layout pass. If JS reads a layout value (like offsetHeight) immediately after, the browser is forced to run the layout recalculation synchronously, slowing performance down to a crawl.",
+        "slug": "layout-thrashing-performance"
+      },
+      {
+        "id": "q5",
+        "text": "What is the primary layout benefit of the modern 'aspect-ratio' property?",
+        "options": [
+          { "id": "o1", "text": "It compresses images to save loading bandwidth." },
+          { "id": "o2", "text": "It lets you define an element's proportions directly, avoiding padding hacks (like padding-bottom ratios) to maintain aspect ratio." },
+          { "id": "o3", "text": "It forces elements into circular shapes." },
+          { "id": "o4", "text": "It overrides media query definitions." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Before aspect-ratio (e.g. 'aspect-ratio: 16 / 9'), developers had to use padding hacks (like padding-bottom: 56.25%) to preserve responsive dimensions. The property allows developers to define dimensions directly on images, videos, or boxes.",
+        "slug": "aspect-ratio-css"
+      },
+      {
+        "id": "q6",
+        "text": "What is a major pitfall of overusing the 'will-change' property on too many elements?",
+        "options": [
+          { "id": "o1", "text": "It is ignored by modern browsers." },
+          { "id": "o2", "text": "It consumes massive GPU memory, as each promoted element creates a rendering layer, leading to performance degradation or mobile crashes." },
+          { "id": "o3", "text": "It slows down HTML compilation." },
+          { "id": "o4", "text": "It prevents styles from being updated via JavaScript." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "will-change should only be used as a last resort on active elements. Creating excessive GPU rendering layers wastes system memory and overhead, causing mobile pages to become sluggish or crash entirely.",
+        "slug": "will-change-abuse-pitfall"
+      },
+      {
+        "id": "q7",
+        "text": "How do CSS Custom Properties (CSS variables) differ from variables in preprocessors like Sass or Less?",
+        "options": [
+          { "id": "o1", "text": "Preprocessors are faster to render in the browser." },
+          { "id": "o2", "text": "CSS variables exist at runtime, respect the DOM cascade, and can be updated dynamically via JavaScript or CSS rules." },
+          { "id": "o3", "text": "CSS variables cannot be inherited by nested elements." },
+          { "id": "o4", "text": "Preprocessors support fluid viewport math." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Preprocessor variables are compiled away into static values before reaching the browser. CSS Custom Properties exist dynamically in the browser, meaning you can alter their values at runtime in media queries or JavaScript, and they automatically update down the DOM cascade.",
+        "slug": "custom-properties-vs-preprocessors"
+      },
+      {
+        "id": "q8",
+        "text": "If a flex item has both 'flex-basis: 200px' and 'width: 300px' set, how is its layout baseline width resolved?",
+        "options": [
+          { "id": "o1", "text": "The width (300px) overrides flex-basis." },
+          { "id": "o2", "text": "The flex-basis (200px) overrides width." },
+          { "id": "o3", "text": "The browser averages them to 250px." },
+          { "id": "o4", "text": "The layout engine throws a compilation warning." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Inside a flex container, flex-basis takes precedence over the width (or height if flex-direction is column) property to determine the initial layout size of the flex item before growing or shrinking.",
+        "slug": "flex-basis-vs-width-precedence"
+      },
+      {
+        "id": "q9",
+        "text": "What is the purpose of the 'contain: paint' property in CSS performance optimization?",
+        "options": [
+          { "id": "o1", "text": "It blocks images from downloading until they enter the viewport." },
+          { "id": "o2", "text": "It restricts descendants of the element from rendering outside its bounds, allowing the browser to skip painting the element entirely if it's offscreen." },
+          { "id": "o3", "text": "It compresses pixel densities on retina screens." },
+          { "id": "o4", "text": "It isolates standard inline elements." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Setting contain: paint isolates rendering. It guarantees that the children of the element won't draw outside its boundaries. This allows the browser to skip paint calculations for that subtree entirely if the element is offscreen, optimizing scroll performance.",
+        "slug": "contain-paint-rendering"
+      },
+      {
+        "id": "q10",
+        "text": "How does '@media (min-width: 768px) and (max-width: 1024px)' evaluate browser viewports?",
+        "options": [
+          { "id": "o1", "text": "Matches any viewport width above 768px, or below 1024px." },
+          { "id": "o2", "text": "Matches viewports between 768px and 1024px inclusive." },
+          { "id": "o3", "text": "Applies styles to all screen widths." },
+          { "id": "o4", "text": "Only matches heights between 768px and 1024px." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The 'and' operator combines conditions. Both criteria must be satisfied, meaning viewport width must be greater than or equal to 768px, and less than or equal to 1024px.",
+        "slug": "media-queries-range-logic"
+      }
+    ]
+  }
+]

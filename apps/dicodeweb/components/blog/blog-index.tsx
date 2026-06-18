@@ -1,10 +1,18 @@
 'use client';
 
 import { BlogListItem, SeriesItem, WhatsNewCard } from '@/components/blog/blog-cards';
-import type { BlogPost, BlogSeries } from '@/lib/blog';
+import type { HomeLocale } from '@/lib/home-content';
+import { resolvePostForLocale, type BlogPost, type BlogSeries } from '@/lib/blog';
+import {
+  formatBlogArticleCount,
+  formatBlogCategory,
+  formatBlogLevel,
+  getBlogUiCopy,
+} from '@/lib/blog-localization';
+import { getPreferredLocale, subscribeToLocaleChange } from '@/lib/site-locale';
 import { ArrowRight, ArrowUpDown, BookOpen, Search } from 'lucide-react';
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 type PagefindResultData = { url: string };
 
@@ -43,6 +51,12 @@ function sortPosts(posts: BlogPost[], sortMode: SortMode) {
 }
 
 export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSeries[] }) {
+  const locale = useSyncExternalStore<HomeLocale>(
+    subscribeToLocaleChange,
+    getPreferredLocale,
+    () => 'en',
+  );
+  const copy = getBlogUiCopy(locale).index;
   const [query, setQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [sortMode, setSortMode] = useState<SortMode>('newest');
@@ -53,6 +67,9 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
     () => ['All', ...Array.from(new Set(posts.map((post) => post.category)))],
     [posts],
   );
+
+  const localizedCategoryLabel = (category: string) =>
+    category === 'All' ? copy.allCategories : formatBlogCategory(category, locale);
 
   const seriesBySlug = useMemo(
     () => new Map(series.map((seriesEntry) => [seriesEntry.slug, seriesEntry])),
@@ -109,22 +126,30 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
       } else {
         const normalizedQuery = query.toLowerCase();
 
-        nextPosts = nextPosts.filter((post) =>
-          [post.series?.slug]
+        nextPosts = nextPosts.filter((post) => {
+          const displayPost = resolvePostForLocale(post, locale);
+
+          return [displayPost.series?.slug]
             .map((slug) => (slug ? seriesBySlug.get(slug) : null))
             .filter(Boolean)
             .flatMap((seriesEntry) => [seriesEntry?.title, seriesEntry?.description])
-            .concat([post.title, post.excerpt, post.category, post.level, ...(post.tags ?? [])])
+            .concat([
+              displayPost.title,
+              displayPost.excerpt,
+              formatBlogCategory(displayPost.category, locale),
+              formatBlogLevel(displayPost.level, locale),
+              ...(displayPost.tags ?? []),
+            ])
             .filter(Boolean)
             .join(' ')
             .toLowerCase()
-            .includes(normalizedQuery),
-        );
+            .includes(normalizedQuery);
+        });
       }
     }
 
     return sortPosts(nextPosts, sortMode);
-  }, [activeCategory, pagefindSlugs, posts, query, seriesBySlug, sortMode]);
+  }, [activeCategory, locale, pagefindSlugs, posts, query, seriesBySlug, sortMode]);
 
   const visiblePosts = filteredPosts.slice(0, visibleCount);
   const hasMore = visibleCount < filteredPosts.length;
@@ -133,12 +158,11 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
     <div className="pb-24">
       <section className="mb-10 space-y-3">
         <h1 className="text-4xl font-bold tracking-[-0.04em] text-[#202124] md:text-5xl dark:text-[#F5F7FB]">
-          DiCodeWeb Blog
+          {copy.heroTitle}
         </h1>
 
         <p className="text-muted-foreground max-w-3xl text-base leading-8 md:text-lg">
-          Learn modern systems through practical write-ups, deeper implementation notes, and curated
-          content grouped into clear series.
+          {copy.heroDescription}
         </p>
       </section>
 
@@ -147,12 +171,10 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
           <div className="flex items-center gap-3">
             <div>
               <h2 className="text-2xl font-semibold tracking-[-0.03em] text-[#202124] dark:text-[#F5F7FB]">
-                What&apos;s new
+                {copy.whatsNewTitle}
               </h2>
 
-              <p className="text-muted-foreground mt-1 text-sm">
-                Fresh posts and recent additions from the editorial stream.
-              </p>
+              <p className="text-muted-foreground mt-1 text-sm">{copy.whatsNewDescription}</p>
             </div>
           </div>
 
@@ -160,7 +182,7 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
             href="/blog"
             className="hidden items-center gap-1.5 text-sm font-medium text-[#202124] md:inline-flex dark:text-[#F5F7FB]"
           >
-            See all
+            {copy.seeAll}
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
@@ -177,12 +199,11 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
           <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 className="text-3xl font-semibold tracking-[-0.03em] text-[#202124] dark:text-[#F5F7FB]">
-                Everything from the blog
+                {copy.everythingTitle}
               </h2>
 
               <p className="text-muted-foreground mt-2 max-w-2xl text-sm leading-7">
-                Browse every post, narrow by category, and jump into deeper topic paths through the
-                series rail on the right.
+                {copy.everythingDescription}
               </p>
             </div>
 
@@ -194,14 +215,14 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
                 onChange={(event) => setSortMode(event.target.value as SortMode)}
                 className="bg-transparent outline-none"
               >
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
-                <option value="title">Title A-Z</option>
+                <option value="newest">{copy.sortNewest}</option>
+                <option value="oldest">{copy.sortOldest}</option>
+                <option value="title">{copy.sortTitle}</option>
               </select>
             </div>
           </div>
 
-          <div className="border-border bg-card mb-4 flex flex-col gap-3 rounded-md border p-4 shadow-[0_16px_45px_rgba(15,68,122,0.05)] xl:flex-row xl:items-center md:p-5">
+          <div className="border-border bg-card mb-4 flex flex-col gap-3 rounded-md border p-4 shadow-[0_16px_45px_rgba(15,68,122,0.05)] md:p-5 xl:flex-row xl:items-center">
             <label className="border-border bg-background text-muted-foreground flex flex-1 items-center gap-3 rounded-[1.1rem] border px-4 py-3 text-sm">
               <Search className="h-4 w-4" />
 
@@ -211,7 +232,7 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
                   setQuery(event.target.value);
                   setVisibleCount(PAGE_SIZE);
                 }}
-                placeholder="Search posts, tags, or series"
+                placeholder={copy.searchPlaceholder}
                 className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent outline-none"
               />
             </label>
@@ -234,7 +255,7 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
                         : 'border-border bg-card text-muted-foreground hover:border-accent/35 hover:text-foreground'
                     }`}
                   >
-                    {category}
+                    {localizedCategoryLabel(category)}
                   </button>
                 );
               })}
@@ -244,7 +265,7 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
           <div className="border-border text-muted-foreground mb-6 flex flex-wrap items-center justify-between gap-3 border-b pb-5 text-sm">
             <div className="flex items-center gap-2">
               <BookOpen className="h-4 w-4" />
-              <span>{filteredPosts.length} articles</span>
+              <span>{formatBlogArticleCount(filteredPosts.length, locale)}</span>
             </div>
           </div>
 
@@ -263,11 +284,11 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
           ) : (
             <div className="border-border rounded-[1.45rem] border border-dashed px-6 py-10 text-center">
               <p className="text-lg font-semibold text-[#202124] dark:text-[#F5F7FB]">
-                No posts matched this view.
+                {copy.noPostsTitle}
               </p>
 
               <p className="text-muted-foreground mt-2 text-sm leading-7">
-                Try a broader keyword or switch the active category filter.
+                {copy.noPostsDescription}
               </p>
             </div>
           )}
@@ -279,7 +300,7 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
                 onClick={() => setVisibleCount((current) => current + PAGE_SIZE)}
                 className="border-border bg-card text-muted-foreground hover:border-accent/35 hover:text-foreground rounded-full border px-5 py-2.5 text-sm font-medium transition-colors"
               >
-                Load more articles
+                {copy.loadMore}
               </button>
             </div>
           ) : null}
@@ -293,12 +314,11 @@ export function BlogIndex({ posts, series }: { posts: BlogPost[]; series: BlogSe
           <div className="mb-6 flex items-start justify-between gap-4">
             <div>
               <h2 className="text-2xl font-semibold tracking-[-0.03em] text-[#202124] dark:text-[#F5F7FB]">
-                Browse series
+                {copy.browseSeriesTitle}
               </h2>
 
               <p className="text-muted-foreground mt-2 text-sm leading-7">
-                Explore grouped content arcs instead of isolated posts, from Next.js patterns to
-                frontend systems decisions.
+                {copy.browseSeriesDescription}
               </p>
             </div>
           </div>

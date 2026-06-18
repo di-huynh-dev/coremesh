@@ -1,0 +1,1377 @@
+[
+  {
+    "id": "js-fundamentals-01",
+    "title": "JavaScript Fundamentals",
+    "category": "javascript",
+    "difficulty": "Medium",
+    "description": "Test your knowledge on core JavaScript concepts including variables, scope, hoisting, and closures.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is the output of the following code?",
+        "codeSnippet": "console.log(a);\nvar a = 10;",
+        "options": [
+          {
+            "id": "o1",
+            "text": "10"
+          },
+          {
+            "id": "o2",
+            "text": "undefined"
+          },
+          {
+            "id": "o3",
+            "text": "ReferenceError"
+          },
+          {
+            "id": "o4",
+            "text": "null"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Variables declared with `var` are hoisted to the top of their functional/global scope, but their initialization is not. Therefore, `a` exists but is `undefined` before assignment.",
+        "relatedQuestionSlug": "hoisting",
+        "slug": "q1-what-is-the-output-of-the-following-code"
+      },
+      {
+        "id": "q2",
+        "text": "Which statement accurately describes closures in JavaScript?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "A closure is created every time a function is executed."
+          },
+          {
+            "id": "o2",
+            "text": "A closure gives you access to an outer function's scope from an inner function."
+          },
+          {
+            "id": "o3",
+            "text": "Closures prevent memory leaks by automatically garbage collecting variables."
+          },
+          {
+            "id": "o4",
+            "text": "Closures only work with arrow functions."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "A closure is the combination of a function bundled together with references to its surrounding state (the lexical environment). It gives you access to an outer function's scope from an inner function.",
+        "relatedQuestionSlug": "closures",
+        "slug": "q2-which-statement-accurately-describes-closures-in-j"
+      },
+      {
+        "id": "q3",
+        "text": "What happens when you declare a variable with `let` but try to access it before declaration?",
+        "codeSnippet": "console.log(b);\nlet b = 5;",
+        "options": [
+          {
+            "id": "o1",
+            "text": "It prints undefined."
+          },
+          {
+            "id": "o2",
+            "text": "It throws a TypeError."
+          },
+          {
+            "id": "o3",
+            "text": "It throws a ReferenceError."
+          },
+          {
+            "id": "o4",
+            "text": "It prints 5."
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Variables declared with `let` and `const` are hoisted, but they remain in the Temporal Dead Zone (TDZ) until their declaration line is executed. Accessing them beforehand throws a ReferenceError.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q3-what-happens-when-you-declare-a-variable-with-let"
+      },
+      {
+        "id": "q4",
+        "text": "What will be printed to the console?",
+        "codeSnippet": "for (var i = 0; i < 3; i++) {\n  setTimeout(() => console.log(i), 1);\n}",
+        "options": [
+          {
+            "id": "o1",
+            "text": "0, 1, 2"
+          },
+          {
+            "id": "o2",
+            "text": "1, 2, 3"
+          },
+          {
+            "id": "o3",
+            "text": "3, 3, 3"
+          },
+          {
+            "id": "o4",
+            "text": "undefined, undefined, undefined"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Because `var` is function-scoped, the `setTimeout` callbacks all share the same `i` variable. By the time the timeouts execute, the loop has finished and `i` is 3.",
+        "relatedQuestionSlug": "closures",
+        "slug": "q4-what-will-be-printed-to-the-console"
+      },
+      {
+        "id": "q5",
+        "text": "What is the result of the following execution?",
+        "codeSnippet": "const x = 10;\nfunction test() {\n  console.log(x);\n  const x = 20;\n}\ntest();",
+        "options": [
+          {
+            "id": "o1",
+            "text": "10"
+          },
+          {
+            "id": "o2",
+            "text": "20"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "ReferenceError"
+          }
+        ],
+        "correctOptionId": "o4",
+        "explanation": "The `x` declared inside `test()` is hoisted to the top of the function scope, shadowing the outer `x`. However, it's in the TDZ when `console.log(x)` runs, resulting in a ReferenceError.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q5-what-is-the-result-of-the-following-execution"
+      },
+      {
+        "id": "q6",
+        "text": "Which of these variables is added to the global `window` object in a browser environment?",
+        "codeSnippet": "var a = 1;\nlet b = 2;\nconst c = 3;",
+        "options": [
+          {
+            "id": "o1",
+            "text": "a, b, and c"
+          },
+          {
+            "id": "o2",
+            "text": "a only"
+          },
+          {
+            "id": "o3",
+            "text": "b and c"
+          },
+          {
+            "id": "o4",
+            "text": "None of them"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "In the global scope, `var` declarations create a property on the global object (e.g., `window` in browsers). `let` and `const` do not.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q6-which-of-these-variables-is-added-to-the-global-wi"
+      },
+      {
+        "id": "q7",
+        "text": "What will be printed here?",
+        "codeSnippet": "function outer() {\n  let count = 0;\n  return function inner() {\n    count++;\n    return count;\n  }\n}\nconst counter = outer();\nconsole.log(counter());\nconsole.log(counter());",
+        "options": [
+          {
+            "id": "o1",
+            "text": "0, 1"
+          },
+          {
+            "id": "o2",
+            "text": "1, 2"
+          },
+          {
+            "id": "o3",
+            "text": "1, 1"
+          },
+          {
+            "id": "o4",
+            "text": "undefined, undefined"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "This is a classic closure. `inner()` retains access to `outer()`'s `count` variable. Each time `counter()` is called, it increments and returns the shared `count` state.",
+        "relatedQuestionSlug": "closures",
+        "slug": "q7-what-will-be-printed-here"
+      },
+      {
+        "id": "q8",
+        "text": "Can a `const` variable's properties be mutated if it is an object?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "No, const makes the entire object immutable."
+          },
+          {
+            "id": "o2",
+            "text": "Yes, const only prevents reassignment of the variable identifier itself."
+          },
+          {
+            "id": "o3",
+            "text": "Only if 'use strict' is not enabled."
+          },
+          {
+            "id": "o4",
+            "text": "Yes, but only top-level properties."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`const` prevents the reassignment of the variable identifier. It does not freeze objects or make their properties immutable. You need `Object.freeze()` for that.",
+        "relatedQuestionSlug": "primitive-vs-reference",
+        "slug": "q8-can-a-const-variable-s-properties-be-mutated-if-it"
+      },
+      {
+        "id": "q9",
+        "text": "What is the output of the following?",
+        "codeSnippet": "var foo = 1;\n(function() {\n  console.log(foo);\n  var foo = 2;\n})();",
+        "options": [
+          {
+            "id": "o1",
+            "text": "1"
+          },
+          {
+            "id": "o2",
+            "text": "2"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "ReferenceError"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Inside the IIFE, `var foo = 2;` hoists `foo` to the top of the function scope. This shadows the outer `foo`. When `console.log(foo)` runs, the inner `foo` is initialized to `undefined`.",
+        "relatedQuestionSlug": "hoisting",
+        "slug": "q9-what-is-the-output-of-the-following"
+      },
+      {
+        "id": "q10",
+        "text": "What represents the lexical environment in JavaScript execution contexts?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "The physical location of the code in the file."
+          },
+          {
+            "id": "o2",
+            "text": "The memory heap where objects are allocated."
+          },
+          {
+            "id": "o3",
+            "text": "A structure holding identifier-variable mappings and a reference to the outer environment."
+          },
+          {
+            "id": "o4",
+            "text": "The event loop queue."
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "A Lexical Environment is a specification type used to define the association of Identifiers to specific variables and functions based upon the lexical nesting structure of ECMAScript code.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q10-what-represents-the-lexical-environment-in-javascr"
+      }
+    ]
+  },
+  {
+    "id": "js-async-02",
+    "title": "JavaScript Async & Event Loop",
+    "category": "javascript",
+    "difficulty": "Hard",
+    "description": "Master the event loop, microtasks, macrotasks, promises, and the async/await syntax.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is the output order of the following code?",
+        "codeSnippet": "console.log('A');\nsetTimeout(() => console.log('B'), 0);\nPromise.resolve().then(() => console.log('C'));\nconsole.log('D');",
+        "options": [
+          {
+            "id": "o1",
+            "text": "A, B, C, D"
+          },
+          {
+            "id": "o2",
+            "text": "A, D, C, B"
+          },
+          {
+            "id": "o3",
+            "text": "A, D, B, C"
+          },
+          {
+            "id": "o4",
+            "text": "A, C, D, B"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Synchronous code runs first (A, D). Then microtasks run (Promise callbacks: C). Finally, macrotasks run (setTimeout callbacks: B).",
+        "relatedQuestionSlug": "event-loop",
+        "slug": "q1-what-is-the-output-order-of-the-following-code"
+      },
+      {
+        "id": "q2",
+        "text": "What happens if a Promise does not call `resolve` or `reject`?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "It resolves automatically to undefined after the current event loop tick."
+          },
+          {
+            "id": "o2",
+            "text": "It rejects with a TimeoutError."
+          },
+          {
+            "id": "o3",
+            "text": "It remains pending indefinitely, and its .then()/.catch() handlers never execute."
+          },
+          {
+            "id": "o4",
+            "text": "It blocks the main thread permanently."
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "A Promise that is never resolved or rejected stays in the 'pending' state forever, leading to a memory leak if handlers are attached, but it does not block the thread.",
+        "relatedQuestionSlug": "promises",
+        "slug": "q2-what-happens-if-a-promise-does-not-call-resolve-or"
+      },
+      {
+        "id": "q3",
+        "text": "What will be printed?",
+        "codeSnippet": "async function foo() {\n  return 'hello';\n}\nconsole.log(foo() instanceof Promise);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "false"
+          },
+          {
+            "id": "o2",
+            "text": "true"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "ReferenceError"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "An `async` function always returns a Promise. If you return a non-Promise value, JavaScript automatically wraps it in a resolved Promise.",
+        "relatedQuestionSlug": "async-await",
+        "slug": "q3-what-will-be-printed"
+      },
+      {
+        "id": "q4",
+        "text": "Which of these queues has higher priority in the Event Loop?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "Macrotask Queue (setTimeout, setInterval)"
+          },
+          {
+            "id": "o2",
+            "text": "Microtask Queue (Promises, MutationObserver)"
+          },
+          {
+            "id": "o3",
+            "text": "Render Queue (requestAnimationFrame)"
+          },
+          {
+            "id": "o4",
+            "text": "They all have equal priority"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "After every single macrotask execution (or synchronous script block), the Event Loop entirely drains the Microtask Queue before moving on to the next macrotask or rendering step.",
+        "relatedQuestionSlug": "event-loop",
+        "slug": "q4-which-of-these-queues-has-higher-priority-in-the-e"
+      },
+      {
+        "id": "q5",
+        "text": "What is the output of the following?",
+        "codeSnippet": "Promise.resolve(1)\n  .then((x) => x + 1)\n  .then((x) => { throw new Error('Fail') })\n  .catch(() => 10)\n  .then((x) => console.log(x));",
+        "options": [
+          {
+            "id": "o1",
+            "text": "1"
+          },
+          {
+            "id": "o2",
+            "text": "2"
+          },
+          {
+            "id": "o3",
+            "text": "Fail"
+          },
+          {
+            "id": "o4",
+            "text": "10"
+          }
+        ],
+        "correctOptionId": "o4",
+        "explanation": "The error thrown in the second `.then()` is caught by `.catch()`. The `.catch()` returns 10, which resolves the chain and passes 10 to the final `.then()`.",
+        "relatedQuestionSlug": "promises",
+        "slug": "q5-what-is-the-output-of-the-following"
+      },
+      {
+        "id": "q6",
+        "text": "What is true about `Promise.all()`?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "It resolves only when all promises resolve, but ignores rejections."
+          },
+          {
+            "id": "o2",
+            "text": "It rejects immediately if any of the provided promises reject."
+          },
+          {
+            "id": "o3",
+            "text": "It waits for all promises to settle (resolve or reject)."
+          },
+          {
+            "id": "o4",
+            "text": "It executes promises sequentially."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`Promise.all()` is all-or-nothing. It resolves with an array of results if all promises resolve, but it rejects immediately with the reason of the first promise that rejects.",
+        "relatedQuestionSlug": "promises",
+        "slug": "q6-what-is-true-about-promise-all"
+      },
+      {
+        "id": "q7",
+        "text": "What is the output?",
+        "codeSnippet": "setTimeout(() => console.log('A'), 0);\nconst p = new Promise((resolve) => {\n  console.log('B');\n  resolve();\n});\np.then(() => console.log('C'));\nconsole.log('D');",
+        "options": [
+          {
+            "id": "o1",
+            "text": "A, B, C, D"
+          },
+          {
+            "id": "o2",
+            "text": "B, D, C, A"
+          },
+          {
+            "id": "o3",
+            "text": "B, C, D, A"
+          },
+          {
+            "id": "o4",
+            "text": "D, B, C, A"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The executor function inside `new Promise(...)` runs synchronously! So 'B' is printed. Then 'D' is printed. Then the microtask 'C'. Finally the macrotask 'A'.",
+        "relatedQuestionSlug": "promises",
+        "slug": "q7-what-is-the-output"
+      },
+      {
+        "id": "q8",
+        "text": "If `await` is used on a non-Promise value, what happens?",
+        "codeSnippet": "async function test() {\n  const res = await 42;\n  console.log(res);\n}\ntest();",
+        "options": [
+          {
+            "id": "o1",
+            "text": "It throws a TypeError."
+          },
+          {
+            "id": "o2",
+            "text": "It prints 42 synchronously."
+          },
+          {
+            "id": "o3",
+            "text": "It converts 42 to a resolved Promise, waits one microtask, then prints 42."
+          },
+          {
+            "id": "o4",
+            "text": "It blocks execution forever."
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "If the value is not a Promise, `await` converts it to a resolved Promise (`Promise.resolve(42)`). Execution is paused until the next microtask tick, then continues.",
+        "relatedQuestionSlug": "async-await",
+        "slug": "q8-if-await-is-used-on-a-non-promise-value-what-happe"
+      },
+      {
+        "id": "q9",
+        "text": "Which method should you use if you want to wait for all promises to finish regardless of whether they resolve or reject?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "Promise.all()"
+          },
+          {
+            "id": "o2",
+            "text": "Promise.race()"
+          },
+          {
+            "id": "o3",
+            "text": "Promise.any()"
+          },
+          {
+            "id": "o4",
+            "text": "Promise.allSettled()"
+          }
+        ],
+        "correctOptionId": "o4",
+        "explanation": "`Promise.allSettled()` returns a promise that resolves after all of the given promises have either fulfilled or rejected, with an array of objects describing the outcome of each.",
+        "relatedQuestionSlug": "promises",
+        "slug": "q9-which-method-should-you-use-if-you-want-to-wait-fo"
+      },
+      {
+        "id": "q10",
+        "text": "What happens if a microtask queues another microtask?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "The new microtask is executed in the next tick of the event loop after macrotasks."
+          },
+          {
+            "id": "o2",
+            "text": "The new microtask is executed in the current microtask queue phase."
+          },
+          {
+            "id": "o3",
+            "text": "It throws a Maximum Call Stack Size Exceeded error."
+          },
+          {
+            "id": "o4",
+            "text": "It gets converted to a macrotask."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The Event Loop drains the Microtask Queue completely. If microtasks enqueue more microtasks, the Event Loop will continue processing them until the queue is empty, potentially blocking rendering and macrotasks forever.",
+        "relatedQuestionSlug": "event-loop",
+        "slug": "q10-what-happens-if-a-microtask-queues-another-microta"
+      }
+    ]
+  },
+  {
+    "id": "js-functions-closures-03",
+    "title": "JavaScript Functions & Closures",
+    "category": "javascript",
+    "difficulty": "Medium",
+    "description": "Deep dive into higher-order functions, IIFEs, lexical scoping, and advanced closure patterns.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is an IIFE (Immediately Invoked Function Expression)?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "A function that executes as soon as it is defined."
+          },
+          {
+            "id": "o2",
+            "text": "A function that returns another function."
+          },
+          {
+            "id": "o3",
+            "text": "A function assigned to a variable."
+          },
+          {
+            "id": "o4",
+            "text": "A generator function."
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "An IIFE is a design pattern used to execute a function immediately after it's created, often to avoid polluting the global scope.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q1-what-is-an-iife-immediately-invoked-function-expre"
+      },
+      {
+        "id": "q2",
+        "text": "Which of these represents a Higher-Order Function?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "A function that takes another function as an argument or returns a function."
+          },
+          {
+            "id": "o2",
+            "text": "A function that has a very high time complexity."
+          },
+          {
+            "id": "o3",
+            "text": "A function defined inside the global scope."
+          },
+          {
+            "id": "o4",
+            "text": "An async function."
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "Higher-order functions either take functions as arguments (like map, filter) or return a function as their result.",
+        "relatedQuestionSlug": "closures",
+        "slug": "q2-which-of-these-represents-a-higher-order-function"
+      },
+      {
+        "id": "q3",
+        "text": "What does this code log?",
+        "codeSnippet": "let f = (a, b) => a + b;\nconsole.log(f.length);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "0"
+          },
+          {
+            "id": "o2",
+            "text": "2"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "Throws an error"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The `length` property of a function indicates the number of parameters expected by the function.",
+        "relatedQuestionSlug": "closures",
+        "slug": "q3-what-does-this-code-log"
+      },
+      {
+        "id": "q4",
+        "text": "What is the output?",
+        "codeSnippet": "const add = x => y => x + y;\nconsole.log(add(5)(3));",
+        "options": [
+          {
+            "id": "o1",
+            "text": "8"
+          },
+          {
+            "id": "o2",
+            "text": "NaN"
+          },
+          {
+            "id": "o3",
+            "text": "Function"
+          },
+          {
+            "id": "o4",
+            "text": "undefined"
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "This is an example of currying using closures. `add(5)` returns a function `y => 5 + y`, which is then immediately called with `3`.",
+        "relatedQuestionSlug": "currying-partial-application",
+        "slug": "q4-what-is-the-output"
+      },
+      {
+        "id": "q5",
+        "text": "What happens if a function does not have a return statement?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "It returns null."
+          },
+          {
+            "id": "o2",
+            "text": "It returns undefined."
+          },
+          {
+            "id": "o3",
+            "text": "It throws a SyntaxError."
+          },
+          {
+            "id": "o4",
+            "text": "It returns an empty object."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "If a function does not explicitly return a value, it implicitly returns `undefined`.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q5-what-happens-if-a-function-does-not-have-a-return"
+      },
+      {
+        "id": "q6",
+        "text": "What is the output of the following?",
+        "codeSnippet": "function createCounter() {\n  let count = 0;\n  return () => count++;\n}\nconst c1 = createCounter();\nc1();\nc1();\nconst c2 = createCounter();\nconsole.log(c1(), c2());",
+        "options": [
+          {
+            "id": "o1",
+            "text": "2 0"
+          },
+          {
+            "id": "o2",
+            "text": "3 1"
+          },
+          {
+            "id": "o3",
+            "text": "2 1"
+          },
+          {
+            "id": "o4",
+            "text": "3 0"
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "Each call to `createCounter()` creates a new lexical environment (closure). `c1` shares its `count` (now 2), and `c2` starts with its own fresh `count` (0). Post-increment `count++` returns the value before incrementing.",
+        "relatedQuestionSlug": "closures",
+        "slug": "q6-what-is-the-output-of-the-following"
+      },
+      {
+        "id": "q7",
+        "text": "Are arrow functions hoisted?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "Yes, just like normal functions."
+          },
+          {
+            "id": "o2",
+            "text": "No, they are hoisted as undefined if declared with var, or uninitialized if let/const."
+          },
+          {
+            "id": "o3",
+            "text": "Yes, but they bind their own 'this'."
+          },
+          {
+            "id": "o4",
+            "text": "No, arrow functions cannot be used before they are declared in any context."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Arrow functions are expressions. If assigned to a `var`, the variable is hoisted but initialized to `undefined`. If `let` or `const`, it sits in the Temporal Dead Zone.",
+        "relatedQuestionSlug": "hoisting",
+        "slug": "q7-are-arrow-functions-hoisted"
+      },
+      {
+        "id": "q8",
+        "text": "Which statement about the `arguments` object is true?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "It is a true JavaScript Array."
+          },
+          {
+            "id": "o2",
+            "text": "It is available inside arrow functions."
+          },
+          {
+            "id": "o3",
+            "text": "It is an Array-like object available in standard functions."
+          },
+          {
+            "id": "o4",
+            "text": "It contains the named parameters only."
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "The `arguments` object is an Array-like object (it has a length property and indexed elements, but lacks methods like `map`) available only in standard non-arrow functions.",
+        "relatedQuestionSlug": "closures",
+        "slug": "q8-which-statement-about-the-arguments-object-is-true"
+      },
+      {
+        "id": "q9",
+        "text": "What is output by this block?",
+        "codeSnippet": "let x = 1;\nfunction foo(a = x, b = () => x) {\n  let x = 2;\n  console.log(a, b());\n}\nfoo();",
+        "options": [
+          {
+            "id": "o1",
+            "text": "1 2"
+          },
+          {
+            "id": "o2",
+            "text": "1 1"
+          },
+          {
+            "id": "o3",
+            "text": "undefined 2"
+          },
+          {
+            "id": "o4",
+            "text": "Throws an error"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Default parameters have their own intermediate scope. They capture the outer `x` (1) because the inner `let x = 2` is in the function body scope, which is a child of the parameter scope.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q9-what-is-output-by-this-block"
+      },
+      {
+        "id": "q10",
+        "text": "What characterizes a pure function?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "It never returns undefined."
+          },
+          {
+            "id": "o2",
+            "text": "It relies on external global state."
+          },
+          {
+            "id": "o3",
+            "text": "Given the same input, it always returns the same output and has no side effects."
+          },
+          {
+            "id": "o4",
+            "text": "It executes asynchronously."
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "A pure function's output depends solely on its input parameters, and it does not mutate any external state (no side effects).",
+        "relatedQuestionSlug": "programming-paradigms",
+        "slug": "q10-what-characterizes-a-pure-function"
+      }
+    ]
+  },
+  {
+    "id": "js-this-bind-04",
+    "title": "JavaScript `this`, Call, Apply, Bind",
+    "category": "javascript",
+    "difficulty": "Hard",
+    "description": "Test your mastery of execution context, the 'this' keyword, and function context bindings.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "In a regular function (non-strict mode), what does `this` point to when called simply as `func()`?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "The function itself"
+          },
+          {
+            "id": "o2",
+            "text": "undefined"
+          },
+          {
+            "id": "o3",
+            "text": "The global object (window in browsers)"
+          },
+          {
+            "id": "o4",
+            "text": "null"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "In non-strict mode, calling a function normally sets `this` to the global object. In strict mode, it would be `undefined`.",
+        "relatedQuestionSlug": "this-keyword",
+        "slug": "q1-in-a-regular-function-non-strict-mode-what-does-th"
+      },
+      {
+        "id": "q2",
+        "text": "What is the primary difference between `call` and `apply`?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "Call immediately executes, Apply returns a bound function."
+          },
+          {
+            "id": "o2",
+            "text": "Call accepts arguments as a comma-separated list, Apply accepts an array of arguments."
+          },
+          {
+            "id": "o3",
+            "text": "Apply binds 'this' permanently, Call does not."
+          },
+          {
+            "id": "o4",
+            "text": "There is no difference."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Both execute the function immediately with a given `this` context. However, `call` takes parameters individually (a, b, c), while `apply` takes them as an array `[a, b, c]`.",
+        "relatedQuestionSlug": "call-apply-bind",
+        "slug": "q2-what-is-the-primary-difference-between-call-and-ap"
+      },
+      {
+        "id": "q3",
+        "text": "What does `bind()` return?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "The result of the function execution."
+          },
+          {
+            "id": "o2",
+            "text": "A new function with the 'this' context permanently bound."
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "A boolean indicating if binding succeeded."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`bind()` creates a new function that, when called, has its `this` keyword set to the provided value, with a given sequence of arguments preceding any provided when the new function is called.",
+        "relatedQuestionSlug": "call-apply-bind",
+        "slug": "q3-what-does-bind-return"
+      },
+      {
+        "id": "q4",
+        "text": "What does the following code print?",
+        "codeSnippet": "const obj = {\n  name: 'Alice',\n  getName: () => this.name\n};\nconsole.log(obj.getName());",
+        "options": [
+          {
+            "id": "o1",
+            "text": "'Alice'"
+          },
+          {
+            "id": "o2",
+            "text": "undefined"
+          },
+          {
+            "id": "o3",
+            "text": "ReferenceError"
+          },
+          {
+            "id": "o4",
+            "text": "null"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Arrow functions do not have their own `this`. They inherit `this` from the enclosing lexical scope (in this case, likely the global window or module scope, where `name` is undefined).",
+        "relatedQuestionSlug": "this-keyword",
+        "slug": "q4-what-does-the-following-code-print"
+      },
+      {
+        "id": "q5",
+        "text": "What is the output?",
+        "codeSnippet": "const user = {\n  id: 42,\n  getId() {\n    return this.id;\n  }\n};\nconst unboundGetId = user.getId;\nconsole.log(unboundGetId());",
+        "options": [
+          {
+            "id": "o1",
+            "text": "42"
+          },
+          {
+            "id": "o2",
+            "text": "undefined"
+          },
+          {
+            "id": "o3",
+            "text": "TypeError"
+          },
+          {
+            "id": "o4",
+            "text": "null"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "When `user.getId` is assigned to a variable, it loses its object context. Calling `unboundGetId()` executes it as a plain function, so `this` points to the global object (which has no `id`).",
+        "relatedQuestionSlug": "this-keyword",
+        "slug": "q5-what-is-the-output"
+      },
+      {
+        "id": "q6",
+        "text": "Can you use `.bind()` on an arrow function to change its `this` context?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "Yes, just like normal functions."
+          },
+          {
+            "id": "o2",
+            "text": "No, arrow functions permanently inherit 'this' from their lexical scope."
+          },
+          {
+            "id": "o3",
+            "text": "Only if executed in strict mode."
+          },
+          {
+            "id": "o4",
+            "text": "Yes, but you must use .apply() first."
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Arrow functions cannot have their `this` value bound using `bind`, `call`, or `apply`. They will always use the `this` value from the scope in which they were defined.",
+        "relatedQuestionSlug": "this-keyword",
+        "slug": "q6-can-you-use-bind-on-an-arrow-function-to-change-it"
+      },
+      {
+        "id": "q7",
+        "text": "What happens if you double bind a function?",
+        "codeSnippet": "function f() { return this.name; }\nconst b1 = f.bind({name: 'A'});\nconst b2 = b1.bind({name: 'B'});\nconsole.log(b2());",
+        "options": [
+          {
+            "id": "o1",
+            "text": "'A'"
+          },
+          {
+            "id": "o2",
+            "text": "'B'"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "TypeError"
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "A bound function cannot be rebound. The first `bind` creates an exotic function object that permanently hardcodes its `this` value.",
+        "relatedQuestionSlug": "call-apply-bind",
+        "slug": "q7-what-happens-if-you-double-bind-a-function"
+      },
+      {
+        "id": "q8",
+        "text": "What is the output?",
+        "codeSnippet": "const obj = {\n  value: 10,\n  getValue() {\n    setTimeout(function() {\n      console.log(this.value);\n    }, 100);\n  }\n};\nobj.getValue();",
+        "options": [
+          {
+            "id": "o1",
+            "text": "10"
+          },
+          {
+            "id": "o2",
+            "text": "undefined"
+          },
+          {
+            "id": "o3",
+            "text": "Throws Error"
+          },
+          {
+            "id": "o4",
+            "text": "null"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The standard function passed to `setTimeout` is executed with the global context (or undefined in strict mode). To fix this, use an arrow function or `.bind(this)`.",
+        "relatedQuestionSlug": "this-keyword",
+        "slug": "q8-what-is-the-output"
+      },
+      {
+        "id": "q9",
+        "text": "How can you borrow an Array method to use on an Array-like object (like `arguments`)?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "Array.prototype.slice.call(arguments)"
+          },
+          {
+            "id": "o2",
+            "text": "arguments.slice()"
+          },
+          {
+            "id": "o3",
+            "text": "Object.slice(arguments)"
+          },
+          {
+            "id": "o4",
+            "text": "arguments.toArray()"
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "You can use `.call()` or `.apply()` on `Array.prototype` methods to trick them into treating an Array-like object (having length and numeric indices) as an actual array.",
+        "relatedQuestionSlug": "call-apply-bind",
+        "slug": "q9-how-can-you-borrow-an-array-method-to-use-on-an-ar"
+      },
+      {
+        "id": "q10",
+        "text": "What does `this` point to inside a class constructor?",
+        "options": [
+          {
+            "id": "o1",
+            "text": "The class definition itself"
+          },
+          {
+            "id": "o2",
+            "text": "The newly created instance object"
+          },
+          {
+            "id": "o3",
+            "text": "The global object"
+          },
+          {
+            "id": "o4",
+            "text": "undefined"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "When a class is instantiated with the `new` keyword, `this` inside the constructor points to the newly created object.",
+        "relatedQuestionSlug": "this-keyword",
+        "slug": "q10-what-does-this-point-to-inside-a-class-constructor"
+      }
+    ]
+  },
+  {
+    "id": "js-tricky-output-05",
+    "title": "Tricky JavaScript Output Questions",
+    "category": "javascript",
+    "difficulty": "Hard",
+    "description": "Challenge yourself with edge cases, type coercion, object references, and tricky JS quirks.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is the output?",
+        "codeSnippet": "console.log(typeof null);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "'null'"
+          },
+          {
+            "id": "o2",
+            "text": "'undefined'"
+          },
+          {
+            "id": "o3",
+            "text": "'object'"
+          },
+          {
+            "id": "o4",
+            "text": "'number'"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "This is a well-known bug in JavaScript from its earliest versions. `typeof null` returns 'object', even though null is a primitive type.",
+        "relatedQuestionSlug": "primitive-vs-reference",
+        "slug": "q1-what-is-the-output"
+      },
+      {
+        "id": "q2",
+        "text": "What does this output?",
+        "codeSnippet": "console.log(0.1 + 0.2 === 0.3);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "true"
+          },
+          {
+            "id": "o2",
+            "text": "false"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "TypeError"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Due to floating-point math precision issues in JavaScript (IEEE 754 standard), `0.1 + 0.2` equals `0.30000000000000004`.",
+        "relatedQuestionSlug": "strict-equality",
+        "slug": "q2-what-does-this-output"
+      },
+      {
+        "id": "q3",
+        "text": "What is printed?",
+        "codeSnippet": "console.log(1 +  '2' + '2');\nconsole.log(1 +  +'2' + '2');\nconsole.log(1 +  -'1' + '2');",
+        "options": [
+          {
+            "id": "o1",
+            "text": "'122', '32', '02'"
+          },
+          {
+            "id": "o2",
+            "text": "'122', '122', '112'"
+          },
+          {
+            "id": "o3",
+            "text": "NaN everywhere"
+          },
+          {
+            "id": "o4",
+            "text": "14, 5, 2"
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "First is string concat: '122'. Second: `+'2'` is unary plus (number 2), so `1 + 2` is `3`, then concat with '2' makes '32'. Third: `-'1'` is number `-1`, so `1 + -1` is `0`, concatenated with '2' makes '02'.",
+        "relatedQuestionSlug": "primitive-vs-reference",
+        "slug": "q3-what-is-printed"
+      },
+      {
+        "id": "q4",
+        "text": "What is the output?",
+        "codeSnippet": "let a = [1, 2, 3];\nlet b = [1, 2, 3];\nlet c = a;\nconsole.log(a === b);\nconsole.log(a === c);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "true, true"
+          },
+          {
+            "id": "o2",
+            "text": "false, false"
+          },
+          {
+            "id": "o3",
+            "text": "false, true"
+          },
+          {
+            "id": "o4",
+            "text": "true, false"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Arrays are objects (reference types). Comparing objects compares their memory references, not their content. `a` and `b` point to different memory locations. `c` points to `a`.",
+        "relatedQuestionSlug": "primitive-vs-reference",
+        "slug": "q4-what-is-the-output"
+      },
+      {
+        "id": "q5",
+        "text": "What happens here?",
+        "codeSnippet": "const obj = { a: 'one', b: 'two', a: 'three' };\nconsole.log(obj);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "Throws a SyntaxError due to duplicate keys"
+          },
+          {
+            "id": "o2",
+            "text": "{ a: 'one', b: 'two' }"
+          },
+          {
+            "id": "o3",
+            "text": "{ a: 'three', b: 'two' }"
+          },
+          {
+            "id": "o4",
+            "text": "undefined"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "If you have duplicate keys in an object literal, the last occurrence overrides the previous ones. The position of the key remains the same, but the value is updated.",
+        "relatedQuestionSlug": "primitive-vs-reference",
+        "slug": "q5-what-happens-here"
+      },
+      {
+        "id": "q6",
+        "text": "What is the output of this IIFE?",
+        "codeSnippet": "(function() {\n  var a = b = 3;\n})();\nconsole.log(typeof a);\nconsole.log(typeof b);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "'number', 'number'"
+          },
+          {
+            "id": "o2",
+            "text": "'undefined', 'undefined'"
+          },
+          {
+            "id": "o3",
+            "text": "'undefined', 'number'"
+          },
+          {
+            "id": "o4",
+            "text": "ReferenceError"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "`var a = b = 3` evaluates right-to-left. `b = 3` creates a global variable `b` (in non-strict mode). Then `var a` is declared locally. So `a` is undefined globally, but `b` is 3.",
+        "relatedQuestionSlug": "javascript-scopes",
+        "slug": "q6-what-is-the-output-of-this-iife"
+      },
+      {
+        "id": "q7",
+        "text": "What gets logged?",
+        "codeSnippet": "let x = [1, 2, 3];\nlet y = [...x];\ny[0] = 99;\nconsole.log(x[0]);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "1"
+          },
+          {
+            "id": "o2",
+            "text": "99"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "Throws TypeError"
+          }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "The spread operator `...` creates a shallow copy of the array. Modifying primitives in the copied array does not affect the original array.",
+        "relatedQuestionSlug": "primitive-vs-reference",
+        "slug": "q7-what-gets-logged"
+      },
+      {
+        "id": "q8",
+        "text": "What is the outcome of comparing NaN?",
+        "codeSnippet": "console.log(NaN === NaN);",
+        "options": [
+          {
+            "id": "o1",
+            "text": "true"
+          },
+          {
+            "id": "o2",
+            "text": "false"
+          },
+          {
+            "id": "o3",
+            "text": "undefined"
+          },
+          {
+            "id": "o4",
+            "text": "TypeError"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "NaN (Not-a-Number) is the only value in JavaScript that is not strictly equal to itself. Use `Number.isNaN()` or `Object.is()` to check for NaN.",
+        "relatedQuestionSlug": "strict-equality",
+        "slug": "q8-what-is-the-outcome-of-comparing-nan"
+      },
+      {
+        "id": "q9",
+        "text": "What does this map function return?",
+        "codeSnippet": "console.log(['1', '7', '11'].map(parseInt));",
+        "options": [
+          {
+            "id": "o1",
+            "text": "[1, 7, 11]"
+          },
+          {
+            "id": "o2",
+            "text": "[1, NaN, 3]"
+          },
+          {
+            "id": "o3",
+            "text": "[1, NaN, NaN]"
+          },
+          {
+            "id": "o4",
+            "text": "Throws Error"
+          }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`map` passes three arguments to `parseInt(value, index, array)`. `parseInt('1', 0)` is 1. `parseInt('7', 1)` is NaN (radix 1 is invalid). `parseInt('11', 2)` parses binary 11 to 3.",
+        "relatedQuestionSlug": "map-filter-reduce",
+        "slug": "q9-what-does-this-map-function-return"
+      },
+      {
+        "id": "q10",
+        "text": "What is the output?",
+        "codeSnippet": "console.log(false == '0');\nconsole.log(false === '0');",
+        "options": [
+          {
+            "id": "o1",
+            "text": "true, true"
+          },
+          {
+            "id": "o2",
+            "text": "false, false"
+          },
+          {
+            "id": "o3",
+            "text": "true, false"
+          },
+          {
+            "id": "o4",
+            "text": "false, true"
+          }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Loose equality `==` attempts type coercion, turning both to 0, which evaluates to `true`. Strict equality `===` checks types as well, so a boolean and a string evaluate to `false`.",
+        "relatedQuestionSlug": "strict-equality",
+        "slug": "q10-what-is-the-output"
+      }
+    ]
+  }
+]

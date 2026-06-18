@@ -1,6 +1,9 @@
-import { allPosts, allSeries } from '../.content-collections/generated';
+import { allLocalizedPosts, allPosts, allSeries } from '../.content-collections/generated';
+import type { HomeLocale } from '@/lib/home-content';
 
 export type BlogPost = (typeof allPosts)[number];
+export type LocalizedBlogPost = (typeof allLocalizedPosts)[number];
+export type RenderableBlogPost = BlogPost | LocalizedBlogPost;
 export type BlogSeriesDocument = (typeof allSeries)[number];
 export type BlogSeries = BlogSeriesDocument & {
   posts: BlogPost[];
@@ -15,6 +18,10 @@ export type SeriesNavigation = {
   next: BlogPost | null;
 };
 
+const localizedPostsByKey = new Map(
+  allLocalizedPosts.map((post) => [`${post.sourceSlug}:${post.locale}`, post]),
+);
+
 export function getAllPosts() {
   return [...allPosts].sort(
     (a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime(),
@@ -23,6 +30,18 @@ export function getAllPosts() {
 
 export function getPostBySlug(slug: string) {
   return getAllPosts().find((post) => post.slug === slug);
+}
+
+export function getLocalizedPostVariant(slug: string, locale: HomeLocale) {
+  if (locale === 'en') {
+    return null;
+  }
+
+  return localizedPostsByKey.get(`${slug}:${locale}`) ?? null;
+}
+
+export function resolvePostForLocale(post: BlogPost, locale: HomeLocale): RenderableBlogPost {
+  return getLocalizedPostVariant(post.slug, locale) ?? post;
 }
 
 export function getAllSlugs() {
@@ -94,7 +113,8 @@ export function getTopicCluster(currentPost: BlogPost, limit = 5): TopicCluster 
   const bestTagMatch = (currentPost.tags ?? [])
     .map((tag) => ({
       tag,
-      count: posts.filter((post) => post.slug !== currentPost.slug && post.tags.includes(tag)).length,
+      count: posts.filter((post) => post.slug !== currentPost.slug && post.tags.includes(tag))
+        .length,
     }))
     .sort((a, b) => b.count - a.count)[0];
 

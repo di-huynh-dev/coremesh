@@ -14,7 +14,18 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { BlogPost, SeriesNavigation, TopicCluster } from '@/lib/blog';
+import type { HomeLocale } from '@/lib/home-content';
+import { getPreferredLocale, subscribeToLocaleChange } from '@/lib/site-locale';
+import { BlogPost, SeriesNavigation, TopicCluster, resolvePostForLocale } from '@/lib/blog';
+import {
+  formatBlogCategory,
+  formatBlogDate,
+  formatBlogReadingTime,
+  formatRelatedLabel,
+  formatTopicClusterLabel,
+  getBlogUiCopy,
+  getBlogVoicePrefix,
+} from '@/lib/blog-localization';
 import { blogMdxComponents } from '@/components/blog/mdx-components';
 import { FeaturedPostCard } from '@/components/blog/blog-cards';
 
@@ -90,7 +101,17 @@ function extractTocItems(content: string): TocItem[] {
   return items;
 }
 
-function TableOfContentsRail({ items, activeId }: { items: TocItem[]; activeId: string | null }) {
+function TableOfContentsRail({
+  items,
+  activeId,
+  title,
+  ariaLabel,
+}: {
+  items: TocItem[];
+  activeId: string | null;
+  title: string;
+  ariaLabel: string;
+}) {
   return (
     <aside
       className="hidden self-start xl:sticky xl:block"
@@ -101,11 +122,11 @@ function TableOfContentsRail({ items, activeId }: { items: TocItem[]; activeId: 
       <div className="w-[240px]">
         <div className="mb-4 flex items-center gap-2 text-[#202124] dark:text-[#F5F7FB]">
           <ListTree className="text-accent h-4 w-4" />
-          <h2 className="text-sm font-semibold tracking-[0.08em] uppercase">Contents</h2>
+          <h2 className="text-sm font-semibold tracking-[0.08em] uppercase">{title}</h2>
         </div>
         <nav
-          aria-label="Table of contents"
-          className="toc-scroll overflow-y-auto border-l border-border pr-1 pl-3"
+          aria-label={ariaLabel}
+          className="toc-scroll border-border overflow-y-auto border-l pr-1 pl-3"
           style={{ maxHeight: 'calc(100vh - var(--site-nav-offset, 96px) - 6rem)' }}
         >
           <ol className="space-y-1">
@@ -120,7 +141,7 @@ function TableOfContentsRail({ items, activeId }: { items: TocItem[]; activeId: 
                       item.level === 3 ? 'ml-4' : ''
                     } ${
                       isActive
-                        ? 'border-l-2 border-accent bg-accent/[0.05] font-semibold text-accent'
+                        ? 'border-accent bg-accent/[0.05] text-accent border-l-2 font-semibold'
                         : 'text-muted-foreground hover:text-foreground'
                     }`}
                   >
@@ -137,14 +158,21 @@ function TableOfContentsRail({ items, activeId }: { items: TocItem[]; activeId: 
 }
 
 export function ArticleContent({ post, topicCluster, seriesNavigation }: ArticleContentProps) {
-  const authorInitials = post.author.name
+  const locale = useSyncExternalStore<HomeLocale>(
+    subscribeToLocaleChange,
+    getPreferredLocale,
+    () => 'en',
+  );
+  const copy = getBlogUiCopy(locale).article;
+  const displayPost = useMemo(() => resolvePostForLocale(post, locale), [locale, post]);
+  const authorInitials = displayPost.author.name
     .split(' ')
     .map((part) => part[0])
     .join('')
     .slice(0, 2)
     .toUpperCase();
 
-  const tocItems = useMemo(() => extractTocItems(post.content), [post.content]);
+  const tocItems = useMemo(() => extractTocItems(displayPost.content), [displayPost.content]);
   const [activeHeadingId, setActiveHeadingId] = useState<string | null>(null);
 
   // Reading progress
@@ -170,7 +198,9 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
     () => typeof window !== 'undefined' && 'speechSynthesis' in window,
     () => false,
   );
-  const words = post.content ? post.content.split(/\s+/).filter((word) => word.length > 0) : [];
+  const words = displayPost.content
+    ? displayPost.content.split(/\s+/).filter((word) => word.length > 0)
+    : [];
   const seriesNavigationSlugs = useMemo(
     () =>
       new Set(
@@ -196,8 +226,17 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
       const availableVoices = speechSynthesis.getVoices();
       if (availableVoices.length === 0) return;
 
+      const localePrefix = getBlogVoicePrefix(locale);
+      const localeVoices = availableVoices.filter((voice) =>
+        voice.lang.toLowerCase().startsWith(localePrefix),
+      );
       const englishVoices = availableVoices.filter((voice) => voice.lang.startsWith('en'));
-      const voicesToUse = englishVoices.length > 0 ? englishVoices : availableVoices;
+      const voicesToUse =
+        localeVoices.length > 0
+          ? localeVoices
+          : englishVoices.length > 0
+            ? englishVoices
+            : availableVoices;
       setVoices(voicesToUse);
 
       if (!selectedVoice) {
@@ -224,7 +263,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
         speechSynthesis.onvoiceschanged = null;
       }
     };
-  }, [ttsSupported, selectedVoice]);
+  }, [locale, ttsSupported, selectedVoice]);
 
   useEffect(() => {
     if (tocItems.length === 0) {
@@ -293,11 +332,12 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
 
   // Initialize TTS with selected voice and speed
   const initTTS = useCallback(() => {
-    if (!ttsSupported || !post.content) return;
+    if (!ttsSupported || !displayPost.content) return;
 
-    const utterance = new SpeechSynthesisUtterance(post.content);
+    const utterance = new SpeechSynthesisUtterance(displayPost.content);
     utterance.rate = speed;
     utterance.pitch = 1;
+    utterance.lang = getBlogVoicePrefix(locale);
 
     if (selectedVoice) {
       utterance.voice = selectedVoice;
@@ -325,7 +365,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
     };
 
     utteranceRef.current = utterance;
-  }, [ttsSupported, post.content, selectedVoice, speed]);
+  }, [displayPost.content, locale, selectedVoice, speed, ttsSupported]);
 
   useEffect(() => {
     initTTS();
@@ -382,6 +422,26 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
   const ttsProgress = words.length > 0 ? (currentWordIndex / words.length) * 100 : 0;
   const hasToc = tocItems.length > 0;
   const currentActiveHeadingId = activeHeadingId ?? tocItems[0]?.id ?? null;
+  const [seriesDescriptionBefore, seriesDescriptionAfter] =
+    copy.keepReadingDescription.split('{series}');
+  const footerCards = [
+    seriesNavigation?.previous
+      ? { post: seriesNavigation.previous, label: copy.previousInSeries }
+      : null,
+    seriesNavigation?.next ? { post: seriesNavigation.next, label: copy.nextInSeries } : null,
+    relatedPosts[0]
+      ? {
+          post: relatedPosts[0],
+          label: topicCluster
+            ? formatRelatedLabel(
+                copy.relatedFrom,
+                formatTopicClusterLabel(topicCluster.label, locale),
+              )
+            : copy.relatedArticle,
+        }
+      : null,
+  ].filter((card): card is { post: BlogPost; label: string } => Boolean(card));
+  const hasSingleFooterCard = footerCards.length === 1;
 
   return (
     <>
@@ -401,7 +461,12 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
           }
         >
           {hasToc ? (
-            <TableOfContentsRail items={tocItems} activeId={currentActiveHeadingId} />
+            <TableOfContentsRail
+              items={tocItems}
+              activeId={currentActiveHeadingId}
+              title={copy.tableOfContents}
+              ariaLabel={copy.tableOfContentsAria}
+            />
           ) : null}
 
           <article className="min-w-0" data-pagefind-body>
@@ -411,20 +476,24 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                 className="text-muted-foreground hover:text-foreground mb-6 inline-flex items-center gap-2 text-sm transition-colors md:mb-8"
               >
                 <ArrowLeft className="h-4 w-4" />
-                Back to Blog
+                {copy.backToBlog}
               </Link>
 
               <header className="mb-8 md:mb-12">
                 <div className="text-muted-foreground mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-medium uppercase md:mb-6 md:gap-x-5">
-                  <span className="text-[#071B3A] dark:text-[#D7E2FF]">{post.category}</span>
-                  <span className="text-muted-foreground text-xs md:text-sm">
-                    {post.readingTime} min read
+                  <span className="text-[#071B3A] dark:text-[#D7E2FF]">
+                    {formatBlogCategory(displayPost.category, locale)}
                   </span>
-                  <span className="text-muted-foreground text-xs md:text-sm">{post.date}</span>
+                  <span className="text-muted-foreground text-xs md:text-sm">
+                    {formatBlogReadingTime(displayPost.readingTime, locale)}
+                  </span>
+                  <span className="text-muted-foreground text-xs md:text-sm">
+                    {formatBlogDate(displayPost.publishedAt, locale)}
+                  </span>
                   {seriesNavigation ? (
                     <Link
                       href={`/blog/series/${seriesNavigation.series.slug}`}
-                      className="text-accent hover:text-[#071B3A] text-xs font-medium transition-colors md:text-sm"
+                      className="text-accent text-xs font-medium transition-colors hover:text-[#071B3A] md:text-sm"
                     >
                       {seriesNavigation.series.title}
                     </Link>
@@ -432,11 +501,11 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                 </div>
 
                 <h1 className="mb-4 text-3xl leading-tight font-bold tracking-[-0.03em] text-[#071B3A] md:mb-6 md:text-5xl dark:text-[#D7E2FF]">
-                  {post.title}
+                  {displayPost.title}
                 </h1>
 
                 <p className="text-muted-foreground mb-6 text-base leading-8 md:mb-8 md:text-xl">
-                  {post.excerpt}
+                  {displayPost.excerpt}
                 </p>
 
                 <div className="border-border flex flex-col justify-between gap-4 border-b pb-6 sm:flex-row sm:items-center md:pb-8">
@@ -446,9 +515,9 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                     </div>
                     <div>
                       <p className="text-foreground text-sm font-medium md:text-base">
-                        {post.author.name}
+                        {displayPost.author.name}
                       </p>
-                      <p className="text-muted-foreground text-xs md:text-sm">Author</p>
+                      <p className="text-muted-foreground text-xs md:text-sm">{copy.authorLabel}</p>
                     </div>
                   </div>
 
@@ -458,7 +527,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                       className="border-border text-muted-foreground hover:text-foreground hover:border-accent/35 inline-flex w-full items-center justify-center gap-2 rounded-full border px-4 py-2.5 transition-colors sm:w-auto"
                     >
                       <Volume2 className="h-4 w-4" />
-                      <span className="text-sm font-medium">Listen</span>
+                      <span className="text-sm font-medium">{copy.listen}</span>
                     </button>
                   )}
                 </div>
@@ -468,60 +537,111 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                 ref={articleRef}
                 className="blog-prose prose prose-sm md:prose-lg prose-headings:scroll-mt-28 prose-headings:font-semibold prose-headings:text-foreground prose-h2:text-xl md:prose-h2:text-2xl prose-h2:mt-10 md:prose-h2:mt-14 prose-h2:mb-4 md:prose-h2:mb-6 prose-h3:text-lg md:prose-h3:text-xl prose-h3:mt-8 md:prose-h3:mt-10 prose-h3:mb-3 md:prose-h3:mb-4 prose-p:text-sm md:prose-p:text-base prose-p:text-foreground prose-p:leading-relaxed md:prose-p:leading-[1.8] prose-p:mb-4 md:prose-p:mb-6 [&>p:first-of-type]:text-muted-foreground [&>div:first-of-type]:text-muted-foreground prose-a:text-accent prose-a:no-underline hover:prose-a:underline prose-strong:text-foreground prose-strong:font-semibold prose-code:text-[#24324A] prose-code:bg-[#EEF1F5] prose-code:border prose-code:border-[#DEE4EE] prose-code:px-1.5 md:prose-code:px-2 prose-code:py-0.5 prose-code:rounded-md prose-code:font-medium prose-code:text-xs md:prose-code:text-sm prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:border-0 prose-pre:my-6 md:prose-pre:my-8 prose-pre:p-0 prose-pre:rounded-none prose-pre:shadow-none prose-blockquote:border-l-accent prose-blockquote:border-l-4 prose-blockquote:bg-accent/7 prose-blockquote:py-3 md:prose-blockquote:py-4 prose-blockquote:px-4 md:prose-blockquote:px-6 prose-blockquote:rounded-r-lg md:prose-blockquote:rounded-r-xl prose-blockquote:not-italic prose-blockquote:my-6 md:prose-blockquote:my-8 prose-blockquote:text-foreground prose-ul:my-4 md:prose-ul:my-6 prose-ul:space-y-2 md:prose-ul:space-y-3 prose-ol:my-4 md:prose-ol:my-6 prose-ol:space-y-2 md:prose-ol:space-y-3 prose-li:text-foreground/80 prose-li:leading-relaxed prose-li:text-sm md:prose-li:text-base prose-table:my-8 prose-table:w-full prose-table:overflow-hidden prose-table:rounded-[1.25rem] prose-table:border prose-table:border-border prose-table:bg-card prose-thead:border-border prose-th:border-border prose-th:bg-muted/70 prose-th:px-4 prose-th:py-3 prose-th:text-left prose-th:text-xs prose-th:font-semibold prose-th:tracking-[0.12em] prose-th:text-muted-foreground prose-th:uppercase prose-td:border-border prose-td:px-4 prose-td:py-3.5 prose-td:text-sm prose-td:leading-7 md:prose-td:text-base max-w-none [&>div:first-of-type]:mb-6 [&>div:first-of-type]:text-base [&>div:first-of-type]:leading-relaxed md:[&>div:first-of-type]:mb-8 md:[&>div:first-of-type]:text-xl [&>p:first-of-type]:mb-6 [&>p:first-of-type]:text-base [&>p:first-of-type]:leading-relaxed md:[&>p:first-of-type]:mb-8 md:[&>p:first-of-type]:text-xl"
               >
-                <MDXContent code={post.code} components={blogMdxComponents} />
+                <MDXContent code={displayPost.code} components={blogMdxComponents} />
               </div>
 
-              <footer className="border-border mt-12 border-t pt-8 md:mt-16 md:pt-10">
-                <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-                  <div>
-                    <p className="text-muted-foreground text-xs font-semibold tracking-[0.14em] uppercase">
-                      Keep reading
-                    </p>
-                    <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-[#202124] dark:text-[#F5F7FB]">
-                      Better navigation for the next step.
-                    </h2>
-                    {seriesNavigation ? (
-                      <p className="text-muted-foreground mt-2 text-sm leading-7">
-                        This article is part of{' '}
+              <footer className="mt-12 md:mt-16">
+                <section className="relative overflow-hidden rounded-[2rem] border border-[#e4d8c8] bg-[linear-gradient(180deg,rgba(255,253,250,0.98),rgba(247,242,235,0.9))] p-6 shadow-[0_18px_48px_rgba(65,48,24,0.08)] md:p-8">
+                  <div className="absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(15,68,122,0.24),transparent)]" />
+
+                  {hasSingleFooterCard ? (
+                    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
+                      <div className="max-w-2xl">
+                        <p className="text-xs font-semibold tracking-[0.18em] text-[#5f6f86] uppercase">
+                          {copy.keepReadingEyebrow}
+                        </p>
+
+                        <h2 className="mt-3 max-w-xl text-3xl leading-[1.08] font-semibold tracking-[-0.04em] text-[#202124] md:text-[2.4rem] dark:text-[#F5F7FB]">
+                          {copy.keepReadingTitle}
+                        </h2>
+
+                        {seriesNavigation ? (
+                          <p className="text-muted-foreground mt-4 max-w-xl text-sm leading-7 md:text-base">
+                            {seriesDescriptionBefore}
+                            <Link
+                              href={`/blog/series/${seriesNavigation.series.slug}`}
+                              className="text-accent font-medium hover:underline"
+                            >
+                              {seriesNavigation.series.title}
+                            </Link>
+                            {seriesDescriptionAfter}
+                          </p>
+                        ) : null}
+
+                        <div className="mt-6 flex flex-wrap items-center gap-3">
+                          <Link
+                            href="/blog"
+                            className="inline-flex items-center gap-2 rounded-full border border-[#c9d6e6] bg-white/85 px-4 py-2.5 text-sm font-medium text-[#0F447A] shadow-[0_8px_24px_rgba(15,68,122,0.08)] transition-colors hover:border-[#0F447A]/25 hover:text-[#071B3A]"
+                          >
+                            <ArrowLeft className="h-4 w-4" />
+                            {copy.moreArticles}
+                          </Link>
+
+                          {seriesNavigation ? (
+                            <Link
+                              href={`/blog/series/${seriesNavigation.series.slug}`}
+                              className="text-muted-foreground hover:text-foreground inline-flex items-center gap-2 text-sm font-medium transition-colors"
+                            >
+                              {seriesNavigation.series.title}
+                            </Link>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="xl:justify-self-end">
+                        <FeaturedPostCard post={footerCards[0].post} label={footerCards[0].label} />
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+                        <div className="max-w-2xl">
+                          <p className="text-xs font-semibold tracking-[0.18em] text-[#5f6f86] uppercase">
+                            {copy.keepReadingEyebrow}
+                          </p>
+
+                          <h2 className="mt-3 text-3xl leading-[1.08] font-semibold tracking-[-0.04em] text-[#202124] md:text-[2.4rem] dark:text-[#F5F7FB]">
+                            {copy.keepReadingTitle}
+                          </h2>
+
+                          {seriesNavigation ? (
+                            <p className="text-muted-foreground mt-4 max-w-xl text-sm leading-7 md:text-base">
+                              {seriesDescriptionBefore}
+                              <Link
+                                href={`/blog/series/${seriesNavigation.series.slug}`}
+                                className="text-accent font-medium hover:underline"
+                              >
+                                {seriesNavigation.series.title}
+                              </Link>
+                              {seriesDescriptionAfter}
+                            </p>
+                          ) : null}
+                        </div>
+
                         <Link
-                          href={`/blog/series/${seriesNavigation.series.slug}`}
-                          className="text-accent hover:underline"
+                          href="/blog"
+                          className="inline-flex items-center gap-2 self-start rounded-full border border-[#c9d6e6] bg-white/85 px-4 py-2.5 text-sm font-medium text-[#0F447A] shadow-[0_8px_24px_rgba(15,68,122,0.08)] transition-colors hover:border-[#0F447A]/25 hover:text-[#071B3A]"
                         >
-                          {seriesNavigation.series.title}
+                          <ArrowLeft className="h-4 w-4" />
+                          {copy.moreArticles}
                         </Link>
-                        , so you can keep moving through the same learning path.
-                      </p>
-                    ) : null}
-                  </div>
+                      </div>
 
-                  <Link
-                    href="/blog"
-                    className="text-accent inline-flex items-center gap-2 text-sm font-medium hover:underline md:text-base"
-                  >
-                    <ArrowLeft className="h-4 w-4" />
-                    More articles
-                  </Link>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {seriesNavigation?.previous ? (
-                    <FeaturedPostCard
-                      post={seriesNavigation.previous}
-                      label="Previous in series"
-                    />
-                  ) : null}
-
-                  {seriesNavigation?.next ? (
-                    <FeaturedPostCard post={seriesNavigation.next} label="Next in series" />
-                  ) : null}
-
-                  {relatedPosts[0] ? (
-                    <FeaturedPostCard
-                      post={relatedPosts[0]}
-                      label={topicCluster ? `Related from ${topicCluster.label}` : 'Related article'}
-                    />
-                  ) : null}
-                </div>
+                      <div
+                        className="grid gap-5"
+                        style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}
+                      >
+                        {footerCards.map((card) => (
+                          <FeaturedPostCard
+                            key={`${card.label}-${card.post.slug}`}
+                            post={card.post}
+                            label={card.label}
+                          />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </section>
               </footer>
             </div>
           </article>
@@ -545,7 +665,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                 </div>
                 <div className="hidden min-w-0 sm:block">
                   <p className="text-foreground max-w-[120px] truncate text-xs font-medium md:max-w-none md:text-sm">
-                    {post.title}
+                    {displayPost.title}
                   </p>
                   <p className="text-muted-foreground text-xs">{speed}x</p>
                 </div>
@@ -555,7 +675,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                 <button
                   onClick={handleRestart}
                   className="text-muted-foreground hover:text-foreground p-1.5 transition-colors md:p-2"
-                  title="Restart"
+                  title={copy.restart}
                 >
                   <SkipBack className="h-4 w-4 md:h-5 md:w-5" />
                 </button>
@@ -574,7 +694,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                 <button
                   onClick={handleStop}
                   className="text-muted-foreground hover:text-foreground p-1.5 transition-colors md:p-2"
-                  title="Stop"
+                  title={copy.stop}
                 >
                   <Square className="h-3 w-3 md:h-4 md:w-4" />
                 </button>
@@ -589,7 +709,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                         ? 'bg-accent/10 text-accent'
                         : 'text-muted-foreground hover:text-foreground'
                     }`}
-                    title="Settings"
+                    title={copy.settings}
                   >
                     <Settings className="h-4 w-4 md:h-5 md:w-5" />
                   </button>
@@ -598,7 +718,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                     <div className="paper-card absolute right-0 bottom-full mb-3 w-64 rounded-xl p-3 md:w-72 md:rounded-2xl md:p-4">
                       <div className="mb-3 flex items-center justify-between md:mb-4">
                         <h4 className="text-foreground text-sm font-semibold md:text-base">
-                          Playback Settings
+                          {copy.playbackSettings}
                         </h4>
                         <button
                           onClick={() => setShowSettings(false)}
@@ -610,7 +730,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
 
                       <div className="mb-4 md:mb-5">
                         <label className="text-foreground mb-2 flex items-center justify-between text-xs font-medium md:mb-3 md:text-sm">
-                          <span>Speed</span>
+                          <span>{copy.speed}</span>
                           <span className="text-accent">{speed}x</span>
                         </label>
                         <input
@@ -636,7 +756,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                       {voices.length > 0 && (
                         <div>
                           <label className="text-foreground mb-2 block text-xs font-medium md:text-sm">
-                            Voice
+                            {copy.voice}
                           </label>
                           <select
                             value={selectedVoice?.name || ''}
@@ -659,7 +779,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                       )}
 
                       <p className="text-muted-foreground mt-3 text-xs md:mt-4">
-                        Changes apply when you restart
+                        {copy.restartToApply}
                       </p>
                     </div>
                   )}
@@ -668,7 +788,7 @@ export function ArticleContent({ post, topicCluster, seriesNavigation }: Article
                 <button
                   onClick={handleStop}
                   className="text-muted-foreground hover:text-foreground p-1.5 transition-colors md:p-2"
-                  title="Close player"
+                  title={copy.closePlayer}
                 >
                   <X className="h-4 w-4 md:h-5 md:w-5" />
                 </button>

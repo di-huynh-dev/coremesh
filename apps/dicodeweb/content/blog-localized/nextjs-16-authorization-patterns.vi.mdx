@@ -1,0 +1,294 @@
+---
+title: 'Authorization patterns trong Next.js 16 có thể scale tốt'
+sourceSlug: nextjs-16-authorization-patterns
+locale: vi
+excerpt: 'Hướng dẫn thực tế để giữ `proxy.ts` gọn nhẹ trong Next.js 16, đưa authorization an toàn xuống gần data hơn và tránh các flow redirect nặng tay dễ vỡ khi ứng dụng lớn dần.'
+category: Framework
+date: 17 tháng 6, 2026
+publishedAt: 2026-06-17T23:59:59.000Z
+readingTime: 9
+level: Advanced
+image: /images/blog/nextjs-authorization-banner.png
+tags:
+  - Next.js
+  - Authorization
+  - Authentication
+  - Proxy
+  - App Router
+series:
+  slug: nextjs-in-practice
+  position: 2
+author:
+  name: DiCodeWeb Editorial
+---
+
+Khi một codebase App Router vẫn còn nhỏ, chúng ta rất dễ xem việc chặn route như một bài toán duy nhất và cố giải mọi thứ ở cùng một chỗ.
+
+Đó là lúc team bắt đầu dồn quá nhiều trách nhiệm vào `middleware.ts`, hoặc theo cách gọi của Next.js 16 là `proxy.ts`.
+
+Vấn đề là authorization không phải một quyết định đơn lẻ. Nó là cả một chồng quyết định:
+
+- request này có nên được đi tiếp ngay từ đầu không?
+- user này có nên nhìn thấy screen này không?
+- mutation này có được phép chạy không?
+- user này có được truy cập đúng record cụ thể này không?
+
+Nếu một layer cố trả lời cả bốn câu hỏi đó, hệ thống sẽ chậm, dễ vỡ, hoặc cả hai.
+
+Mô hình tư duy có thể scale tốt thực ra đơn giản hơn:
+
+- `proxy.ts` xử lý request gating nhanh và mang tính optimistic
+- data access layer xử lý session validation an toàn
+- Server Components, Route Handlers và Server Actions chịu trách nhiệm enforce authorization cuối cùng ngay gần data
+
+<MetricCards
+  items={[
+    {
+      label: 'Vai trò của Proxy',
+      value: 'Optimistic',
+      detail: 'Dùng cho các check nhanh theo cookie, rewrite và redirect trước khi render bắt đầu.',
+    },
+    {
+      label: 'Secure checks',
+      value: 'Gần data',
+      detail:
+        'Permission, ownership, revocation và các sensitive read nên nằm ở DAL và các handler phía server.',
+    },
+    {
+      label: 'Lỗi phổ biến',
+      value: 'Ôm đồm',
+      detail:
+        'Nhồi quá nhiều logic vào Proxy biến navigation thành hạ tầng nặng nề và làm bug auth khó lần hơn.',
+    },
+  ]}
+/>
+
+## Bắt đầu từ thay đổi của Next.js 16
+
+Có một cập nhật rất dễ bị bỏ lỡ nếu bạn học phần này từ các tutorial cũ: trong Next.js 16, convention `middleware` đã được đổi tên thành `proxy`.
+
+Việc đổi tên này quan trọng vì nó làm rõ ý đồ. Tài liệu chính thức đặt Proxy ở ranh giới mạng, chạy trước khi route được render, và còn khuyến nghị tránh dùng nó trừ khi đó thật sự là đúng công cụ cho bài toán.
+
+Đó là một giới hạn hữu ích.
+
+Proxy rất giỏi ở những quyết định rẻ. Nó không phải nơi để nhét toàn bộ authorization model của bạn.
+
+<Callout type="tip" title="Rule of thumb tốt hơn">
+  Hãy để Proxy trả lời <strong>"request này có được đi tiếp không?"</strong>. Hãy để data layer phía
+  server trả lời <strong>"user này thực sự được xem hay thay đổi cái gì?"</strong>.
+</Callout>
+
+## Pattern 1: Giữ Proxy nhỏ, rẻ và dễ đoán
+
+Authentication guide chính thức khuyên dùng Proxy cho các check optimistic và nói rất rõ rằng đừng mang database work vào đó trên mọi request khớp matcher.
+
+Khuyến nghị này càng quan trọng khi ứng dụng lớn lên, vì Proxy chạy trước render và còn có thể chạy trên cả các route được prefetch. Nếu nó trở nên nặng, toàn bộ app sẽ có cảm giác nặng theo.
+
+Đây là kiểu Proxy scale tốt:
+
+```ts
+import { NextRequest, NextResponse } from 'next/server';
+
+const publicPaths = ['/', '/login', '/signup'];
+
+function isPublicPath(pathname: string) {
+  return publicPaths.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+}
+
+export default function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  const hasSession = Boolean(request.cookies.get('session')?.value);
+
+  if (!hasSession && !isPublicPath(pathname)) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  if (hasSession && (pathname === '/login' || pathname === '/signup')) {
+    return NextResponse.redirect(new URL('/dashboard', request.url));
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|.*\\.(png|jpg|jpeg|svg|webp|ico)$).*)'],
+};
+```
+
+Lý do cách này ổn:
+
+- nó chỉ check sự hiện diện của session, không gánh permission logic sâu
+- matcher được giữ hẹp và có chủ đích
+- nó tránh mang database traffic vào mọi request khớp matcher
+- nó biến Proxy thành perimeter guard thay vì policy engine
+
+## Pattern 2: Đưa authorization an toàn vào DAL
+
+Auth guide của Next.js khuyến nghị tạo một Data Access Layer và tập trung authorization ở đó.
+
+Đó mới là nền móng thực sự.
+
+DAL là nơi bạn verify session theo cách có thể chạm database, session store, role table, team membership, resource ownership hoặc revocation state một cách an toàn.
+
+```ts
+import 'server-only';
+
+import { cache } from 'react';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+import { db } from '@/lib/db';
+
+export const verifySession = cache(async () => {
+  const token = (await cookies()).get('session')?.value;
+
+  if (!token) {
+    redirect('/login');
+  }
+
+  const session = await db.sessions.findValidByToken(token);
+
+  if (!session) {
+    redirect('/login');
+  }
+
+  return {
+    userId: session.userId,
+    role: session.role,
+    teamId: session.teamId,
+  };
+});
+```
+
+Sau đó, mọi read hoặc write nhạy cảm đều build trên verified session này thay vì tin vào lớp gating ở mức navigation.
+
+```ts
+export async function getProject(projectId: string) {
+  const session = await verifySession();
+
+  const project = await db.projects.findById(projectId);
+
+  if (!project || project.teamId !== session.teamId) {
+    return null;
+  }
+
+  return project;
+}
+```
+
+Đó là khác biệt giữa “chúng ta redirect trình duyệt” và “chúng ta thật sự enforce access control.”
+
+## Pattern 3: Dùng layouts và pages cho trải nghiệm UI, không phải cho lớp bảo mật cuối cùng
+
+Layouts rất tốt để định hình trải nghiệm người dùng.
+
+Nhưng chỉ riêng layouts thì không đủ để bảo vệ cả hệ thống.
+
+Ví dụ, dashboard layout có thể fetch current user, chọn nav variant phù hợp hoặc redirect người chưa đăng nhập từ sớm. Điều đó hữu ích. Nhưng nếu cùng user đó vẫn gọi được một Route Handler hoặc trigger một Server Action mà không check lại permission, hệ thống vẫn chưa hoàn chỉnh.
+
+Đây là điểm nhiều app bắt đầu cho cảm giác thiếu chắc chắn. UI trông có vẻ được bảo vệ, nhưng contract phía server lại yếu hơn cái shell bên ngoài.
+
+<Compare
+  leftTitle="Pattern dễ vỡ"
+  rightTitle="Pattern có thể scale"
+  left={[
+    'Bảo vệ page shell rồi mặc định phần còn lại cũng đã an toàn',
+    'Dùng Proxy redirect cho role logic trên mọi request',
+    'Để layout checks đại diện luôn cho mutation security',
+    'Coi navigation control là toàn bộ authorization model',
+  ]}
+  right={[
+    'Dùng layouts cho trải nghiệm và branch sớm theo user',
+    'Giữ Proxy tập trung vào optimistic route gating',
+    'Check lại permission trong Route Handlers và Server Actions',
+    'Xem data access là nguồn authority cuối cùng',
+  ]}
+/>
+
+## Những anti-pattern càng để lâu càng đau
+
+Có vài pattern nhìn hợp lý ở tuần đầu nhưng trở nên mệt mỏi ở tháng thứ sáu.
+
+### Làm database hoặc revocation checks trong Proxy
+
+Đây là nơi các team vô tình biến mỗi lần navigation thành một phần của backend infrastructure.
+
+Nếu Proxy đang check session table, permissions table và tenant membership table trên mọi request khớp matcher, bạn đã làm cho phần nhanh nhất của routing phụ thuộc vào phần chậm nhất của hệ thống.
+
+Tài liệu chính thức khuyên tránh database checks trong Proxy chính vì lý do đó.
+
+### Coi Proxy là guard duy nhất cho APIs
+
+Perimeter checks rất quan trọng. Nhưng chúng không đủ.
+
+Nếu một Route Handler thực hiện công việc nhạy cảm, nó nên tự verify session và permission. Server Actions cũng vậy. Internal calls và code path mới sẽ tăng dần theo thời gian; giả định rằng mọi đường truy cập đều đã được phủ an toàn bởi một lớp perimeter là cách các lỗ hổng âm thầm xuất hiện.
+
+### Nhét quá nhiều role logic vào redirect
+
+Redirect logic quá hung hăng dễ sinh ra những bug giống race condition dù gốc rễ thật sự lại nằm ở kiến trúc.
+
+Tại sao? Vì navigation trong App Router bao gồm prefetching, nested layouts và server-rendered boundaries. Khi Proxy cứ liên tục phát ra redirect theo từng nuance của authorization, navigation layer bắt đầu mang những quyết định vốn nên thuộc về secure server layer.
+
+Đó là lúc bạn thấy các triệu chứng như:
+
+- nội dung chớp lên trước khi redirect ổn định
+- redirect loop giữa public route và private route
+- hard refresh và client navigation cho hành vi khác nhau
+
+Một quy tắc an toàn hơn là:
+
+- dùng Proxy redirect cho session bị thiếu hoặc rõ ràng không hợp lệ
+- dùng server-side data checks cho permission, ownership và resource-specific access
+- dùng `redirect()` hoặc `notFound()` từ server layer khi bạn đã biết quyết định nghiệp vụ thực sự là gì
+
+### Match quá rộng
+
+Nếu matcher của bạn bao gồm assets, images hoặc những route không cần guard, bạn sẽ phải trả giá cho công việc không tạo thêm giá trị bảo mật.
+
+Ngay cả một Proxy rẻ cũng trở nên tốn kém khi nó bị chạy không cần thiết trên toàn bộ bề mặt request.
+
+## Một kiến trúc thực tế cho ứng dụng thật
+
+Nếu hôm nay mình setup authorization cho một project App Router với Next.js 16 từ đầu, mình sẽ tách như sau:
+
+<Steps>
+  <Step number="01" title="Proxy cho perimeter control">
+    Check sự tồn tại của session cookie, giữ matcher hẹp và redirect các request chưa đăng nhập một
+    cách hiển nhiên ra khỏi protected routes.
+  </Step>
+  <Step number="02" title="DAL cho secure session verification">
+    Tập trung session validation, role lookup, team membership và ownership checks vào server-only
+    code nằm gần database.
+  </Step>
+  <Step number="03" title="Layouts và pages cho trải nghiệm">
+    Dùng server-rendered layouts để branch giao diện, hiển thị đúng shell và làm protected
+    navigation mượt hơn, nhưng đừng xem đó là lớp bảo mật duy nhất.
+  </Step>
+  <Step number="04" title="Handlers và actions cho enforcement cuối cùng">
+    Mọi sensitive mutation và mọi sensitive resource read đều nên verify lại session và
+    authorization ở đúng nơi công việc thật sự xảy ra.
+  </Step>
+</Steps>
+
+Cấu trúc này có lặp lại hơn một chút so với phiên bản tutorial kiểu “dồn hết vào middleware”.
+
+Nhưng nó cũng dễ audit, dễ test và dễ mở rộng hơn rất nhiều.
+
+## Ý tưởng cốt lõi cần giữ lại
+
+Sai lầm lớn nhất không nằm ở chỗ chọn nhầm helper function. Nó nằm ở chỗ giao sai trách nhiệm cho sai layer.
+
+Proxy rất mạnh khi bạn giữ nó nhanh và nhàm chán.
+
+Authorization trở nên vững khi quyết định cuối cùng nằm ngay cạnh data mà quyết định đó đang bảo vệ.
+
+Đó là phiên bản có thể scale: perimeter checks nhanh ở phía trước, secure checks sâu hơn ở bên trong stack và không tự đánh lừa mình rằng redirect thôi đã tương đương với access control.
+
+<Callout type="note" title="Đọc thêm">
+  Bài viết này là góc nhìn gốc của DiCodeWeb về cùng một problem space thường được bàn tới trong
+  cộng đồng. Nếu cần framework guidance mới nhất, hai tài liệu đáng đọc nhất là{' '}
+  <a href="https://nextjs.org/docs/app/guides/authentication">Next.js Authentication guide</a>
+  và{' '}
+  <a href="https://nextjs.org/docs/app/api-reference/file-conventions/proxy">
+    tài liệu Proxy file convention
+  </a>
+</Callout>

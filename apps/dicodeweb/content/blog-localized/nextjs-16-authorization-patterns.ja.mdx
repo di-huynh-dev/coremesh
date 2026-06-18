@@ -1,0 +1,295 @@
+---
+title: 'スケールする Next.js 16 の Authorization Pattern'
+sourceSlug: nextjs-16-authorization-patterns
+locale: ja
+excerpt: 'Next.js 16 で `proxy.ts` を軽く保ち、より安全な authorization を data に近い場所へ寄せ、アプリ拡大時に壊れやすい redirect 過多の構成を避けるための実践ガイドです。'
+category: Framework
+date: 2026年6月17日
+publishedAt: 2026-06-17T23:59:59.000Z
+readingTime: 9
+level: Advanced
+image: /images/blog/nextjs-authorization-banner.png
+tags:
+  - Next.js
+  - Authorization
+  - Authentication
+  - Proxy
+  - App Router
+series:
+  slug: nextjs-in-practice
+  position: 2
+author:
+  name: DiCodeWeb Editorial
+---
+
+App Router の codebase がまだ小さいうちは、route guarding をひとつの問題として捉え、すべてを一か所で解決したくなりがちです。
+
+そこで team は `middleware.ts`、あるいは Next.js 16 の呼び方でいう `proxy.ts` に責務を詰め込み始めます。
+
+ただし authorization は単一の判断ではありません。いくつもの判断の積み重ねです。
+
+- この request はそもそも先へ進めてよいか
+- この user はこの screen を見てよいか
+- この mutation は許可されるべきか
+- この user はこの特定 record に access してよいか
+
+ひとつの layer がこの四つすべてに答えようとすると、system は遅くなるか、壊れやすくなるか、その両方になります。
+
+スケールしやすい考え方はもっとシンプルです。
+
+- `proxy.ts` は高速で optimistic な request gating を担当する
+- data access layer は安全な session validation を担当する
+- Server Components、Route Handlers、Server Actions は data の近くで最終的な authorization を enforce する
+
+<MetricCards
+  items={[
+    {
+      label: 'Proxy の役割',
+      value: 'Optimistic',
+      detail:
+        'render 開始前に cookie ベースの軽い check、rewrite、redirect を行う用途に向いています。',
+    },
+    {
+      label: 'Secure checks',
+      value: 'Data の近く',
+      detail:
+        'permission、ownership、revocation、sensitive read は DAL や server-side handler に置くべきです。',
+    },
+    {
+      label: 'よくある失敗',
+      value: 'やりすぎ',
+      detail:
+        'Proxy にロジックを詰め込みすぎると navigation が infrastructure 化し、auth bug の原因追跡も難しくなります。',
+    },
+  ]}
+/>
+
+## まずは Next.js 16 の変化から
+
+この領域を古い tutorial で学んだ場合に見落としやすい更新があります。Next.js 16 では `middleware` という file convention が `proxy` に名前変更されました。
+
+この naming change には意味があります。公式 docs は Proxy を route render 前に動く network boundary として位置づけ、本当に適した用途でなければ使わないことまで勧めています。
+
+これはとても有益な制約です。
+
+Proxy は cheap な判断には向いています。しかし authorization model 全体を置く場所ではありません。
+
+<Callout type="tip" title="より良い rule of thumb">
+  Proxy には <strong>「この request は先へ進んでよいか」</strong> を答えさせ、server-side data layer
+  には <strong>「この user は実際に何へ access・変更できるのか」</strong> を答えさせましょう。
+</Callout>
+
+## Pattern 1: Proxy は小さく、軽く、安く保つ
+
+公式 authentication guide は Proxy を optimistic check に使うことを勧めており、matched request ごとに database work を走らせないよう明確に注意しています。
+
+app が成長するほどこの推奨は重要になります。Proxy は render 前に実行され、prefetch された route に対しても動くことがあるからです。重くなれば app 全体が重く感じられます。
+
+スケールしやすい Proxy は次のような形です。
+
+```ts
+import { NextRequest, NextResponse } from 'next/server';
+
+const publicPaths = ['/', '/login', '/signup'];
+
+function isPublicPath(pathname: string) {
+  return publicPaths.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+}
+
+export default function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  const hasSession = Boolean(request.cookies.get('session')?.value);
+
+  if (!hasSession && !isPublicPath(pathname)) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  if (hasSession && (pathname === '/login' || pathname === '/signup')) {
+    return NextResponse.redirect(new URL('/dashboard', request.url));
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|.*\\.(png|jpg|jpeg|svg|webp|ico)$).*)'],
+};
+```
+
+この形がうまく機能する理由は次の通りです。
+
+- deep permission ではなく session の有無だけを見る
+- matcher を狭く保つ
+- matched request ごとに database traffic を発生させない
+- Proxy を policy engine ではなく perimeter guard にする
+
+## Pattern 2: 安全な authorization は DAL に置く
+
+Next.js の auth guide は Data Access Layer を作り、authorization をそこへ集約することを勧めています。
+
+そこが本当の土台です。
+
+DAL は database、session store、role table、team membership、resource ownership、revocation state などへ安全に触れながら session を verify する場所です。
+
+```ts
+import 'server-only';
+
+import { cache } from 'react';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+import { db } from '@/lib/db';
+
+export const verifySession = cache(async () => {
+  const token = (await cookies()).get('session')?.value;
+
+  if (!token) {
+    redirect('/login');
+  }
+
+  const session = await db.sessions.findValidByToken(token);
+
+  if (!session) {
+    redirect('/login');
+  }
+
+  return {
+    userId: session.userId,
+    role: session.role,
+    teamId: session.teamId,
+  };
+});
+```
+
+その上で、機微な read や write はすべて verified session に基づいて構築し、navigation レベルの gating を信用しすぎないようにします。
+
+```ts
+export async function getProject(projectId: string) {
+  const session = await verifySession();
+
+  const project = await db.projects.findById(projectId);
+
+  if (!project || project.teamId !== session.teamId) {
+    return null;
+  }
+
+  return project;
+}
+```
+
+これは「browser を redirect した」ことと「本当に access control を enforce した」ことの違いです。
+
+## Pattern 3: Layouts と pages は UI の判断に使い、最終 security にはしない
+
+Layouts は user experience を整えるのに向いています。
+
+しかし、それだけで system 全体を守ることはできません。
+
+たとえば dashboard layout は current user を fetch し、適切な nav variant を選び、未認証 visitor を早めに redirect できます。これは有用です。ただし同じ user が permission 再確認なしで Route Handler を叩けたり、Server Action を実行できたりするなら、system はまだ不完全です。
+
+多くの app がここで不安定さを見せ始めます。UI は守られているように見えても、server contract のほうが shell より弱いのです。
+
+<Compare
+  leftTitle="壊れやすい pattern"
+  rightTitle="スケールする pattern"
+  left={[
+    'page shell を守ったら残りも安全だとみなす',
+    'role logic を every request の Proxy redirect に乗せる',
+    'layout check を mutation security の代わりにする',
+    'navigation control を authorization model 全体だと考える',
+  ]}
+  right={[
+    'layouts は体験と early branching のために使う',
+    'Proxy は optimistic route gating に集中させる',
+    'Route Handlers と Server Actions の中で permission を再確認する',
+    '最終 authority は data access に置く',
+  ]}
+/>
+
+## 時間がたつほどつらくなる anti-pattern
+
+最初の一週間ではそれらしく見えても、六か月後に痛みへ変わる pattern がいくつかあります。
+
+### Proxy で database や revocation check を行う
+
+ここで team は、各 navigation を backend infrastructure に変えてしまいがちです。
+
+Proxy が matched request ごとに session table、permissions table、tenant membership table を見に行くなら、routing の最速部分を system の最遅部分へ依存させてしまっています。
+
+公式 docs が Proxy での database check を避けるよう勧めるのは、まさにこのためです。
+
+### Proxy だけを API guard と見なす
+
+Perimeter check は重要ですが、それだけでは不十分です。
+
+Route Handler が sensitive work をするなら、その場で session と permissions を verify すべきです。Server Actions も同様です。internal call や新しい code path は時間とともに増えます。すべての access path が perimeter layer で安全に覆われていると仮定すると、静かな穴が生まれます。
+
+### role logic を redirect に詰め込みすぎる
+
+強すぎる redirect logic は、実際には architecture の問題なのに race condition のように見える bug を生みます。
+
+なぜなら App Router の navigation には prefetching、nested layouts、server-rendered boundary が含まれるからです。authorization の細かいニュアンスごとに Proxy が redirect を出し続けると、本来 secure server layer に属すべき判断を navigation layer が抱え込むようになります。
+
+その結果、次のような症状が出ます。
+
+- redirect が落ち着く前に content が一瞬見える
+- public route と private route の間で redirect loop が起こる
+- hard refresh と client navigation で挙動が変わる
+
+より安全なルールは次の通りです。
+
+- session が欠けている、または明らかに無効な場合だけ Proxy redirect を使う
+- permissions、ownership、resource-specific access は server-side data check で判断する
+- 本当の business decision が確定した段階で server layer から `redirect()` や `notFound()` を使う
+
+### matcher を広げすぎる
+
+matcher に assets、images、guard 不要の route まで含めると、security value を生まない work にコストを払い続けることになります。
+
+cheap な Proxy でも、request surface 全体で不要に動けば高くつきます。
+
+## 実アプリ向けの現実的な architecture
+
+もし今日、自分が Next.js 16 App Router project の authorization をゼロから組むなら、次のように分割します。
+
+<Steps>
+  <Step number="01" title="Perimeter control のための Proxy">
+    session cookie の有無だけを確認し、matcher を狭く保ち、未認証 traffic を protected route
+    から明確に遠ざけます。
+  </Step>
+  <Step number="02" title="Secure session verification のための DAL">
+    session validation、role lookup、team membership、ownership check を database 近くの server-only
+    code に集約します。
+  </Step>
+  <Step number="03" title="体験のための layouts と pages">
+    server-rendered layout を使って interface を分岐し、適切な shell を見せ、protected navigation
+    を滑らかにします。ただし唯一の security layer にはしません。
+  </Step>
+  <Step number="04" title="最終 enforcement のための handlers と actions">
+    すべての sensitive mutation と sensitive resource read で、実際の処理地点でもう一度 session と
+    authorization を verify します。
+  </Step>
+</Steps>
+
+この構造は「middleware に全部入れる」tutorial 型の実装より、少しだけ重複して見えるかもしれません。
+
+ですが audit、test、evolve のしやすさはずっと高くなります。
+
+## 最後まで残すべき core idea
+
+最大の失敗は helper function を間違えることではありません。間違った責務を間違った layer に渡してしまうことです。
+
+Proxy は、速くて退屈なままにしておくと非常に優秀です。
+
+Authorization は、最終判断が守るべき data の隣にあるときに堅牢になります。
+
+それがスケールする形です。前段では速い perimeter check を行い、stack の深いところで secure check を行い、redirect だけで access control と同じだと思い込まないことです。
+
+<Callout type="note" title="さらに読む">
+  この記事は、community でも広く語られている問題領域に対する DiCodeWeb 独自の整理です。 最新の
+  framework guidance を確認するなら、特に役立つのは{' '}
+  <a href="https://nextjs.org/docs/app/guides/authentication">Next.js Authentication guide</a>と{' '}
+  <a href="https://nextjs.org/docs/app/api-reference/file-conventions/proxy">
+    Proxy file convention docs
+  </a>
+  です。
+</Callout>

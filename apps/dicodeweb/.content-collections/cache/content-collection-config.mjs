@@ -70,6 +70,28 @@ function rehypeShiki() {
 
 // content-collections.ts
 var postLevelSchema = z.enum(["Starter", "Intermediate", "Advanced"]);
+var blogLocaleSchema = z.enum(["en", "vi", "ja"]);
+var basePostSchema = z.object({
+  title: z.string(),
+  slug: z.string().optional(),
+  excerpt: z.string(),
+  category: z.enum(["Engineering", "Design", "Framework"]),
+  content: z.string(),
+  date: z.string(),
+  readingTime: z.number().int().positive(),
+  publishedAt: z.string(),
+  author: z.object({
+    name: z.string(),
+    avatar: z.string().optional()
+  }),
+  tags: z.array(z.string()).default([]),
+  level: postLevelSchema.default("Intermediate"),
+  image: z.string().optional(),
+  series: z.object({
+    slug: z.string(),
+    position: z.number().int().positive().optional()
+  }).optional()
+});
 var mdxOptions = {
   remarkPlugins: [remarkGfm],
   rehypePlugins: [
@@ -105,32 +127,30 @@ var blogPosts = defineCollection({
   name: "posts",
   directory: "content/blog",
   include: "**/*.mdx",
-  schema: z.object({
-    title: z.string(),
-    slug: z.string().optional(),
-    excerpt: z.string(),
-    category: z.enum(["Engineering", "Design", "Framework"]),
-    content: z.string(),
-    date: z.string(),
-    readingTime: z.number().int().positive(),
-    publishedAt: z.string(),
-    author: z.object({
-      name: z.string(),
-      avatar: z.string().optional()
-    }),
-    tags: z.array(z.string()).default([]),
-    level: postLevelSchema.default("Intermediate"),
-    image: z.string().optional(),
-    series: z.object({
-      slug: z.string(),
-      position: z.number().int().positive().optional()
-    }).optional()
-  }),
+  schema: basePostSchema,
   transform: async (document, context) => {
     const code = await compileMDX(context, document, mdxOptions);
     return {
       ...document,
       slug: document.slug ?? document._meta.path,
+      code,
+      plainContent: createPlainContent(document.content)
+    };
+  }
+});
+var localizedBlogPosts = defineCollection({
+  name: "localizedPosts",
+  directory: "content/blog-localized",
+  include: "**/*.mdx",
+  schema: basePostSchema.extend({
+    locale: blogLocaleSchema,
+    sourceSlug: z.string()
+  }),
+  transform: async (document, context) => {
+    const code = await compileMDX(context, document, mdxOptions);
+    return {
+      ...document,
+      slug: document.sourceSlug,
       code,
       plainContent: createPlainContent(document.content)
     };
@@ -160,7 +180,7 @@ var blogSeries = defineCollection({
   }
 });
 var content_collections_default = defineConfig({
-  content: [blogPosts, blogSeries]
+  content: [blogPosts, localizedBlogPosts, blogSeries]
 });
 export {
   content_collections_default as default
