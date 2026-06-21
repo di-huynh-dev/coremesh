@@ -18,19 +18,19 @@ import { useSyncExternalStore } from 'react';
 
 const CATEGORY_ACCENTS: Record<string, { background: string; accent: string; soft: string }> = {
   Engineering: {
-    background: 'linear-gradient(135deg, #081A33 0%, #133B6D 100%)',
-    accent: '#8BD63F',
-    soft: 'rgba(139,214,63,0.16)',
+    background: 'linear-gradient(135deg, #141d29 0%, #243247 100%)',
+    accent: '#bfd0df',
+    soft: 'rgba(191,208,223,0.12)',
   },
   Design: {
-    background: 'linear-gradient(135deg, #123148 0%, #22607E 100%)',
-    accent: '#41D7F9',
-    soft: 'rgba(65,215,249,0.16)',
+    background: 'linear-gradient(135deg, #182230 0%, #30455f 100%)',
+    accent: '#c9d7e4',
+    soft: 'rgba(201,215,228,0.12)',
   },
   Framework: {
-    background: 'linear-gradient(135deg, #071B3A 0%, #0F447A 100%)',
-    accent: '#AAF85D',
-    soft: 'rgba(170,248,93,0.16)',
+    background: 'linear-gradient(135deg, #101925 0%, #26384f 100%)',
+    accent: '#d7e3ef',
+    soft: 'rgba(215,227,239,0.12)',
   },
 };
 
@@ -69,8 +69,8 @@ function ThumbnailArtwork({ post, compact = false }: { post: BlogPost; compact?:
   return (
     <>
       <div className="absolute inset-0" style={{ background: surface.background }} />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_20%,rgba(255,255,255,0.18),transparent_28%),radial-gradient(circle_at_15%_80%,rgba(255,255,255,0.08),transparent_34%)]" />
-      <div className="absolute inset-0 opacity-30">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_20%,rgba(255,255,255,0.16),transparent_24%),radial-gradient(circle_at_15%_80%,rgba(255,255,255,0.06),transparent_30%)]" />
+      <div className="absolute inset-0 opacity-24">
         <div className="absolute top-5 left-10 h-px w-18 rotate-12 bg-white/40" />
         <div className="absolute top-9 left-22 h-px w-16 -rotate-12 bg-white/30" />
         <div className="absolute top-13 left-30 h-px w-12 rotate-12 bg-white/25" />
@@ -90,7 +90,7 @@ export function PostThumbnail({ post }: { post: BlogPost }) {
   return (
     <div className="relative h-[96px] w-full shrink-0 overflow-hidden rounded-[6px] md:h-[100px] md:w-[188px]">
       <ThumbnailArtwork post={post} compact />
-      <div className="absolute top-4 left-4 flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.15] bg-white/[0.08] text-white backdrop-blur-sm">
+      <div className="absolute top-4 left-4 flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-black/18 text-white">
         <BookOpen className="h-4 w-4" />
       </div>
     </div>
@@ -162,6 +162,237 @@ export function WhatsNewCard({ post }: { post: BlogPost }) {
   const copy = getBlogUiCopy(locale);
 
   return <FeaturedPostCard post={post} label={copy.whatsNewLabel} cta={copy.readArticle} />;
+}
+
+function formatEditorialIndex(index: number) {
+  return String(index).padStart(2, '0');
+}
+
+function EditorialMeta({
+  post,
+  locale,
+}: {
+  post: ReturnType<typeof resolvePostForLocale>;
+  locale: HomeLocale;
+}) {
+  return (
+    <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+      {[
+        formatBlogCategory(post.category, locale),
+        formatBlogReadingTime(post.readingTime, locale),
+        formatBlogLevel(post.level, locale),
+        formatBlogDate(post.publishedAt, locale),
+      ].join(' / ')}
+    </div>
+  );
+}
+
+export function EditorialFeaturedArticle({
+  post,
+  label,
+  whyLabel,
+  whyItMatters,
+  cta,
+}: {
+  post: BlogPost;
+  label: string;
+  whyLabel: string;
+  whyItMatters: string;
+  cta: string;
+}) {
+  const locale = useActiveLocale();
+  const displayPost = resolvePostForLocale(post, locale);
+  const primaryTag = displayPost.tags[0] ?? displayPost.category;
+
+  return (
+    <article className="blog-panel grid gap-6 overflow-hidden rounded-[1.3rem] p-4 md:p-6 xl:grid-cols-[minmax(0,1.05fr)_360px] xl:items-stretch">
+      <div className="flex min-w-0 flex-col">
+        <div>
+          <p className="blog-kicker font-mono text-[11px] uppercase tracking-[0.18em]">
+            {label}
+          </p>
+
+          <Link href={`/blog/${post.slug}`} className="mt-4 block">
+            <h2 className="text-foreground max-w-3xl text-3xl leading-[1.08] font-semibold tracking-[-0.04em] transition-colors hover:text-[#2c4057] md:text-[2.45rem] dark:hover:text-[#dbe6f2]">
+              {displayPost.title}
+            </h2>
+          </Link>
+
+          <p className="text-muted-foreground mt-4 max-w-2xl text-sm leading-7 md:text-[15px]">
+            {displayPost.excerpt}
+          </p>
+        </div>
+
+        <div className="blog-soft-panel mt-6 rounded-[1rem] p-4">
+          <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+            {whyLabel}
+          </p>
+          <p className="mt-2 text-sm leading-7 text-[#465568] dark:text-[#d6dce5]">
+            {whyItMatters}
+          </p>
+        </div>
+
+        <div className="mt-6">
+          <EditorialMeta post={displayPost} locale={locale} />
+        </div>
+
+        <div className="mt-6 flex items-center justify-between gap-4">
+          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+            {formatHashTag(primaryTag)}
+          </span>
+
+          <Link
+            href={`/blog/${post.slug}`}
+            className="blog-primary-action inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-all hover:-translate-y-[1px]"
+          >
+            {cta}
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+      </div>
+
+      <Link
+        href={`/blog/${post.slug}`}
+        className="group relative min-h-[260px] overflow-hidden rounded-[1rem] border border-border/70 bg-[#131c28]"
+      >
+        <ThumbnailArtwork post={post} />
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(18,28,40,0.08),rgba(18,28,40,0.56))]" />
+        <div className="absolute left-4 top-4 font-mono text-[11px] uppercase tracking-[0.16em] text-white/88">
+          {formatHashTag(primaryTag)}
+        </div>
+      </Link>
+    </article>
+  );
+}
+
+export function EditorialArticleRow({
+  post,
+  index,
+  seriesTitle,
+}: {
+  post: BlogPost;
+  index: number;
+  seriesTitle?: string;
+}) {
+  const locale = useActiveLocale();
+  const displayPost = resolvePostForLocale(post, locale);
+  const primaryTag = displayPost.tags[0] ?? displayPost.category;
+
+  return (
+    <article className="border-t border-border/70 first:border-t-0">
+      <Link
+        href={`/blog/${post.slug}`}
+        className="grid gap-4 py-5 transition-colors hover:bg-black/[0.015] md:grid-cols-[48px_minmax(0,1fr)_188px] md:gap-6 md:py-6 dark:hover:bg-white/[0.015]"
+      >
+        <div className="font-mono text-[13px] uppercase tracking-[0.18em] text-muted-foreground">
+          {formatEditorialIndex(index)}
+        </div>
+
+        <div className="min-w-0">
+          <EditorialMeta post={displayPost} locale={locale} />
+
+          <h3 className="text-foreground mt-3 text-[1.3rem] leading-[1.22] font-semibold tracking-[-0.03em] transition-colors hover:text-[#2d4157] md:text-[1.55rem] dark:hover:text-[#dde6f0]">
+            {displayPost.title}
+          </h3>
+
+          <p className="text-muted-foreground mt-3 max-w-3xl text-sm leading-7">
+            {displayPost.excerpt}
+          </p>
+
+          <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+            <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#5a687d] dark:text-[#a8b5c7]">
+              {formatHashTag(primaryTag)}
+            </span>
+
+            <span className="blog-soft-panel inline-flex items-center rounded-full px-3 py-1 text-xs font-medium text-foreground">
+              {formatBlogLevel(displayPost.level, locale)}
+            </span>
+
+            {seriesTitle ? (
+              <span className="text-muted-foreground text-xs uppercase tracking-[0.14em]">
+                {seriesTitle}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="mt-4 md:hidden">
+            <PostThumbnail post={post} />
+          </div>
+        </div>
+
+        <div className="hidden md:block">
+          <PostThumbnail post={post} />
+        </div>
+      </Link>
+    </article>
+  );
+}
+
+export function LearningTrackCard({
+  index,
+  series,
+  startLabel,
+  latestLabel,
+}: {
+  index: number;
+  series: BlogSeries;
+  startLabel: string;
+  latestLabel: string;
+}) {
+  const locale = useActiveLocale();
+  const firstPost = series.posts[0];
+  const latestPost = series.posts[series.posts.length - 1];
+  const updatedAt = series.updatedAt ?? latestPost?.publishedAt;
+
+  return (
+    <Link
+      href={`/blog/series/${series.slug}`}
+      className="blog-panel group flex h-full flex-col rounded-[1.2rem] p-5 transition-all hover:-translate-y-[1px] hover:border-[#4c6078]"
+    >
+      <div className="flex items-start gap-4">
+        <div className="flex shrink-0 flex-col items-center pt-0.5">
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+            {formatEditorialIndex(index + 1)}
+          </span>
+          <span className="mt-3 h-16 w-px bg-border/80" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <h3 className="text-foreground text-xl leading-tight font-semibold tracking-[-0.03em] transition-colors group-hover:text-[#30455d] dark:group-hover:text-[#dde6f0]">
+              {series.title}
+            </h3>
+
+            <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+              {formatSeriesPostCount(series.posts.length, locale)}
+            </span>
+          </div>
+
+          <p className="text-muted-foreground mt-3 text-sm leading-7">{series.description}</p>
+
+          <dl className="mt-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <dt className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                {startLabel}
+              </dt>
+              <dd className="mt-1 text-sm leading-6 text-[#202124] dark:text-[#F5F7FB]">
+                {firstPost ? resolvePostForLocale(firstPost, locale).title : series.title}
+              </dd>
+            </div>
+
+            <div>
+              <dt className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                {latestLabel}
+              </dt>
+              <dd className="mt-1 text-sm leading-6 text-[#202124] dark:text-[#F5F7FB]">
+                {updatedAt ? formatBlogDate(updatedAt, locale) : formatBlogLevel(series.level, locale)}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </Link>
+  );
 }
 
 export function BlogListItem({ post }: { post: BlogPost; seriesTitle?: string }) {
