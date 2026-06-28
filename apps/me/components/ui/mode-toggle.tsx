@@ -16,17 +16,17 @@ export function ModeToggle() {
       aria-pressed={isDark}
       onClick={() => setTheme(isDark ? "light" : "dark")}
       whileTap={{ scale: 0.96 }}
-      className="group relative inline-flex size-10 items-center justify-center overflow-hidden rounded-full border-[0.5px] border-border bg-background/90 text-foreground shadow-[inset_0_0.5px_0_rgba(255,255,255,0.72)] transition-all duration-300 hover:border-foreground/22 hover:bg-muted/60 dark:shadow-[inset_0_0.5px_0_rgba(255,255,255,0.08)] dark:hover:bg-muted/80"
+      className="group relative inline-flex size-10 items-center justify-center overflow-hidden rounded-full border border-black/20 bg-background text-foreground transition-all duration-300 hover:bg-zinc-50 dark:border-white/75 dark:hover:bg-muted/80"
     >
-      <span className="absolute inset-[3px] rounded-full border-[0.5px] border-white/32 bg-gradient-to-b from-white/90 to-zinc-100/80 dark:border-white/[0.06] dark:from-white/[0.04] dark:to-white/[0.01]" />
+      <span className="absolute inset-[3px] rounded-full bg-zinc-100/80 dark:bg-white/[0.03]" />
       <motion.span
         suppressHydrationWarning
         animate={{
-          scale: isDark ? 1.08 : 0.96,
-          opacity: isDark ? 0.22 : 0.16,
+          scale: isDark ? 1.04 : 0.94,
+          opacity: isDark ? 0.16 : 0.08,
         }}
         transition={{ duration: 0.35, ease: "easeOut" }}
-        className="pointer-events-none absolute inset-[7px] rounded-full bg-sky-400/50 blur-md dark:bg-sky-500/40"
+        className="pointer-events-none absolute inset-[8px] rounded-full bg-sky-400/35 blur-md dark:bg-sky-500/25"
       />
       <motion.span
         suppressHydrationWarning

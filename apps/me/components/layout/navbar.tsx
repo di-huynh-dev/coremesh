@@ -85,7 +85,7 @@ export function Navbar() {
   return (
     <header
       data-affix={affixed}
-      className="sticky inset-x-0 top-0 z-50 max-w-screen overflow-x-hidden bg-background px-2 pt-2 transition-shadow duration-300 data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.08)] dark:data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.45)]"
+      className="fixed inset-x-0 top-0 z-50 max-w-screen overflow-x-hidden bg-background px-2 pt-2 transition-shadow duration-300 data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.08)] dark:data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.45)]"
     >
       <div className="profile-rail rail-box screen-line-after flex h-12 items-center justify-between gap-4 px-6 max-sm:px-4">
         <Link
@@ -122,10 +122,11 @@ export function Navbar() {
               target="_blank"
               rel="noopener noreferrer"
               aria-label="GitHub"
-              className="inline-flex size-10 items-center justify-center rounded-full border-[0.5px] border-border bg-background text-foreground transition-all duration-300 hover:border-foreground/22 hover:bg-muted/60 dark:hover:bg-muted/80"
+              className="relative inline-flex size-10 items-center justify-center overflow-hidden rounded-full border border-black/20 bg-background text-foreground transition-all duration-300 hover:bg-zinc-50 dark:border-white/75 dark:hover:bg-muted/80"
             >
-              <GithubLight className="size-[18px] dark:hidden" />
-              <GithubDark className="hidden size-[18px] dark:block" />
+              <span className="absolute inset-[3px] rounded-full bg-zinc-100/80 dark:bg-white/[0.03]" />
+              <GithubLight className="relative z-10 size-[18px] dark:hidden" />
+              <GithubDark className="relative z-10 hidden size-[18px] dark:block" />
             </a>
             <ModeToggle />
             <motion.button
@@ -137,11 +138,18 @@ export function Navbar() {
               className="inline-flex size-10 items-center justify-center rounded-full border-[0.5px] border-border bg-background text-foreground transition-all duration-300 hover:border-foreground/22 hover:bg-muted/60 dark:hover:bg-muted/80 sm:hidden"
             >
               <motion.span
-                animate={{ rotate: mobileOpen ? 180 : 0, scale: mobileOpen ? 0.96 : 1 }}
+                animate={{
+                  rotate: mobileOpen ? 180 : 0,
+                  scale: mobileOpen ? 0.96 : 1,
+                }}
                 transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
                 className="inline-flex items-center justify-center"
               >
-                {mobileOpen ? <X className="size-4" /> : <Menu className="size-4" />}
+                {mobileOpen ? (
+                  <X className="size-4" />
+                ) : (
+                  <Menu className="size-4" />
+                )}
               </motion.span>
             </motion.button>
           </div>
@@ -166,10 +174,7 @@ export function Navbar() {
                 className="absolute inset-x-4 top-0 h-px origin-left bg-gradient-to-r from-sky-500/0 via-sky-500/55 to-sky-500/0"
               />
               {navLinks.map((link) => (
-                <motion.div
-                  key={link.href}
-                  variants={menuItemVariants}
-                >
+                <motion.div key={link.href} variants={menuItemVariants}>
                   <Link
                     href={link.href}
                     onClick={() => setMobileOpen(false)}

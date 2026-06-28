@@ -66,8 +66,8 @@ const overviewItems = [
 const socialItems = [
   {
     label: "LinkedIn",
-    handle: "huynh-tiendi",
-    href: "https://www.linkedin.com/in/huynh-tiendi/",
+    handle: "Huynh Tien Di",
+    href: "https://www.linkedin.com/in/huynhtiendi/",
     Icon: Linkedin,
     iconClassName: "bg-white",
   },
@@ -138,7 +138,7 @@ export function OverviewSection({ blogsBaseUrl }: OverviewSectionProps) {
             alt="Huynh Tien Di monogram"
             width={64}
             height={64}
-            className="size-16 select-none"
+            className="absolute left-1/2 top-[80%] size-16 -translate-x-1/2 -translate-y-1/2 select-none"
             priority
           />
         </div>

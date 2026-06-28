@@ -10,14 +10,17 @@ export function BlogSection({ posts, blogsBaseUrl }: BlogSectionProps) {
   const resolvedBlogsBaseUrl = blogsBaseUrl.replace(/\/$/, "");
 
   return (
-    <section id="blog" className="profile-rail rail-box screen-line-after px-4 py-8">
+    <section
+      id="blog"
+      className="profile-rail rail-box screen-line-after px-4 py-8"
+    >
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-3xl font-semibold leading-9">Blog</h2>
         <a
           href={`${resolvedBlogsBaseUrl}/blog`}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 font-mono text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex items-center gap-2 rounded-md  px-3 py-1.5 font-mono text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           Open blogs
           <ExternalLink className="size-4" />
