@@ -165,10 +165,7 @@ export function ExperienceSection() {
 
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {exp.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="rounded-md border border-border bg-muted/25 px-2 py-0.5 text-xs text-muted-foreground"
-                      >
+                      <span key={tag} className="company-tag">
                         {tag}
                       </span>
                     ))}

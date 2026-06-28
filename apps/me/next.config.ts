@@ -27,22 +27,12 @@ const nextConfig: NextConfig = {
       },
       {
         protocol: "https",
-        hostname: "cdn.simpleicons.org",
-        pathname: "/**",
-      },
-      {
-        protocol: "https",
         hostname: "images.unsplash.com",
         pathname: "/**",
       },
       {
         protocol: "https",
         hostname: "www.estuarysolutions.com",
-        pathname: "/**",
-      },
-      {
-        protocol: "https",
-        hostname: "svgl.app",
         pathname: "/**",
       },
     ],

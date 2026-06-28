@@ -30,7 +30,6 @@ export default function Home() {
   return (
     <main className="min-h-screen max-w-screen overflow-x-hidden bg-background px-2 text-foreground">
       <Navbar />
-      <div className="h-14" aria-hidden="true" />
       <OverviewSection blogsBaseUrl={blogsBaseUrl} />
       <AboutSection />
       <StackSection />

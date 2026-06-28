@@ -1,13 +1,20 @@
 "use client";
 
+import { GithubDark } from "@/components/ui/svgs/githubDark";
+import { Linkedin } from "@/components/ui/svgs/linkedin";
+import { NextjsIconDark } from "@/components/ui/svgs/nextjsIconDark";
+import { TiktokIconDark } from "@/components/ui/svgs/tiktokIconDark";
 import { Code2, ExternalLink, Globe, Mail, MapPin } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import Image from "next/image";
+import type { ComponentType, SVGProps } from "react";
 import { useEffect, useState } from "react";
 
 type OverviewSectionProps = {
   blogsBaseUrl: string;
 };
+
+type SvgIcon = ComponentType<SVGProps<SVGSVGElement>>;
 
 const overviewItems = [
   {
@@ -61,31 +68,37 @@ const socialItems = [
     label: "LinkedIn",
     handle: "huynh-tiendi",
     href: "https://www.linkedin.com/in/huynh-tiendi/",
-    iconUrl: "https://svgl.app/library/linkedin.svg",
+    Icon: Linkedin,
     iconClassName: "bg-white",
   },
   {
     label: "GitHub",
     handle: "di-huynh-dev",
     href: "https://github.com/di-huynh-dev",
-    iconUrl: "https://svgl.app/library/github_dark.svg",
+    Icon: GithubDark,
     iconClassName: "bg-zinc-950 p-2.5",
   },
   {
-    label: "X",
-    handle: "@dihuynhdev",
-    href: "https://x.com/dihuynhdev",
-    iconUrl: "https://svgl.app/library/x.svg",
-    iconClassName: "bg-white p-1",
+    label: "TikTok",
+    handle: "@dicodeweb",
+    href: "https://www.tiktok.com/@dicodeweb",
+    Icon: TiktokIconDark,
+    iconClassName: "bg-zinc-950 p-2",
   },
   {
     label: "Blog",
     handle: "nextdi.io.vn",
     href: "https://nextdi.io.vn",
-    iconUrl: "https://svgl.app/library/nextjs_icon_dark.svg",
+    Icon: NextjsIconDark,
     iconClassName: "bg-white p-2",
   },
-];
+] satisfies Array<{
+  label: string;
+  handle: string;
+  href: string;
+  Icon: SvgIcon;
+  iconClassName: string;
+}>;
 
 const subtitles = [
   "Frontend Developer",
@@ -113,9 +126,9 @@ export function OverviewSection({ blogsBaseUrl }: OverviewSectionProps) {
     <>
       <section className="profile-rail rail-box screen-line-after">
         <div className="dot-pattern relative flex h-64 items-center justify-center overflow-hidden">
-          <div className="pointer-events-none absolute left-1/2 top-1/2 size-[420px] -translate-x-1/2 -translate-y-1/2 opacity-[0.055] mix-blend-multiply dark:mix-blend-screen">
+          <div className="pointer-events-none absolute left-1/2 top-0 h-[250px] w-[420px] -translate-x-1/2 overflow-hidden opacity-[0.09] mix-blend-multiply dark:mix-blend-screen">
             <div
-              className="trongdong-spin size-full bg-contain bg-center bg-no-repeat"
+              className="trongdong-spin absolute left-0 top-0 size-[420px] bg-contain bg-center bg-no-repeat"
               style={{ backgroundImage: "url('/trongdong.png')" }}
               aria-hidden="true"
             />
@@ -214,6 +227,7 @@ export function OverviewSection({ blogsBaseUrl }: OverviewSectionProps) {
         <div className="grid grid-cols-1 sm:grid-cols-2">
           {socialItems.map((item, index) => {
             const href = item.label === "Blog" ? `${blogUrl}/blog` : item.href;
+            const SocialIcon = item.Icon;
 
             return (
               <a
@@ -228,12 +242,8 @@ export function OverviewSection({ blogsBaseUrl }: OverviewSectionProps) {
                 }`}
               >
                 <span className="flex size-12 items-center justify-center overflow-hidden rounded-xl ring-1 ring-border">
-                  <Image
-                    src={item.iconUrl}
-                    alt=""
-                    width={48}
-                    height={48}
-                    unoptimized
+                  <SocialIcon
+                    aria-hidden="true"
                     className={`size-12 object-contain ${item.iconClassName}`}
                   />
                 </span>
