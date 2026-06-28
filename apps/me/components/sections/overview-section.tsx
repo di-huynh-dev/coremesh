@@ -113,6 +113,13 @@ export function OverviewSection({ blogsBaseUrl }: OverviewSectionProps) {
     <>
       <section className="profile-rail rail-box screen-line-after">
         <div className="dot-pattern relative flex h-64 items-center justify-center overflow-hidden">
+          <div className="pointer-events-none absolute left-1/2 top-1/2 size-[420px] -translate-x-1/2 -translate-y-1/2 opacity-[0.055] mix-blend-multiply dark:mix-blend-screen">
+            <div
+              className="trongdong-spin size-full bg-contain bg-center bg-no-repeat"
+              style={{ backgroundImage: "url('/trongdong.png')" }}
+              aria-hidden="true"
+            />
+          </div>
           <Image
             src="/round-avatar.svg"
             alt="Huynh Tien Di monogram"

@@ -303,6 +303,20 @@
     animation: summary-highlight-shift 8s ease-in-out infinite;
     background-color: #0ea5e9;
   }
+
+  .trongdong-spin {
+    animation: trongdong-rotate 96s linear infinite;
+    transform-origin: center;
+  }
+}
+
+@keyframes trongdong-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes summary-highlight-shift {
@@ -319,7 +333,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .summary-highlight {
+  .summary-highlight,
+  .trongdong-spin {
     animation: none;
   }
 }
