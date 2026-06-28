@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { Mail } from 'lucide-react';
-import { GitHubIcon, LinkedInIcon, XIcon } from '@/components/ui/social-icons';
+import { GitHubIcon, LinkedInIcon } from '@/components/ui/social-icons';
 import { useSyncExternalStore } from 'react';
 import type { HomeLocale } from '@/lib/home-content';
 import { homeLocales } from '@/lib/home-content';
@@ -61,7 +61,7 @@ type FooterCopy = {
 const footerContent: Record<HomeLocale, FooterCopy> = {
   en: {
     description:
-      'A premium editorial learning system for developers and digital creators who want practical depth without visual noise.',
+      'Notes, questions, and roadmaps for frontend developers who want to understand the system behind the code.',
     navigate: 'Navigate',
     links: [
       { href: '/questions', label: 'Questions' },
@@ -74,7 +74,7 @@ const footerContent: Record<HomeLocale, FooterCopy> = {
   },
   vi: {
     description:
-      'Hệ thống học tập biên tập cao cấp dành cho lập trình viên và nhà sáng tạo số muốn đào sâu thực tế mà không bị nhiễu thị giác.',
+      'Ghi chú, câu hỏi, và roadmap cho frontend developers muốn hiểu được hệ thống ẩn sau phần code.',
     navigate: 'Điều hướng',
     links: [
       { href: '/questions', label: 'Câu hỏi' },
@@ -87,7 +87,7 @@ const footerContent: Record<HomeLocale, FooterCopy> = {
   },
   ja: {
     description:
-      '実践的な深さを求める開発者やデジタルクリエイターのための、プレミアムなエディトリアル学習システム。',
+      'コードの背後にあるシステムを理解したい frontend developers のためのノート、質問、ロードマップです。',
     navigate: 'ナビゲート',
     links: [
       { href: '/questions', label: '質問' },

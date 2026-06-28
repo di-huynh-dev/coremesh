@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: BlogPostPageProps) {
   }
 
   return {
-    title: `${post.title} | DiCodeWeb Blog`,
+    title: `${post.title} | DiCodeWeb Journal`,
     description: post.excerpt,
     openGraph: {
       title: post.title,

@@ -19,8 +19,8 @@ export function GET() {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
     <rss version="2.0">
       <channel>
-        <title>DiCodeWeb Blog</title>
-        <description>Technical essays, frontend notes, and product engineering articles from DiCodeWeb.</description>
+        <title>DiCodeWeb Journal</title>
+        <description>Frontend notes, interview patterns, and product engineering write-ups from DiCodeWeb.</description>
         <link>https://dicodeweb.com/blog</link>
         ${items}
       </channel>

@@ -282,20 +282,20 @@ export function EditorialArticleRow({
     <article className="border-t border-border/70 first:border-t-0">
       <Link
         href={`/blog/${post.slug}`}
-        className="grid gap-4 py-5 transition-colors hover:bg-black/[0.015] md:grid-cols-[48px_minmax(0,1fr)_188px] md:gap-6 md:py-6 dark:hover:bg-white/[0.015]"
+        className="group grid gap-3 py-5 transition-colors hover:bg-black/[0.015] md:grid-cols-[56px_minmax(0,1fr)_auto] md:items-start md:gap-6 md:py-6 dark:hover:bg-white/[0.015]"
       >
-        <div className="font-mono text-[13px] uppercase tracking-[0.18em] text-muted-foreground">
+        <div className="pt-0.5 font-mono text-[13px] uppercase tracking-[0.18em] text-muted-foreground">
           {formatEditorialIndex(index)}
         </div>
 
         <div className="min-w-0">
           <EditorialMeta post={displayPost} locale={locale} />
 
-          <h3 className="text-foreground mt-3 text-[1.3rem] leading-[1.22] font-semibold tracking-[-0.03em] transition-colors hover:text-[#2d4157] md:text-[1.55rem] dark:hover:text-[#dde6f0]">
+          <h3 className="text-foreground mt-3 text-[1.28rem] leading-[1.2] font-semibold tracking-[-0.035em] transition-colors hover:text-[#2d4157] md:text-[1.7rem] dark:hover:text-[#dde6f0]">
             {displayPost.title}
           </h3>
 
-          <p className="text-muted-foreground mt-3 max-w-3xl text-sm leading-7">
+          <p className="text-muted-foreground mt-3 max-w-3xl text-sm leading-7 md:max-w-2xl">
             {displayPost.excerpt}
           </p>
 
@@ -315,13 +315,10 @@ export function EditorialArticleRow({
             ) : null}
           </div>
 
-          <div className="mt-4 md:hidden">
-            <PostThumbnail post={post} />
-          </div>
         </div>
 
-        <div className="hidden md:block">
-          <PostThumbnail post={post} />
+        <div className="hidden pt-1 md:flex md:items-center">
+          <ArrowRight className="h-5 w-5 text-muted-foreground transition-transform group-hover:translate-x-1" />
         </div>
       </Link>
     </article>

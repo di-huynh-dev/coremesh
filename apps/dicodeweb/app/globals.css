@@ -211,6 +211,72 @@
     color: #ffffff;
   }
 
+  .interviews-shell {
+    position: relative;
+    background:
+      radial-gradient(circle at top left, rgba(75, 97, 124, 0.2), transparent 26%),
+      radial-gradient(circle at top right, rgba(122, 146, 170, 0.12), transparent 22%),
+      linear-gradient(180deg, #111417 0%, #15191d 34%, #121518 100%);
+    color: #eef2f6;
+  }
+
+  .interviews-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(rgba(137, 151, 166, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(137, 151, 166, 0.06) 1px, transparent 1px);
+    background-size: 36px 36px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 92%);
+  }
+
+  .interviews-shell .interview-panel {
+    border: 1px solid rgba(208, 220, 232, 0.1);
+    background:
+      linear-gradient(180deg, rgba(27, 31, 36, 0.96), rgba(20, 24, 29, 0.98));
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.22);
+  }
+
+  .interviews-shell .interview-soft-panel {
+    border: 1px solid rgba(208, 220, 232, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .interviews-shell .interview-kicker {
+    color: #9fb0c2;
+  }
+
+  .interviews-shell .interview-primary-action {
+    border: 1px solid rgba(230, 237, 244, 0.16);
+    background: #e6edf4;
+    color: #16202b;
+  }
+
+  .interviews-shell .interview-primary-action:hover {
+    background: #f1f5f8;
+  }
+
+  .interviews-shell .interview-secondary-action {
+    border: 1px solid rgba(208, 220, 232, 0.12);
+    background: rgba(255, 255, 255, 0.02);
+    color: #eef2f6;
+  }
+
+  .interviews-shell .interview-secondary-action:hover {
+    border-color: rgba(208, 220, 232, 0.22);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .interviews-shell .interview-meter {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .interviews-shell .interview-meter > span {
+    background: linear-gradient(90deg, #dbe5ef 0%, #8aa1b8 100%);
+  }
+
   .paper-card {
     background: var(--card);
     box-shadow: var(--paper-shadow);

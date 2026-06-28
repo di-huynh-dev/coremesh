@@ -100,7 +100,7 @@ const levelLabels: Record<BlogLevel, Record<HomeLocale, string>> = {
 const blogUiCopy: Record<HomeLocale, BlogUiCopy> = {
   en: {
     index: {
-      heroTitle: 'DiCodeWeb Blog',
+      heroTitle: 'DiCodeWeb Journal',
       heroDescription:
         'Learn modern systems through practical write-ups, deeper implementation notes, and curated content grouped into clear series.',
       whatsNewTitle: "What's new",
@@ -151,7 +151,7 @@ const blogUiCopy: Record<HomeLocale, BlogUiCopy> = {
   },
   vi: {
     index: {
-      heroTitle: 'Blog DiCodeWeb',
+      heroTitle: 'DiCodeWeb Journal',
       heroDescription:
         'Học các hệ thống hiện đại qua bài viết thực tế, ghi chú triển khai có chiều sâu và nội dung được nhóm lại thành các series rõ ràng.',
       whatsNewTitle: 'Mới nhất',
@@ -202,7 +202,7 @@ const blogUiCopy: Record<HomeLocale, BlogUiCopy> = {
   },
   ja: {
     index: {
-      heroTitle: 'DiCodeWeb ブログ',
+      heroTitle: 'DiCodeWeb Journal',
       heroDescription:
         '実践的な write-up、より深い実装メモ、そして明確な series に整理された curated content を通して、現代的な system を学べます。',
       whatsNewTitle: '最新記事',

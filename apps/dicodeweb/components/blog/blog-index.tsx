@@ -61,7 +61,7 @@ const editorialIndexCopy: Record<HomeLocale, EditorialIndexCopy> = {
   en: {
     heroTitle: 'DiCodeWeb Journal',
     heroDescription:
-      'Frontend notes, interview patterns, and real product decisions from building modern web systems.',
+      'Frontend notes from building, breaking, and improving real web systems.',
     readLatestCta: 'Read latest',
     browseTracksCta: 'Browse learning tracks',
     writingAboutTitle: 'Currently writing about',
@@ -76,7 +76,7 @@ const editorialIndexCopy: Record<HomeLocale, EditorialIndexCopy> = {
     readBreakdownCta: 'Read breakdown',
     latestTitle: 'Latest Notes',
     latestDescription:
-      'Notes from building DiCodeWeb. Architecture decisions, tradeoffs, and patterns worth remembering before an interview.',
+      'Notes from building DiCodeWeb. Architecture decisions, tradeoffs, and patterns worth keeping in your head before an interview.',
     learningTracksTitle: 'Learning Tracks',
     learningTracksDescription: 'Read in sequence when the topic needs more than one note.',
     practiceTitle: 'Read, then practice',
@@ -98,7 +98,7 @@ const editorialIndexCopy: Record<HomeLocale, EditorialIndexCopy> = {
   vi: {
     heroTitle: 'DiCodeWeb Journal',
     heroDescription:
-      'Ghi chú frontend, pattern phỏng vấn, và quyết định sản phẩm thực tế từ quá trình xây dựng hệ thống web hiện đại.',
+      'Ghi chú frontend từ quá trình xây, phá, và cải thiện những hệ thống web thực tế.',
     readLatestCta: 'Đọc bài mới nhất',
     browseTracksCta: 'Xem lộ trình đọc',
     writingAboutTitle: 'Đang viết về',
@@ -113,7 +113,7 @@ const editorialIndexCopy: Record<HomeLocale, EditorialIndexCopy> = {
     readBreakdownCta: 'Đọc bài phân tích',
     latestTitle: 'Latest Notes',
     latestDescription:
-      'Ghi chú từ lúc xây dựng DiCodeWeb. Quyết định kiến trúc, tradeoff, và những pattern đáng nhớ trước buổi phỏng vấn.',
+      'Ghi chú từ quá trình xây DiCodeWeb. Quyết định kiến trúc, tradeoff, và những pattern nên hiểu thật trước khi đi phỏng vấn.',
     learningTracksTitle: 'Learning Tracks',
     learningTracksDescription: 'Đọc theo mạch khi một chủ đề cần nhiều hơn một bài viết.',
     practiceTitle: 'Đọc xong, rồi luyện',
@@ -135,7 +135,7 @@ const editorialIndexCopy: Record<HomeLocale, EditorialIndexCopy> = {
   ja: {
     heroTitle: 'DiCodeWeb Journal',
     heroDescription:
-      'フロントエンドのメモ、面接パターン、そしてモダンなWebシステムを作る中での実際の判断をまとめています。',
+      '実際のWebシステムを作って、壊して、改善する中で残しているフロントエンドのメモです。',
     readLatestCta: '最新を読む',
     browseTracksCta: '学習トラックを見る',
     writingAboutTitle: '最近書いていること',
@@ -150,7 +150,7 @@ const editorialIndexCopy: Record<HomeLocale, EditorialIndexCopy> = {
     readBreakdownCta: '詳しく読む',
     latestTitle: 'Latest Notes',
     latestDescription:
-      'DiCodeWebを作る中で残したメモです。設計判断、トレードオフ、面接前に整理しておきたいパターンをまとめます。',
+      'DiCodeWebを作る中で残したメモです。設計判断、トレードオフ、面接前にしっかり理解しておきたいパターンをまとめています。',
     learningTracksTitle: 'Learning Tracks',
     learningTracksDescription: 'ひとつのテーマを複数の記事で追いたいときのための流れです。',
     practiceTitle: '読んだ後に練習する',
@@ -174,7 +174,7 @@ const editorialIndexCopy: Record<HomeLocale, EditorialIndexCopy> = {
 const featuredWhyItMattersByLocale: Record<HomeLocale, Record<string, string>> = {
   en: {
     'nextjs-16-authorization-patterns':
-      'Strong interview answers come from knowing why authorization belongs near data, not only in Proxy.',
+      'Proxy should stay cheap. Authorization belongs closer to the data.',
     'nextjs-14-app-router':
       'App Router questions are really boundary questions. This note helps you explain them without buzzwords.',
     'building-with-shadcn-ui':
@@ -184,7 +184,7 @@ const featuredWhyItMattersByLocale: Record<HomeLocale, Record<string, string>> =
   },
   vi: {
     'nextjs-16-authorization-patterns':
-      'Câu trả lời phỏng vấn sẽ chắc hơn khi bạn hiểu vì sao authorization nên nằm gần data, không chỉ nằm trong Proxy.',
+      'Proxy nên giữ nhẹ. Authorization nên nằm gần data hơn.',
     'nextjs-14-app-router':
       'Câu hỏi về App Router thật ra là câu hỏi về boundary. Bài này giúp bạn giải thích rõ mà không cần buzzword.',
     'building-with-shadcn-ui':
@@ -194,7 +194,7 @@ const featuredWhyItMattersByLocale: Record<HomeLocale, Record<string, string>> =
   },
   ja: {
     'nextjs-16-authorization-patterns':
-      '認可を Proxy だけでなくデータの近くで考えられると、面接での説明も実務の判断も強くなります。',
+      'Proxy は軽く保ち、認可はデータの近くで扱うべきです。',
     'nextjs-14-app-router':
       'App Router の質問は、実際には責務の境界をどう切るかという質問です。',
     'building-with-shadcn-ui':
