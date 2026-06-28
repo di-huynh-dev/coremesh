@@ -1,302 +1,249 @@
 "use client";
 
-import { motion } from "framer-motion";
-import {
-  BadgeCheck,
-  BriefcaseBusiness,
-  Clock3,
-  Globe,
-  Linkedin,
-  Mail,
-  MapPin,
-  MessageCircle,
-  Phone,
-  Twitter,
-  Volume2,
-  Github,
-  type LucideIcon,
-} from "lucide-react";
+import { Code2, ExternalLink, Globe, Mail, MapPin } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type OverviewSectionProps = {
   blogsBaseUrl: string;
 };
 
-type DetailItem = {
-  icon: LucideIcon;
-  label: string;
-  value: string;
-  href?: string;
-  hint?: string;
-  live?: boolean;
-};
-
-type SocialItem = {
-  label: string;
-  href: string;
-  icon: LucideIcon;
-};
-
-const socialItems: SocialItem[] = [
+const overviewItems = [
   {
-    label: "GitHub",
-    href: "https://github.com/di-huynh-dev",
-    icon: Github,
+    label: "Role",
+    icon: Code2,
+    content: (
+      <>
+        Frontend Developer{" "}
+        <a
+          href="https://estuary.solutions/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium underline-offset-4 hover:underline"
+        >
+          @Estuary Solutions
+        </a>
+      </>
+    ),
+  },
+  { label: "Location", icon: MapPin, content: "Ho Chi Minh City, Viet Nam" },
+  {
+    label: "Email",
+    icon: Mail,
+    content: (
+      <a
+        href="mailto:dihuynhdev.contact@gmail.com"
+        className="underline-offset-4 hover:underline"
+      >
+        dihuynhdev.contact@gmail.com
+      </a>
+    ),
   },
   {
-    label: "LinkedIn",
-    href: "https://www.linkedin.com/in/huynh-tiendi/",
-    icon: Linkedin,
-  },
-  {
-    label: "X",
-    href: "https://x.com/dihuynhdev",
-    icon: Twitter,
-  },
-  {
-    label: "Discord",
-    href: "https://discord.com/users/dihuynh",
-    icon: MessageCircle,
+    label: "Website",
+    icon: Globe,
+    content: (
+      <a
+        href="https://me.nextdi.io.vn"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline-offset-4 hover:underline"
+      >
+        me.nextdi.io.vn
+      </a>
+    ),
   },
 ];
 
+const socialItems = [
+  {
+    label: "LinkedIn",
+    handle: "huynh-tiendi",
+    href: "https://www.linkedin.com/in/huynh-tiendi/",
+    iconUrl: "https://svgl.app/library/linkedin.svg",
+    iconClassName: "bg-white",
+  },
+  {
+    label: "GitHub",
+    handle: "di-huynh-dev",
+    href: "https://github.com/di-huynh-dev",
+    iconUrl: "https://svgl.app/library/github_dark.svg",
+    iconClassName: "bg-zinc-950 p-2.5",
+  },
+  {
+    label: "X",
+    handle: "@dihuynhdev",
+    href: "https://x.com/dihuynhdev",
+    iconUrl: "https://svgl.app/library/x.svg",
+    iconClassName: "bg-white p-1",
+  },
+  {
+    label: "Blog",
+    handle: "nextdi.io.vn",
+    href: "https://nextdi.io.vn",
+    iconUrl: "https://svgl.app/library/nextjs_icon_dark.svg",
+    iconClassName: "bg-white p-2",
+  },
+];
+
+const subtitles = [
+  "Frontend Developer",
+  "React / Next.js Engineer",
+  "TypeScript Interface Builder",
+  "CMS & CRM Platform Engineer",
+  "Realtime Web App Developer",
+  "Performance-minded UI Developer",
+  "Micro-frontend Practitioner",
+];
+
 export function OverviewSection({ blogsBaseUrl }: OverviewSectionProps) {
-  const [time, setTime] = useState("");
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const blogUrl = blogsBaseUrl.replace(/\/$/, "");
+  const [subtitleIndex, setSubtitleIndex] = useState(0);
 
   useEffect(() => {
-    const formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Ho_Chi_Minh",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-
-    const updateTime = () => {
-      setTime(formatter.format(new Date()));
-    };
-
-    updateTime();
-    const interval = window.setInterval(updateTime, 1000);
+    const interval = window.setInterval(() => {
+      setSubtitleIndex((index) => (index + 1) % subtitles.length);
+    }, 2600);
 
     return () => window.clearInterval(interval);
   }, []);
 
-  const details = useMemo<DetailItem[]>(
-    () => [
-      {
-        icon: BriefcaseBusiness,
-        label: "Role",
-        value: "Junior Frontend Developer @ Estuary Solutions",
-      },
-      {
-        icon: Clock3,
-        label: "Local time",
-        value: time || "--:--",
-        hint: "ICT (UTC+7)",
-        live: true,
-      },
-      {
-        icon: MapPin,
-        label: "Location",
-        value: "Ho Chi Minh City, Viet Nam",
-      },
-      {
-        icon: Mail,
-        label: "Email",
-        value: "dihuynhdev.contact@gmail.com",
-        href: "mailto:dihuynhdev.contact@gmail.com",
-      },
-      {
-        icon: Phone,
-        label: "Phone",
-        value: "0372639623",
-        href: "tel:0372639623",
-      },
-      {
-        icon: Globe,
-        label: "Website",
-        value: "me.nextdi.io.vn",
-        href: "https://me.nextdi.io.vn",
-      },
-    ],
-    [time],
-  );
-
-  const handlePronunciation = () => {
-    if (!("speechSynthesis" in window)) {
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance("Huynh Tien Di");
-    utterance.lang = "vi-VN";
-    utterance.rate = 0.85;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(utterance);
-  };
-
   return (
-    <section className="px-4 pb-10 pt-28 md:px-8 md:pb-14 md:pt-36">
-      <div className="mx-auto max-w-5xl">
-        <motion.div
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.45 }}
-          className="overflow-hidden rounded-[28px] border border-border bg-background shadow-[0_20px_80px_rgba(15,23,42,0.08)]"
-        >
-          <div className="bg-[radial-gradient(circle_at_top,_rgba(15,23,42,0.06),_transparent_55%),linear-gradient(to_right,_rgba(15,23,42,0.06)_1px,_transparent_1px),linear-gradient(to_bottom,_rgba(15,23,42,0.06)_1px,_transparent_1px)] bg-[size:auto,24px_24px,24px_24px]">
-            <div className="grid border-b border-border md:grid-cols-[228px_minmax(0,1fr)]">
-              <div className="flex items-center justify-center border-b border-border p-6 md:border-b-0 md:border-r">
-                <div className="rounded-full border border-border bg-background p-1.5 shadow-sm">
-                  <Image
-                    src="https://avatars.githubusercontent.com/u/103420884?v=4"
-                    alt="Huynh Tien Di"
-                    width={180}
-                    height={180}
-                    className="h-[180px] w-[180px] rounded-full object-cover"
-                    priority
-                  />
-                </div>
-              </div>
+    <>
+      <section className="profile-rail rail-box screen-line-after">
+        <div className="dot-pattern relative flex h-64 items-center justify-center overflow-hidden">
+          <Image
+            src="/round-avatar.svg"
+            alt="Huynh Tien Di monogram"
+            width={64}
+            height={64}
+            className="size-16 select-none"
+            priority
+          />
+        </div>
+      </section>
 
-              <div className="flex min-h-[228px] flex-col justify-end">
-                <div className="border-b border-border px-6 py-4 md:px-8">
-                  <p className="font-mono-data text-muted-foreground">
-                    frontend engineer / portfolio
-                  </p>
-                </div>
-                <div className="border-b border-border px-6 py-5 md:px-8">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <h1 className="text-4xl font-semibold tracking-tight text-foreground md:text-5xl">
-                      Huynh Tien Di
-                    </h1>
-                    <BadgeCheck className="h-7 w-7 text-sky-500" />
-                    <button
-                      type="button"
-                      onClick={handlePronunciation}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-muted/30 text-muted-foreground transition-colors hover:text-foreground"
-                      aria-label="Pronounce my name"
-                    >
-                      <Volume2
-                        className={`h-4 w-4 ${isSpeaking ? "text-sky-500" : ""}`}
-                      />
-                    </button>
-                  </div>
-                </div>
-                <div className="px-6 py-4 md:px-8">
-                  <p className="text-lg text-muted-foreground md:text-2xl">
-                    Frontend Engineer
-                  </p>
-                </div>
-              </div>
+      <section className="profile-rail rail-box screen-line-after flex">
+        <div className="relative w-[164px] shrink-0 max-sm:w-[112px]">
+          <span className="absolute left-0 top-0 z-10 flex h-9 w-14 items-center justify-center bg-red-600 text-lg text-yellow-300">
+            ★
+          </span>
+          <Image
+            src="https://avatars.githubusercontent.com/u/103420884?v=4"
+            alt="Huỳnh Tiến Dĩ"
+            width={160}
+            height={160}
+            className="-mt-px size-32 rounded-full bg-background object-cover ring-1 ring-border ring-offset-2 ring-offset-background sm:size-40"
+            priority
+          />
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="diagonal-pattern flex grow items-end border-b border-edge pb-1 pl-4">
+            <p className="line-clamp-1 font-mono text-xs text-zinc-300 select-none dark:text-zinc-700 max-sm:hidden">
+              text-3xl text-zinc-950 font-medium
+            </p>
+          </div>
+
+          <div>
+            <h1 className="flex items-center gap-2 pl-4 text-3xl font-semibold leading-9">
+              Huỳnh Tiến Dĩ
+              <span className="group/verified relative inline-flex">
+                <span
+                  className="inline-flex size-5 items-center justify-center rounded-full bg-sky-500 text-[13px] font-bold leading-none text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.4)]"
+                  aria-label="Verified"
+                >
+                  ✓
+                </span>
+                <span className="pointer-events-none absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-[calc(100%+10px)] rounded-lg bg-zinc-950 px-3 py-2 font-mono text-sm font-medium leading-5 text-white opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] transition-all duration-150 group-hover/verified:-translate-y-[calc(100%+14px)] group-hover/verified:opacity-100">
+                  Verified
+                  <span className="absolute left-1/2 top-full size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-zinc-950" />
+                </span>
+              </span>
+            </h1>
+            <div className="h-12 overflow-hidden border-t border-edge py-1 pl-4 sm:h-[29px]">
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.p
+                  key={subtitles[subtitleIndex]}
+                  initial={{ y: 8, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={{ y: -8, opacity: 0 }}
+                  transition={{ duration: 0.22, ease: "easeOut" }}
+                  className="line-clamp-1 font-mono text-sm leading-5 text-muted-foreground"
+                >
+                  {subtitles[subtitleIndex]}
+                </motion.p>
+              </AnimatePresence>
             </div>
           </div>
+        </div>
+      </section>
 
-          <div className="bg-[linear-gradient(135deg,transparent_0,transparent_48%,rgba(15,23,42,0.06)_48%,rgba(15,23,42,0.06)_50%,transparent_50%,transparent_100%)] bg-[length:16px_16px] px-6 py-5 md:px-8" />
+      <div className="diagonal-pattern h-8 screen-line-after" />
 
-          <div className="grid gap-0 border-y border-border md:grid-cols-2">
-            {details.map((item, index) => {
-              const Icon = item.icon;
-              const content = item.href ? (
-                <a
-                  href={item.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex min-w-0 items-center gap-2 transition-colors hover:text-foreground"
-                >
-                  <span className="truncate">{item.value}</span>
-                </a>
-              ) : (
-                <span className="truncate">{item.value}</span>
-              );
+      <section className="profile-rail rail-box screen-line-after">
+        <div className="space-y-2 p-4">
+          {overviewItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <div
+                key={item.label}
+                className="flex items-center gap-4 font-mono text-sm"
+              >
+                <span className="mini-icon">
+                  <Icon className="size-4" />
+                </span>
+                <p className="text-balance">{item.content}</p>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
-              return (
-                <div
-                  key={item.label}
-                  className={`flex items-center gap-4 px-4 py-4 md:px-5 ${
-                    index < details.length - 2 ? "border-b border-border" : ""
-                  } ${index % 2 === 0 ? "md:border-r md:border-border" : ""}`}
-                >
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-border bg-muted/30">
-                    <Icon className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="mb-1 font-mono-data text-muted-foreground">
-                      {item.label}
-                    </p>
-                    <div className="flex items-center gap-2 text-lg text-foreground">
-                      {item.label === "Role" ? (
-                        <>
-                          <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-white">
-                            <Image
-                              src="/estuary-logo.jpg"
-                              alt="Estuary Solutions"
-                              width={28}
-                              height={28}
-                              className="h-5 w-5 object-contain"
-                            />
-                          </span>
-                          {content}
-                        </>
-                      ) : (
-                        content
-                      )}
-                      {item.live ? (
-                        <span className="relative flex h-2.5 w-2.5 shrink-0">
-                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                        </span>
-                      ) : null}
-                    </div>
-                    {item.hint ? (
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        {item.hint}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+      <div className="diagonal-pattern h-8 screen-line-after" />
 
-          <div className="grid md:grid-cols-2 xl:grid-cols-4">
-            {socialItems.map((item, index) => {
-              const Icon = item.icon;
+      <section className="profile-rail rail-box screen-line-after">
+        <div className="grid grid-cols-1 sm:grid-cols-2">
+          {socialItems.map((item, index) => {
+            const href = item.label === "Blog" ? `${blogUrl}/blog` : item.href;
 
-              return (
-                <a
-                  key={item.label}
-                  href={item.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`group flex items-center justify-between gap-4 border-border px-5 py-5 transition-colors hover:bg-muted/20 ${
-                    index < socialItems.length - 1
-                      ? "border-b md:border-b-0"
-                      : ""
-                  } ${
-                    index < socialItems.length - 1
-                      ? "md:border-r xl:border-r"
-                      : ""
-                  }`}
-                >
-                  <div className="flex items-center gap-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-background">
-                      <Icon className="h-5 w-5 text-foreground" />
-                    </div>
-                    <span className="text-2xl font-medium text-foreground">
-                      {item.label}
-                    </span>
-                  </div>
-                </a>
-              );
-            })}
-          </div>
-        </motion.div>
-      </div>
-    </section>
+            return (
+              <a
+                key={item.label}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`group flex h-20 cursor-pointer items-center gap-4 p-4 pr-2 transition-colors duration-150 hover:bg-muted/40 ${
+                  index % 2 === 0 ? "sm:border-r sm:border-edge" : ""
+                } ${index < socialItems.length - 1 ? "border-b border-edge" : ""} ${
+                  index === 2 ? "sm:border-b-0" : ""
+                }`}
+              >
+                <span className="flex size-12 items-center justify-center overflow-hidden rounded-xl ring-1 ring-border">
+                  <Image
+                    src={item.iconUrl}
+                    alt=""
+                    width={48}
+                    height={48}
+                    unoptimized
+                    className={`size-12 object-contain ${item.iconClassName}`}
+                  />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center font-medium underline-offset-4 group-hover:underline">
+                    {item.label}
+                  </span>
+                  <span className="block truncate text-sm text-muted-foreground">
+                    {item.handle}
+                  </span>
+                </span>
+                <ExternalLink className="size-4 text-muted-foreground" />
+              </a>
+            );
+          })}
+        </div>
+      </section>
+    </>
   );
 }

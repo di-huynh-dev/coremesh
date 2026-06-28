@@ -1,9 +1,5 @@
-"use client";
-
-import { PostCard } from "@repo/ui/post-card";
 import type { BlogPost } from "@repo/ui/types/post";
-import { motion } from "framer-motion";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, FileText } from "lucide-react";
 
 type BlogSectionProps = {
   posts: BlogPost[];
@@ -14,43 +10,46 @@ export function BlogSection({ posts, blogsBaseUrl }: BlogSectionProps) {
   const resolvedBlogsBaseUrl = blogsBaseUrl.replace(/\/$/, "");
 
   return (
-    <section id="blog" className="px-4 py-10 md:px-8 md:py-14">
-      <div className="mx-auto max-w-5xl">
-        <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true, margin: "-60px" }}
-          transition={{ duration: 0.45, delay: 0.08 }}
+    <section id="blog" className="profile-rail rail-box screen-line-after px-4 py-8">
+      <div className="flex items-center justify-between gap-4">
+        <h2 className="text-3xl font-semibold leading-9">Blog</h2>
+        <a
+          href={`${resolvedBlogsBaseUrl}/blog`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 font-mono text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
-          <div className="mb-5 flex items-end justify-between gap-4">
-            <div>
-              <p className="font-mono-data text-muted-foreground">
-                from the blog
-              </p>
-            </div>
-            <a
-              href={`${resolvedBlogsBaseUrl}/blog`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hidden items-center gap-2 rounded-full border border-border px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground md:inline-flex"
-            >
-              Open blogs
-              <ExternalLink className="h-4 w-4" />
-            </a>
-          </div>
+          Open blogs
+          <ExternalLink className="size-4" />
+        </a>
+      </div>
 
-          <div className="grid gap-4 lg:grid-cols-3">
-            {posts.map((post, index) => (
-              <PostCard
-                key={post.slug}
-                post={post}
-                viewMode="grid"
-                href={`${resolvedBlogsBaseUrl}/blog/${post.slug}`}
-                index={index}
-              />
-            ))}
-          </div>
-        </motion.div>
+      <div className="mt-5 divide-y divide-edge border-y border-edge">
+        {posts.map((post) => (
+          <a
+            key={post.slug}
+            href={`${resolvedBlogsBaseUrl}/blog/${post.slug}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group flex items-start gap-4 py-4 transition-colors hover:bg-muted/30"
+          >
+            <span className="mini-icon mt-1">
+              <FileText className="size-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium underline-offset-4 group-hover:underline">
+                {post.title}
+              </span>
+              <span className="mt-1 line-clamp-2 block font-mono text-sm leading-6 text-muted-foreground">
+                {post.excerpt}
+              </span>
+              <span className="mt-2 block font-mono text-xs text-muted-foreground">
+                {post.date} / {post.readingTime}
+              </span>
+            </span>
+            <ExternalLink className="mt-1 size-4 shrink-0 text-muted-foreground" />
+          </a>
+        ))}
       </div>
     </section>
   );

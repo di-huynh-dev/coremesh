@@ -1,97 +1,45 @@
-"use client";
-
-import { motion } from "framer-motion";
 import Image from "next/image";
 
 const technologies = [
-  { name: "JavaScript", iconUrl: "https://svgl.app/library/javascript.svg" },
-  { name: "TypeScript", iconUrl: "https://svgl.app/library/typescript.svg" },
-  { name: "React", iconUrl: "https://svgl.app/library/react_light.svg" },
-  { name: "Next.js", iconUrl: "https://svgl.app/library/nextjs_icon_dark.svg" },
-  { name: "Vue.js", iconUrl: "https://svgl.app/library/vue.svg" },
-  { name: "NestJS", iconUrl: "https://svgl.app/library/nestjs.svg" },
-  { name: "Tailwind CSS", iconUrl: "https://svgl.app/library/tailwindcss.svg" },
-  { name: "Bootstrap", iconUrl: "https://svgl.app/library/bootstrap.svg" },
-  {
-    name: "Ant Design",
-    iconUrl: "https://svgl.app/library/ant-design-dark-theme.svg",
-  },
-  { name: "Redux", iconUrl: "https://svgl.app/library/redux.svg" },
-  { name: "Zustand", iconUrl: "https://svgl.app/library/svgl.svg" },
-  {
-    name: "TanStack Query",
-    iconUrl: "https://svgl.app/library/reactquery.svg",
-  },
-  { name: "GSAP", iconUrl: "https://svgl.app/library/svgl.svg" },
-  { name: "Firebase", iconUrl: "https://svgl.app/library/firebase.svg" },
-  { name: "Docker", iconUrl: "https://svgl.app/library/docker.svg" },
-  { name: "AWS", iconUrl: "https://svgl.app/library/aws_light.svg" },
-  { name: "Azure", iconUrl: "https://svgl.app/library/azure.svg" },
-  { name: "Git", iconUrl: "https://svgl.app/library/git.svg" },
-  { name: "GitHub", iconUrl: "https://svgl.app/library/github_light.svg" },
-  { name: "GitLab", iconUrl: "https://svgl.app/library/gitlab.svg" },
-  { name: "Vite", iconUrl: "https://svgl.app/library/vite.svg" },
-  { name: "Jest", iconUrl: "https://svgl.app/library/jest.svg" },
-  { name: "Cypress", iconUrl: "https://svgl.app/library/cypress.svg" },
-  { name: "Figma", iconUrl: "https://svgl.app/library/figma.svg" },
+  { name: "html5", iconUrl: "https://svgl.app/library/html5.svg", tone: "bg-orange-600" },
+  { name: "css3", iconUrl: "https://svgl.app/library/css.svg", tone: "bg-blue-600" },
+  { name: "Javascript", iconUrl: "https://svgl.app/library/javascript.svg", tone: "bg-zinc-950" },
+  { name: "Typescript", iconUrl: "https://svgl.app/library/typescript.svg", tone: "bg-blue-500" },
+  { name: "Reactjs", iconUrl: "https://svgl.app/library/react_light.svg", tone: "bg-zinc-950" },
+  { name: "Nextjs", iconUrl: "https://svgl.app/library/nextjs_icon_dark.svg", tone: "bg-black" },
+  { name: "Vuejs", iconUrl: "https://svgl.app/library/vue.svg", tone: "bg-emerald-700" },
+  { name: "Nestjs", iconUrl: "https://svgl.app/library/nestjs.svg", tone: "bg-red-600" },
+  { name: "Tailwindcss", iconUrl: "https://svgl.app/library/tailwindcss.svg", tone: "bg-cyan-600" },
+  { name: "AntDesign", iconUrl: "https://svgl.app/library/ant-design-dark-theme.svg", tone: "bg-blue-700" },
+  { name: "Firebase", iconUrl: "https://svgl.app/library/firebase.svg", tone: "bg-sky-500" },
+  { name: "Docker", iconUrl: "https://svgl.app/library/docker.svg", tone: "bg-cyan-600" },
+  { name: "Git", iconUrl: "https://svgl.app/library/git.svg", tone: "bg-orange-600" },
+  { name: "Vitejs", iconUrl: "https://svgl.app/library/vite.svg", tone: "bg-violet-600" },
+  { name: "Nodejs", iconUrl: "https://svgl.app/library/nodejs.svg", tone: "bg-green-700" },
 ];
-
-const containerVariants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: { staggerChildren: 0.03 },
-  },
-};
-
-const itemVariants = {
-  hidden: { opacity: 0, scale: 0.8 },
-  visible: {
-    opacity: 1,
-    scale: 1,
-    transition: { duration: 0.3 },
-  },
-};
 
 export function StackSection() {
   return (
-    <section id="techstack" className="py-12 section-divider">
-      <div className="container-tight">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5 }}
-        >
-          <h2 className="font-mono-data text-muted-foreground mb-6">Stack</h2>
+    <section
+      id="techstack"
+      className="profile-rail rail-box screen-line-after px-4 py-8"
+    >
+      <h2 className="mb-5 text-3xl font-semibold leading-9">Stack</h2>
 
-          <motion.div
-            variants={containerVariants}
-            initial="hidden"
-            whileInView="visible"
-            viewport={{ once: true }}
-            className="flex flex-wrap gap-3"
-          >
-            {technologies.map((tech) => (
-              <motion.div
-                key={tech.name}
-                variants={itemVariants}
-                className="group flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-card hover:border-muted-foreground/30 transition-colors"
-                title={tech.name}
-              >
-                <Image
-                  src={tech.iconUrl}
-                  alt={tech.name}
-                  width={18}
-                  height={18}
-                  unoptimized
-                  className="shrink-0 dark:brightness-90"
-                />
-                <span className="text-sm text-foreground">{tech.name}</span>
-              </motion.div>
-            ))}
-          </motion.div>
-        </motion.div>
+      <div className="dot-pattern flex flex-wrap justify-center gap-1.5 px-6 py-4">
+        {technologies.map((tech) => (
+          <span key={tech.name} className={`tech-badge ${tech.tone}`}>
+            <Image
+              src={tech.iconUrl}
+              alt=""
+              width={14}
+              height={14}
+              unoptimized
+              className="size-3.5 shrink-0"
+            />
+            {tech.name}
+          </span>
+        ))}
       </div>
     </section>
   );

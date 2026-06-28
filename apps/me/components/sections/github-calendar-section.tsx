@@ -1,10 +1,24 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 const WEEKS = 52;
 const DAYS = 7;
+const MONTH_LABELS = [
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+];
+const LEVEL_COLORS = ["#e5e7eb", "#d1d5db", "#b8bcc5", "#9ca3af", "#808692"];
 
 // Seeded pseudo-random generator for deterministic output
 function seededRandom(seed: number) {
@@ -13,10 +27,10 @@ function seededRandom(seed: number) {
 }
 
 function generateContributions() {
-  const data: number[][] = [];
+  const data: { level: number; count: number; label: string }[][] = [];
   const baseSeed = 42; // Fixed seed for consistency
   for (let w = 0; w < WEEKS; w++) {
-    const week: number[] = [];
+    const week: { level: number; count: number; label: string }[] = [];
     for (let d = 0; d < DAYS; d++) {
       const seed = baseSeed + w * 100 + d;
       const rand = seededRandom(seed);
@@ -25,149 +39,109 @@ function generateContributions() {
       if (rand > 0.75) level = 2;
       if (rand > 0.88) level = 3;
       if (rand > 0.95) level = 4;
-      week.push(level);
+      const count = level === 0 ? 0 : Math.max(1, Math.round(rand * 13));
+      week.push({
+        level,
+        count,
+        label: `${count} contributions on week ${w + 1}, day ${d + 1}`,
+      });
     }
     data.push(week);
   }
   return data;
 }
 
-const MONTHS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-];
-const DAY_LABELS = ["Mon", "Wed", "Fri"];
-const MONTH_LABELS = MONTHS.slice(0, 10);
-
 export function GithubCalendarSection() {
   const contributions = useMemo(() => generateContributions(), []);
+  const [tooltip, setTooltip] = useState<{
+    label: string;
+    left: number;
+    top: number;
+  } | null>(null);
 
   const totalContributions = useMemo(() => {
     if (!contributions.length) return 0;
     return contributions
       .flat()
-      .reduce((sum, level) => sum + (level > 0 ? level * 3 : 0), 0);
+      .reduce((sum, day) => sum + day.count, 0);
   }, [contributions]);
 
-  const getLevelClass = (level: number) => {
-    switch (level) {
-      case 0:
-        return "gh-level-0";
-      case 1:
-        return "gh-level-1";
-      case 2:
-        return "gh-level-2";
-      case 3:
-        return "gh-level-3";
-      case 4:
-        return "gh-level-4";
-      default:
-        return "gh-level-0";
-    }
-  };
-
-  // Calculate month positions
-  const monthPositions = useMemo(() => {
-    const positions: { month: string; x: number }[] = [];
-    MONTH_LABELS.forEach((month, i) => {
-      positions.push({ month, x: (i / MONTH_LABELS.length) * 100 });
-    });
-    return positions;
-  }, []);
-
   return (
-    <section className="py-12 section-divider">
-      <div className="container-tight">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5 }}
-        >
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="font-mono-data text-muted-foreground">
-              GitHub Contributions
-            </h2>
-            <span className="text-xs text-muted-foreground">
-              {totalContributions} contributions in the last year
-            </span>
+    <section className="profile-rail rail-box screen-line-after overflow-hidden px-4 py-7">
+      <div className="overflow-x-auto pb-1">
+        <div className="min-w-[736px]">
+          <div className="mb-2 grid grid-cols-12 px-1 text-sm text-muted-foreground">
+            {MONTH_LABELS.map((month) => (
+              <span key={month}>{month}</span>
+            ))}
           </div>
 
-          <div className="overflow-hidden rounded-xl border border-border p-4 md:p-6">
-            <div className="w-full max-w-full">
-              {/* Month labels */}
-              <div className="relative mb-3 ml-8 h-4 md:ml-9">
-                {monthPositions.map((pos, i) => (
-                  <span
-                    key={i}
-                    className="absolute text-[10px] font-mono-data text-muted-foreground"
-                    style={{ left: `${pos.x}%` }}
-                  >
-                    {pos.month}
-                  </span>
-                ))}
+          <div className="relative">
+            <div
+              className="grid w-max grid-flow-col grid-rows-7 gap-[3px] px-1"
+              aria-label="GitHub contribution heatmap"
+              onMouseLeave={() => setTooltip(null)}
+            >
+            {contributions.map((week, weekIndex) =>
+              week.map((day, dayIndex) => (
+                <span
+                  key={`${weekIndex}-${dayIndex}`}
+                  className="size-[11px] rounded-[2px] transition-transform duration-150 hover:scale-125"
+                  style={{ backgroundColor: LEVEL_COLORS[day.level] }}
+                  onMouseEnter={() =>
+                    setTooltip({
+                      label: day.label,
+                      left: weekIndex * 14 + 6,
+                      top: dayIndex * 14 - 42,
+                    })
+                  }
+                />
+              )),
+            )}
+            </div>
+
+            {tooltip ? (
+              <div
+                className="pointer-events-none absolute z-20 rounded-lg bg-zinc-950 px-3 py-2 font-sans text-sm text-white opacity-100 shadow-[0_8px_24px_rgba(0,0,0,0.18)] transition-opacity duration-150"
+                style={{
+                  left: tooltip.left,
+                  top: tooltip.top,
+                  transform: "translateX(-50%)",
+                }}
+              >
+                <span className="whitespace-nowrap">{tooltip.label}</span>
+                <span className="absolute left-1/2 top-full size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-zinc-950" />
               </div>
+            ) : null}
+          </div>
 
-              <div className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 md:grid-cols-[28px_minmax(0,1fr)]">
-                {/* Day labels */}
-                <div className="flex h-[52px] flex-col justify-between py-0.5 md:h-[60px]">
-                  {DAY_LABELS.map((day) => (
-                    <span
-                      key={day}
-                      className="text-[9px] font-mono-data text-muted-foreground"
-                    >
-                      {day}
-                    </span>
-                  ))}
-                </div>
-
-                {/* Contribution grid */}
+          <div className="mt-3 flex items-center justify-between px-1 text-sm text-muted-foreground">
+            <p>
+              {new Intl.NumberFormat("en-US").format(totalContributions)}{" "}
+              contributions in 2026 on{" "}
+              <a
+                href="https://github.com/di-huynh-dev"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium underline underline-offset-4"
+              >
+                GitHub
+              </a>
+              .
+            </p>
+            <div className="flex items-center gap-2">
+              <span>Less</span>
+              {LEVEL_COLORS.map((color) => (
                 <div
-                  className="grid min-w-0 gap-[3px] md:gap-[4px]"
-                  style={{ gridTemplateColumns: `repeat(${WEEKS}, minmax(0, 1fr))` }}
-                >
-                  {contributions.map((week, weekIndex) => (
-                    <div
-                      key={weekIndex}
-                      className="grid gap-[3px] md:gap-[4px]"
-                      style={{ gridTemplateRows: `repeat(${DAYS}, minmax(0, 1fr))` }}
-                    >
-                      {week.map((level, dayIndex) => (
-                        <div
-                          key={`${weekIndex}-${dayIndex}`}
-                          className={`aspect-square w-full rounded-[3px] ${getLevelClass(level)} transition-all hover:ring-2 hover:ring-ring hover:ring-offset-1 hover:ring-offset-background`}
-                          title={`${level} contributions`}
-                        />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Legend */}
-              <div className="flex items-center justify-end gap-2 mt-3">
-                <span className="text-[10px] text-muted-foreground">Less</span>
-                {[0, 1, 2, 3, 4].map((level) => (
-                  <div
-                    key={level}
-                    className={`h-2.5 w-2.5 rounded-[3px] ${getLevelClass(level)}`}
-                  />
-                ))}
-                <span className="text-[10px] text-muted-foreground">More</span>
-              </div>
+                  key={color}
+                  className="size-3 rounded-[2px]"
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+              <span>More</span>
             </div>
           </div>
-        </motion.div>
+        </div>
       </div>
     </section>
   );

@@ -7,8 +7,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-ibm-plex-sans);
+  --font-mono: var(--font-ibm-plex-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -25,6 +25,7 @@
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-edge: var(--edge-color);
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
@@ -47,11 +48,11 @@
 /* ========== LIGHT MODE (DEFAULT) ========== */
 :root {
   --font-geist-sans:
-    "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Helvetica Neue", sans-serif;
+    var(--font-ibm-plex-sans), ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   --font-geist-mono:
-    "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
-    monospace;
+    var(--font-ibm-plex-mono), "Cascadia Code", "SFMono-Regular", Consolas,
+    "Liberation Mono", Menlo, monospace;
   --radius: 0.5rem;
   --background: 0 0% 100%;
   --foreground: 0 0% 9%;
@@ -78,6 +79,8 @@
   --destructive-foreground: 0 0% 98%;
 
   --border: 0 0% 90%;
+  --edge: 220 14% 91%;
+  --edge-color: #e5e7eb;
   --input: 0 0% 90%;
   --ring: 0 0% 64%;
 
@@ -124,6 +127,8 @@
   --destructive-foreground: 0 0% 98%;
 
   --border: 0 0% 15%;
+  --edge: 220 12% 20%;
+  --edge-color: #2d3138;
   --input: 0 0% 15%;
   --ring: 0 0% 40%;
 
@@ -169,6 +174,8 @@
   --destructive-foreground: 210 40% 98%;
 
   --border: 218 28% 18%;
+  --edge: 218 28% 18%;
+  --edge-color: #202a3b;
   --input: 218 28% 18%;
   --ring: 214 32% 58%;
 
@@ -194,6 +201,126 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
+    background-image:
+      linear-gradient(to right, color-mix(in srgb, var(--edge-color) 72%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--edge-color) 72%, transparent) 1px, transparent 1px);
+    background-position: calc(50% - 384px) 0;
+    background-size: 768px 256px;
+  }
+}
+
+@layer utilities {
+  .profile-rail {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  @media (min-width: 768px) {
+    .profile-rail {
+      max-width: 48rem;
+    }
+  }
+
+  .rail-box {
+    border-left: 1px solid var(--edge-color);
+    border-right: 1px solid var(--edge-color);
+  }
+
+  .screen-line-before {
+    @apply relative;
+  }
+
+  .screen-line-before::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 1px;
+    background-color: var(--edge-color);
+    pointer-events: none;
+  }
+
+  .screen-line-after {
+    @apply relative;
+  }
+
+  .screen-line-after::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    height: 1px;
+    background-color: var(--edge-color);
+    pointer-events: none;
+  }
+
+  .dot-pattern {
+    background-image: radial-gradient(
+      color-mix(in srgb, var(--edge-color) 84%, transparent) 1px,
+      transparent 1px
+    );
+    background-size: 10px 10px;
+  }
+
+  .diagonal-pattern {
+    background-image: repeating-linear-gradient(
+      315deg,
+      color-mix(in srgb, var(--edge-color) 72%, transparent) 0,
+      color-mix(in srgb, var(--edge-color) 72%, transparent) 1px,
+      transparent 0,
+      transparent 50%
+    );
+    background-size: 10px 10px;
+  }
+
+  .mini-icon {
+    display: flex;
+    width: 1.5rem;
+    height: 1.5rem;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.375rem;
+    background-color: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    box-shadow: 0 0 0 1px hsl(var(--border));
+  }
+
+  .tech-badge {
+    display: inline-flex;
+    height: 1.25rem;
+    align-items: center;
+    gap: 0.375rem;
+    border-radius: 2px;
+    padding-left: 0.375rem;
+    padding-right: 0.375rem;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    color: white;
+  }
+
+  .summary-highlight {
+    animation: summary-highlight-shift 8s ease-in-out infinite;
+    background-color: #0ea5e9;
+  }
+}
+
+@keyframes summary-highlight-shift {
+  0%,
+  100% {
+    background-color: #0ea5e9;
+  }
+  33% {
+    background-color: #2563eb;
+  }
+  66% {
+    background-color: #0891b2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .summary-highlight {
+    animation: none;
   }
 }
 
@@ -235,9 +362,8 @@
 /* ========== MONOSPACE UTILITIES ========== */
 .font-mono-data {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 0.75rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font-size: 0.875rem;
+  letter-spacing: 0;
 }
 
 /* ========== SECTION DIVIDERS ========== */
@@ -373,7 +499,7 @@ body {
 /* ========== RESPONSIVE CONTAINER ========== */
 .container-tight {
   width: 100%;
-  max-width: 680px;
+  max-width: 768px;
   margin-left: auto;
   margin-right: auto;
   padding-left: 1.5rem;
