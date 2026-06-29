@@ -103,9 +103,6 @@ const socialItems = [
 const subtitles = [
   "Frontend Developer",
   "React / Next.js Engineer",
-  "TypeScript Interface Builder",
-  "CMS & CRM Platform Engineer",
-  "Realtime Web App Developer",
   "Performance-minded UI Developer",
   "Micro-frontend Practitioner",
 ];
