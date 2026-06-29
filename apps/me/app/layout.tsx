@@ -16,7 +16,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Steven Huynh — Software Engineer",
+  title: "Steven Huynh | Software Engineer",
   description:
     "Love to work and build anything with Js <3. Software Engineer at Estuary Solutions. Based in Ho Chi Minh, Viet Nam.",
   keywords: [
