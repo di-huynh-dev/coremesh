@@ -516,6 +516,12 @@ body {
   overflow-x: hidden;
 }
 
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
 /* ========== SELECTION ========== */
 ::selection {
   background-color: hsl(var(--primary) / 0.15);
