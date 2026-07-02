@@ -4,7 +4,6 @@ import { Navbar } from "@/components/layout/navbar";
 import { AboutSection } from "@/components/sections/about-section";
 import { ExperienceSection } from "@/components/sections/experience-section";
 import { OverviewSection } from "@/components/sections/overview-section";
-// import { ProjectsSection } from "@/components/sections/projects-section";
 import { StackSection } from "@/components/sections/stack-section";
 import { ScrollToTop } from "@/components/ui/scroll-to-top";
 import { getAllPosts } from "../../blogs/lib/blog";
@@ -36,7 +35,6 @@ export default function Home() {
       <StackSection />
       <ExperienceSection />
       <BlogSection posts={posts} blogsBaseUrl={blogsBaseUrl} />
-      {/* <ProjectsSection /> */}
       <Footer />
       <ScrollToTop />
     </main>
