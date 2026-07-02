@@ -3,39 +3,38 @@
 import Image from "next/image";
 import { useLocale } from "next-intl";
 import { usePathname, useRouter } from "next/navigation";
-import { cn } from "@/lib/utils";
+import { ChevronDown } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ChevronDown } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+const languages = [
+  { code: "en", name: "English", src: "/flags/united-kingdom.png" },
+  { code: "vi", name: "Tiếng Việt", src: "/flags/vietnam.png" },
+] as const;
 
 export function LanguageSwitcher() {
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
-  
-  const languages = [
-    { code: "en", name: "English", src: "/flags/united-kingdom.png" },
-    { code: "vi", name: "Tiếng Việt", src: "/flags/vietnam.png" },
-  ];
 
   const handleLanguageChange = (newLocale: string) => {
-    // Remove the current locale from the pathname
     const segments = pathname.split("/");
     segments[1] = newLocale;
-    const newPathname = segments.join("/");
-    router.push(newPathname);
+    router.push(segments.join("/"));
   };
 
-  const currentLang = languages.find((lang) => lang.code === locale) || languages[0];
+  const currentLang =
+    languages.find((lang) => lang.code === locale) ?? languages[0]!;
 
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <button className="bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 border border-border/50 h-10 w-[150px] rounded-full px-4 py-2 shadow-sm backdrop-blur transition-all duration-200 flex items-center justify-between cursor-pointer focus:outline-none">
+        <button className="flex h-10 w-[150px] items-center justify-between rounded-full border border-border/50 bg-black/5 px-4 py-2 shadow-sm backdrop-blur transition-all duration-200 hover:bg-black/10 focus:outline-none dark:bg-white/10 dark:hover:bg-white/15">
           <span className="flex items-center gap-2">
             <Image
               src={currentLang.src}
@@ -44,21 +43,22 @@ export function LanguageSwitcher() {
               height={16}
               className="rounded-sm border border-black/5 object-cover shadow-sm"
             />
-            <span className="text-foreground/80 text-sm font-medium">
+            <span className="text-sm font-medium text-foreground/80">
               {currentLang.name}
             </span>
           </span>
           <ChevronDown className="h-4 w-4 text-muted-foreground opacity-60" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="bg-card/80 w-[150px] min-w-[150px] rounded-2xl border p-1.5 shadow-lg backdrop-blur-md">
+      <DropdownMenuContent className="w-[150px] min-w-[150px] rounded-2xl border bg-card/80 p-1.5 shadow-lg backdrop-blur-md">
         {languages.map((lang) => (
           <DropdownMenuItem
             key={lang.code}
             onClick={() => handleLanguageChange(lang.code)}
             className={cn(
-              "flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium focus:bg-black/5 dark:focus:bg-white/10 focus:text-foreground outline-none transition-colors",
-              lang.code === locale && "bg-black/10 dark:bg-white/15 text-foreground font-semibold"
+              "flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium outline-none transition-colors focus:bg-black/5 focus:text-foreground dark:focus:bg-white/10",
+              lang.code === locale &&
+                "bg-black/10 font-semibold text-foreground dark:bg-white/15",
             )}
           >
             <Image

@@ -69,7 +69,9 @@ export function ArticleContent({ post }: ArticleContentProps) {
               v.name.includes("Natural") ||
               v.name.includes("Samantha"),
           ) || voicesToUse[0];
-        setSelectedVoice(preferredVoice);
+        if (preferredVoice) {
+          setSelectedVoice(preferredVoice);
+        }
       }
     };
 

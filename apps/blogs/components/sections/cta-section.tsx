@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { Github, Linkedin, ExternalLink } from "lucide-react";
+import Image from "next/image";
 import { useTranslations } from "next-intl";
 
 const socialLinks = [
@@ -120,10 +121,12 @@ export function CTASection() {
           className="mt-16 pt-16 border-t border-white/10"
         >
           <div className="flex flex-col md:flex-row items-center justify-center gap-6">
-            <img
+            <Image
               src="/avatar.png"
               alt="DiCodeWeb"
-              className="w-20 h-20 rounded-full border-2 border-[#FF4D8E]/50"
+              width={80}
+              height={80}
+              className="h-20 w-20 rounded-full border-2 border-[#FF4D8E]/50"
             />
 
             <div className="text-center md:text-left">

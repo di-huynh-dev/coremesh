@@ -1,98 +1,63 @@
-# ⚡ CoreMesh
+# CoreMesh Zones
 
-**A modern monorepo architecture for building scalable products with contemporary technologies.**
+CoreMesh Zones is a Bun-powered Turborepo that hosts multiple Next.js applications and shared packages in one workspace.
 
-CoreMesh is designed as a centralized platform to develop multiple applications and services within a single codebase, leveraging the power of a monorepo to improve scalability, maintainability, and developer experience.
+## Workspace Layout
 
-The primary goal of this project is to explore and apply a **monorepo-first architecture** in real-world product development using modern tech stacks.
+- `apps/`: user-facing applications and product surfaces
+- `packages/`: shared UI, lint, Tailwind, and TypeScript configuration
+- `tmp/`: experimental or imported code that is not part of the Bun workspace unless explicitly wired in
 
----
+## Standards
 
-## 🎯 Purpose
+- Package manager: `bun@1.3.3`
+- Monorepo orchestration: Turborepo
+- Runtime baseline: Node.js 20+
+- Shared config packages:
+  - `@repo/eslint-config`
+  - `@repo/tailwind-config`
+  - `@repo/typescript-config`
 
-This repository focuses on:
+## Required Workspace Scripts
 
-- Applying **monorepo architecture** to build real products
-- Organizing multiple applications and services in a unified structure
-- Sharing code efficiently across projects
-- Improving development speed with modern tooling
-- Maintaining a scalable and production-ready codebase
+Each app should expose these scripts when applicable:
 
----
+- `dev`
+- `build`
+- `lint`
+- `check-types`
+- `start`
 
-## 🧠 Why Monorepo
+Shared libraries should expose:
 
-Traditional multi-repo setups often lead to:
+- `build`
+- `lint`
+- `check-types`
 
-- Code duplication
-- Inconsistent configurations
-- Difficult dependency management
-
-CoreMesh addresses these issues by using a **monorepo approach**, where:
-
-- All applications and services live in a single repository
-- Shared logic is centralized into reusable packages
-- Changes can be coordinated across the entire system
-
----
-
-## 🧱 Architecture Overview
-
-CoreMesh follows a **monorepo-centric architecture** combined with modular design principles:
-
-### Key principles:
-
-- **Single source of truth** for all code
-- **Modular separation** between apps, services, and shared packages
-- **Reusable components and logic** across the system
-- **Scalable structure** for future growth
-
----
-
-## ⚙️ Tech Stack
-
-CoreMesh is built using modern technologies:
-
-- Frontend: Next.js, React
-- Backend: Node.js (NestJS / Express)
-- Monorepo Tooling: Turborepo
-- Database: MongoDB / PostgreSQL
-- DevOps: Docker, CI/CD
-
----
-
-## 🚀 Monorepo Benefits in CoreMesh
-
-- Faster development with shared dependencies
-- Consistent tooling and configuration
-- Simplified code sharing across applications
-- Optimized builds with caching and task pipelines
-- Easier scaling from small projects to large systems
-
----
-
-## 🔄 Development Workflow
-
-- Build multiple apps and services in parallel
-- Share code through internal packages
-- Maintain consistent standards across the entire codebase
-- Optimize performance using Turborepo caching
-
----
-
-## 🌍 Vision
-
-CoreMesh aims to serve as a practical foundation for:
-
-- Building scalable fullstack applications
-- Experimenting with modern architectures
-- Demonstrating real-world usage of monorepo systems
-
----
-
-## ⚡ Getting Started
+## Commands
 
 ```bash
-pnpm install
-pnpm dev
+bun install
+bun run dev
+bun run lint
+bun run check-types
+bun run build
+bun run validate
 ```
+
+## Monorepo Rules
+
+- Prefer shared packages over copy-pasted config.
+- Keep framework versions aligned unless a workspace has a documented exception.
+- Do not add new workspaces under `tmp/`.
+- Treat `tmp/` as scratch space or migration input, not production workspace code.
+- Update this README when repo-level tooling or conventions change.
+
+## Current Focus
+
+Phase 1 and Phase 2 standardization cover:
+
+- root governance and docs
+- shared TypeScript, ESLint, and PostCSS usage
+- consistent workspace scripts
+- CI quality gates for lint, typecheck, and build

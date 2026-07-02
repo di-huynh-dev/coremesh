@@ -67,7 +67,7 @@ function createPlainContent(content: string) {
   return content
     .replace(/^---[\s\S]*?---/, '')
     .replace(/`{1,3}[^`]*`{1,3}/g, ' ')
-    .replace(/[#>*_\-\[\]()]/g, ' ')
+    .replace(/[#>*_[\]()-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

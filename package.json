@@ -1,12 +1,14 @@
 {
-  "name": "with-tailwind",
+  "name": "coremesh-zones",
   "private": true,
+  "description": "CoreMesh monorepo for multi-app Next.js products powered by Bun and Turborepo.",
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "check-types": "turbo run check-types",
-    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,md}\"",
+    "validate": "bun run lint && bun run check-types && bun run build"
   },
   "devDependencies": {
     "prettier": "^3.6.0",
@@ -14,7 +16,8 @@
     "turbo": "^2.9.6"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20",
+    "bun": "1.3.3"
   },
   "packageManager": "bun@1.3.3",
   "workspaces": [

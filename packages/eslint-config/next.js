@@ -21,8 +21,10 @@ export const nextJsConfig = [
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    ".content-collections/**",
     "out/**",
     "build/**",
+    "public/pagefind/**",
     "next-env.d.ts",
   ]),
   {
