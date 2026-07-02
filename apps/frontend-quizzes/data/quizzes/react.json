@@ -1,0 +1,703 @@
+[
+  {
+    "id": "react-fundamentals-01",
+    "title": "React Fundamentals",
+    "category": "react",
+    "difficulty": "Medium",
+    "description": "Test your knowledge on core React concepts including JSX, components, props, and state.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What happens if you mutate state directly instead of using `setState` or the hook setter?",
+        "codeSnippet": "this.state.count = 5;",
+        "options": [
+          { "id": "o1", "text": "React automatically detects the change and re-renders." },
+          { "id": "o2", "text": "The state is updated, but the component will not re-render, leading to UI inconsistency." },
+          { "id": "o3", "text": "A syntax error is thrown immediately." },
+          { "id": "o4", "text": "The state remains unchanged." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "React's state is designed to be immutable. Mutating it directly doesn't trigger the reconciliation process, meaning the component won't re-render to reflect the new state.",
+        "slug": "q1-mutate-state-directly"
+      },
+      {
+        "id": "q2",
+        "text": "Why must custom React components start with a capital letter?",
+        "options": [
+          { "id": "o1", "text": "It is just a stylistic convention with no technical impact." },
+          { "id": "o2", "text": "JSX relies on capitalization to distinguish custom components from built-in HTML tags." },
+          { "id": "o3", "text": "The Babel transpiler will throw an error otherwise." },
+          { "id": "o4", "text": "It improves parsing speed in the browser." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "When JSX is compiled, tags starting with a lowercase letter are treated as HTML primitives (e.g., 'div' becomes a string 'div'), while capitalized tags are treated as variables referencing custom components.",
+        "slug": "q2-component-capitalization"
+      },
+      {
+        "id": "q3",
+        "text": "In React, how does data flow between components?",
+        "options": [
+          { "id": "o1", "text": "Bi-directionally, allowing children to automatically update parents." },
+          { "id": "o2", "text": "Uni-directionally (top-down), passing data from parents to children via props." },
+          { "id": "o3", "text": "Through a global shared mutable object only." },
+          { "id": "o4", "text": "Randomly based on which component renders first." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "React enforces a uni-directional data flow. Data is passed downwards from parent to child through props. To update a parent from a child, a callback function must be passed down.",
+        "slug": "q3-data-flow"
+      },
+      {
+        "id": "q4",
+        "text": "What is the purpose of the `key` prop in a list of elements?",
+        "codeSnippet": "{items.map(item => <li key={item.id}>{item.name}</li>)}",
+        "options": [
+          { "id": "o1", "text": "To uniquely identify elements to help React optimize rendering by knowing which items have changed, been added, or removed." },
+          { "id": "o2", "text": "To provide an index accessible within the child component." },
+          { "id": "o3", "text": "To uniquely style specific elements in CSS." },
+          { "id": "o4", "text": "To prevent cross-site scripting (XSS) attacks." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "Keys help React identify which items have changed, are added, or are removed. They should be given to the elements inside the array to give the elements a stable identity.",
+        "slug": "q4-key-prop-purpose"
+      },
+      {
+        "id": "q5",
+        "text": "Which of the following is true about JSX?",
+        "options": [
+          { "id": "o1", "text": "It is a native JavaScript syntax supported by all modern browsers." },
+          { "id": "o2", "text": "It prevents the use of JavaScript expressions inside elements." },
+          { "id": "o3", "text": "It is syntactic sugar for `React.createElement()` calls." },
+          { "id": "o4", "text": "It strictly requires HTML tags to be unclosed for void elements." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "JSX is not native to JavaScript or browsers. It requires compilation (e.g., via Babel) and is fundamentally syntactic sugar for `React.createElement()`.",
+        "slug": "q5-jsx-truth"
+      },
+      {
+        "id": "q6",
+        "text": "What is the primary benefit of using a React Fragment (`<>...</>`)?",
+        "options": [
+          { "id": "o1", "text": "It speeds up API requests by grouping them." },
+          { "id": "o2", "text": "It allows returning multiple elements from a component without adding extra nodes to the DOM." },
+          { "id": "o3", "text": "It is a specialized container for context providers." },
+          { "id": "o4", "text": "It automatically memoizes its children." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "React components must return a single root element. Fragments let you group a list of children without adding an extra wrapper div to the actual DOM, reducing nested HTML depth.",
+        "slug": "q6-react-fragment"
+      },
+      {
+        "id": "q7",
+        "text": "What does `props.children` represent in a React component?",
+        "options": [
+          { "id": "o1", "text": "An array of the component's state variables." },
+          { "id": "o2", "text": "The content passed between the opening and closing tags of the component." },
+          { "id": "o3", "text": "A list of child components dynamically fetched from an API." },
+          { "id": "o4", "text": "The inner HTML string of the parent element." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`props.children` is a special prop that automatically contains whatever is placed between the opening and closing tags of a component.",
+        "slug": "q7-props-children"
+      },
+      {
+        "id": "q8",
+        "text": "What is the difference between a controlled and an uncontrolled input component?",
+        "options": [
+          { "id": "o1", "text": "A controlled component handles its own state internally, while an uncontrolled component relies on React props." },
+          { "id": "o2", "text": "A controlled component's value is driven by React state, whereas an uncontrolled component maintains its own DOM state." },
+          { "id": "o3", "text": "Uncontrolled components are faster but lack accessibility." },
+          { "id": "o4", "text": "There is no difference; they are interchangeable terms." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "In a controlled component, form data is handled by a React component's state. In an uncontrolled component, form data is handled by the DOM itself (usually accessed via a ref).",
+        "slug": "q8-controlled-vs-uncontrolled"
+      },
+      {
+        "id": "q9",
+        "text": "How does React handle browser events natively?",
+        "options": [
+          { "id": "o1", "text": "It attaches native event listeners directly to every single DOM node." },
+          { "id": "o2", "text": "It uses a cross-browser wrapper called SyntheticEvent and attaches a single event listener to the document root (event delegation)." },
+          { "id": "o3", "text": "It intercepts all events through a hidden service worker." },
+          { "id": "o4", "text": "It doesn't handle events; you must use native addEventListener." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "React implements a synthetic event system. It normalizes events across browsers and uses event delegation by attaching a single event listener to the root element for better performance.",
+        "slug": "q9-synthetic-events"
+      },
+      {
+        "id": "q10",
+        "text": "What is the equivalent of `innerHTML` in React?",
+        "options": [
+          { "id": "o1", "text": "`innerHTML`" },
+          { "id": "o2", "text": "`setInnerHTML`" },
+          { "id": "o3", "text": "`dangerouslySetInnerHTML`" },
+          { "id": "o4", "text": "`parseHTML`" }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "React uses `dangerouslySetInnerHTML` to intentionally remind developers that setting HTML from code is risky and can expose users to cross-site scripting (XSS) attacks.",
+        "slug": "q10-dangerously-set-inner-html"
+      }
+    ]
+  },
+  {
+    "id": "react-hooks-02",
+    "title": "React Hooks",
+    "category": "react",
+    "difficulty": "Medium",
+    "description": "Deep dive into useState, useEffect, useContext, and custom hooks.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What does the array returned by `useState` contain?",
+        "codeSnippet": "const [value, setValue] = useState(0);",
+        "options": [
+          { "id": "o1", "text": "The previous state and the current state." },
+          { "id": "o2", "text": "The current state and a function to update it." },
+          { "id": "o3", "text": "A function to read the state and a function to update it." },
+          { "id": "o4", "text": "The state value and an error object." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`useState` returns an array with exactly two items: the current state value, and a dispatch function to update that state.",
+        "slug": "q1-usestate-return"
+      },
+      {
+        "id": "q2",
+        "text": "When does the `useEffect` hook run if the dependency array is empty (`[]`)?",
+        "codeSnippet": "useEffect(() => { console.log('Mounted'); }, []);",
+        "options": [
+          { "id": "o1", "text": "After every single render." },
+          { "id": "o2", "text": "Only once, after the initial render (mount)." },
+          { "id": "o3", "text": "Only when the component is unmounted." },
+          { "id": "o4", "text": "It never runs." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "An empty dependency array tells React that the effect doesn't depend on any values from props or state, so it never needs to re-run. It only runs once after mounting.",
+        "slug": "q2-useeffect-empty-deps"
+      },
+      {
+        "id": "q3",
+        "text": "Which rule must be followed when calling React Hooks?",
+        "options": [
+          { "id": "o1", "text": "Hooks can only be called inside class components." },
+          { "id": "o2", "text": "Hooks can be conditionally called within loops or if-statements." },
+          { "id": "o3", "text": "Hooks must only be called at the top level of a functional component or custom hook." },
+          { "id": "o4", "text": "Hooks must be imported dynamically." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Hooks must be called at the top level to ensure that they are called in the exact same order on every render. This is how React internally associates state with specific hook calls.",
+        "slug": "q3-rules-of-hooks"
+      },
+      {
+        "id": "q4",
+        "text": "What is the primary use case for `useRef`?",
+        "options": [
+          { "id": "o1", "text": "To trigger re-renders when a mutable value changes." },
+          { "id": "o2", "text": "To keep a mutable reference that does NOT trigger a re-render when changed." },
+          { "id": "o3", "text": "To replace Redux for global state management." },
+          { "id": "o4", "text": "To intercept network requests." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`useRef` returns a mutable ref object whose `.current` property is initialized to the passed argument. Mutating `.current` does not cause a re-render, making it ideal for storing DOM nodes or interval IDs.",
+        "slug": "q4-useref-purpose"
+      },
+      {
+        "id": "q5",
+        "text": "How does `useContext` behave when the nearest matching `Provider` updates its value?",
+        "options": [
+          { "id": "o1", "text": "It forces the component to re-render with the new value." },
+          { "id": "o2", "text": "It only re-renders if the value is explicitly listed in a dependency array." },
+          { "id": "o3", "text": "It throws a warning unless wrapped in `React.memo`." },
+          { "id": "o4", "text": "It silently updates the value but prevents a re-render." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "Whenever the value of a Context Provider changes, all descendant components calling `useContext` for that context will automatically re-render with the newest value.",
+        "slug": "q5-usecontext-update"
+      },
+      {
+        "id": "q6",
+        "text": "When should you prefer `useReducer` over `useState`?",
+        "options": [
+          { "id": "o1", "text": "When managing local state that is frequently updated in an animation loop." },
+          { "id": "o2", "text": "When you have complex state logic that involves multiple sub-values or when the next state depends on the previous one." },
+          { "id": "o3", "text": "When fetching data from an external API." },
+          { "id": "o4", "text": "`useReducer` is deprecated; Redux must be used instead." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`useReducer` is preferable when state logic is complex, involves multiple sub-values, or when updates heavily depend on the previous state. It lets you optimize performance by passing a dispatch function instead of callbacks.",
+        "slug": "q6-usereducer-vs-usestate"
+      },
+      {
+        "id": "q7",
+        "text": "What is the difference between `useEffect` and `useLayoutEffect`?",
+        "options": [
+          { "id": "o1", "text": "`useLayoutEffect` runs synchronously after all DOM mutations but before paint, while `useEffect` runs asynchronously after paint." },
+          { "id": "o2", "text": "`useLayoutEffect` is only available in Server Components." },
+          { "id": "o3", "text": "`useEffect` blocks the browser paint, while `useLayoutEffect` does not." },
+          { "id": "o4", "text": "There is no functional difference; `useLayoutEffect` is just an older name." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "`useLayoutEffect` fires synchronously immediately after DOM mutations. Updates scheduled inside it will be flushed synchronously before the browser has a chance to paint, preventing visual flickering.",
+        "slug": "q7-useeffect-vs-uselayouteffect"
+      },
+      {
+        "id": "q8",
+        "text": "Why is it important to start custom hook names with 'use' (e.g., `useFetch`)?",
+        "options": [
+          { "id": "o1", "text": "To register the hook in the global React registry." },
+          { "id": "o2", "text": "So React's linter plugins can automatically check them for violations of the Rules of Hooks." },
+          { "id": "o3", "text": "It is a requirement imposed by the JavaScript compiler." },
+          { "id": "o4", "text": "It improves the runtime performance of the hook." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The 'use' prefix is a convention that allows the `eslint-plugin-react-hooks` linter to identify custom hooks and enforce the rules of hooks (like calling them only at the top level).",
+        "slug": "q8-custom-hook-naming"
+      },
+      {
+        "id": "q9",
+        "text": "What is the purpose of the `useImperativeHandle` hook?",
+        "options": [
+          { "id": "o1", "text": "To force a synchronous re-render." },
+          { "id": "o2", "text": "To customize the instance value that is exposed to parent components when using `ref`." },
+          { "id": "o3", "text": "To handle errors imperatively outside of error boundaries." },
+          { "id": "o4", "text": "To define legacy class component lifecycle methods inside functional components." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`useImperativeHandle` is used with `forwardRef` to selectively expose certain imperative methods (like focus(), scroll()) to parent components, instead of exposing the entire DOM node.",
+        "slug": "q9-useimperativehandle"
+      },
+      {
+        "id": "q10",
+        "text": "What causes the 'stale closure' problem in a `useEffect` hook?",
+        "options": [
+          { "id": "o1", "text": "Forgetting to close HTML tags within the component." },
+          { "id": "o2", "text": "Capturing variables from a previous render because they were omitted from the dependency array." },
+          { "id": "o3", "text": "Using too many hooks inside a single component." },
+          { "id": "o4", "text": "Returning a promise directly from the effect function." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "A stale closure happens when a function inside `useEffect` references a state or prop variable, but that variable isn't in the dependency array. The effect will 'remember' the variable's value from the render when the effect was created.",
+        "slug": "q10-stale-closures"
+      }
+    ]
+  },
+  {
+    "id": "react-performance-03",
+    "title": "React Performance",
+    "category": "react",
+    "difficulty": "Hard",
+    "description": "Optimize React applications using memoization, lazy loading, and profiling.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What does `React.memo` do for a functional component?",
+        "options": [
+          { "id": "o1", "text": "It caches the result of an API call made within the component." },
+          { "id": "o2", "text": "It prevents the component from re-rendering if its props have not changed (shallow comparison)." },
+          { "id": "o3", "text": "It caches all functions defined inside the component." },
+          { "id": "o4", "text": "It deeply compares state and prevents unneeded renders." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`React.memo` is a higher-order component that prevents a component from re-rendering if the incoming props remain identical (using shallow equality) to the previous render.",
+        "slug": "q1-react-memo-purpose"
+      },
+      {
+        "id": "q2",
+        "text": "When should you use the `useMemo` hook?",
+        "options": [
+          { "id": "o1", "text": "To memoize every single variable declaration to maximize speed." },
+          { "id": "o2", "text": "To cache the result of an expensive calculation so it isn't re-computed on every render." },
+          { "id": "o3", "text": "To replace `useState` for complex objects." },
+          { "id": "o4", "text": "To prevent a callback function from changing reference." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`useMemo` is used for performance optimization by caching the result of expensive computations. Using it everywhere adds overhead and can actually degrade performance.",
+        "slug": "q2-usememo-usage"
+      },
+      {
+        "id": "q3",
+        "text": "What is the fundamental difference between `useMemo` and `useCallback`?",
+        "options": [
+          { "id": "o1", "text": "`useMemo` memoizes a value, while `useCallback` memoizes a function definition." },
+          { "id": "o2", "text": "`useMemo` is for asynchronous code, `useCallback` is for synchronous code." },
+          { "id": "o3", "text": "`useCallback` triggers a re-render, whereas `useMemo` does not." },
+          { "id": "o4", "text": "There is no difference; they are aliases." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "`useMemo(() => fn, deps)` evaluates the function and caches its returned value. `useCallback(fn, deps)` caches the function definition itself, preventing unnecessary re-creations of the function.",
+        "slug": "q3-usememo-vs-usecallback"
+      },
+      {
+        "id": "q4",
+        "text": "How does code splitting improve application performance?",
+        "codeSnippet": "const LazyComponent = React.lazy(() => import('./LazyComponent'));",
+        "options": [
+          { "id": "o1", "text": "It automatically minifies JavaScript." },
+          { "id": "o2", "text": "It splits the component into smaller React elements." },
+          { "id": "o3", "text": "It defers loading parts of the JavaScript bundle until they are actually needed, reducing initial load time." },
+          { "id": "o4", "text": "It runs the code in multiple concurrent web workers." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Code splitting with `React.lazy` and dynamic imports breaks the app bundle into smaller chunks, loading them on-demand, which vastly improves the initial Time to Interactive (TTI).",
+        "slug": "q4-code-splitting-benefit"
+      },
+      {
+        "id": "q5",
+        "text": "What is a common pitfall that breaks `React.memo` optimizations?",
+        "options": [
+          { "id": "o1", "text": "Passing string literals as props." },
+          { "id": "o2", "text": "Passing a newly instantiated object or inline function as a prop on every render." },
+          { "id": "o3", "text": "Using too many useState hooks inside the child." },
+          { "id": "o4", "text": "Using CSS modules instead of styled-components." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`React.memo` relies on shallow equality. Inline objects `{}` or functions `() => {}` create new references on every render, causing the shallow comparison to fail and the component to re-render anyway.",
+        "slug": "q5-react-memo-pitfall"
+      },
+      {
+        "id": "q6",
+        "text": "What does the `Profiler` API in React measure?",
+        "options": [
+          { "id": "o1", "text": "The memory heap size of the application." },
+          { "id": "o2", "text": "The rendering cost and frequency of React components." },
+          { "id": "o3", "text": "The network latency of API requests." },
+          { "id": "o4", "text": "The bundle size of the compiled application." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`React.Profiler` measures how often a React application renders and what the 'cost' of rendering is. Its purpose is to help identify parts of an application that are slow and may benefit from optimizations.",
+        "slug": "q6-react-profiler"
+      },
+      {
+        "id": "q7",
+        "text": "Which technique is highly recommended for rendering massive lists of data efficiently in React?",
+        "options": [
+          { "id": "o1", "text": "Array.prototype.forEach loops." },
+          { "id": "o2", "text": "Server-side rendering (SSR)." },
+          { "id": "o3", "text": "Windowing / Virtualization (e.g., react-window)." },
+          { "id": "o4", "text": "Inline styling." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Windowing or virtualization (libraries like `react-window` or `react-virtualized`) only renders the rows that are currently visible in the viewport, drastically reducing the number of DOM nodes created.",
+        "slug": "q7-list-virtualization"
+      },
+      {
+        "id": "q8",
+        "text": "Why should you generally avoid passing anonymous inline functions as props?",
+        "codeSnippet": "<Child onClick={() => console.log('Clicked')} />",
+        "options": [
+          { "id": "o1", "text": "They create a new function reference on every render, potentially breaking child component memoization." },
+          { "id": "o2", "text": "They cause memory leaks because the garbage collector cannot access them." },
+          { "id": "o3", "text": "They execute immediately when the component mounts." },
+          { "id": "o4", "text": "They do not have access to the component's state variables." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "An inline arrow function creates a new reference on every render. If the `Child` component relies on `React.memo` or `PureComponent`, the new reference will force it to re-render unnecessarily.",
+        "slug": "q8-inline-functions-performance"
+      },
+      {
+        "id": "q9",
+        "text": "What improvement did React 18 introduce regarding state updates?",
+        "options": [
+          { "id": "o1", "text": "State updates are now completely synchronous." },
+          { "id": "o2", "text": "Automatic batching for all state updates, even inside promises and timeouts." },
+          { "id": "o3", "text": "State updates are automatically persisted to local storage." },
+          { "id": "o4", "text": "The `setState` function was completely removed." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "React 18 introduced automatic batching. Multiple state updates inside promises, timeouts, or native event handlers are batched into a single re-render, improving performance out of the box.",
+        "slug": "q9-automatic-batching"
+      },
+      {
+        "id": "q10",
+        "text": "How can you defer loading non-critical images in React to improve LCP (Largest Contentful Paint)?",
+        "options": [
+          { "id": "o1", "text": "Use `loading=\"lazy\"` on `<img>` tags." },
+          { "id": "o2", "text": "Wrap the `<img>` tags in a `React.lazy()` call." },
+          { "id": "o3", "text": "Use `React.Suspense` for images natively." },
+          { "id": "o4", "text": "Images are lazy-loaded automatically by React without any code changes." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "React supports standard HTML attributes. Using the native `loading=\"lazy\"` attribute on an `img` element instructs the browser to defer loading the image until it is near the visible viewport.",
+        "slug": "q10-lazy-load-images"
+      }
+    ]
+  },
+  {
+    "id": "react-rendering-04",
+    "title": "React Rendering",
+    "category": "react",
+    "difficulty": "Hard",
+    "description": "Understand the React rendering process, Virtual DOM, diffing algorithm, and concurrent features.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is the Virtual DOM?",
+        "options": [
+          { "id": "o1", "text": "A direct representation of the browser's CSS Object Model (CSSOM)." },
+          { "id": "o2", "text": "A lightweight JavaScript representation of the actual DOM kept in memory by React." },
+          { "id": "o3", "text": "A hidden iframe used to compute layouts before rendering." },
+          { "id": "o4", "text": "A web worker that processes DOM updates asynchronously." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "The Virtual DOM is a programming concept where an ideal, or 'virtual', representation of a UI is kept in memory and synced with the real DOM. This process is called reconciliation.",
+        "slug": "q1-virtual-dom-definition"
+      },
+      {
+        "id": "q2",
+        "text": "Which algorithm does React use to figure out which parts of the DOM need to change?",
+        "options": [
+          { "id": "o1", "text": "The diffing algorithm (Heuristic O(n) algorithm)." },
+          { "id": "o2", "text": "Dijkstra's Shortest Path algorithm." },
+          { "id": "o3", "text": "The A* search algorithm." },
+          { "id": "o4", "text": "Binary Search Tree traversal." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "React uses a heuristic O(n) diffing algorithm based on two assumptions: two elements of different types will produce different trees, and the developer can hint at which child elements may be stable using the `key` prop.",
+        "slug": "q2-react-diffing-algorithm"
+      },
+      {
+        "id": "q3",
+        "text": "What does React's 'Concurrent Mode' (or concurrent features in React 18+) primarily enable?",
+        "options": [
+          { "id": "o1", "text": "It allows React to interrupt a long-running render to handle high-priority events like user input." },
+          { "id": "o2", "text": "It allows React to run in multiple browser tabs simultaneously." },
+          { "id": "o3", "text": "It completely eliminates the need for the Virtual DOM." },
+          { "id": "o4", "text": "It converts all components to WebAssembly." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "Concurrent rendering means React can pause, abort, or yield rendering work. This ensures the main thread isn't blocked by huge rendering tasks, keeping the app responsive to user input.",
+        "slug": "q3-concurrent-mode"
+      },
+      {
+        "id": "q4",
+        "text": "During reconciliation, what happens if React encounters an element of a different type (e.g., a `<div>` changes to a `<span>`)?",
+        "options": [
+          { "id": "o1", "text": "It attempts to mutate the existing DOM node into the new type." },
+          { "id": "o2", "text": "It tears down the old tree completely and builds the new tree from scratch." },
+          { "id": "o3", "text": "It ignores the change unless `forceUpdate` is called." },
+          { "id": "o4", "text": "It wraps the old element with the new one." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "When the root elements have different types, React will tear down the old tree and build the new tree from scratch. Any state associated with the old tree is lost.",
+        "slug": "q4-diffing-different-types"
+      },
+      {
+        "id": "q5",
+        "text": "What does the `useTransition` hook do?",
+        "options": [
+          { "id": "o1", "text": "It animates CSS properties smoothly." },
+          { "id": "o2", "text": "It lets you mark a state update as a non-urgent transition, keeping the UI responsive." },
+          { "id": "o3", "text": "It handles route transitions in React Router automatically." },
+          { "id": "o4", "text": "It delays the unmounting of a component." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`useTransition` is a concurrent feature that lets you update the state without blocking the UI. High-priority updates (like typing) can interrupt the non-urgent transition.",
+        "slug": "q5-usetransition-purpose"
+      },
+      {
+        "id": "q6",
+        "text": "What is the primary role of the `<Suspense>` component?",
+        "options": [
+          { "id": "o1", "text": "To suspend the execution of JavaScript in the browser." },
+          { "id": "o2", "text": "To display a fallback UI (like a spinner) while waiting for asynchronous operations (like lazy components or data fetching) to complete." },
+          { "id": "o3", "text": "To pause CSS animations globally." },
+          { "id": "o4", "text": "To delay mounting the root element of the React application." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`Suspense` lets your components 'wait' for something before they can render, showing a specified fallback UI (like a loading indicator) in the meantime.",
+        "slug": "q6-react-suspense"
+      },
+      {
+        "id": "q7",
+        "text": "What is 'hydration' in the context of React Server-Side Rendering (SSR)?",
+        "options": [
+          { "id": "o1", "text": "The process of downloading the React library from a CDN." },
+          { "id": "o2", "text": "The process of injecting CSS into the DOM." },
+          { "id": "o3", "text": "The process of attaching event listeners to the static HTML markup generated by the server, making it interactive." },
+          { "id": "o4", "text": "The process of fetching data dynamically via GraphQL." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Hydration is the process where React takes the static HTML sent by the server and 'hydrates' it by attaching event listeners and setting up the component state, making the page interactive.",
+        "slug": "q7-ssr-hydration"
+      },
+      {
+        "id": "q8",
+        "text": "What is a React Error Boundary?",
+        "options": [
+          { "id": "o1", "text": "A try-catch block inside a functional component." },
+          { "id": "o2", "text": "A class component that implements `componentDidCatch` or `getDerivedStateFromError` to catch JavaScript errors anywhere in its child component tree." },
+          { "id": "o3", "text": "A tool that prevents users from submitting invalid forms." },
+          { "id": "o4", "text": "An automated testing library for React." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Error boundaries are React components that catch JavaScript errors anywhere in their child component tree, log those errors, and display a fallback UI instead of crashing the whole component tree.",
+        "slug": "q8-error-boundaries"
+      },
+      {
+        "id": "q9",
+        "text": "When would you typically use `ReactDOM.createPortal`?",
+        "options": [
+          { "id": "o1", "text": "When routing to a completely different URL." },
+          { "id": "o2", "text": "When you need to render children into a DOM node that exists outside the DOM hierarchy of the parent component (e.g., modals, tooltips)." },
+          { "id": "o3", "text": "When injecting external scripts into the document head." },
+          { "id": "o4", "text": "When creating a micro-frontend architecture." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Portals provide a first-class way to render children into a DOM node that exists outside the DOM hierarchy of the parent component, which is perfect for overlays, modals, or tooltips to avoid z-index and overflow issues.",
+        "slug": "q9-create-portal"
+      },
+      {
+        "id": "q10",
+        "text": "What happens when you wrap an application in `<React.StrictMode>` during development?",
+        "options": [
+          { "id": "o1", "text": "It turns off all warnings to speed up the development server." },
+          { "id": "o2", "text": "It enforces strict TypeScript checking." },
+          { "id": "o3", "text": "It intentionally double-invokes components, effects, and lifecycle methods to help identify unsafe side effects." },
+          { "id": "o4", "text": "It minifies the code immediately on save." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "Strict Mode is a development-only tool that helps highlight potential problems in an application by double-invoking certain functions and effects to expose impure logic and side-effects.",
+        "slug": "q10-strict-mode-double-render"
+      }
+    ]
+  },
+  {
+    "id": "react-advanced-05",
+    "title": "React Advanced",
+    "category": "react",
+    "difficulty": "Hard",
+    "description": "Advanced component patterns, HOCs, render props, compound components, and Server Components.",
+    "questions": [
+      {
+        "id": "q1",
+        "text": "What is a Higher-Order Component (HOC)?",
+        "options": [
+          { "id": "o1", "text": "A component that renders other components in a loop." },
+          { "id": "o2", "text": "A function that takes a component and returns a new component." },
+          { "id": "o3", "text": "A component that sits at the very top of the DOM tree." },
+          { "id": "o4", "text": "A built-in React component for advanced routing." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "A Higher-Order Component is a pattern derived from React's compositional nature. It's a pure function that takes a component as an argument and returns an enhanced version of that component.",
+        "slug": "q1-hoc-definition"
+      },
+      {
+        "id": "q2",
+        "text": "Which of the following describes the 'Render Props' pattern?",
+        "options": [
+          { "id": "o1", "text": "Passing a function as a prop to a component to tell it what to render." },
+          { "id": "o2", "text": "Rendering properties of an object directly into the DOM." },
+          { "id": "o3", "text": "Using props to trigger a forced re-render." },
+          { "id": "o4", "text": "Passing an array of DOM nodes as a prop." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "The term 'render prop' refers to a technique for sharing code between React components using a prop whose value is a function, which returns a React element.",
+        "slug": "q2-render-props-pattern"
+      },
+      {
+        "id": "q3",
+        "text": "What is the primary benefit of React Server Components (RSC)?",
+        "options": [
+          { "id": "o1", "text": "They allow components to run on the server, reducing the JavaScript bundle size sent to the client." },
+          { "id": "o2", "text": "They replace Node.js backends entirely." },
+          { "id": "o3", "text": "They allow secure storage of client-side state." },
+          { "id": "o4", "text": "They automatically implement WebSocket communication." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "Server Components fetch data and render exclusively on the server. Their code and dependencies are not included in the client JS bundle, resulting in faster page loads and less client-side parsing.",
+        "slug": "q3-rsc-benefit"
+      },
+      {
+        "id": "q4",
+        "text": "In the Compound Components pattern, how do parent and child components usually communicate?",
+        "options": [
+          { "id": "o1", "text": "Using Redux or an external state manager." },
+          { "id": "o2", "text": "Using `React.Children.map` or React Context to implicitly share state." },
+          { "id": "o3", "text": "Through global window variables." },
+          { "id": "o4", "text": "Using complex prop drilling." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "Compound components (like `<select>` and `<option>`) share implicit state. This is typically achieved using the Context API to provide state from the parent to specific child components seamlessly.",
+        "slug": "q4-compound-components-communication"
+      },
+      {
+        "id": "q5",
+        "text": "What does `React.forwardRef` allow you to do?",
+        "options": [
+          { "id": "o1", "text": "To skip rendering if a ref hasn't changed." },
+          { "id": "o2", "text": "To pass a ref through a component to one of its child elements." },
+          { "id": "o3", "text": "To automatically focus an input field on mount." },
+          { "id": "o4", "text": "To reverse the flow of data in React." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "By default, you cannot pass `ref` as a prop to a functional component. `forwardRef` creates a component that forwards the `ref` attribute it receives to a child element lower in the tree.",
+        "slug": "q5-forwardref-usage"
+      },
+      {
+        "id": "q6",
+        "text": "What is the fundamental difference between Server-Side Rendering (SSR) and React Server Components (RSC)?",
+        "options": [
+          { "id": "o1", "text": "SSR generates HTML on the server and hydrates on the client. RSC executes exclusively on the server and never ships its JS code to the client." },
+          { "id": "o2", "text": "RSC replaces the need for Next.js, while SSR requires it." },
+          { "id": "o3", "text": "SSR is for static sites, while RSC is for dynamic apps." },
+          { "id": "o4", "text": "They are exactly the same concept with different names." }
+        ],
+        "correctOptionId": "o1",
+        "explanation": "While traditional SSR sends HTML from the server but still sends the JS bundle for hydration, Server Components run entirely on the server and send a serialized format to the client, omitting their JS from the bundle entirely.",
+        "slug": "q6-ssr-vs-rsc"
+      },
+      {
+        "id": "q7",
+        "text": "What is the primary use case for the `useId` hook?",
+        "options": [
+          { "id": "o1", "text": "To generate unique cryptographic keys for mapping arrays." },
+          { "id": "o2", "text": "To generate unique IDs for accessibility attributes (like `aria-labelledby`) that are consistent between server and client." },
+          { "id": "o3", "text": "To create a global session ID for analytics tracking." },
+          { "id": "o4", "text": "To uniquely identify components in the React DevTools." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "`useId` generates unique IDs that are stable across server rendering and hydration. It is primarily used to connect HTML elements via attributes like `id` and `aria-labelledby` without causing hydration mismatches.",
+        "slug": "q7-useid-purpose"
+      },
+      {
+        "id": "q8",
+        "text": "Which design pattern is best described as giving the user of a component control over its internal state via props?",
+        "options": [
+          { "id": "o1", "text": "The Singleton Pattern" },
+          { "id": "o2", "text": "The Render Props Pattern" },
+          { "id": "o3", "text": "The Control Props Pattern" },
+          { "id": "o4", "text": "The Observer Pattern" }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "The Control Props pattern allows parent components to optionally manage the state of a child component (making it 'controlled'). If no control props are provided, the child manages its own state internally.",
+        "slug": "q8-control-props-pattern"
+      },
+      {
+        "id": "q9",
+        "text": "What does the 'State Reducer' pattern accomplish in React component design?",
+        "options": [
+          { "id": "o1", "text": "It reduces the amount of memory a component's state uses." },
+          { "id": "o2", "text": "It forces all state to be managed by a global Redux store." },
+          { "id": "o3", "text": "It allows a consumer to intercept and modify state changes of a component before they are applied via a custom reducer function." },
+          { "id": "o4", "text": "It combines multiple state variables into a single object automatically." }
+        ],
+        "correctOptionId": "o3",
+        "explanation": "The State Reducer pattern (popularized by libraries like Downshift) gives consumers inversion of control by allowing them to pass a reducer function to intercept and modify the internal state updates of a component.",
+        "slug": "q9-state-reducer-pattern"
+      },
+      {
+        "id": "q10",
+        "text": "How is Dependency Injection typically achieved in standard React applications?",
+        "options": [
+          { "id": "o1", "text": "Using Angular's DI container." },
+          { "id": "o2", "text": "Through the React Context API, which provides dependencies to child components deep in the tree." },
+          { "id": "o3", "text": "By dynamically importing modules using `require()`." },
+          { "id": "o4", "text": "By modifying the global `window` object." }
+        ],
+        "correctOptionId": "o2",
+        "explanation": "In React, Context is the standard way to implement Dependency Injection. You can wrap a tree with a Provider holding a service or configuration, and any component can consume it using `useContext` without prop drilling.",
+        "slug": "q10-dependency-injection-context"
+      }
+    ]
+  }
+]

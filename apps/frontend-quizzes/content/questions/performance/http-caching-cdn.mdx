@@ -1,0 +1,102 @@
+---
+title: "Web Performance: HTTP Caching and CDN Optimization"
+description: "Master HTTP caching headers (Cache-Control, ETag, Last-Modified) and CDN edge networks. Learn about Cache-Control directives (max-age, s-maxage, stale-while-revalidate) and caching strategies."
+difficulty: "Hard"
+category: "performance"
+tags:
+  - Performance
+  - HTTP Caching
+  - CDN
+keywords:
+  - http caching headers
+  - cache-control max-age
+  - stale-while-revalidate cdn
+  - etag conditional requests
+  - cdn caching edge
+  - web server cache
+slug: "http-caching-cdn"
+readingTime: 9
+relatedQuestions:
+  - critical-rendering-path
+  - core-web-vitals
+---
+
+# Web Performance: HTTP Caching and CDN Optimization
+
+One of the most frequent backend-integration and system design questions in frontend interviews is:
+
+> Explain the HTTP Caching Model. What are the roles of ETag, Cache-Control, and CDN edge networks, and how does stale-while-revalidate work?
+
+Caching assets at both the client browser level and the CDN edge server level is the most effective way to eliminate network latency, improve page rendering speeds, and decrease server compute loads.
+
+---
+
+## 1. Cache Validation: Strong vs. Weak
+
+The browser uses validation headers to check with the server if a cached asset is still valid:
+
+- **`Last-Modified` / `If-Modified-Since`**: A weak validation strategy using timestamps. The client sends the stored timestamp, and the server responds with `304 Not Modified` if the file has not changed since that date.
+- **`ETag` / `If-None-Match`**: A strong validation strategy using hash tokens. The server generates a unique hash identifier based on file contents. If the hashes match, the server returns `304 Not Modified`, saving download payload bytes.
+
+```text
+ Client (Browser)                        Server
+      │                                    │
+      │ GET /style.css                     │
+      │ If-None-Match: "W/abc123xyz"       │
+      ├───────────────────────────────────►│
+      │                                    │ Checks file hash
+      │                                    │ (Identical!)
+      │ 304 Not Modified                   │
+      │◄───────────────────────────────────┤
+      │ (Uses local cached copy)           │
+```
+
+---
+
+## 2. Cache-Control Directives
+
+The `Cache-Control` header defines who can cache the response, for how long, and under what conditions.
+
+- **`public`**: The response can be cached by both the user's browser and shared caches (CDNs, proxy servers).
+- **`private`**: The response contains user-specific data and can only be stored by the user's browser, not shared CDNs.
+- **`no-cache`**: Forces the browser to validate the cached copy with the server (using ETag) on **every single request** before using it.
+- **`no-store`**: Prevents caching entirely. The file must be downloaded in full on every request.
+- **`max-age`**: Defines the duration (in seconds) the resource is considered fresh for the client browser.
+- **`s-maxage`**: Overrides `max-age` for shared public caches (CDNs).
+
+---
+
+## 3. Stale-While-Revalidate (SWR)
+
+`stale-while-revalidate` is a caching directive that instructs the browser or CDN to return a cached stale asset immediately, while initiating a background fetch to revalidate and update the cache for future requests.
+
+```css
+Cache-Control: max-age=600, stale-while-revalidate=30
+```
+
+### Flow Diagram:
+```text
+Request 1 (at 0m): Fetch from network. Cache is fresh for 10 minutes.
+Request 2 (at 8m): Within max-age. Return cached content instantly (fresh).
+Request 3 (at 10.2m): Within revalidate window. Return cached content instantly (stale) AND trigger background update.
+Request 4 (at 11m): Background update completed. Return new content.
+```
+This pattern ensures fast loading times by eliminating the wait time for network requests while keeping content reasonably fresh.
+
+---
+
+## 4. CDN Edge Optimization
+
+A CDN (Content Delivery Network) is a network of distributed edge servers.
+- **Edge Caching**: Storing static files at the edge server location geographically closest to the user.
+- **Origin Shielding**: Placing a centralized cache between CDNs and the origin server to reduce load spikes on database servers.
+- **Purging Cache**: Clearing CDN caches programmatically immediately after deployments or mutations.
+
+---
+
+## Key Takeaways
+
+- **Cache-Control rules**: Control cache behavior by setting correct headers; use `no-store` for user authentication states.
+- **ETags save bandwidth**: Ensure web servers generate ETags to allow browsers to skip asset payloads via 304 redirects.
+- **Stale-While-Revalidate**: Solves layout latency on pages with dynamic but slowly changing content (like product profiles).
+- **CDNs mitigate latency**: Use edge CDNs to serve images, scripts, and document shells to reduce TTFB metrics.

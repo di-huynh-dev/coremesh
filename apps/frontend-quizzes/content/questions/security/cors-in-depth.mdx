@@ -1,0 +1,96 @@
+---
+title: "Web Security: CORS Mechanics and Configuration Errors"
+description: "Master the mechanics of Cross-Origin Resource Sharing (CORS). Learn about preflight OPTIONS requests, simple vs credentialed requests, access control headers, and common misconfigurations."
+difficulty: "Medium"
+category: "security"
+tags:
+  - Security
+  - CORS
+  - Web Security
+keywords:
+  - cors preflight options
+  - access-control-allow-origin
+  - cors simple requests
+  - credentialed requests cors
+  - cors misconfiguration errors
+slug: "cors-in-depth"
+readingTime: 8
+relatedQuestions:
+  - cors-csp-security-headers
+  - auth-session-management
+---
+
+# Web Security: CORS Mechanics and Configuration Errors
+
+One of the most common interview topics that tests a frontend developer's network security understanding is:
+
+> Explain Cross-Origin Resource Sharing (CORS). What is a preflight request, and what are the security risks of configuring Access-Control-Allow-Origin to '*'?
+
+CORS is a browser-enforced security mechanism that controls how web pages hosted on one origin can interact with resources on another origin. It is defined in HTTP headers sent by the server.
+
+---
+
+## 1. Same-Origin Policy (SOP) vs. CORS
+
+By default, web browsers enforce the **Same-Origin Policy (SOP)**:
+- A webpage on `https://site-a.com` cannot read the response payload of an API request to `https://site-b.com`.
+- Origins differ if **protocol**, **domain**, or **port** do not match.
+
+**CORS** is the official mechanism that allows servers to opt-in to cross-origin resource sharing, relaxing the SOP restrictions selectively.
+
+---
+
+## 2. Preflight Requests (OPTIONS)
+
+For requests that could affect server data (e.g. non-simple requests), the browser automatically sends a **preflight request** using the `OPTIONS` method before firing the actual request.
+
+```text
+ Client (Browser)                           Server (Origin B)
+   │                                           │
+   │ OPTIONS /api/data (Preflight)             │
+   │ Origin: https://site-a.com                │
+   ├──────────────────────────────────────────►│
+   │                                           │ Checks origin whitelist
+   │ Access-Control-Allow-Origin: site-a.com   │ (Approved!)
+   │ Access-Control-Allow-Methods: POST, GET   │
+   │◄──────────────────────────────────────────┤
+   │                                           │
+   │ POST /api/data (Actual Request)           │
+   ├──────────────────────────────────────────►│
+```
+
+### What triggers a preflight request?
+A request is preflighted if it does **not** qualify as a "Simple Request". It is preflighted if it:
+- Uses methods other than `GET`, `HEAD`, or `POST`.
+- Uses a `POST` method with a `Content-Type` other than `application/x-www-form-urlencoded`, `multipart/form-data`, or `text/plain` (e.g. sending JSON `application/json` triggers preflight).
+- Includes custom request headers (e.g. `Authorization`).
+
+---
+
+## 3. Credentialed Requests & the Wildcard Danger
+
+When your frontend requests contain cookies or HTTP authorization details (`credentials: 'include'`), the browser enforces stricter CORS checks:
+
+1. **No Wildcards**: If credentials are sent, the server **cannot** set `Access-Control-Allow-Origin: *`. It must return the exact matching origin domain (e.g. `Access-Control-Allow-Origin: https://site-a.com`).
+2. **Access-Control-Allow-Credentials**: The server response must explicitly include:
+   ```http
+   Access-Control-Allow-Credentials: true
+   ```
+
+### The Misconfiguration Vulnerability:
+To bypass the wildcard restriction, lazy configurations simply mirror the incoming request origin header back to the client:
+```javascript
+// DANGEROUS: Mirrors origin dynamically with credentials enabled!
+res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+res.setHeader('Access-Control-Allow-Credentials', 'true');
+```
+This is a critical security vulnerability. It allows any malicious website in the user's browser to execute requests against your API and read the responses, including sensitive user session cookies.
+
+---
+
+## Key Takeaways
+
+- **OPTIONS Method**: Preflight requests check permissions in advance to ensure the target origin accepts the custom HTTP method or headers.
+- **Never Mirror Origins**: Do not copy `req.headers.origin` directly into the CORS header on authenticated APIs; use a strict whitelist instead.
+- **Simple Requests still fire**: Remember that simple requests (like standard GET queries) are executed by the browser *before* CORS headers are evaluated; CORS simply blocks the script from reading the response.
+- **Credential Constraints**: Set `Access-Control-Allow-Credentials: true` only when cross-site cookie transmission is explicitly required.

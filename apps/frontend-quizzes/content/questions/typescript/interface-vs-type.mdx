@@ -1,0 +1,128 @@
+---
+title: "TypeScript: Interface vs. Type Alias"
+description: "Master TypeScript types. Learn the differences between Interface and Type declarations, when to use which, declaration merging, mapped types, and TS compiler performance."
+difficulty: "Easy"
+category: "typescript"
+tags:
+  - TypeScript
+  - Types
+keywords:
+  - typescript interface vs type
+  - when to use interface typescript
+  - declaration merging typescript
+  - typescript types interview questions
+slug: "interface-vs-type"
+readingTime: 5
+relatedQuestions:
+  - typescript-generics-utility-types
+---
+
+# TypeScript: Interface vs. Type Alias
+
+If you've written any TypeScript, you've probably asked yourself this question:
+
+> **"Should I use `interface` or `type` to define my data shape?"**
+
+At first glance, they seem to do the exact same thing. Both let you define the shape of an object. However, there are subtle differences in their capabilities and how the TypeScript compiler handles them. Let's break down the differences with easy-to-understand examples.
+
+---
+
+## 1. The Core Difference: Objects vs. Everything Else
+
+The simplest way to think about it is:
+- **`interface`** is exclusively for defining the shape of an **object**.
+- **`type`** (Type Alias) is like a variable for *any* type—it can represent objects, but also primitives (strings, numbers), unions, and more.
+
+### Example: What `type` can do that `interface` cannot
+
+```typescript
+// ✅ TYPE can represent primitives
+type Status = "success" | "error" | "loading";
+
+// ✅ TYPE can represent unions (either one or the other)
+type ID = string | number;
+
+// ✅ TYPE can represent tuples (arrays with fixed lengths and types)
+type Coordinate = [number, number];
+```
+You **cannot** do any of the above using an `interface`. 
+
+---
+
+## 2. Extending and Inheriting
+
+Both `interface` and `type` can be extended, but they use different syntax.
+
+### Using `interface` (The `extends` keyword)
+Interfaces use the `extends` keyword, which looks very familiar if you are used to Object-Oriented Programming (like Java or C#).
+
+```typescript
+interface Animal {
+  name: string;
+}
+
+interface Dog extends Animal {
+  bark(): void;
+}
+
+const myDog: Dog = { name: "Rex", bark: () => console.log("Woof!") };
+```
+
+### Using `type` (The `&` Intersection)
+Types achieve the same result using the `&` (intersection) operator.
+
+```typescript
+type Animal = {
+  name: string;
+};
+
+type Dog = Animal & {
+  bark(): void;
+};
+
+const myDog: Dog = { name: "Rex", bark: () => console.log("Woof!") };
+```
+
+---
+
+## 3. Declaration Merging (The Interface Superpower)
+
+This is the biggest feature unique to `interfaces`. If you define two interfaces with the exact same name in the same file, TypeScript will **automatically merge them together**. 
+
+```typescript
+interface User {
+  name: string;
+}
+
+interface User {
+  age: number;
+}
+
+// ✅ TypeScript merges them! The User object now needs BOTH properties.
+const user1: User = {
+  name: "Alice",
+  age: 28
+};
+```
+
+If you try to do this with `type`, TypeScript will throw an error complaining about a duplicate identifier.
+
+### Why is Declaration Merging useful?
+It's incredibly useful for library authors. For example, if you are using a third-party library (like React or Express) and you want to add a custom property to their global `Window` or `Request` object, you can just declare an `interface` with the same name, and TypeScript will merge your custom property into the existing one!
+
+---
+
+## Which one should you use?
+
+Here is a practical rule of thumb:
+
+1. **Use `interface` by default**, especially if you are defining the shape of an object or building a public API/library (because declaration merging allows your users to extend your types).
+2. **Use `type` when you have to**, such as when you need to define unions (`A | B`), intersections (`A & B`), mapped types, or primitive aliases.
+3. **Be consistent**: Whatever you pick, stick to it within your codebase so it's easy for your team to read!
+
+---
+
+## Key Takeaways
+
+- **`interface`** = Best for objects, supports declaration merging (great for extending third-party libraries).
+- **`type`** = More versatile. Can do objects, but also primitives, unions, and tuples. Cannot be merged.

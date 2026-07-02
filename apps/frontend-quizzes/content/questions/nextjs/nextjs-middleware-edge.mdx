@@ -1,0 +1,114 @@
+---
+title: "Next.js: Middleware and Edge Runtime"
+description: "Master Next.js Middleware and Edge Runtime. Learn about route matching, cookies manipulation, geolocation headers, redirecting, and the limitations of the Edge runtime environment."
+difficulty: "Hard"
+category: "nextjs"
+tags:
+  - Next.js
+  - Middleware
+  - Edge Runtime
+keywords:
+  - nextjs middleware tutorial
+  - edge runtime limitations nextjs
+  - nextjs cookies in middleware
+  - geolocation headers nextjs
+  - nextjs routing redirect
+slug: "nextjs-middleware-edge"
+readingTime: 8
+relatedQuestions:
+  - nextjs-routing-dynamic-segments
+  - app-router-rsc
+---
+
+# Next.js: Middleware and Edge Runtime
+
+One of the key architectural questions asked in senior Next.js interviews is:
+
+> How does Next.js Middleware work, and what are the limitations of the Edge Runtime? How do you manipulate request cookies and headers before rendering?
+
+Middleware allows you to run code **before a request is completed**. Based on the incoming request, you can rewrite, redirect, modify the request or response headers, or respond directly.
+
+---
+
+## 1. Middleware Architecture & Placement
+
+Middleware runs in the **Edge Runtime**, which is a lightweight subset of Node.js APIs optimized for speed and low latency, typically deployed closer to users in edge servers.
+
+- **Placement**: Define a `middleware.ts` (or `.js`) file in the **root** of your project (same level as `app` or `pages` directories).
+- **Matching**: By default, middleware runs for every route in your project. You use custom `matcher` configurations to filter paths.
+
+```typescript
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/request';
+
+export function middleware(request: NextRequest) {
+  // Redirect to login if accessing protected dashboard without token
+  const token = request.cookies.get('token');
+  if (!token && request.nextUrl.pathname.startsWith('/dashboard')) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+  return NextResponse.next();
+}
+
+// Limit middleware to dashboard paths
+export const config = {
+  matcher: '/dashboard/:path*',
+};
+```
+
+---
+
+## 2. Manipulating Cookies & Headers
+
+Middleware can modify headers and cookies on both the incoming request and the outgoing response.
+
+### A. Cookies
+You can read, set, or delete cookies:
+```typescript
+export function middleware(request: NextRequest) {
+  // 1. Read cookie
+  const theme = request.cookies.get('theme')?.value;
+
+  // 2. Set cookie on response
+  const response = NextResponse.next();
+  response.cookies.set('visited', 'true', { maxAge: 60 * 60 * 24 });
+
+  return response;
+}
+```
+
+### B. Headers
+You can inject headers to send context down to Server Components:
+```typescript
+export function middleware(request: NextRequest) {
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-custom-header', 'hello-middleware');
+
+  // Pass modified headers to downstream route
+  return NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
+}
+```
+
+---
+
+## 3. The Edge Runtime: Limitations
+
+Because the Edge Runtime is optimized for high-density edge deployments, it does **not support all Node.js APIs**:
+
+- **No Native Modules**: Calling native C++ bindings (e.g. `bcrypt`) causes compile errors.
+- **Limited fs Modules**: You cannot use `fs` (file system) modules (`readFileSync`, etc.). Use fetch helpers instead.
+- **No process.env overrides**: You can read variables, but you cannot alter them.
+- **Limited packages**: Libraries depending on node native packages (like `net`, `crypto` APIs in node) will fail. Use web-compatible alternatives (like Web Crypto APIs).
+
+---
+
+## Key Takeaways
+
+- **Pre-execution**: Middleware intercepts requests at the routing edge before any page rendering or data fetching takes place.
+- **Matching Rules**: Use regex in the `matcher` object to exclude assets, static public directories, and next internal files to avoid performance bottlenecks.
+- **NextResponse**: Use `NextResponse.rewrite()` to show target content under the original URL, and `NextResponse.redirect()` to change URLs on client browsers.
+- **Lightweight Code**: Keep middleware files small and fast. Do not run heavy database queries or long cryptographic cycles in the Edge runtime.

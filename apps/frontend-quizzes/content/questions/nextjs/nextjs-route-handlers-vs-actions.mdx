@@ -1,0 +1,115 @@
+---
+title: "Next.js Route Handlers vs Server Actions"
+description: "Understand when to use Route Handlers (API routes) versus Server Actions in Next.js applications."
+difficulty: "Medium"
+category: "nextjs"
+tags:
+  - Next.js
+  - API
+  - Server Actions
+  - Forms
+keywords:
+  - next.js route handlers
+  - server actions vs route handlers
+  - nextjs api endpoints
+  - use server nextjs
+slug: "nextjs-route-handlers-vs-actions"
+readingTime: 6
+relatedQuestions:
+  - nextjs-server-actions-mutations
+---
+
+# Next.js Route Handlers vs Server Actions
+
+Next.js provides two main ways to execute server-side logic and handle data mutations from the client: **Route Handlers** (API routes) and **Server Actions**. 
+
+While both run on the server, they serve different architectural needs. Knowing when to use each is a common question in frontend interviews.
+
+---
+
+## 1. What are Route Handlers?
+
+Route Handlers are custom request handlers that allow you to build REST-like API endpoints. They are defined in `route.ts` (or `route.js`) files and are accessed via standard HTTP requests (GET, POST, PUT, DELETE).
+
+### Code Example:
+```ts
+// app/api/users/route.ts
+import { NextResponse } from "next/server";
+
+export async function POST(request: Request) {
+  const data = await request.json();
+  const newUser = await db.user.create({ data });
+  
+  return NextResponse.json({ success: true, user: newUser }, { status: 201 });
+}
+```
+
+### Best Used For:
+* **Public APIs**: When third-party apps or services need to access your data.
+* **Webhooks**: Handling callbacks from services like Stripe, GitHub, or SendGrid.
+* **Mobile Clients**: If you have a separate mobile app that needs standard JSON endpoints.
+* **Resource Streaming**: Returning custom file downloads, PDF generation, or image assets.
+
+---
+
+## 2. What are Server Actions?
+
+Server Actions are asynchronous functions declared with the `"use server"` directive. They allow client components to invoke server-side database code directly, behaving like a Remote Procedure Call (RPC). You do not write fetch API requests or declare custom route endpoints.
+
+### Code Example:
+```ts
+// app/actions.ts
+"use server";
+
+import { revalidatePath } from "next/cache";
+
+export async function createUserAction(formData: FormData) {
+  const email = formData.get("email") as string;
+  await db.user.create({ data: { email } });
+  
+  // Revalidate the cache to show updated data instantly
+  revalidatePath("/users");
+}
+```
+
+You can import and trigger this function directly inside a client button or HTML form:
+
+```tsx
+// app/components/UserForm.tsx
+import { createUserAction } from "../actions";
+
+export default function UserForm() {
+  return (
+    <form action={createUserAction}>
+      <input name="email" type="email" required />
+      <button type="submit">Register User</button>
+    </form>
+  );
+}
+```
+
+### Best Used For:
+* **Form Submissions**: Standard application mutations (creating, updating, deleting database items).
+* **Next.js Internal Cache Mutations**: Actions integrate deeply with `revalidatePath` and `revalidateTag` to update Next.js page caches dynamically.
+* **Quick UI Mutations**: Small user updates like toggling a "like" button or updating settings.
+
+---
+
+## Comparison Summary
+
+| Criteria | Route Handlers | Server Actions |
+| :--- | :--- | :--- |
+| **Declaration** | `route.ts` file exporting HTTP methods (GET, POST) | `"use server"` functions |
+| **Invocation** | Standard HTTP request (`fetch('/api/users')`) | Direct function call (`createUserAction()`) |
+| **Format** | Standard JSON responses or streams | Serialization (returns plain JS objects) |
+| **API Boundary** | Explicit (cross-origin accessible) | Implicit (Next.js app boundary only) |
+| **Use Case** | External services, webhooks, mobile integrations | Internal database mutations, form workflows |
+
+---
+
+## Key Takeaways
+
+* **Route Handlers** act as standard REST API endpoints. Use them when you need to serve public clients, webhooks, or mobile apps.
+* **Server Actions** are internal RPC functions. Use them inside your Next.js application for forms, buttons, and state mutations.
+* Server Actions simplify development by removing the need to write API endpoints and `fetch` client requests for basic database edits.
+* Do not use Server Actions if third-party external applications need access to the endpoint; write a Route Handler instead.

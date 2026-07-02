@@ -1,0 +1,103 @@
+---
+title: "Behavioral: Tell Me About a Production Outage"
+description: "Learn how to discuss a production outage in a frontend interview. Focuses on incident response, triage, rollback protocols, post-mortems, and preventative patterns."
+difficulty: "Medium"
+category: "behavioral"
+tags:
+  - Behavioral
+  - Incident Response
+  - Reliability
+  - Architecture
+keywords:
+  - production outage behavioral interview
+  - frontend production incident
+  - API schema drift outage
+  - error boundary rollback strategy
+slug: "production-outage"
+readingTime: 6
+relatedQuestions:
+  - user-affecting-bug
+  - disagreement-backend
+---
+
+# Behavioral: Tell Me About a Production Outage
+
+A common senior-level question to test your composure, problem-solving under pressure, and production readiness:
+
+> "Tell me about a time you experienced a major production outage. How did you triage it, what was the resolution, and how did you prevent it from happening again?"
+
+---
+
+## 1. What Interviewers Are Evaluating
+
+- **Triage Under Pressure**: Do you focus on rollback/mitigation first, or do you leave the app broken in production while you try to write a fix?
+- **Root Cause Analysis (RCA)**: Can you trace a client-side crash back to its architectural or structural origin (e.g., API contracts, bundler issues, CDN configuration)?
+- **Defensive Engineering**: Do you build applications with resilience mechanisms (e.g., Error Boundaries, schema validation, feature flags)?
+
+---
+
+## 2. Structured STAR Method Answer
+
+Here is a structured answer template focusing on a **Frontend Runtime Crash due to API Schema Drift**.
+
+### Situation: The Outage
+> "During a major marketing campaign, our primary e-commerce dashboard started crashing, rendering a blank screen for 100% of our authenticated users. The crash was caught by our automated Slack alerts linked to Datadog/Sentry, showing a massive spike in uncaught JavaScript errors: `TypeError: Cannot read properties of null (reading 'map')`."
+
+### Task: The Objective
+> "My immediate responsibility was to restore the application's functionality for users, coordinate with the infrastructure team, identify the root cause of the client-side crash, and implement guards to prevent schema drifts from breaking our layout."
+
+### Action: Triage and Resolution
+> "Here are the actions I coordinated:
+> 
+> 1. **Mitigation First (Rollback)**: Instead of trying to debug and write code under pressure, I coordinated with our dev-ops engineer to immediately trigger a rollback of the latest backend deployment that went live 15 minutes prior. This restored service within 4 minutes.
+> 2. **Isolating the Root Cause**: With the production site stable, we analyzed the Sentry logs. A backend microservice release had altered the API payload contract. A nested array field (`recommendedProducts`) was changed to return `null` instead of an empty array `[]` when no recommendations were available. 
+> 3. **Identifying the Frontend Vulnerability**: The client-side codebase was mapping over this array directly:
+> 
+> ```javascript
+> // Buggy frontend code
+> function RecommendationWidget({ data }) {
+>   return (
+>     <div>
+>       {data.recommendedProducts.map(item => <Card key={item.id} {...item} />)}
+>     </div>
+>   );
+> }
+> ```
+> 
+> Because this component lacked defensive guards and wasn't wrapped in a **React Error Boundary**, the uncaught runtime exception bubbled up to the root layout, crashing the entire React rendering loop and leaving users with a blank page.
+> 
+> 4. **Fix and Safeguards**: 
+>    - I added defensive checks using optional chaining and fallback arrays (`data?.recommendedProducts ?? []`).
+>    - I introduced a global and component-level `ErrorBoundary` structure to gracefully fail-silent or show a recovery state rather than blanking the page.
+>    - I integrated **Zod schema validation** at our API fetching layer to parse and validate backend responses, casting invalid schema drift to safe defaults before they hit the rendering code.
+>    - I scheduled a joint meeting with the backend leads to establish API contract verification tooling (OpenAPI/Swagger) to validate payloads in our CI pipelines."
+
+### Result: The Outcome
+> "The fix and new safeguards were deployed safely. In a subsequent release where a similar database field was updated, our Zod parsing caught the payload drift, logged a warning to Sentry, and fallback defaults were applied. The UI remained fully functional, preventing another potential outage. This incident also prompted us to create weekly API sync meetings between frontend and backend teams."
+
+---
+
+## Senior-Level Interview Answer
+
+### Key details that highlight senior composure:
+- **Prioritizing Rollbacks**: Emphasize that restoring user experience (via rollback or disabling feature flags) always comes before patching the codebase.
+- **Defensive API Integration**: Explain how parsing payloads using schemas (Zod, Joi) decouples the frontend runtime from backend structural alterations.
+- **Fail-Safe UI Design**: Demonstrate understanding of React's lifecycle and how Error Boundaries isolate page failures to prevent full-application crashes.
+
+---
+
+## Common Interview Mistakes
+
+### ❌ Leaving the app broken while debugging
+Do not describe spending hours looking through code while users are seeing a broken screen. The first rule of incident response is **mitigation (rollback), then debugging**.
+
+### ❌ Blaming backend or infrastructure teams
+Even if the backend team broke the API contract, a robust frontend shouldn't completely crash the screen. Frame the incident as a failure in shared contract verification, not a single team's fault.
+
+---
+
+## Key Takeaways
+
+- **Stop the Bleeding First**: Always roll back to a known stable build or disable the offending feature flag immediately.
+- **Isolate Faults**: Use component-level Error Boundaries in React to contain crashes (e.g., if a widget breaks, render a fallback, keeping the navigation and remaining page functional).
+- **Enforce Contracts**: Validate and normalize API data using parsing layers before passing it to UI components.

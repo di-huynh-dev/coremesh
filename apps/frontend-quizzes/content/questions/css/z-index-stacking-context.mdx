@@ -1,0 +1,210 @@
+---
+title: "The CSS Stacking Context and z-index"
+description: "Understand the CSS Stacking Context and why z-index sometimes doesn't work as expected. Learn how to debug z-index issues and manage layer order in web layouts."
+difficulty: "Medium"
+category: "css"
+tags:
+  - CSS
+  - Layouts
+  - z-index
+  - Stacking Context
+keywords:
+  - css z-index not working
+  - stacking context explained
+  - z-index interview question
+  - css positioning
+  - rendering layers
+slug: "z-index-stacking-context"
+readingTime: 8
+relatedQuestions:
+  - css-positioning
+---
+
+# The CSS Stacking Context and z-index
+
+A very common question asked in frontend interviews to evaluate practical layout knowledge is:
+
+> **"Why isn't my `z-index` working? Explain what a Stacking Context is and how it affects the rendering order of elements."**
+
+Most developers know that a higher `z-index` value brings an element closer to the viewer. However, many encounter a situation where an element with `z-index: 9999` is somehow hidden behind an element with `z-index: 1`. 
+
+This is where understanding the **Stacking Context** becomes crucial.
+
+---
+
+## 1. What is a Stacking Context?
+
+The Stacking Context is a three-dimensional conceptualization of HTML elements along an imaginary z-axis relative to the user. Elements occupy this space in order of priority based on element properties.
+
+When a stacking context is formed on an element, that element becomes the root of a new local z-axis for all its children. 
+
+### The Key Rule
+> [!IMPORTANT]
+> **The `z-index` values of child elements only have meaning within their parent's stacking context.**
+
+If Element A and Element B are in different stacking contexts, and Element A's stacking context is below Element B's stacking context, then **no matter how high** you set the `z-index` of a child inside Element A, it will never appear above Element B.
+
+---
+
+## 2. The 7 Layers of Stacking Order (Within a Single Context)
+
+Before discussing how stacking contexts are created, we must understand how a browser orders elements *within* a single stacking context by default. 
+
+Here is the exact stacking hierarchy (from back to front):
+
+<div className="my-8 p-6 md:p-8 rounded-2xl bg-card-bg/40 border border-card-border/80 backdrop-blur-md flex flex-col items-center">
+  <h4 className="text-sm font-bold text-foreground mb-6 uppercase tracking-wider">The 7 Layers of Stacking Order (Back to Front)</h4>
+  
+  <div className="relative w-full max-w-lg flex flex-col gap-3">
+    {/* Layer 7: Positive z-index */}
+    <div className="relative p-3 rounded-xl border border-sky-500/40 bg-sky-950/80 text-sky-400 flex items-center justify-between text-xs font-semibold shadow-md transform hover:-translate-y-0.5 transition-transform cursor-default" style={{ zIndex: 7 }}>
+      <span>Layer 7: Positioned elements (z-index &gt; 0)</span>
+      <span className="text-[9px] bg-sky-500/20 px-2 py-0.5 rounded text-sky-300 uppercase font-bold tracking-wide">Top Layer (Closest to user)</span>
+    </div>
+
+    {/* Layer 6: z-index 0 or auto */}
+    <div className="relative p-3 rounded-xl border border-blue-500/20 bg-blue-950/40 text-blue-400 flex items-center justify-between text-xs font-semibold" style={{ zIndex: 6 }}>
+      <span>Layer 6: Positioned elements (z-index: 0 or auto)</span>
+    </div>
+
+    {/* Layer 5: Non-positioned Inline children */}
+    <div className="relative p-3 rounded-xl border border-purple-500/20 bg-purple-950/40 text-purple-400 flex items-center justify-between text-xs font-semibold" style={{ zIndex: 5 }}>
+      <span>Layer 5: Non-positioned Inline elements (text, inline nodes)</span>
+    </div>
+
+    {/* Layer 4: Non-positioned Block children */}
+    <div className="relative p-3 rounded-xl border border-indigo-500/20 bg-indigo-950/20 text-indigo-400/80 flex items-center justify-between text-xs font-semibold" style={{ zIndex: 4 }}>
+      <span>Layer 4: Non-positioned Block elements (div, p, sections in normal flow)</span>
+    </div>
+
+    {/* Layer 3: Negative z-index */}
+    <div className="relative p-3 rounded-xl border border-amber-500/20 bg-amber-950/20 text-amber-400/80 flex items-center justify-between text-xs font-semibold" style={{ zIndex: 3 }}>
+      <span>Layer 3: Positioned elements (z-index &lt; 0)</span>
+    </div>
+
+    {/* Layer 2: Parent Background & Borders */}
+    <div className="relative p-3 rounded-xl border border-neutral-700/60 bg-neutral-900/60 text-neutral-400 flex items-center justify-between text-xs font-semibold" style={{ zIndex: 2 }}>
+      <span>Layer 2: Stacking Context Parent's background & borders</span>
+      <span className="text-[9px] bg-neutral-800 px-2 py-0.5 rounded text-neutral-400 uppercase font-bold tracking-wide">Base</span>
+    </div>
+  </div>
+  
+  <p className="text-xs text-text-muted mt-5 text-center max-w-md">
+    💡 Elements on higher layers will always cover elements on lower layers, regardless of their source code order.
+  </p>
+</div>
+
+---
+
+## 3. How is a Stacking Context Created?
+
+A common misconception is that only `position: absolute` or `position: relative` combined with `z-index` creates a stacking context. While true, many other modern CSS properties trigger a new stacking context.
+
+An element forms a new stacking context if any of the following are true:
+
+1. It is the root element (`<html>`).
+2. It has `position: absolute` or `relative` AND a `z-index` value other than `auto`.
+3. It has `position: fixed` or `sticky`.
+4. It is a child of a Flexbox or Grid container AND has a `z-index` value other than `auto`.
+5. It has an `opacity` value less than `1`.
+6. It has a `transform`, `filter`, `perspective`, `clip-path`, or `mask` property other than `none`.
+7. It has `isolation: isolate`.
+8. It has a `will-change` value specifying any property that would trigger a context on its own (like `transform` or `opacity`).
+
+> [!WARNING]
+> Applying a seemingly unrelated property like `opacity: 0.99` or `transform: scale(1)` to a parent element will instantly create a new stacking context, potentially trapping all its children behind other elements on the page!
+
+---
+
+## 4. The Classic `z-index` Trap (Example)
+
+Consider the following HTML and CSS:
+
+```html
+<div className="parent-a">
+  <div className="child-a">Child A (z-index: 9999)</div>
+</div>
+
+<div className="parent-b">
+  <div className="child-b">Child B (z-index: 1)</div>
+</div>
+```
+
+```css
+.parent-a {
+  position: relative;
+  z-index: 1; /* Creates Stacking Context A */
+}
+
+.child-a {
+  position: absolute;
+  z-index: 9999;
+}
+
+.parent-b {
+  position: relative;
+  z-index: 2; /* Creates Stacking Context B */
+}
+
+.child-b {
+  position: absolute;
+  z-index: 1;
+}
+```
+
+### What happens here?
+
+Even though `child-a` has a massive `z-index` of `9999`, it will render **behind** `child-b` (which only has a `z-index` of `1`).
+
+Here is a visual map of how the browser evaluates this:
+
+<div className="my-8 p-6 md:p-8 rounded-2xl bg-card-bg/40 border border-card-border/80 backdrop-blur-md">
+  <h4 className="text-sm font-bold text-foreground mb-6 uppercase tracking-wider text-center">Visual Stacking Hierarchy of the Trap</h4>
+  <div className="flex flex-col gap-6 max-w-md mx-auto">
+    
+    {/* Stacking Context B */}
+    <div className="relative p-5 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 shadow-[0_4px_20px_rgba(34,197,94,0.05)]">
+      <div className="flex justify-between items-center mb-3">
+        <span className="text-xs font-bold text-emerald-400">Parent B (Stacking Context Level: 2)</span>
+        <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] uppercase font-bold tracking-wide">Wins & Layers Higher</span>
+      </div>
+      <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-xs font-semibold">
+        Child B (z-index: 1 within Context B)
+      </div>
+    </div>
+
+    {/* Stacking Context A */}
+    <div className="relative p-5 rounded-2xl border border-rose-500/20 bg-rose-500/5 shadow-[0_4px_20px_rgba(239,68,68,0.05)]">
+      <div className="flex justify-between items-center mb-3">
+        <span className="text-xs font-bold text-rose-400">Parent A (Stacking Context Level: 1)</span>
+        <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px] uppercase font-bold tracking-wide">Layers Lower</span>
+      </div>
+      <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs font-semibold flex items-center justify-between">
+        <span>Child A (z-index: 9999)</span>
+        <span className="text-[10px] text-rose-400/80 font-normal italic">Trapped inside Context A!</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+**Why does this happen?** 
+Because `parent-a` has a `z-index` of 1, and `parent-b` has a `z-index` of 2. The browser compares the parents first. Since `parent-b` is higher than `parent-a`, everything inside `parent-b` will render on top of everything inside `parent-a`. The `z-index: 9999` of `child-a` only means it is on top of other things *inside* `parent-a`.
+
+---
+
+## 5. How to Debug and Fix Stacking Issues
+
+If your element is trapped behind another, follow these steps to diagnose and repair the bug:
+
+1. **Check the parent chain**: Walk up the DOM tree of the hidden element and look for any parents with `position`, `opacity`, `transform`, `filter`, or grid/flex layouts.
+2. **Use the `isolation` property**: If you need to intentionally trap the `z-index` of child elements to prevent them from bleeding out over other parts of your app, use `isolation: isolate` on the container. This is cleaner than hacking it with `z-index: 1; position: relative`.
+3. **Use a Portal**: In React/Next.js, if you have a Modal or Tooltip that needs to break out of all stacking contexts and render on top of the whole page, use a **Portal** (`createPortal`) to append it directly to `document.body` or `#portal-root`.
+
+---
+
+## Key Takeaways
+
+- `z-index` is not global. It operates locally within its parent's stacking context.
+- Many CSS properties besides `position` (like `opacity`, `transform`, and `filter`) create new stacking contexts.
+- Sibling stacking contexts are compared first. If a parent is "lower" than another parent, its children cannot break out to overlay the higher parent.
+- Use `isolation: isolate` to purposefully create stacking contexts, and Portals to escape them.

@@ -1,0 +1,101 @@
+---
+title: "Web Performance: Optimizing Render-Blocking Resources"
+description: "Learn how to identify and resolve render-blocking CSS and JavaScript. Understand inline critical path styling, code coverage profiling, and dynamic import loading."
+difficulty: "Medium"
+category: "performance"
+tags:
+  - Performance
+  - Critical Path
+  - Optimization
+keywords:
+  - render blocking resources css
+  - render blocking javascript
+  - critical path css
+  - coverage tool chrome devtools
+  - dynamic import react lazy
+slug: "render-blocking-resources"
+readingTime: 9
+relatedQuestions:
+  - critical-rendering-path
+  - core-web-vitals
+---
+
+# Web Performance: Optimizing Render-Blocking Resources
+
+One of the most common web performance questions in engineering interviews is:
+
+> What is a render-blocking resource? How do you optimize stylesheets and scripts to prevent them from blocking the first paint of a webpage?
+
+When a browser encounters stylesheet link elements or script tag elements in the HTML document, it pauses layout painting until the assets are downloaded and parsed. These elements are called **render-blocking resources**.
+
+---
+
+## 1. How Render-Blocking Occurs
+
+During page load, the browser builds the **DOM** (Document Object Model) and the **CSSOM** (CSS Object Model). The page cannot paint until both trees are combined into the **Render Tree**:
+
+```text
+ HTML ──────► DOM ──────┐
+                         ├──────► Render Tree ──────► Paint UI
+ CSS ───────► CSSOM ────┘
+```
+
+- **CSS blocks Paint**: The browser delays rendering to prevent a flash of unstyled content (FOUC). Therefore, all stylesheets in the document head block rendering.
+- **JS blocks DOM construction**: Standard script tags block the HTML parser entirely, because scripts can modify the DOM using `document.write` or access style attributes.
+
+---
+
+## 2. Optimizing Render-Blocking CSS
+
+To prevent CSS from delaying first paint times:
+
+### A. Inline Critical Path CSS
+Split your CSS into **critical** (needed for the above-the-fold content visible on load) and **non-critical** styles:
+- Inline the critical CSS directly inside a `<style>` block in the HTML head.
+- Load the remaining non-critical stylesheet asynchronously:
+
+```html
+<link 
+  rel="preload" 
+  href="non-critical.css" 
+  as="style" 
+  onload="this.onload=null;this.rel='stylesheet'" 
+/>
+<noscript>
+  <link rel="stylesheet" href="non-critical.css" />
+</noscript>
+```
+
+### B. Media Attributes for Stylesheets
+If a stylesheet is only needed for printing or specific screens, tell the browser to download it with low priority:
+```html
+<link rel="stylesheet" href="print.css" media="print" />
+```
+The browser still downloads it, but it does not block the render tree on normal screens.
+
+---
+
+## 3. Optimizing Render-Blocking JS
+
+To prevent JavaScript from blocking HTML parsing:
+
+1. **Use `defer` or `async` attributes**: Apply these to all external script elements (see script execution guides).
+2. **Code Coverage Profiling**: Use the Chrome DevTools **Coverage Tool** to record code execution. Identify unused code chunks and split them out.
+3. **Dynamic Imports (`React.lazy` / `import()`)**: Load code blocks asynchronously only when user interactions occur (e.g. loading a modal script only when the modal open button is clicked).
+
+```typescript
+// Dynamically import heavy chart library only when needed
+async function showCharts() {
+  const { Chart } = await import('chart.js');
+  const chart = new Chart(...);
+}
+```
+
+---
+
+## Key Takeaways
+
+- **DOM/CSSOM sync**: Rendering requires both the DOM and CSSOM to be fully ready; CSS is always render-blocking.
+- **Inline Critical Styles**: Inlining critical CSS directly in the HTML document eliminates round-trip asset requests.
+- **De-prioritize Stylesheets**: Set proper `media` queries on links to keep screen-specific CSS from blocking default viewport paints.
+- **Defer Script Tags**: Always ensure scripts are loaded using `defer` or `async` to keep the HTML parser running smoothly.

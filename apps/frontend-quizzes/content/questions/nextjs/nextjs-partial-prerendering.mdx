@@ -1,0 +1,116 @@
+---
+title: "Next.js Partial Prerendering (PPR)"
+description: "Learn what Partial Prerendering (PPR) is in Next.js, how it combines static and dynamic rendering, and how it improves web performance."
+difficulty: "Hard"
+category: "nextjs"
+tags:
+  - Next.js
+  - Next.js 15
+  - Rendering Strategies
+  - Performance
+keywords:
+  - nextjs partial prerendering
+  - PPR next.js
+  - static shell dynamic holes
+  - react suspense streaming nextjs
+slug: "nextjs-partial-prerendering"
+readingTime: 6
+relatedQuestions:
+  - nextjs-rendering-strategies
+---
+
+# Next.js Partial Prerendering (PPR)
+
+Traditionally, web pages were either fully static (prerendered at build time) or fully dynamic (rendered on demand on the server for each request). Next.js 15 introduces **Partial Prerendering (PPR)**, which merges these two paradigms into a single page lifecycle.
+
+---
+
+## 1. The Core Problem PPR Solves
+
+Consider a typical e-commerce product detail page.
+* **Static parts**: Product name, description, images (same for everyone).
+* **Dynamic parts**: User cart count, personalized recommendations, live stock counts.
+
+Without PPR, you had to make a compromise:
+1. **Force the whole page to be Dynamic (SSR)**: The server does all computations on every request. This delays the initial response (slow Time to First Byte - TTFB) for everyone.
+2. **Make the page Static (SSG) and fetch dynamic data client-side**: The page loads instantly, but users see layout shifts or blank skeleton loaders while client-side API requests resolve.
+
+---
+
+## 2. What is Partial Prerendering?
+
+PPR lets you render a static page shell immediately, while deferring dynamic sections. 
+
+It does this by leveraging React's **`Suspense`** boundaries:
+
+1. **Static Shell**: During build time, Next.js compiles the parts of the page outside of `<Suspense>` boundaries into static HTML.
+2. **Dynamic Slots (Holes)**: The parts wrapped in `<Suspense>` are treated as dynamic "holes".
+3. **Immediate Delivery**: When a user requests the page, the static HTML shell is sent instantly.
+4. **Streaming Updates**: The server resolves the dynamic dynamic components in the background and streams the HTML chunks down the same HTTP connection, replacing the fallback skeleton.
+
+---
+
+## 3. How to Structure Code for PPR
+
+To use PPR, wrap your dynamic server components in a React `<Suspense>` boundary and provide a fallback skeleton:
+
+```tsx
+// app/products/[id]/page.tsx
+import { Suspense } from "react";
+import { ProductDetails, DynamicReviews, ReviewsSkeleton } from "@/components/product";
+
+export default function ProductPage({ params }: { params: { id: string } }) {
+  return (
+    <main className="product-layout">
+      {/* 1. Static Content: compiled at build time */}
+      <ProductDetails id={params.id} />
+      
+      {/* 2. Dynamic Content: streamed from server on demand */}
+      <Suspense fallback={<ReviewsSkeleton />}>
+        <DynamicReviews id={params.id} />
+      </Suspense>
+    </main>
+  );
+}
+```
+
+### Behind the Scenes:
+- Next.js recognizes `<ProductDetails />` uses static data, so it pre-renders it to static HTML.
+- Next.js detects `<DynamicReviews />` uses dynamic functions (like cookies, headers, or uncached fetch calls), so it leaves it as a dynamic hole.
+
+---
+
+## 4. How to Enable PPR
+
+Partial Prerendering is currently an experimental feature in Next.js. You can enable it in your config:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  experimental: {
+    ppr: true, // Enables PPR support
+  },
+};
+
+export default nextConfig;
+```
+
+Once enabled, you can opt-in specific routes by exporting the `ppr` config option:
+
+```tsx
+// app/products/[id]/page.tsx
+export const experimental_ppr = true; // Opts this specific route into PPR
+
+export default function Page() { ... }
+```
+
+---
+
+## Key Takeaways
+
+* **Partial Prerendering (PPR)** combines the speed of static rendering with the personalization of dynamic rendering on the same page.
+* It uses **React `Suspense`** boundaries to separate static shells from dynamic contents.
+* The static HTML shell is delivered instantly to the browser (lowering TTFB), and dynamic components are streamed as they resolve on the server.
+* PPR reduces layout shifts and removes client-side fetching overhead.

@@ -1,0 +1,146 @@
+---
+title: "Next.js: Resource Optimizations (Images, Fonts, Scripts, Links)"
+description: "Explore built-in Next.js optimizations. Learn how Image, Font, Script, and Link components work under the hood to prevent layout shifting and improve Core Web Vitals."
+difficulty: "Medium"
+category: "nextjs"
+tags:
+  - Next.js
+  - Optimization
+  - Core Web Vitals
+keywords:
+  - nextjs image component optimization
+  - next font layout shift
+  - next script loading strategy
+  - next link prefetching
+  - prevent CLS nextjs
+slug: "nextjs-optimizations"
+readingTime: 7
+relatedQuestions:
+  - image-resource-optimization
+  - core-web-vitals
+---
+
+# Next.js: Resource Optimizations (Images, Fonts, Scripts, Links)
+
+A common medium-to-hard Next.js architecture question is:
+
+> How does Next.js optimize assets under the hood? Explain the internal behaviors of the Image, Font, Script, and Link components, and how they improve Core Web Vitals like LCP, CLS, and FID.
+
+Next.js provides dedicated wrapper components that replace standard HTML tags. These components automatically handle complex optimizations—like dynamic image resizing, layout shift prevention, deferred script loading, and route prefetching—right out of the box.
+
+---
+
+## 1. Next.js Image Component (`next/image`)
+
+The `<Image />` component extends the standard HTML `<img>` tag to automate image optimization:
+
+- **Automatic Size Generation**: Automatically generates `srcset` attributes to serve appropriately sized images based on the user's viewport.
+- **Preventing Layout Shift**: Requires explicit `width` and `height` dimensions (or the `fill` layout style) to calculate aspect ratios, reserving space in the layout before loading to prevent **Cumulative Layout Shift (CLS)**.
+- **Modern Formats**: Compresses images on-demand, serving them in modern formats (like WebP or AVIF) if supported by the browser.
+- **Lazy Loading**: Images are lazy-loaded by default, loading only when they approach the viewport (using native `loading="lazy"`). For critical above-the-fold images, you override this with `priority`.
+
+```jsx
+import Image from 'next/image';
+
+function Profile() {
+  return (
+    <div className="relative w-40 h-40">
+      <Image
+        src="/profile.jpg"
+        alt="User Profile"
+        fill
+        className="rounded-full object-cover"
+        priority // Preloads the image if it appears above-the-fold (LCP target)
+      />
+    </div>
+  );
+}
+```
+
+---
+
+## 2. Next.js Font Optimization (`next/font`)
+
+The `next/font` module downloads font files at build time and hosts them alongside your static assets.
+
+- **Zero Layout Shift**: It automatically calculates matching fallback system font dimensions and inserts CSS override parameters (using `size-adjust`). When the custom font file finishes loading, the switch causes **zero layout shift (CLS)**.
+- **No External Request**: Because fonts are self-hosted within the application bundle, the browser does not need to send third-party requests to Google Fonts during page load, improving load speeds.
+
+```typescript
+// app/layout.tsx
+import { Inter } from 'next/font/google';
+
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap', // Fallback font is shown immediately
+});
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en" className={inter.className}>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+---
+
+## 3. Next.js Script Optimization (`next/script`)
+
+The `<Script />` component lets you load third-party scripts anywhere in your application and controls execution timing via the `strategy` property:
+
+- **`beforeInteractive`**: Loads before Next.js hydration code runs. Useful for critical bootstrap scripts (like bot detectors).
+- **`afterInteractive`** (Default): Loads immediately after hydration code runs. Best for general tracking scripts (like tag managers).
+- **`lazyOnload`**: Defers loading during CPU idle time. Ideal for low-priority scripts (like chat widgets).
+- **`worker`** (Experimental): Offloads script execution to a Web Worker, freeing up the main browser thread.
+
+```jsx
+import Script from 'next/script';
+
+export default function Contact() {
+  return (
+    <div>
+      <h1>Contact Us</h1>
+      <Script
+        src="https://example.com/chat-widget.js"
+        strategy="lazyOnload"
+      />
+    </div>
+  );
+}
+```
+
+---
+
+## 4. Next.js Link Navigation (`next/link`)
+
+The `<Link />` component handles client-side navigation.
+
+When a `<Link />` enters the browser's viewport, Next.js **prefetches the target page's code** in the background. By the time the user clicks the link, the target page's resources are already loaded, making the transition feel near-instant.
+
+---
+
+## Senior-Level Interview Answer
+
+> Next.js optimizes resource loading via built-in compiler wrappers. `next/image` requires aspect ratios or wrapper bounds to block layout layouts, preventing CLS, while dynamically generating responsive sizes and modern formatting compressions. `next/font` downloads web fonts at build time and embeds font overriding metadata in CSS to match fallback fonts, neutralizing layout shifts during swap renders. `next/script` lets developers schedule script injection through execution strategies like `lazyOnload` or web worker execution to preserve main-thread capacity. Finally, `next/link` pre-fetches routed bundles in the background when links enter the viewport, enabling near-instant Client Side Navigation.
+
+---
+
+## Common Interview Mistakes
+
+### ❌ Using external fonts via `<link>` tags
+Importing Google Fonts using standard `<link>` tags inside `layout.tsx`. This forces the browser to make external DNS lookups and requests at runtime, triggering font-swapping layout shifts, whereas `next/font` self-hosts the files at build time.
+
+### ❌ Specifying absolute layout sizes for dynamic images
+Assuming `<Image>` width/height attributes behave exactly like HTML parameters. If you need responsive sizing, you should set `fill={true}` and control sizes using CSS classes on a relative parent container instead of hardcoding absolute layout dimensions.
+
+---
+
+## Key Takeaways
+
+- **CLS Defenses**: `next/image` and `next/font` eliminate styling layout shifts by reserving layout boundaries before content finishes loading.
+- **Self-Hosted Assets**: `next/font` downloads Google Font assets at build time, eliminating external runtime network requests.
+- **Hydration Syncing**: `next/script` organizes third-party JS loading sequences, moving non-critical tasks out of the hydration path.
+- **Viewport Prefetch**: `<Link>` components automatically prefetch target route code in the background as they scroll into view.
+- **Priority Loading**: Use the `priority` attribute on above-the-fold images to mark them as high priority and optimize LCP metrics.

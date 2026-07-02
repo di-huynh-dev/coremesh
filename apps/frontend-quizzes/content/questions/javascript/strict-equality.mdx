@@ -1,0 +1,132 @@
+---
+title: "JavaScript: Double Equals (==) vs. Triple Equals (===)"
+description: "Understand the differences between loose equality (==) and strict equality (===) in JavaScript. Learn coercion rules, falsy comparisons, and best practices."
+difficulty: "Easy"
+category: "javascript"
+tags:
+  - JavaScript
+  - Operators
+  - Type Coercion
+  - Fundamentals
+keywords:
+  - double equals vs triple equals javascript
+  - loose vs strict equality js
+  - javascript type coercion equality
+  - falsy comparisons js
+  - strict equality operator
+slug: "javascript-double-equals-vs-triple-equals"
+readingTime: 6
+relatedQuestions:
+  - javascript-primitive-vs-reference-types
+  - type-narrowing-guards
+---
+
+# JavaScript: Double Equals (==) vs. Triple Equals (===)
+
+One of the most classic JavaScript interview questions is:
+
+> What is the difference between double equals (==) and triple equals (===) in JavaScript?
+
+Every junior developer learns that `==` compares values and `===` compares both value and type. But interviewers want to test if you understand **type coercion** mechanics under the hood:
+- **Implicit Type Coercion**: How JavaScript automatically converts values during loose comparison.
+- **Comparison Algorithm**: The rules JavaScript uses to match values (like string-to-number or boolean-to-number).
+- **Falsy Pitfalls**: Why statements like `[] == false` or `"" == 0` evaluate to `true`.
+- **Exceptions**: How special values like `NaN`, `null`, and `undefined` behave in comparisons.
+
+Let's explore JavaScript's equality operators from first principles.
+
+---
+
+## 1. Loose Equality (==) with Coercion
+
+The loose equality operator (`==`) compares two values for equality **after converting both values to a common type**. This process is known as **implicit type coercion**.
+
+When comparing variables of different types with `==`:
+1. If one is a **Boolean**, it is converted to a **Number** (`true` becomes `1`, `false` becomes `0`).
+2. If comparing a **String** and a **Number**, the string is coerced to a number (`Number(string)`).
+3. If one is an **Object** and the other is a **Primitive**, the object is converted to a primitive using its `valueOf()` or `toString()` methods.
+
+```javascript
+console.log(5 == "5");  // true (String "5" is coerced to number 5)
+console.log(1 == true); // true (Boolean true is coerced to number 1)
+console.log(0 == false); // true (Boolean false is coerced to number 0)
+```
+
+---
+
+## 2. Strict Equality (===)
+
+The strict equality operator (`===`) compares two values for equality **without performing type coercion**. 
+
+For strict comparison to return `true`:
+- Both values must have the **exact same type**.
+- Both values must have the **exact same value** (or point to the same memory reference for objects).
+
+```javascript
+console.log(5 === "5");  // false (Number vs String)
+console.log(1 === true); // false (Number vs Boolean)
+console.log(5 === 5);    // true
+```
+
+---
+
+## 3. Falsy Comparison Pitfalls
+
+Loose equality coercion rules lead to highly unintuitive comparisons that senior developers must avoid:
+
+```javascript
+console.log("" == 0);      // true (Empty string converts to number 0)
+console.log([] == false);  // true (Array converts to empty string "", which converts to 0)
+console.log(null == 0);    // false (special case: null only equals undefined loosely)
+```
+
+### The Null & Undefined Exception
+Under the loose equality algorithm, `null` and `undefined` are loosely equal to each other but are **not coerced to any other values** (like false or 0).
+
+```javascript
+console.log(null == undefined); // true
+console.log(null === undefined); // false (different types)
+```
+
+---
+
+## 4. Summary Table
+
+| Comparison | Loose Equality (`==`) | Strict Equality (`===`) |
+| :--- | :--- | :--- |
+| **`5 == "5"`** | ✅ `true` | ❌ `false` |
+| **`0 == false`** | ✅ `true` | ❌ `false` |
+| **`null == undefined`** | ✅ `true` | ❌ `false` |
+| **`NaN == NaN`** | ❌ `false` (NaN never equals itself) | ❌ `false` |
+| **`[] == ""`** | ✅ `true` | ❌ `false` |
+
+---
+
+## Senior-Level Interview Answer
+
+> Double equals (`==`) compares values after performing implicit type coercion, trying to convert both operands to a matching primitive type (usually numeric). Triple equals (`===`) compares both the value and the type strictly, returning false if types do not align. For example, `5 == "5"` evaluates to true because the string is coerced to a number, whereas `5 === "5"` is false due to type mismatch. Because loose coercion rules lead to unintuitive behaviors (like `[] == false` evaluating to true), strict equality (`===`) is the industry standard for code predictability, with double equals reserved almost exclusively for checking if a value is null or undefined simultaneously (`val == null`).
+
+---
+
+## Common Interview Mistakes
+
+### ❌ Relying on `==` to check for falsy values
+Using `if (value == false)` can lead to logic bugs if `value` is an empty array `[]` or the number `0`, which are coerced to false loosely. Instead, write explicit checks or use boolean casting: `if (!value)`.
+
+### ❌ Thinking `NaN` can be compared using equality operators
+`NaN` (Not-a-Number) is the only value in JavaScript that is not equal to itself under either `==` or `===`. To check for `NaN`, use `Number.isNaN(value)`.
+
+```javascript
+console.log(NaN === NaN); // false
+console.log(Number.isNaN(NaN)); // true
+```
+
+---
+
+## Key Takeaways
+
+- **Loose Equality**: Double equals (`==`) performs implicit type coercion, converting operands to numeric primitives before comparison.
+- **Strict Equality**: Triple equals (`===`) enforces strict type matching, guaranteeing both type and value are identical.
+- **Null and Undefined**: `null == undefined` is true, which provides a convenient way to check for both null or empty values.
+- **NaN Behavior**: `NaN` is not equal to itself under either operator; you must use `Number.isNaN()` to identify it.
+- **Best Practice**: Use triple equals (`===`) by default to avoid coercion bugs and ensure runtime predictability.

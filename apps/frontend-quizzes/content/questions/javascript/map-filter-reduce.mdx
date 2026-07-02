@@ -1,0 +1,150 @@
+---
+title: "JavaScript Array Methods: map, filter, and reduce"
+description: "Master Array.prototype.map, filter, and reduce in JavaScript. Learn callback signatures, return behaviors, immutability concepts, and method chaining."
+difficulty: "Easy"
+category: "javascript"
+tags:
+  - JavaScript
+  - Array Methods
+  - Functional Programming
+  - Immutability
+keywords:
+  - javascript map filter reduce
+  - array map vs filter
+  - javascript reduce explained
+  - functional programming array methods
+  - array immutability js
+slug: "javascript-array-methods-map-filter-reduce"
+readingTime: 8
+relatedQuestions:
+  - javascript-closures-interview-questions
+  - array-manipulation-challenges
+---
+
+# JavaScript Array Methods: map, filter, and reduce
+
+One of the most fundamental questions asked in frontend developer interviews is:
+
+> What is the difference between map, filter, and reduce in JavaScript? When should you use each?
+
+Most developers can explain that `map` changes values, `filter` removes values, and `reduce` combines them. However, interviewers want to see that you understand the underlying concepts:
+- **Immutability**: Why do these methods return new arrays rather than modifying the original?
+- **Callback Parameters**: What arguments do the callbacks receive beyond the current element?
+- **Method Chaining**: How do you compose these methods to write clean, declarative calculations?
+- **Reduce Accumulation**: How does the accumulator in `reduce` coordinate multi-step calculations?
+
+Let's explore these essential array methods from first principles.
+
+---
+
+## 1. Array.prototype.map()
+
+The `map()` method creates a **new array** populated with the results of calling a provided function on every element in the calling array.
+
+- **Formula**: `Array.prototype.map(callback(element, index, array), thisArg)`
+- **Key Property**: It preserves the original array size. The returned array will always have the exact same length as the original array.
+
+```javascript
+const numbers = [1, 2, 3, 4];
+const doubled = numbers.map(num => num * 2);
+
+console.log(doubled); // [2, 4, 6, 8]
+console.log(numbers); // [1, 2, 3, 4] (Original is unchanged)
+```
+
+---
+
+## 2. Array.prototype.filter()
+
+The `filter()` method creates a **new array** with all elements that pass the test implemented by the provided callback function.
+
+- **Formula**: `Array.prototype.filter(callback(element, index, array), thisArg)`
+- **Key Property**: The callback function must return a truthy value to keep the element, or a falsy value to discard it. The length of the new array will be less than or equal to the original array.
+
+```javascript
+const numbers = [1, 2, 3, 4];
+const evens = numbers.filter(num => num % 2 === 0);
+
+console.log(evens);   // [2, 4]
+console.log(numbers); // [1, 2, 3, 4] (Original is unchanged)
+```
+
+---
+
+## 3. Array.prototype.reduce()
+
+The `reduce()` method executes a user-supplied "reducer" callback function on each element of the array, in order, passing in the return value from the calculation on the preceding element. The final result of running the reducer across all elements of the array is a **single value**.
+
+- **Formula**: `Array.prototype.reduce(callback(accumulator, currentValue, index, array), initialValue)`
+- **Key Property**: If you do not provide an `initialValue`, the first element of the array (index 0) becomes the initial accumulator, and the loop starts at index 1. **Always supply an initial value** to avoid runtime errors on empty arrays.
+
+```javascript
+const numbers = [1, 2, 3, 4];
+const sum = numbers.reduce((accumulator, currentValue) => {
+  return accumulator + currentValue;
+}, 0);
+
+console.log(sum); // 10
+```
+
+---
+
+## 4. Practical Method Chaining
+
+Because `map()` and `filter()` return new arrays, they can be chained together to perform complex transformations in a highly readable, declarative pipeline.
+
+Consider a shopping cart checkout scenario:
+1. Filter out items that are not in stock.
+2. Map over remaining items to apply a 10% discount.
+3. Reduce the discounted items to calculate the final total cost.
+
+```javascript
+const cart = [
+  { name: "Laptop", price: 1000, inStock: true },
+  { name: "Mouse", price: 50, inStock: false },
+  { name: "Keyboard", price: 100, inStock: true }
+];
+
+const total = cart
+  .filter(item => item.inStock)
+  .map(item => item.price * 0.9)
+  .reduce((sum, price) => sum + price, 0);
+
+console.log(total); // 990 (1000 * 0.9 + 100 * 0.9)
+```
+
+---
+
+## 5. Comparison Matrix
+
+| Method | Returns | Length of Output | Modifies Original? | Primary Use Case |
+| :--- | :--- | :--- | :--- | :--- |
+| **`map`** | New Array | Same as input ($N$) | ❌ No | Transforming every element individually |
+| **`filter`** | New Array | $0 \le Length \le N$ | ❌ No | Selecting subset of items matching a condition |
+| **`reduce`** | Single Value (Any type) | $1$ (Object, Number, Array, etc.) | ❌ No | Aggregating items into a single summary result |
+
+---
+
+## Senior-Level Interview Answer
+
+> In JavaScript, `map`, `filter`, and `reduce` are functional, non-mutating array methods used for traversing and transforming collections. `map` creates a new array of the same length by applying a callback to each element. `filter` creates a subset array containing only elements that return truthy from a predicate callback. `reduce` iterates over the array to accumulate its values into a single return value—which can be a number, string, array, or object—based on an accumulator parameter and an optional initial value. Because `map` and `filter` return arrays, they support declarative chaining, allowing developers to avoid imperative `for` loops and state mutations.
+
+---
+
+## Common Interview Mistakes
+
+### ❌ Using `map()` when you don't return anything
+Using `map` purely for side effects (like mutating an external array or logging) is a bad practice. If you don't want to transform values and return a new array, use `forEach()` instead.
+
+### ❌ Omitting the initial value in `reduce()`
+If you call `reduce()` on an empty array without supplying an initial value, JavaScript throws a `TypeError`. Always supply the second parameter (like `0`, `[]`, or `{}`) to make the code safe.
+
+---
+
+## Key Takeaways
+
+- **Immutability**: `map`, `filter`, and `reduce` do not modify the original array; they always return new data structures.
+- **Map Length**: `map` always outputs a new array of the exact same length as the input array.
+- **Filter Predicates**: `filter` evaluates a truthy/falsy condition, meaning the return array will be equal to or smaller than the original.
+- **Reduce Accumulation**: `reduce` aggregates arrays into any single target data type (including summing numbers, flattening arrays, or building lookup maps).
+- **Safe Init**: Always specify an initial value parameter inside `reduce` calls to protect against empty array exceptions.

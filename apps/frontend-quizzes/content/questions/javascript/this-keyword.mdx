@@ -1,0 +1,697 @@
+---
+title: "Explain JavaScript 'this' Keyword with Interview Examples"
+description: "Master the JavaScript this keyword for frontend interviews. Learn how this works in global scope, objects, functions, arrow functions, event handlers, classes, call, apply, and bind with practical examples."
+
+difficulty: "Medium"
+
+category: "javascript"
+
+tags:
+  - JavaScript
+  - this Keyword
+  - Functions
+  - OOP
+  - Closures
+
+keywords:
+  - javascript this interview question
+  - explain this keyword in javascript
+  - javascript call apply bind
+  - arrow function this
+  - javascript execution context
+  - frontend interview questions
+  - javascript object methods
+  - how this works in javascript
+
+slug: "javascript-this-keyword"
+
+readingTime: 12
+
+relatedQuestions:
+  - call-apply-bind
+  - arrow-functions-vs-normal-functions
+  - execution-context
+  - closures-in-javascript
+---
+
+# Explain the JavaScript `this` Keyword
+
+One of the most frequently asked JavaScript interview questions is:
+
+> What is `this` in JavaScript and how does it work?
+
+Many developers memorize rules such as:
+
+```javascript
+this === window;
+```
+
+or
+
+```javascript
+arrow functions don't have this
+```
+
+but struggle when interviewers ask:
+
+> What determines the value of `this`?
+
+The most important thing to understand is:
+
+> `this` is determined by **how a function is called**, not where it is defined.
+
+### What is `this`?
+
+`this` is a special keyword that refers to an object associated with the current execution context.
+
+The value of `this` is decided at runtime.
+
+Example:
+
+```javascript
+const user = {
+  name: "John",
+  greet() {
+    console.log(this.name);
+  },
+};
+
+user.greet();
+```
+
+Output:
+
+```text
+John
+```
+
+Here:
+
+```javascript
+this === user;
+```
+
+because the function was called using:
+
+```javascript
+user.greet();
+```
+
+### Why Does JavaScript Need `this`?
+
+Imagine creating multiple objects:
+
+```javascript
+const user1 = {
+  name: "John",
+};
+
+const user2 = {
+  name: "Sarah",
+};
+```
+
+Without `this`, every method would need hardcoded references.
+
+```javascript
+const user = {
+  name: "John",
+  greet() {
+    console.log(user.name);
+  },
+};
+```
+
+This breaks when reused.
+
+With `this`:
+
+```javascript
+const user = {
+  name: "John",
+  greet() {
+    console.log(this.name);
+  },
+};
+```
+
+The method becomes reusable for different objects.
+
+## 3. Global Context & Function Invocation Rules
+
+In browsers:
+
+```javascript
+console.log(this);
+```
+
+Output:
+
+```javascript
+window;
+```
+
+Because the global execution context is the browser window.
+
+### Browser Example
+
+```javascript
+var name = "John";
+
+console.log(this.name);
+```
+
+Output:
+
+```text
+John
+```
+
+Equivalent to:
+
+```javascript
+window.name;
+```
+
+### Rule #2: Function Invocation
+
+Consider:
+
+```javascript
+function greet() {
+  console.log(this);
+}
+
+greet();
+```
+
+In non-strict mode:
+
+```javascript
+window;
+```
+
+In strict mode:
+
+```javascript
+undefined;
+```
+
+### Strict Mode Example
+
+```javascript
+"use strict";
+
+function greet() {
+  console.log(this);
+}
+
+greet();
+```
+
+Output:
+
+```javascript
+undefined;
+```
+
+This prevents accidental global object access.
+
+## 4. Method Invocation Rule
+
+When a function is called as an object's method:
+
+```javascript
+object.method();
+```
+
+`this` refers to that object.
+
+Example:
+
+```javascript
+const user = {
+  name: "John",
+
+  greet() {
+    console.log(this.name);
+  },
+};
+
+user.greet();
+```
+
+Output:
+
+```text
+John
+```
+
+### Interview Trap
+
+```javascript
+const user = {
+  name: "John",
+
+  greet() {
+    console.log(this.name);
+  },
+};
+
+const fn = user.greet;
+
+fn();
+```
+
+Output:
+
+```text
+undefined
+```
+
+(or `window.name` in non-strict mode)
+
+Why?
+
+Because:
+
+```javascript
+fn();
+```
+
+is a normal function call.
+
+The connection to `user` is lost.
+
+## 5. Constructor Functions Rule
+
+When using `new`:
+
+```javascript
+function User(name) {
+  this.name = name;
+}
+
+const user = new User("John");
+```
+
+JavaScript creates a new object and binds `this` to it.
+
+Equivalent to:
+
+```javascript
+const user = {};
+user.name = "John";
+```
+
+Output:
+
+```javascript
+{
+  name: "John";
+}
+```
+
+## 6. Arrow Functions & Lexical Binding
+
+Arrow functions do NOT create their own `this`.
+
+Instead, they inherit `this` from the surrounding scope.
+
+Example:
+
+```javascript
+const user = {
+  name: "John",
+
+  greet: () => {
+    console.log(this.name);
+  },
+};
+
+user.greet();
+```
+
+Output:
+
+```text
+undefined
+```
+
+Why?
+
+Because the arrow function uses the surrounding `this`.
+
+It does not receive:
+
+```javascript
+this === user;
+```
+
+### Normal Function vs Arrow Function
+
+Normal function:
+
+```javascript
+const user = {
+  name: "John",
+
+  greet() {
+    console.log(this.name);
+  },
+};
+```
+
+Output:
+
+```text
+John
+```
+
+Arrow function:
+
+```javascript
+const user = {
+  name: "John",
+
+  greet: () => {
+    console.log(this.name);
+  },
+};
+```
+
+Output:
+
+```text
+undefined
+```
+
+### Common React Example
+
+Bad:
+
+```javascript
+class App {
+  handleClick() {
+    console.log(this);
+  }
+}
+```
+
+Passing directly:
+
+```jsx
+<button onClick={this.handleClick}>
+```
+
+may lose context.
+
+Historically developers used:
+
+```javascript
+this.handleClick = this.handleClick.bind(this);
+```
+
+inside constructors.
+
+### Nested Functions Problem
+
+```javascript
+const user = {
+  name: "John",
+
+  greet() {
+    function inner() {
+      console.log(this.name);
+    }
+
+    inner();
+  },
+};
+
+user.greet();
+```
+
+Output:
+
+```text
+undefined
+```
+
+Why?
+
+Because:
+
+```javascript
+inner();
+```
+
+is a normal function call.
+
+### Solution 1: Store Reference
+
+```javascript
+const user = {
+  name: "John",
+
+  greet() {
+    const self = this;
+
+    function inner() {
+      console.log(self.name);
+    }
+
+    inner();
+  },
+};
+```
+
+Output:
+
+```text
+John
+```
+
+### Solution 2: Arrow Function
+
+```javascript
+const user = {
+  name: "John",
+
+  greet() {
+    const inner = () => {
+      console.log(this.name);
+    };
+
+    inner();
+  },
+};
+```
+
+Output:
+
+```text
+John
+```
+
+Arrow functions inherit the surrounding `this`.
+
+## 7. Explicit Binding: call(), apply(), and bind()
+
+`call()` immediately invokes a function and sets `this`.
+
+```javascript
+function greet() {
+  console.log(this.name);
+}
+
+const user = {
+  name: "John",
+};
+
+greet.call(user);
+```
+
+Output:
+
+```text
+John
+```
+
+### Explicit Binding with apply()
+
+Works like `call()` but arguments are passed as an array.
+
+```javascript
+function greet(city) {
+  console.log(this.name, city);
+}
+
+const user = {
+  name: "John",
+};
+
+greet.apply(user, ["Delhi"]);
+```
+
+Output:
+
+```text
+John Delhi
+```
+
+### Explicit Binding with bind()
+
+Unlike call and apply:
+
+```javascript
+bind();
+```
+
+does NOT execute immediately.
+
+It returns a new function.
+
+```javascript
+function greet() {
+  console.log(this.name);
+}
+
+const user = {
+  name: "John",
+};
+
+const boundFn = greet.bind(user);
+
+boundFn();
+```
+
+Output:
+
+```text
+John
+```
+
+### call vs apply vs bind
+
+| Method | Executes Immediately | Returns Function |
+| ------ | -------------------- | ---------------- |
+| call   | Yes                  | No               |
+| apply  | Yes                  | No               |
+| bind   | No                   | Yes              |
+
+## 8. 'this' inside Event Handlers & Classes
+
+```javascript
+button.addEventListener("click", function () {
+  console.log(this);
+});
+```
+
+Output:
+
+```javascript
+<button>
+```
+
+Inside event listeners:
+
+```javascript
+this === element;
+```
+
+### Event Handler with Arrow Function
+
+```javascript
+button.addEventListener("click", () => {
+  console.log(this);
+});
+```
+
+Output:
+
+```javascript
+window;
+```
+
+(or outer scope)
+
+Arrow functions do not get event-bound `this`.
+
+### Classes and `this`
+
+```javascript
+class User {
+  constructor(name) {
+    this.name = name;
+  }
+
+  greet() {
+    console.log(this.name);
+  }
+}
+
+const user = new User("John");
+
+user.greet();
+```
+
+Output:
+
+```text
+John
+```
+
+Here:
+
+```javascript
+this === user;
+```
+
+## 9. Common Interview Q&A
+
+### What Determines the Value of `this`?
+
+Not where the function is written.
+
+Instead:
+
+```text
+How the function is called
+```
+
+determines `this`.
+
+### Do Arrow Functions Have Their Own `this`?
+
+No.
+
+They inherit `this` from the surrounding lexical scope.
+
+### Why Is `bind()` Useful?
+
+It permanently fixes the value of `this`.
+
+```javascript
+const fn = greet.bind(user);
+```
+
+Useful when passing methods as callbacks.
+
+### Why Does React Use Arrow Functions Frequently?
+
+Arrow functions preserve lexical `this`.
+
+This avoids losing context when functions are passed around.
+
+## Senior-Level Interview Answer
+
+> The value of `this` in JavaScript is determined by how a function is invoked. In global scope, `this` usually refers to the global object. In object methods, it refers to the object before the dot. Constructor functions bind `this` to newly created instances via `new`. Functions can explicitly set `this` using call, apply, and bind. Arrow functions are different because they do not have their own `this`; instead they inherit it lexically from the surrounding scope. Understanding invocation patterns rather than memorizing rules is the key to mastering `this`.
+
+## Key Takeaways
+
+- **Dynamic Binding**: The value of `this` is determined dynamically at runtime based on *how* a function is called, not where it is written.
+- **Global Context**: Points to `window` (or `global` in Node.js), resolving to `undefined` inside strict-mode execution.
+- **Arrow Functions**: Do not bind their own `this`; they inherit it lexically from their surrounding declaration context.
+- **Explicit Binding**: Use `call()`, `apply()`, or `bind()` to explicitly force a specific context object onto `this`.
+- **Event Listeners**: Inside event callbacks, `this` naturally points to the DOM element that received the event.

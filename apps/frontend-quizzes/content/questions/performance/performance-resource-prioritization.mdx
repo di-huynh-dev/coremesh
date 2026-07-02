@@ -1,0 +1,119 @@
+---
+title: "Web Performance: Preload, Prefetch, and Preconnect"
+description: "Understand the differences between preload, prefetch, preconnect, and dns-prefetch, and how to use them to optimize page load speeds."
+difficulty: "Medium"
+category: "performance"
+tags:
+  - Web Performance
+  - Browsers
+  - Critical Rendering Path
+keywords:
+  - preload vs prefetch css
+  - preconnect google fonts
+  - dns-prefetch third-party api
+  - resource hints web performance
+slug: "performance-resource-prioritization"
+readingTime: 6
+relatedQuestions:
+  - render-blocking-resources
+---
+
+# Web Performance: Preload, Prefetch, and Preconnect
+
+When a browser loads a web page, it parses the HTML from top to bottom. If it finds scripts, stylesheets, fonts, or images, it starts downloading them. However, by default, the browser doesn't know which assets are critical for the page to load fast versus which ones can wait.
+
+**Resource Hints** (using `<link rel="...">` attributes) allow you to prioritize downloads, helping browsers establish connections and fetch assets early.
+
+---
+
+## 1. What is `preload`?
+
+The `preload` hint tells the browser to download a critical asset needed for the **current page** as soon as possible. It bypasses the browser's normal parsing order.
+
+### Best Used For:
+Assets that are discovered late by the browser but are critical for rendering, such as:
+* Web fonts declared inside CSS files (which the browser only discovers *after* downloading and parsing the CSS).
+* Hero images above-the-fold (crucial for Largest Contentful Paint - LCP).
+* Core bundle files.
+
+### Code Example:
+```html
+<head>
+  <!-- Preloads a critical font asset -->
+  <link 
+    rel="preload" 
+    href="/fonts/inter.woff2" 
+    as="font" 
+    type="font/woff2" 
+    crossorigin="anonymous" 
+  />
+  
+  <!-- Preloads the primary hero image -->
+  <link rel="preload" href="/images/hero.webp" as="image" />
+</head>
+```
+
+---
+
+## 2. What is `prefetch`?
+
+The `prefetch` hint tells the browser that an asset will be needed for a **future page navigation**. The browser downloads this asset in the background with low priority when it is idle.
+
+### Best Used For:
+Assets needed for subsequent pages the user is likely to visit next (e.g., the dashboard script loaded when a user sits on the login page).
+
+### Code Example:
+```html
+<!-- Downloads dashboard bundle in the background for future use -->
+<link rel="prefetch" href="/js/dashboard.js" as="script" />
+```
+
+---
+
+## 3. What is `preconnect`?
+
+The `preconnect` hint tells the browser to establish a connection to a **third-party domain** immediately, before the actual request is sent. This starts the DNS lookup, TCP handshake, and secure TLS negotiation early, saving valuable milliseconds.
+
+### Best Used For:
+Crucial external domains, such as Google Fonts, external CDNs, or API servers.
+
+### Code Example:
+```html
+<!-- Connects to external font files domain early -->
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+```
+
+---
+
+## 4. What is `dns-prefetch`?
+
+The `dns-prefetch` hint performs *only* the DNS lookup step for a domain. It consumes fewer resources than `preconnect` and acts as a safe fallback.
+
+### Best Used For:
+Non-critical third-party domains, tracking scripts, or as a fallback for browsers that do not support `preconnect`.
+
+### Code Example:
+```html
+<!-- Pre-resolves domain names for third-party scripts -->
+<link rel="dns-prefetch" href="https://example-tracker.com" />
+```
+
+---
+
+## Summary Comparison
+
+| Resource Hint | Priority | Scope | Trigger Event |
+| :--- | :--- | :--- | :--- |
+| **`preload`** | High | Current Page | Fetches asset immediately |
+| **`prefetch`** | Low | Future Pages | Fetches asset when browser is idle |
+| **`preconnect`** | High | Third-party Domains | Resolves DNS + TCP + TLS handshake |
+| **`dns-prefetch`** | Low | Third-party Domains | Resolves DNS lookup only (fallback) |
+
+---
+
+## Key Takeaways
+
+* Use **`preload`** to fetch late-discovered, critical resources (like fonts or hero images) needed for the current page immediately.
+* Use **`prefetch`** to fetch assets in the background that are likely to be used in future page navigations.
+* Use **`preconnect`** to establish early handshakes with critical external servers (like Google Fonts or CDNs).
+* Always specify the **`as`** attribute (e.g., `as="font"`) when preloading so the browser applies the correct security and caching rules.

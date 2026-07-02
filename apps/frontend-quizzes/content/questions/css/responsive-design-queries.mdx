@@ -1,0 +1,132 @@
+---
+title: "Responsive Design: Media Queries vs Container Queries"
+description: "Understand the evolution of responsive web design. Compare traditional viewport-based Media Queries with modern component-based Container Queries and learn when to use each."
+difficulty: "Medium"
+category: "css"
+tags:
+  - CSS
+  - Responsive Design
+  - Layouts
+  - Media Queries
+  - Container Queries
+keywords:
+  - container queries vs media queries
+  - css @container
+  - responsive design
+  - component driven architecture
+slug: "responsive-design-queries"
+readingTime: 7
+relatedQuestions:
+  - flexbox-vs-grid
+---
+
+# Responsive Design: Media Queries vs Container Queries
+
+With the rise of component-driven architectures (like React, Vue, and Web Components), the way we approach responsive design has evolved. A great interview question to test a candidate's knowledge of modern CSS features is:
+
+> "What are CSS Container Queries, and how do they differ from Media Queries? When would you choose one over the other?"
+
+While Media Queries have been the standard for over a decade, Container Queries solve a fundamental problem in modular UI development.
+
+---
+
+## 1. The Problem with Media Queries
+
+**Media Queries (`@media`)** allow you to apply CSS rules based on the size of the **viewport** (the browser window).
+
+```css
+.card {
+  display: flex;
+  flex-direction: column;
+}
+
+/* If the browser window is wider than 768px, layout horizontally */
+@media (min-width: 768px) {
+  .card {
+    flex-direction: row;
+  }
+}
+```
+
+### The Limitation
+This approach works perfectly for page-level layouts. However, it breaks down for **reusable components**. 
+
+Imagine you build a `<Card />` component. You want it to display horizontally if it has enough space, and vertically if it doesn't. 
+If you use `@media`, the card only cares about the *browser window* size. If you place that card inside a narrow sidebar on a wide desktop screen, it will still render horizontally (because the viewport is wide), overflowing the sidebar and breaking the layout.
+
+---
+
+## 2. Enter Container Queries
+
+**Container Queries (`@container`)** allow you to apply CSS rules based on the size of a **parent container**, rather than the viewport.
+
+This means a component can adapt its layout depending on where it is placed on the page (e.g., in a wide main content area vs. a narrow sidebar).
+
+### How to use them:
+
+First, you must define a container element by setting its `container-type`. This tells the browser to track its dimensions.
+
+```css
+.sidebar {
+  /* Tracks the inline-size (width) of this container */
+  container-type: inline-size;
+  container-name: sidebar-area; /* Optional naming */
+}
+```
+
+Next, you use the `@container` rule to style the children based on the container's width:
+
+```css
+.card {
+  display: flex;
+  flex-direction: column;
+}
+
+/* If the parent container is wider than 400px, layout horizontally */
+@container (min-width: 400px) {
+  .card {
+    flex-direction: row;
+  }
+}
+```
+
+Now, the `<Card />` is truly modular. It will arrange itself perfectly whether you drop it into a full-width grid or a narrow column.
+
+---
+
+## 3. Comparison and When to Use Which
+
+| Feature | Media Queries (`@media`) | Container Queries (`@container`) |
+| :--- | :--- | :--- |
+| **Monitors** | Viewport (Browser Window) size | Parent container size |
+| **Best used for** | Page-level macro layouts (e.g., hiding a mobile hamburger menu on desktop, adjusting main grid columns). | Component-level micro layouts (e.g., adjusting a card's internal layout based on available space). |
+| **Modularity** | Low. Components are tied to global screen sizes. | High. Components adapt to their immediate context. |
+| **Performance** | Evaluated globally by the browser. | Evaluated locally on specified containers. |
+
+---
+
+## 4. Container Query Units
+
+Just as we have viewport units (`vw`, `vh`), Container Queries introduce new units relative to the container size:
+
+- `cqw`: 1% of the container's width.
+- `cqh`: 1% of the container's height.
+- `cqi`: 1% of the container's inline size (usually width).
+- `cqb`: 1% of the container's block size (usually height).
+
+These are incredibly useful for fluid typography within a component:
+
+```css
+.card-title {
+  /* Font size will scale with the container, not the screen! */
+  font-size: clamp(1rem, 5cqi, 2rem); 
+}
+```
+
+---
+
+## Key Takeaways
+
+- **Media queries** are for **macro-layouts**: designing the skeleton of your page based on the device screen size.
+- **Container queries** are for **micro-layouts**: designing independent components that fluidly adapt to whatever container they are placed inside.
+- Container queries are essential for modern component libraries and design systems because they decouple components from the context of the overall page layout.

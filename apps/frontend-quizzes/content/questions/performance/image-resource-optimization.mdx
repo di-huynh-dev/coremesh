@@ -1,0 +1,107 @@
+---
+title: "Web Performance: Image and Resource Optimization"
+description: "Learn modern resource loading optimizations. Understand image sizing, responsive srcsets, WebP/AVIF formats, fonts preloading, defer/async script loading, and resource hints (dns-prefetch, preconnect, preload)."
+difficulty: "Medium"
+category: "performance"
+tags:
+  - Performance
+  - Resource Optimization
+  - Web Standards
+keywords:
+  - image optimization web
+  - responsive images srcset
+  - resource hints preconnect
+  - font loading performance
+  - defer async script
+  - asset compression
+slug: "image-resource-optimization"
+readingTime: 9
+relatedQuestions:
+  - critical-rendering-path
+  - core-web-vitals
+---
+
+# Web Performance: Image and Resource Optimization
+
+One of the most practical questions in frontend engineering performance interviews is:
+
+> How do you optimize web resources (images, fonts, and scripts) for faster page loading? What are resource hints, and how do async and defer scripts differ?
+
+Images and external assets constitute the largest chunk of bytes transferred over the network. Setting up efficient compression, responsive media delivery, and optimal download ordering is crucial for improving visual loading speeds.
+
+---
+
+## 1. Modern Image Optimization
+
+Delivering unoptimized images is one of the most common causes of slow page rendering.
+
+### A. Next-Gen Image Formats
+- **WebP**: Offers 25-34% smaller file sizes than JPEG at equivalent quality. Supported by almost all modern browsers.
+- **AVIF**: Offers up to 50% compression savings over JPEG. Supported in modern browsers and preferred for high-performance websites.
+
+### B. Responsive Sizing using `srcset` and `sizes`
+Instead of serving a massive desktop-sized image to small mobile viewports, you specify multiple image options using `srcset`. The browser selects the most appropriate size based on viewport width:
+
+```html
+<img 
+  src="fallback-large.jpg"
+  srcset="image-small.jpg 300w, image-medium.jpg 600w, image-large.jpg 1200w"
+  sizes="(max-width: 600px) 280px, (max-width: 1200px) 580px, 1200px"
+  alt="Optimized Banner"
+  loading="lazy"
+/>
+```
+
+- **`loading="lazy"`**: Defers loading images until they enter the browser viewport. Prevents loading offscreen images.
+
+---
+
+## 2. Resource Hints
+
+Resource hints are HTML elements that provide instructions to the browser to prepare connections or pre-load assets before they are needed.
+
+- **`dns-prefetch`**: Resolves the DNS lookup of a domain beforehand (useful for third-party scripts).
+  ```html
+  <link rel="dns-prefetch" href="https://example.com" />
+  ```
+- **`preconnect`**: Resolves the DNS lookup, TCP handshake, and TLS negotiation in advance. Recommended for critical third-party connections (e.g. CDN hosts).
+  ```html
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  ```
+- **`preload`**: Forces the browser to download a critical asset immediately because it will be needed on the current page (e.g. hero banner images, main fonts).
+  ```html
+  <link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2" crossorigin />
+  ```
+- **`prefetch`**: Downloads assets in the background that are likely to be needed on **subsequent** pages (e.g., during navigation).
+
+---
+
+## 3. Script Execution: async vs. defer
+
+How scripts are loaded can block HTML parsing, delaying page rendering.
+
+```text
+Default Script:
+HTML Parsing: ━━━━━━[Pause HTML parsing]━━━━━━━►
+Script Load/Exec:   [Download] [Execute]
+
+async Script:
+HTML Parsing: ━━━━━━[Pause for Exec]━━━━━━━━━━━►
+Script Load/Exec:   [Download]      [Execute] (Runs immediately after download)
+
+defer Script:
+HTML Parsing: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━► (No pauses!)
+Script Load/Exec:   [Download]                 [Execute] (Runs after HTML parsed)
+```
+
+- **`async`**: The script is downloaded asynchronously and executed **immediately** once it finishes downloading, which blocks HTML parsing. Order of execution is not guaranteed. Use for independent, non-critical scripts (e.g. analytics tracking, ads).
+- **`defer`**: The script is downloaded asynchronously but executed **only after** the HTML document parsing is fully completed. Order of execution is preserved. Use for application bundles that depend on DOM elements.
+
+---
+
+## Key Takeaways
+
+- **Lazy Load Images**: Use `loading="lazy"` to defer loading offscreen media by default.
+- **Async vs Defer**: Always prefer `defer` over default script loading to prevent blocking the HTML parser.
+- **Preconnect CDN**: Use preconnect on critical third-party domains to save valuable connection establishment times.
+- **Self-Host Fonts**: Self-host web fonts to eliminate third-party connections and preload them to prevent FOUT layout shifts.

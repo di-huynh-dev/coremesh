@@ -1,0 +1,148 @@
+---
+title: "CSS Specificity: How Styles Are Applied"
+description: "Master CSS Specificity rules. Learn how the browser calculates specificity scores, inline styles, !important, and how cascade rules determine which styles win."
+difficulty: "Easy"
+category: "css"
+tags:
+  - CSS
+  - Specificity
+  - Cascade
+  - Selectors
+keywords:
+  - css specificity hierarchy
+  - how css specificity is calculated
+  - inline styles vs important
+  - css selectors precedence
+  - css specificity rules
+slug: "css-specificity"
+readingTime: 8
+relatedQuestions:
+  - css-positioning
+  - flexbox-vs-grid
+---
+
+# CSS Specificity: How Styles Are Applied
+
+One of the most foundational CSS interview questions is:
+
+> What is CSS Specificity, and how does the browser determine which styles win when multiple rules apply to the same element?
+
+Most frontend developers answer:
+
+```text
+IDs are more specific than classes, which are more specific than elements.
+```
+
+While correct, senior interviews require you to explain:
+
+- The exact specificity calculation formula (the three-column metric).
+- The difference between Cascade, Specificity, and Source Order.
+- The specificity behavior of `:not()`, `:is()`, and `:where()`.
+- How `!important` interacts with the cascade.
+
+Let's break down CSS Specificity from first principles.
+
+---
+
+## 1. Cascade vs. Specificity vs. Source Order
+
+When the browser parses stylesheet styles and attaches them to HTML nodes, it resolves style conflicts using the **CSS Cascade** in the following hierarchy:
+
+1. **Importance**: User agent declarations, user styles, normal author styles, and then `!important` author/user styles.
+2. **Specificity**: If multiple rules are defined with different selector styles, the one with the highest specificity score wins.
+3. **Source Order**: If importance and specificity scores are identical, the rule declared **last** in the stylesheet takes precedence.
+
+---
+
+## 2. Calculating the Specificity Score
+
+Specificity is computed as a three-column score: **(A, B, C)**.
+
+```text
+    ┌───────────────────────┐
+    │  SPECIFICITY METRIC   │
+    │  (  A  ,  B  ,  C  )  │
+    └───────────────────────┘
+       │     │     │
+       │     │     └─ Element & Pseudo-element Selectors (e.g. div, ::before)
+       │     │
+       │     └────── Class, Attribute & Pseudo-class Selectors (e.g. .card, [type="text"], :hover)
+       │
+       └──────────── ID Selectors (e.g. #header)
+```
+
+### The Three Columns:
+- **Column A (ID Selectors)**: Counts all ID selectors (e.g., `#main-nav`).
+- **Column B (Class, Attribute & Pseudo-class Selectors)**: Counts class names (e.g., `.btn`), attribute selectors (e.g., `[disabled]`), and pseudo-classes (e.g., `:hover`, `:first-child`).
+- **Column C (Element & Pseudo-element Selectors)**: Counts raw HTML element tags (e.g., `section`, `p`) and pseudo-elements (e.g., `::before`, `::placeholder`).
+
+> [!NOTE]
+> Inline styles (e.g., `<div style="color: red;">`) sit outside this metric and override any stylesheet selector (acting effectively as a fourth column at the top of the hierarchy).
+
+---
+
+## 3. Selector Score Comparison
+
+Let's look at how selectors compute their specificity:
+
+| Selector | IDs (A) | Classes (B) | Elements (C) | Final Score |
+| :--- | :--- | :--- | :--- | :--- |
+| `*` (Universal) | 0 | 0 | 0 | (0, 0, 0) |
+| `div` | 0 | 0 | 1 | (0, 0, 1) |
+| `div p` | 0 | 0 | 2 | (0, 0, 2) |
+| `.card` | 0 | 1 | 0 | (0, 1, 0) |
+| `.card span` | 0 | 1 | 1 | (0, 1, 1) |
+| `.card:hover span` | 0 | 2 | 1 | (0, 2, 1) |
+| `#header` | 1 | 0 | 0 | (1, 0, 0) |
+| `#header .active a` | 1 | 1 | 1 | (1, 1, 1) |
+| `#header #nav .active` | 2 | 1 | 0 | (2, 1, 0) |
+
+Scores are compared column-by-column, starting from left to right:
+- `(1, 0, 0)` is larger than `(0, 12, 5)` because the first column (IDs) takes absolute precedence over classes.
+- Specificity does not "carry over" to the next column. No number of element selectors can override a class.
+
+---
+
+## 4. Special Pseudo-classes & Rules
+
+### A. The Universal Selector (`*`) and Combinators
+The universal selector `*`, child combinators (`>`), sibling combinators (`+`, `~`), and the parent selector (`&` by itself in nesting) have **zero** specificity contribution `(0, 0, 0)`.
+
+### B. `:not()`, `:is()`, and `:has()`
+The pseudo-class wrappers themselves have no specificity score. Instead, they take the specificity of the **most specific selector** passed in their arguments.
+```css
+/* Specificity is (0, 1, 1) because of .active and div */
+div:not(.active) { color: red; } 
+```
+
+### C. `:where()` vs. `:is()`
+- `:is()` takes the specificity of its most specific argument.
+- `:where()` has **zero specificity** `(0, 0, 0)` regardless of what is passed inside. This is highly useful for library developers who want to write default styles that users can override easily.
+
+---
+
+## 5. The Power of `!important`
+
+When `!important` is attached to a declaration, it overrides normal specificity and inline styles.
+
+```css
+p {
+  color: blue !important; /* This wins */
+}
+#main p {
+  color: red;
+}
+```
+
+- If two competing declarations have `!important`, the browser falls back to selector specificity to resolve the tie.
+- **Warning**: Using `!important` breaks the natural flow of the cascade. Avoid it except for utility-first override classes (e.g. `.hidden { display: none !important; }`).
+
+---
+
+## Key Takeaways
+
+- **Cascade Resolvers**: Cascade determines style application based on Importance, Specificity, and Source Order.
+- **Three Columns**: Specificity scores are counted as `(ID, Class/Pseudo-class/Attribute, Element/Pseudo-element)`.
+- **Inline Styles Override**: Inline styles defeat any CSS selector.
+- **Where has zero score**: Use `:where()` to declare default fallback styles without adding to specificity.
+- **Source Order is the tie-breaker**: When selector specificities are identical, the style defined latest in code wins.

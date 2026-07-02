@@ -1,0 +1,78 @@
+---
+title: "Web Security: Authentication, JWTs, and Session Management"
+description: "Compare JWTs vs. Session Cookies for authentication. Learn about secure token storage, CSRF risks, token revocation, XSS vectors, and cookie flags (HttpOnly, Secure, SameSite)."
+difficulty: "Medium"
+category: "security"
+tags:
+  - Security
+  - Authentication
+  - JWT
+keywords:
+  - jwt vs session cookies
+  - secure cookie flags httponly
+  - token storage xss
+  - same-site cookie security
+  - json web token authentication
+slug: "auth-session-management"
+readingTime: 9
+relatedQuestions:
+  - xss-csrf-mitigation
+  - sql-injection-mitigation
+---
+
+# Web Security: Authentication, JWTs, and Session Management
+
+One of the most frequent architectural security questions in frontend and full-stack interviews is:
+
+> How do JWT-based authentication and Session Cookie-based authentication compare? What are the tradeoffs in storage, XSS/CSRF vulnerabilities, and token revocation?
+
+Managing user authentication sessions safely requires choosing between stateful (session cookies) and stateless (JWT tokens) models, and setting strict browser cookies configs to defend against data hijacking.
+
+---
+
+## 1. Stateless (JWT) vs. Stateful (Session Cookies)
+
+| Feature | Session Cookies (Stateful) | JWT Tokens (Stateless) |
+| :--- | :--- | :--- |
+| **Server Storage** | Server stores session data in database or cache (e.g. Redis). | Server stores nothing. Token contains signed payload. |
+| **Scalability** | Higher database load; requires synchronized sessions across servers. | High scalability; easy to verify signature across edge servers. |
+| **Token Revocation**| Immediate (simply delete session record from server database). | Complex (requires token blocklists or short lifespans). |
+| **Size** | Small (session ID string only). | Large (base64 encoded JSON string with header/payload/signature). |
+
+---
+
+## 2. Secure Token Storage Options
+
+If using JWTs on the client browser, where you store them determines your vulnerability profile:
+
+### A. localStorage / sessionStorage
+- **Risk**: Highly vulnerable to **XSS** (Cross-Site Scripting). If an attacker runs a malicious inline script on your page, they can access `localStorage.getItem('token')` immediately and hijack the user session.
+
+### B. In-Memory Variable (with Refresh Token in Cookie)
+- **Design**: Store the access token in memory (React state). Keep it short-lived. Store the refresh token in a secure, `HttpOnly` cookie.
+- **Benefits**: Protects the access token from XSS extraction, while retaining seamless token refreshing.
+
+---
+
+## 3. Hardening Cookie Flags
+
+When storing session IDs or authentication tokens in browser cookies, always apply the following security flags in HTTP headers:
+
+- **`HttpOnly`**: Blocks client-side JavaScript from accessing the cookie via `document.cookie`. This mitigates token theft via XSS.
+- **`Secure`**: Enforces that the cookie is **only transmitted over HTTPS** connections, defending against man-in-the-middle network interception.
+- **`SameSite`**: Restricts whether cookies are sent with cross-site requests, mitigating **CSRF** (Cross-Site Request Forgery) attacks.
+  - `SameSite=Strict`: Cookie is only sent if the site matches the URL currently in the address bar.
+  - `SameSite=Lax`: (Default in modern browsers) Cookie is sent during top-level navigations (e.g. following a link to your site), but blocked on cross-site sub-resource requests (like loading images/iframes).
+
+```http
+Set-Cookie: sessionId=abc123xyz; Secure; HttpOnly; SameSite=Lax; Path=/;
+```
+
+---
+
+## Key Takeaways
+
+- **HttpOnly is mandatory**: Never store sensitive session IDs or authentication keys in cookies accessible to client JavaScript.
+- **CSRF Defense**: Combine `SameSite=Lax` with anti-CSRF tokens for state-changing forms to protect against forge request attacks.
+- **Short-Lived JWTs**: If using stateless tokens, keep access tokens short-lived (10-15 minutes) to minimize the impact of key leaks.
+- **Token Blacklisting**: Implement token revocation checklists on the server using Redis or databases to handle immediate user logout requests.

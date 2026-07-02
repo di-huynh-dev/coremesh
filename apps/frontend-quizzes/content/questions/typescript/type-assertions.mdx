@@ -1,0 +1,105 @@
+---
+title: "TypeScript: Type Assertions and Type Casting"
+description: "Master TypeScript type assertions. Learn about the 'as' keyword, the angle-bracket syntax, double assertions, const assertions, and when they differ from type casting."
+difficulty: "Easy"
+category: "typescript"
+tags:
+  - TypeScript
+  - Types
+  - Type Assertions
+keywords:
+  - typescript type assertions
+  - as keyword vs angle bracket
+  - double assertion typescript
+  - const assertion typescript
+  - typescript type casting
+slug: "type-assertions"
+readingTime: 6
+relatedQuestions:
+  - any-vs-unknown
+  - interface-vs-type
+---
+
+# TypeScript: Type Assertions and Type Casting
+
+One of the common interview questions asked to test intermediate developers' compiler knowledge is:
+
+> What is a Type Assertion in TypeScript, and how does it differ from Type Casting in JavaScript or other languages?
+
+Type assertions tell the TypeScript compiler: *"I know more about the shape of this value than you do. Treat it as this specific type."* It is purely a compile-time construct and has no runtime performance cost.
+
+---
+
+## 1. Type Assertion vs. Type Casting
+
+It is vital to understand that TypeScript **does not** perform type casting:
+
+- **Type Casting**: Modifies the actual structure of data at runtime (e.g. converting a string `"42"` to a number `42` in compiled code).
+- **Type Assertion**: Does not change runtime values. It only tells the TypeScript compiler how to type-check the value. It disappears completely once compiled to JavaScript.
+
+```text
+TypeScript: const value = data as string;
+                          │
+                          ▼ Compile
+JavaScript: const value = data;  (No casting or checks added!)
+```
+
+---
+
+## 2. Assertion Syntaxes
+
+There are two syntaxes for type assertions in TypeScript:
+
+### A. The `as` Keyword (Recommended)
+This is the standard syntax used in TSX/React projects.
+```typescript
+const myElement = document.getElementById("main-card") as HTMLDivElement;
+```
+
+### B. Angle-Bracket Syntax (`<Type>`)
+This syntax is identical in behavior but cannot be used in `.tsx` files because it conflicts with JSX tags.
+```typescript
+const myElement = <HTMLDivElement>document.getElementById("main-card");
+```
+
+---
+
+## 3. The Rules of Assertions
+
+TypeScript only allows assertions that are "sufficiently overlap" with the original type. You cannot make assertions that are completely contradictory:
+
+```typescript
+const value = "hello";
+const numValue = value as number; // ❌ Compile Error: Conversion of type 'string' to type 'number' may be a mistake.
+```
+
+### Double Assertions
+If you absolutely must force a contradictory assertion (which is generally dangerous and code-smell), you can perform a double assertion by converting to `any` or `unknown` first:
+
+```typescript
+const numValue = (value as unknown) as number; // ✅ Allowed by compiler, but risky!
+```
+
+---
+
+## 4. Const Assertions (`as const`)
+
+Const assertions are a special type of assertion added in TypeScript 3.4. It tells the compiler to:
+- Prevent literal types from being widened (e.g., `"hello"` stays `"hello"`, not widened to `string`).
+- Make all object properties `readonly`.
+- Convert array literals into `readonly` tuples.
+
+```typescript
+const colors = ["red", "blue"] as const;
+// Type is: readonly ["red", "blue"] (Tuple)
+
+colors[0] = "green"; // ❌ Compile Error: Cannot assign to '0' because it is a read-only property.
+```
+
+---
+
+## Key Takeaways
+
+- **No Runtime Impact**: Type assertions are removed during compilation; they do not validate or modify runtime values.
+- **as vs Angle-Bracket**: Always prefer `as` to remain compatible with TSX files.
+- **as const**: Use const assertions when you want to define configuration values, enums, or strict static lookup keys.

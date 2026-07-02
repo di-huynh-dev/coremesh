@@ -1,0 +1,87 @@
+---
+title: "Next.js App Router: RSCs vs. Client Components"
+description: "Understand the Next.js App Router architecture. Compare React Server Components (RSC) vs. Client Components, learn how hydration works, and explore streaming HTML and Suspense boundaries."
+difficulty: "Hard"
+category: "nextjs"
+tags:
+  - Next.js
+  - React Server Components
+  - Hydration
+  - Performance
+keywords:
+  - nextjs app router
+  - rsc vs client component
+  - nextjs server component interview
+  - nextjs streaming html suspense
+  - hydration nextjs
+slug: "app-router-rsc"
+readingTime: 7
+relatedQuestions:
+  - nextjs-rendering-strategies
+---
+
+## Next.js App Router: RSCs vs. Client Components
+
+A central architectural question for modern frontend positions is:
+
+> How does the Next.js App Router differ from the older Pages Router, and what is the difference between React Server Components (RSC) and Client Components?
+
+To answer this, you must cover Server Components, Client Components, hydration boundaries, and streaming rendering.
+
+---
+
+## 1. RSC vs. Client Components: The Paradigm Shift
+
+In Next.js, components are divided into two categories by default depending on where their code runs:
+
+### A. React Server Components (RSC)
+- **Execution**: They run **only on the server**. Their code is executed to generate intermediate virtual DOM structures (RSC Payload) and rendered HTML.
+- **Client Bundle**: None of their code is bundled or shipped to the browser.
+- **Data Access**: They can query databases, call internal microservices directly, and read server resources because they have direct access to backend resources.
+- **Restrictions**: They cannot use client-only features like React state hooks (`useState`), lifecycle hooks (`useEffect`), or browser-only APIs (`window`, `document`, `localStorage`).
+
+### B. Client Components
+- **Marker**: Declared using the `"use client"` directive at the top of the file.
+- **Execution**: They run on the server during the initial HTML prerender phase, and then fully run in the browser.
+- **Client Bundle**: Their code *is* shipped to the browser.
+- **Capabilities**: They have access to all React state hooks, custom browser events, ref bindings, and browser APIs.
+
+---
+
+## 2. Component Integration Matrix
+
+When building an application, you nest Client Components inside Server Components and vice versa. However, there is a key constraint: **You cannot import Server Components directly into a Client Component.**
+
+```text
+❌ INCORRECT (Direct import):
+"use client"
+import MyServerComponent from "./MyServerComponent"; // Will fail or turn ServerComponent into a Client Component
+
+✅ CORRECT (Passing as children / props):
+// ParentServerComponent.tsx (RSC)
+import ClientComponent from "./ClientComponent";
+import ChildServerComponent from "./ChildServerComponent";
+
+export default function ParentServerComponent() {
+  return (
+    <ClientComponent>
+      <ChildServerComponent /> {/* Passed as children prop, runs on the server */}
+    </ClientComponent>
+  );
+}
+```
+
+---
+
+## 3. Hydration & Streaming with Suspense
+
+- **Hydration**: The process where client-side JavaScript runs in the browser to bind event listeners to the static HTML delivered by the server, turning it into an interactive web app.
+- **Streaming HTML**: With the App Router, Next.js can split the page's HTML into smaller chunks and stream them to the client as they are generated. Slow-loading server components (e.g., waiting for slow API databases) can be wrapped in `<Suspense>` boundaries. The server sends placeholder HTML first, and then streams the actual content once the server finishes fetching data.
+
+---
+
+## Key Takeaways
+
+- **Server Components**: By default, all components in the Next.js App Router are React Server Components (RSC) to maximize speed and reduce bundle size.
+- **Client Directive**: Use `"use client"` only when you need client state, interactivity, or browser APIs.
+- **Leaf Components**: Keep Client Components at the leaves of your component tree to minimize the size of the JavaScript bundle shipped to the browser.

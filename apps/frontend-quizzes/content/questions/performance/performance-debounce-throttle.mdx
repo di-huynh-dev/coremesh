@@ -1,0 +1,117 @@
+---
+title: "Web Performance: Debounce vs Throttle"
+description: "Understand the differences between debouncing and throttling, how to implement them, and how they improve frontend performance."
+difficulty: "Medium"
+category: "performance"
+tags:
+  - Web Performance
+  - JavaScript
+  - Events
+keywords:
+  - debounce vs throttle performance
+  - javascript debounce implementation
+  - javascript throttle code example
+  - scroll event rate limiting
+slug: "performance-debounce-throttle"
+readingTime: 6
+relatedQuestions:
+  - core-web-vitals
+---
+
+# Web Performance: Debounce vs Throttle
+
+When users interact with web pages, they trigger events like window scrolling, resizing, dragging, or typing. These events fire at a very high frequency (scrolling can fire dozens of times per second). 
+
+If you bind a heavy computing task—like calling a search API or updating DOM nodes—directly to these events, the browser main thread will struggle, causing lags and high CPU usage.
+
+**Debouncing** and **Throttling** are rate-limiting techniques used to control how often a function executes over time.
+
+---
+
+## 1. What is Debouncing?
+
+**Debouncing** guarantees that a function will not be called until a certain amount of time (e.g., 300ms) has passed *since the last time it was triggered*. 
+
+In other words: it groups multiple consecutive calls into a single execution at the end of the activity burst.
+
+### How it works:
+Every time the event is triggered, we clear the previous timer and start a new one. The function only runs if the timer completes.
+
+### Code Implementation (Vanilla JS):
+```js
+function debounce(func, delay) {
+  let timerId;
+
+  return function (...args) {
+    // Clear the previous timer if it's still running
+    clearTimeout(timerId);
+
+    // Start a new timer
+    timerId = setTimeout(() => {
+      func.apply(this, args);
+    }, delay);
+  };
+}
+```
+
+### Best Used For:
+* **Search Autocomplete**: Waiting for the user to pause typing before hitting the backend search API, reducing server load.
+* **Auto-Save Drafts**: Saving a text area draft 2 seconds after the user stops typing.
+* **Window Resize**: Re-calculating layout dimensions after the user finishes resizing their window.
+
+---
+
+## 2. What is Throttling?
+
+**Throttling** guarantees that a function is executed *at most once* in a defined time window (e.g., once every 200ms), regardless of how many times the user triggers the event.
+
+In other words: it enforces a maximum rate of execution.
+
+### How it works:
+When the event is triggered, we check if the throttle cooldown is active. If it is inactive, we run the function immediately and lock it. Any calls during the lock period are ignored.
+
+### Code Implementation (Vanilla JS):
+```js
+function throttle(func, limit) {
+  let inThrottle = false;
+
+  return function (...args) {
+    if (!inThrottle) {
+      // Execute the function
+      func.apply(this, args);
+      // Activate the lock
+      inThrottle = true;
+      
+      // Release the lock after the limit duration
+      setTimeout(() => {
+        inThrottle = false;
+      }, limit);
+    }
+  };
+}
+```
+
+### Best Used For:
+* **Infinite Scroll**: Checking if the user has scrolled near the bottom of the page once every 200ms, instead of checks on every single pixel movement.
+* **Game loops / Drag-and-drop**: Updating positions of items on screen at regular intervals.
+* **API rate-limiting**: Throttling click event buttons to prevent double-form submissions.
+
+---
+
+## Comparison Summary
+
+| Feature | Debounce | Throttle |
+| :--- | :--- | :--- |
+| **Execution Timing** | Executes *after* the activity stops | Executes *during* the activity at regular intervals |
+| **Core Concept** | "Wait until you've stopped clicking/typing" | "Only run once every X milliseconds" |
+| **Ideal for** | Typings, window resizing | Scroll events, drag-and-drop actions |
+| **API load** | Lowest (only one final request) | Controlled (predictable interval requests) |
+
+---
+
+## Key Takeaways
+
+* Both debouncing and throttling optimize performance by reducing high-frequency function executions.
+* **Debouncing** delays execution until a quiet period occurs (e.g., after typing stops).
+* **Throttling** limits execution to a steady, predictable interval (e.g., once every 200ms while scrolling).
+* Use debounce for inputs and resize events; use throttle for scroll trackers and drag-and-drop actions.

@@ -1,0 +1,123 @@
+---
+title: "Web Performance: Core Web Vitals (LCP, FID, CLS, INP)"
+description: "Master Google's Core Web Vitals metrics. Learn how LCP, FID, CLS, and the new INP are calculated, what causes layout shifts, and practical optimization strategies."
+difficulty: "Medium"
+category: "performance"
+tags:
+  - Performance
+  - Core Web Vitals
+  - Optimization
+keywords:
+  - core web vitals tutorial
+  - lcp loading optimization
+  - fid and inp explained
+  - cls layout shifts
+  - frontend performance metrics
+slug: "core-web-vitals"
+readingTime: 10
+relatedQuestions:
+  - critical-rendering-path
+  - code-splitting-lazy-loading
+---
+
+# Web Performance: Core Web Vitals (LCP, FID, CLS, INP)
+
+One of the most common performance questions in modern frontend interviews is:
+
+> Explain the Core Web Vitals. What are the thresholds for LCP, CLS, and INP, and what techniques do you use to optimize each?
+
+Core Web Vitals are a set of three user-centered performance metrics established by Google to quantify the user experience on the web. They measure **loading speed**, **interactivity**, and **visual stability**.
+
+---
+
+## 1. Largest Contentful Paint (LCP)
+
+LCP measures **loading performance**. Specifically, it tracks when the largest visual block (an image, video, or block-level text element) finishes rendering on the screen.
+
+```text
+       LCP Thresholds
+       ┌────────────────────────┐
+       │ Good: ≤ 2.5s           │
+       │ Needs Improvement: < 4s│
+       │ Poor: ≥ 4.0s           │
+       └────────────────────────┘
+```
+
+### Common Causes of Poor LCP:
+- Slow server response times (TTFB).
+- Render-blocking JavaScript and CSS in the document head.
+- Slow-loading media assets (non-optimized images).
+
+### LCP Optimization Checklist:
+1. **Optimize Server**: Use CDN caches, database indexing, and edge rendering.
+2. **Eliminate Render-Blocking assets**: Defer or inline critical styles and scripts.
+3. **Preload LCP Images**: Use `<link rel="preload">` on main banner images to load them immediately before CSS parsing ends.
+
+---
+
+## 2. Interaction to Next Paint (INP)
+
+INP measures **interactivity** (replacing the older First Input Delay or FID in March 2024). It evaluates a page's overall responsiveness to user interactions (clicks, taps, keystrokes) throughout the entire lifespan of the page visit.
+
+```text
+       INP Thresholds
+       ┌────────────────────────┐
+       │ Good: ≤ 200ms          │
+       │ Needs Improvement: <500│
+       │ Poor: ≥ 500ms          │
+       └────────────────────────┘
+```
+
+### Common Causes of Poor INP:
+- Long-running JavaScript tasks blocking the main thread (blocking input handlers).
+- Large, complex DOM sizes triggering expensive layout recalculations.
+- Inefficient component updates (React re-rendering large UI trees).
+
+### INP Optimization Checklist:
+1. **Break up Long Tasks**: Use `setTimeout()` or `scheduler.yield()` to yield control back to the browser.
+2. **Optimize Event Handlers**: Execute calculations asynchronously and use transitions.
+3. **Avoid Complex Selector Styles**: Keep CSS layout calculations simple.
+
+---
+
+## 3. Cumulative Layout Shift (CLS)
+
+CLS measures **visual stability**. It quantifies how often users experience unexpected layout shifts as elements (like advertisements, dynamic content, or images without dimensions) load and reposition.
+
+```text
+       CLS Thresholds
+       ┌────────────────────────┐
+       │ Good: ≤ 0.1            │
+       │ Needs Improvement: <.25│
+       │ Poor: ≥ 0.25           │
+       └────────────────────────┘
+```
+
+### Common Causes of Poor CLS:
+- Images or video elements without explicit width and height dimensions.
+- Advertisements, embeds, or iframes inserted dynamically without placeholder space.
+- Web fonts loading slowly, causing Flash of Invisible Text (FOIT) or Flash of Unstyled Text (FOUT).
+
+### CLS Optimization Checklist:
+1. **Always Set Dimensions**: Define `width` and `height` attributes (or CSS aspect-ratio) on all images.
+2. **Reserve Slots for Ads**: Wrap dynamic elements in fixed-height placeholder skeletons.
+3. **Font Display swap**: Use `font-display: swap` to fallback to system fonts immediately while custom fonts load.
+
+---
+
+## Key Metrics Summary
+
+| Metric | Short Name | Target Performance | Focus Area |
+| :--- | :--- | :--- | :--- |
+| **Largest Contentful Paint** | **LCP** | &le; 2.5 seconds | Visual Loading Speed |
+| **Interaction to Next Paint** | **INP** | &le; 200 milliseconds | Input Responsiveness |
+| **Cumulative Layout Shift** | **CLS** | &le; 0.1 score | Layout Stability |
+
+---
+
+## Key Takeaways
+
+- **User-Centric**: Core Web Vitals evaluate performance from the user's perspective, not just network completion times.
+- **Preload Critical Assets**: Give the browser early hints to load hero assets to improve LCP.
+- **Yield Main Thread**: Use modern scheduling patterns to break JavaScript processing down to keep the UI interactive.
+- **Reserve Layout Space**: Set layout placeholders to completely eliminate layout shifts during dynamic content injection.

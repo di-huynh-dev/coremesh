@@ -1,0 +1,115 @@
+---
+title: "Next.js: Routing, Layouts, and Dynamic Segments"
+description: "Master Next.js App Router routing mechanisms. Learn about file-based routing, nested layouts, template components, route groups, and handling dynamic parameters."
+difficulty: "Medium"
+category: "nextjs"
+tags:
+  - Next.js
+  - Routing
+  - App Router
+keywords:
+  - next.js routing tutorial
+  - nested layouts nextjs
+  - dynamic segments nextjs
+  - route groups nextjs
+  - nextjs app router routing
+slug: "nextjs-routing-dynamic-segments"
+readingTime: 8
+relatedQuestions:
+  - app-router-rsc
+  - nextjs-rendering-strategies
+---
+
+# Next.js: Routing, Layouts, and Dynamic Segments
+
+One of the most common Next.js interview questions is:
+
+> Explain the routing system of the Next.js App Router. How do Layouts, Templates, and Route Groups differ, and how do you handle dynamic parameters?
+
+The App Router introduced file-system based routing built on React Server Components. Understanding page layouts, navigation hierarchies, and rendering states is essential for building scalable applications.
+
+---
+
+## 1. App Router File Conventions
+
+Routes are defined by folders. A route is a nested folder structure leading to a leaf folder containing a special page file:
+
+- **`page.tsx`**: The unique UI of a route, making the path publicly accessible.
+- **`layout.tsx`**: Shared UI for a segment and its children. Layouts preserve state, remain interactive, and **do not re-render** when navigating between siblings.
+- **`template.tsx`**: Similar to layouts but creates a **new instance** for each child on navigation. State is reset, and effects run on every route change.
+- **`loading.tsx`**: An automatically wrapped React Suspense fallback UI for loading states.
+- **`error.tsx`**: An automatically wrapped React Error Boundary UI to catch runtime routing or data fetching crashes.
+
+```text
+app/
+ ├── layout.tsx         (Root Layout)
+ ├── page.tsx           (Homepage: /)
+ └── dashboard/
+      ├── layout.tsx    (Dashboard Layout - wraps children)
+      ├── loading.tsx   (Skeleton/Spinner UI)
+      └── page.tsx      (Dashboard Page: /dashboard)
+```
+
+---
+
+## 2. Layouts vs. Templates
+
+Interviewers frequently ask when to use `template.tsx` instead of `layout.tsx`:
+
+| Feature | `layout.tsx` | `template.tsx` |
+| :--- | :--- | :--- |
+| **Component Instance** | Preserved across navigation | Recreated on navigation |
+| **React State** | Maintained | Reset |
+| **useEffect Hooks** | Do not re-fire on sibling navigate | Re-fire on every navigation |
+| **Typical Use Cases** | Persistent headers, sidebars, context providers | Page entry animations, analytics pageview tracking, forms reset |
+
+---
+
+## 3. Dynamic Segments & Dynamic Routes
+
+When you don't know the segment names beforehand (e.g. blog posts, product IDs), you create a dynamic folder wrapped in square brackets: `[slug]`.
+
+### A. Simple Dynamic Route (`app/blog/[id]/page.tsx`)
+Resolves to `/blog/123`, `/blog/hello-world`, etc. The parameter is passed to the page component:
+
+```typescript
+type Props = {
+  params: Promise<{ id: string }>;
+};
+
+export default async function BlogPost({ params }: Props) {
+  const { id } = await params;
+  return <h1>Blog Post ID: {id}</h1>;
+}
+```
+
+### B. Catch-All Segments (`app/shop/[...slug]/page.tsx`)
+Matches `/shop/clothes`, `/shop/clothes/shirts/blue`. The `slug` param is passed as an array: `['clothes', 'shirts', 'blue']`.
+
+### C. Optional Catch-All (`app/shop/[[...slug]]/page.tsx`)
+Matches all routes above, plus `/shop` (without dynamic segments). The array parameter will be undefined on `/shop`.
+
+---
+
+## 4. Route Groups `(groupname)`
+
+Folder names wrapped in parentheses represent a **Route Group**: `(marketing)`, `(auth)`.
+- Route groups are **omitted from the URL path** structure.
+- They are used to organize files logically or to define nested layouts for specific groups of sub-pages without adding segment names to the paths.
+
+```text
+app/
+ ├── (auth)/
+ │    ├── layout.tsx    (Auth Layout: e.g. login cards)
+ │    ├── login/page.tsx   (Resolves to /login)
+ │    └── register/page.tsx(Resolves to /register)
+```
+
+---
+
+## Key Takeaways
+
+- **File-based Routing**: App Router uses nested folders to map URLs; special file names declare UI behaviors.
+- **Layout Persistence**: Layouts do not re-render during nested navigation, preserving client state like scrolling position.
+- **Template Re-mounts**: Use templates when you need custom CSS animations or page view analytics tracking triggered on every single route change.
+- **Dynamic Segment destruct**: Always define param models correctly and resolve dynamic params asynchronously if using newer Next.js patterns.

@@ -1,0 +1,119 @@
+---
+title: "TypeScript Conditional Types and the infer Keyword"
+description: "Learn how conditional types work in TypeScript and how to extract types dynamically using the infer keyword."
+difficulty: "Hard"
+category: "typescript"
+tags:
+  - TypeScript
+  - Advanced Types
+  - Type System
+keywords:
+  - typescript conditional types
+  - infer keyword typescript
+  - ReturnType type implementation
+  - typescript extract promise type
+slug: "typescript-infer-keyword"
+readingTime: 6
+relatedQuestions:
+  - typescript-generics-utility-types
+---
+
+# TypeScript Conditional Types and the infer Keyword
+
+In advanced TypeScript codebases, you often need to create types that depend on other types. TypeScript provides **Conditional Types** to write logic in the type system, and the **`infer`** keyword to extract inner types from generic parameters dynamically.
+
+---
+
+## 1. What are Conditional Types?
+
+Conditional types behave like ternary operators (`condition ? trueExpression : falseExpression`) but for types.
+
+```ts
+type IsString<T> = T extends string ? true : false;
+
+type A = IsString<string>;  // true
+type B = IsString<number>;  // false
+```
+
+The syntax checks if type `T` is assignable to (`extends`) type `string`. If yes, the result type is `true`, otherwise `false`.
+
+---
+
+## 2. Introducing the `infer` Keyword
+
+The `infer` keyword can only be used inside the `extends` clause of a conditional type. It allows you to introduce a new type variable (a placeholder) that TypeScript must automatically guess (infer) during compile time.
+
+Think of it as pattern matching for types.
+
+### Syntax:
+```ts
+type MyConditionalType<T> = T extends SomePattern<infer U> ? U : FallbackType;
+```
+
+---
+
+## 3. Practical Use Cases
+
+### Case A: Extracting the Return Type of a Function
+TypeScript's built-in `ReturnType<T>` utility type uses `infer` to extract what a function returns. 
+
+Here is how to implement it yourself:
+
+```ts
+type GetReturnType<T> = T extends (...args: any[]) => infer R ? R : never;
+
+// Example function
+const getUser = () => ({ id: 1, name: "Alice" });
+
+// Extract return type
+type User = GetReturnType<typeof getUser>; 
+// Result: { id: number; name: string }
+```
+
+**How it works:**
+- `T extends (...args: any[]) => infer R` checks if `T` matches a function signature.
+- If it matches, TypeScript matches the return type of that function to our placeholder variable `R`.
+- The type returns the resolved `R`. If it is not a function, it returns `never`.
+
+---
+
+### Case B: Unwrapping Array Elements
+Suppose you have an array type, and you want to extract the type of the elements inside that array.
+
+```ts
+type UnboxArray<T> = T extends (infer Element)[] ? Element : T;
+
+type StringList = string[];
+type SingleString = UnboxArray<StringList>; // string
+
+type NormalNumber = number;
+type SingleNumber = UnboxArray<NormalNumber>; // number (fallback)
+```
+
+**How it works:**
+- `T extends (infer Element)[]` matches array types.
+- If true, it extracts the type of the item inside the array (`Element`) and returns it.
+- If it is a normal non-array type, it defaults to returning `T` itself.
+
+---
+
+### Case C: Unwrapping Promises
+If you have a Promise, how do you extract the type it resolves to?
+
+```ts
+type UnboxPromise<T> = T extends Promise<infer Value> ? Value : T;
+
+type PromiseString = Promise<string>;
+type PlainText = UnboxPromise<PromiseString>; // string
+```
+
+This is the core concept behind TypeScript's built-in `Awaited<T>` utility type, which recursively unwraps nested Promises.
+
+---
+
+## Key Takeaways
+
+* **Conditional types** allow writing `if/else` checks within the type system using `T extends U ? X : Y`.
+* The **`infer`** keyword is a powerful pattern-matching tool that declares a generic variable on-the-fly inside a condition.
+* `infer` can only be placed inside the `extends` clause of a conditional type.
+* Common utilities like `ReturnType`, `Parameters`, and `Awaited` are built entirely on top of the `infer` keyword.

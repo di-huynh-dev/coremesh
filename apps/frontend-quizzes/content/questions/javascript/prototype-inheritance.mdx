@@ -1,0 +1,708 @@
+---
+title: "JavaScript Prototype Inheritance Interview Questions"
+description: "Master JavaScript prototype inheritance and prototype chain interview questions with practical examples. Learn how inheritance works under the hood, how objects share methods, and how JavaScript's prototype chain powers object-oriented programming."
+
+difficulty: "Hard"
+
+category: "javascript"
+
+tags:
+  - JavaScript
+  - Prototype
+  - Inheritance
+  - OOP
+  - Prototype Chain
+
+keywords:
+  - javascript prototype inheritance interview questions
+  - javascript prototype chain explained
+  - object inheritance javascript
+  - javascript prototypes interview questions
+  - prototype vs class javascript
+  - object create javascript
+  - javascript inheritance under the hood
+  - frontend interview questions
+
+slug: "javascript-prototype-inheritance"
+
+readingTime: 14
+
+relatedQuestions:
+  - javascript-this-keyword
+  - call-apply-bind
+  - execution-context
+  - javascript-classes
+---
+
+# JavaScript Prototype Inheritance Interview Questions
+
+One of the most common senior JavaScript interview questions is:
+
+> How does inheritance work in JavaScript?
+
+Many developers answer:
+
+> "Using classes."
+
+While technically true, it misses the most important concept.
+
+JavaScript inheritance is actually based on:
+
+```text
+Prototypes
+```
+
+Classes are simply syntactic sugar built on top of the prototype system.
+
+To truly understand JavaScript, you must understand:
+
+- Prototypes
+- Prototype Chain
+- Inheritance
+- Constructor Functions
+- Object.create()
+- How classes work internally
+
+## 1. What Problem Does Inheritance Solve?
+
+Imagine creating multiple users:
+
+```javascript
+const user1 = {
+  name: "John",
+  greet() {
+    console.log("Hello");
+  },
+};
+
+const user2 = {
+  name: "Sarah",
+  greet() {
+    console.log("Hello");
+  },
+};
+```
+
+Problem:
+
+```text
+greet() is duplicated
+```
+
+Every object stores its own copy.
+
+As objects grow, memory usage increases.
+
+JavaScript solves this through:
+
+```text
+Prototype Inheritance
+```
+
+## 2. What is a Prototype?
+
+Every JavaScript object has an internal reference to another object called its prototype.
+
+Conceptually:
+
+```text
+Object
+  ↓
+Prototype
+```
+
+When JavaScript cannot find a property on an object, it looks up the prototype chain.
+
+### Simple Example
+
+```javascript
+const animal = {
+  speak() {
+    console.log("Animal speaking");
+  },
+};
+
+const dog = Object.create(animal);
+
+dog.speak();
+```
+
+Output:
+
+```text
+Animal speaking
+```
+
+Why?
+
+JavaScript searches:
+
+```text
+dog
+ ↓
+animal
+```
+
+and finds:
+
+```javascript
+speak();
+```
+
+inside `animal`.
+
+## 3. Prototype Inheritance & Prototype Chain
+
+Prototype inheritance allows one object to inherit properties and methods from another object.
+
+Example:
+
+```javascript
+const animal = {
+  eat() {
+    console.log("Eating...");
+  },
+};
+
+const dog = Object.create(animal);
+
+dog.eat();
+```
+
+Output:
+
+```text
+Eating...
+```
+
+Even though:
+
+```javascript
+dog.eat;
+```
+
+does not exist directly.
+
+### Understanding the Prototype Chain
+
+Consider:
+
+```javascript
+const animal = {
+  eat() {
+    console.log("Eating");
+  },
+};
+
+const dog = Object.create(animal);
+
+dog.name = "Tommy";
+```
+
+When JavaScript evaluates:
+
+```javascript
+dog.eat();
+```
+
+it performs:
+
+```text
+dog
+ ↓
+animal
+ ↓
+Object.prototype
+ ↓
+null
+```
+
+This lookup sequence is called the:
+
+```text
+Prototype Chain
+```
+
+### Visual Representation
+
+```text
+dog
+ ↓
+animal
+ ↓
+Object.prototype
+ ↓
+null
+```
+
+If a property is not found:
+
+```text
+undefined
+```
+
+is returned.
+
+### Property Lookup Example
+
+```javascript
+const animal = {
+  species: "Animal",
+};
+
+const dog = Object.create(animal);
+
+console.log(dog.species);
+```
+
+JavaScript searches:
+
+```text
+dog
+ ↓
+animal
+```
+
+Finds:
+
+```javascript
+species;
+```
+
+Output:
+
+```text
+Animal
+```
+
+### Property Shadowing
+
+Objects can override inherited properties.
+
+Example:
+
+```javascript
+const animal = {
+  type: "Animal",
+};
+
+const dog = Object.create(animal);
+
+dog.type = "Dog";
+
+console.log(dog.type);
+```
+
+Output:
+
+```text
+Dog
+```
+
+JavaScript stops searching as soon as it finds the property.
+
+## 4. Constructor Functions & __proto__ vs. prototype
+
+Before ES6 classes, inheritance was commonly implemented using constructor functions.
+
+```javascript
+function User(name) {
+  this.name = name;
+}
+```
+
+Shared methods are added to the prototype:
+
+```javascript
+User.prototype.greet = function () {
+  console.log(`Hello ${this.name}`);
+};
+```
+
+Create instances:
+
+```javascript
+const user1 = new User("John");
+const user2 = new User("Sarah");
+```
+
+Now:
+
+```text
+user1
+ ↓
+User.prototype
+```
+
+```text
+user2
+ ↓
+User.prototype
+```
+
+Both objects share the same method.
+
+### Why Is This Efficient?
+
+Bad approach:
+
+```javascript
+function User(name) {
+  this.name = name;
+
+  this.greet = function () {
+    console.log("Hello");
+  };
+}
+```
+
+Every instance gets a new function.
+
+```text
+user1.greet
+user2.greet
+user3.greet
+```
+
+Three separate copies.
+
+### Better Approach
+
+```javascript
+User.prototype.greet = function () {
+  console.log("Hello");
+};
+```
+
+Now:
+
+```text
+One Function
+Shared By All Instances
+```
+
+Much more memory efficient.
+
+### How `new` Works Internally
+
+When JavaScript executes:
+
+```javascript
+const user = new User("John");
+```
+
+it roughly performs:
+
+```javascript
+const obj = {};
+
+obj.__proto__ = User.prototype;
+
+User.call(obj, "John");
+
+return obj;
+```
+
+Result:
+
+```text
+obj
+ ↓
+User.prototype
+```
+
+This is how inheritance is established.
+
+### Prototype Chain with Constructor Functions
+
+```javascript
+function User() {}
+
+const user = new User();
+```
+
+Chain:
+
+```text
+user
+ ↓
+User.prototype
+ ↓
+Object.prototype
+ ↓
+null
+```
+
+### Interview Question
+
+### What is the Difference Between `__proto__` and `prototype`?
+
+Many developers confuse these.
+
+#### `prototype`
+
+Exists on functions.
+
+```javascript
+function User() {}
+
+console.log(User.prototype);
+```
+
+Used when creating new objects.
+
+#### `__proto__`
+
+Exists on object instances.
+
+```javascript
+const user = new User();
+
+console.log(user.__proto__);
+```
+
+References the object's prototype.
+
+### Example
+
+```javascript
+function User() {}
+
+const user = new User();
+
+console.log(user.__proto__ === User.prototype);
+```
+
+Output:
+
+```text
+true
+```
+
+### Multi-Level Inheritance
+
+```javascript
+const livingThing = {
+  breathe() {
+    console.log("Breathing");
+  },
+};
+
+const animal = Object.create(livingThing);
+
+animal.eat = function () {
+  console.log("Eating");
+};
+
+const dog = Object.create(animal);
+```
+
+Chain:
+
+```text
+dog
+ ↓
+animal
+ ↓
+livingThing
+ ↓
+Object.prototype
+ ↓
+null
+```
+
+Now:
+
+```javascript
+dog.breathe();
+dog.eat();
+```
+
+Both work.
+
+## 5. ES6 Classes Under the Hood
+
+Modern JavaScript:
+
+```javascript
+class User {
+  greet() {
+    console.log("Hello");
+  }
+}
+```
+
+Looks cleaner.
+
+But internally JavaScript creates:
+
+```javascript
+User.prototype.greet = function () {
+  console.log("Hello");
+};
+```
+
+Classes are syntax sugar over prototypes.
+
+### Verify It Yourself
+
+```javascript
+class User {
+  greet() {}
+}
+
+console.log(typeof User.prototype.greet);
+```
+
+Output:
+
+```text
+function
+```
+
+## 6. Object.create() & hasOwnProperty()
+
+A common interview topic.
+
+```javascript
+const animal = {
+  eat() {
+    console.log("Eating");
+  },
+};
+
+const dog = Object.create(animal);
+```
+
+Result:
+
+```text
+dog
+ ↓
+animal
+```
+
+No constructor function required.
+
+### hasOwnProperty()
+
+Used to determine whether a property belongs directly to an object.
+
+```javascript
+const animal = {
+  type: "Animal",
+};
+
+const dog = Object.create(animal);
+
+dog.name = "Tommy";
+```
+
+Check:
+
+```javascript
+dog.hasOwnProperty("name");
+```
+
+Output:
+
+```text
+true
+```
+
+Check:
+
+```javascript
+dog.hasOwnProperty("type");
+```
+
+Output:
+
+```text
+false
+```
+
+Because it comes from the prototype.
+
+## 7. Common Interview Q&A
+
+### How Does JavaScript Achieve Inheritance?
+
+Through prototype delegation.
+
+Objects inherit properties and methods from their prototype chain.
+
+### What Happens If a Property Isn't Found?
+
+JavaScript searches:
+
+```text
+Current Object
+ ↓
+Prototype
+ ↓
+Prototype's Prototype
+ ↓
+null
+```
+
+This process is called prototype chain lookup.
+
+### Are Classes and Prototypes Different?
+
+No.
+
+Classes are built on top of prototypes.
+
+Inheritance still happens through the prototype chain.
+
+### Why Use Prototype Methods?
+
+Because methods are shared across all instances.
+
+This reduces memory usage.
+
+### What Does `Object.create()` Do?
+
+Creates a new object whose prototype is the provided object.
+
+## Senior-Level Interview Answer
+
+> JavaScript uses prototype-based inheritance rather than classical inheritance. Every object has an internal reference to another object known as its prototype. When a property or method is accessed, JavaScript first searches the object itself and then walks up the prototype chain until it finds the property or reaches null. Constructor functions and ES6 classes both rely on this mechanism internally. Methods placed on a constructor's prototype are shared across all instances, making prototype inheritance memory efficient and fundamental to JavaScript's object-oriented model.
+
+## Common Interview Mistakes
+
+❌ "Classes create inheritance."
+
+Correct:
+
+```text
+Prototypes create inheritance.
+Classes are syntax sugar.
+```
+
+❌ "`prototype` and `__proto__` are the same."
+
+Correct:
+
+```text
+prototype → exists on functions
+
+__proto__ → exists on objects
+```
+
+❌ "Methods are copied to every object."
+
+Correct:
+
+```text
+Methods are shared through the prototype chain.
+```
+
+## Key Takeaways
+
+- **Prototype Linkage**: Every JavaScript object holds a link to a prototype object from which it inherits properties.
+- **Prototype Chain**: Property lookup searches the object, then its prototype, ascending the chain until hitting `null`.
+- **Constructor Functions**: Share methods efficiently by attaching them to the constructor's `prototype` object.
+- **Memory Optimization**: Storing methods on prototypes rather than duplicating them inside constructor instances saves memory.
+- **ES6 Classes**: Standard syntactic sugar built on top of prototype chains, not a new inheritance model.

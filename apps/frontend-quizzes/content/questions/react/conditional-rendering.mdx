@@ -1,0 +1,153 @@
+---
+title: "React: Conditional Rendering Patterns & Pitfalls"
+description: "Master conditional rendering in React. Compare logical AND (&&), ternary operators, and if/else conditions. Learn how to prevent common rendering bugs."
+difficulty: "Easy"
+category: "react"
+tags:
+  - React
+  - Rendering
+  - UI Logic
+  - Fundamentals
+keywords:
+  - react conditional rendering
+  - logical and operator react bug
+  - ternary operator react
+  - rendering 0 or nan react
+  - conditional return react
+slug: "react-conditional-rendering"
+readingTime: 6
+relatedQuestions:
+  - react-rendering
+  - state-vs-props-difference
+---
+
+# React: Conditional Rendering Patterns & Pitfalls
+
+A standard React interview question is:
+
+> How do you conditionally render elements in React? What are the common pitfalls of using the logical AND (&&) operator?
+
+React is built on top of JSX, which evaluates expressions to render UI components. Interviewers want to see that you can distinguish between the core conditional patterns and know how to avoid JavaScript coercion bugs in your markup:
+- **Logical AND (&&) Traps**: Why values like `0` or `NaN` show up on the page.
+- **Ternary Compositions**: When to choose ternaries over `&&` to ensure correct rendering.
+- **Guard Clauses**: How to simplify complex layouts using early returns inside components.
+
+Let's explore conditional rendering mechanics from first principles.
+
+---
+
+## 1. The Logical AND (&&) Operator Pitfall
+
+The logical AND (`&&`) operator is a popular shorthand for rendering elements only when a specific condition is true.
+
+```jsx
+// Renders <Dashboard /> only if isLoggedIn is true
+{isLoggedIn && <Dashboard />}
+```
+
+However, JavaScript evaluates `&&` by returning the value of the falsy operand if the left-hand side is falsy. In JSX, React renders strings and numbers directly, but ignores booleans, `null`, and `undefined`.
+
+### The "0" Rendering Bug
+If the left side of `&&` evaluates to the number `0`, JavaScript returns `0`. Because `0` is a valid number, React renders it on the screen, causing layout glitches.
+
+```jsx
+const messages = [];
+
+// ❌ BUG: Renders "0" on the screen
+return <div>{messages.length && <MessageList />}</div>;
+
+// ✅ FIXED: Coerce to Boolean explicitly
+return <div>{messages.length > 0 && <MessageList />}</div>;
+
+// ✅ FIXED: Cast using double negation
+return <div>{!!messages.length && <MessageList />}</div>;
+```
+
+---
+
+## 2. Ternary Operator (`? :`)
+
+When you need an **if-else** condition in JSX, the ternary operator is the preferred pattern. It requires you to define both the truthy and falsy branches explicitly, avoiding implicit coercion bugs.
+
+```jsx
+// Always safe: renders either the user name or a login link
+<div>
+  {isLoggedIn ? <Welcome name={user.name} /> : <Link href="/login">Log In</Link>}
+</div>
+```
+
+If you only want to render something when the condition is true and want to avoid the `&&` bug, pass `null` as the false fallback:
+
+```jsx
+{messages.length ? <MessageList /> : null}
+```
+
+---
+
+## 3. Early Returns (Guard Clauses)
+
+If a component's layout changes completely based on state, writing inline JSX conditions can make the code hard to read. Instead, use early `if` returns at the top of your function.
+
+```jsx
+function UserProfile({ user, isLoading, error }) {
+  // 1. Loading Guard
+  if (isLoading) {
+    return <Spinner />;
+  }
+
+  // 2. Error Guard
+  if (error) {
+    return <ErrorMessage message={error} />;
+  }
+
+  // 3. Normal Render
+  return (
+    <div className="profile">
+      <h1>{user.name}</h1>
+    </div>
+  );
+}
+```
+
+This keeps the main JSX block clean, focused, and flat.
+
+---
+
+## 4. Conditional Rendering Strategy Guide
+
+| Pattern | Best Use Case | Coercion Risk? | Code Readability |
+| :--- | :--- | :--- | :--- |
+| **`condition && UI`** | Simple "if" conditions | ⚠️ High (renders `0`, `NaN`) | Clean (best for booleans) |
+| **`cond ? UI_A : UI_B`** | "if-else" layout switches | ❌ None | Moderate (avoid nesting) |
+| **Early returns** | Full page state changes | ❌ None | Excellent (keeps JSX flat) |
+
+---
+
+## Senior-Level Interview Answer
+
+> React supports conditional rendering using JavaScript expressions inside JSX. While the logical AND (`&&`) operator is a popular shorthand, it is prone to coercion bugs because JavaScript returns the falsy value if the left operand is falsy. If that operand is the number `0` or `NaN`, React will render the number directly to the DOM instead of rendering nothing. To prevent this, developers should ensure the left-hand condition is an explicit boolean by using comparison operators or double-negation casting (`!!`). For if-else layout branches, ternaries or early function returns are preferred because they avoid inline coercion issues and keep JSX structures flat and readable.
+
+---
+
+## Common Interview Mistakes
+
+### ❌ Nesting multiple ternary operators
+Writing nested ternaries inside JSX is a readability anti-pattern. If you have multiple conditions, extract the logic into a helper function or split the layout into separate child components.
+
+```jsx
+// ❌ HARD TO READ
+{isLoading ? <Spinner /> : hasError ? <Error /> : isLogged ? <Dash /> : <Login />}
+```
+
+### ❌ Forgetting that empty arrays `[]` and objects `{}` are truthy
+In JavaScript, empty arrays and empty objects are truthy. Writing `{users && <List />}` will render `<List />` even if the `users` array is empty. You must check the length property instead.
+
+---
+
+## Key Takeaways
+
+- **Logical AND Risks**: `&&` shorthand can cause rendering bugs by printing `0` or `NaN` directly on the page if conditions evaluate to numbers.
+- **Explicit Booleans**: Always coerce conditions on the left side of `&&` into explicit booleans using comparisons (e.g. `length > 0`) or `!!`.
+- **Ternary Safety**: Ternary operators (`? :`) are coercion-safe because they require you to specify a fallback element (or `null`) explicitly.
+- **Early Returns**: Use early returns (guard clauses) at the top of your components to handle loading and error states cleanly.
+- **Coercion Rule**: Remember that empty arrays `[]` and objects `{}` evaluate to truthy; you must check properties like `.length` or `.keys()` to verify content.

@@ -1,0 +1,96 @@
+---
+title: "Tell Me About a Bug That Affected Users"
+description: "Master behavioral interview questions about customer-facing issues. Learn to demonstrate user empathy, rapid resolution, defensive coding, and preventive QA integration."
+difficulty: "Medium"
+category: "behavioral"
+tags:
+  - Behavioral
+  - Ownership
+  - Empathy
+keywords:
+  - bug that affected users
+  - double submission bug
+  - client side payment double submit
+slug: "bug-affecting-users"
+readingTime: 7
+relatedQuestions:
+  - challenging-bug
+  - production-outage
+---
+
+# Tell Me About a Bug That Affected Users
+
+This question allows you to demonstrate your **customer focus** and **user empathy**. The interviewer wants to see that you care about the real-world impact of your code, that you can respond quickly, and that you write defensive interfaces.
+
+The interviewer evaluates:
+- **User Empathy**: Did you understand the frustration of the user, and did you prioritize resolving it immediately?
+- **Defensive Engineering**: Do you write robust client-side state hooks to handle slow network states and race conditions?
+- **Post-Incident Safeguards**: Did you implement end-to-end integration tests to guarantee this specific issue would never return?
+
+---
+
+## The Double-Submit Checkout Bug
+
+A common, high-impact user bug is the **Double Submission** checkout issue, where slow networks lead users to double-click a submit button, triggering multiple charges.
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ 1. USER TRIGGER: Click "Pay Now" on slow 3G network.         │
+├─────────────────────────────────────────────────────────────┤
+│ 2. SENSORY DELAY: No loading indicator → User clicks again. │
+├─────────────────────────────────────────────────────────────┤
+│ 3. CONCURRENT REQUESTS: Server processes payment twice.    │
+├─────────────────────────────────────────────────────────────┤
+│ 4. EMOTIONAL IMPACT: User gets double-charged and panicked.│
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Structured Answer Blueprint (STAR)
+
+### 1. Situation: The Incident & User Impact
+> *"Shortly after a major release, customer support notified us of a critical issue: several users were double-charged for their subscription orders. The emotional impact was severe—customers were calling in panicked. I volunteered to lead the resolution of this issue immediately."*
+
+### 2. Action: Diagnostics & Quick Mitigation
+Explain how you diagnosed the flaw and implemented client-side state controls:
+
+- **Step 1: Replicating the Flow**:
+  *"I throttled my local browser network speed to Slow 3G and clicked the 'Subscribe' button. I observed that the button remained clickable for about 4 seconds while the payment gateway processed. During this window, clicking the button again fired secondary API calls."*
+
+- **Step 2: Frontend State Lock & Loading Indicators**:
+  *"I modified the submit handler to immediately set an `isSubmitting` state, which disabled the button and rendered an explicit loading spinner. This prevented duplicate API triggers and gave visual feedback to the user."*
+
+```javascript
+// The corrected stateful submit action:
+const [isSubmitting, setIsSubmitting] = useState(false);
+
+const handlePaymentSubmit = async () => {
+  if (isSubmitting) return; // Guard clause
+  
+  setIsSubmitting(true);
+  try {
+    await processPayment(payload);
+  } catch (error) {
+    // Ensure button is re-enabled if payment fails
+    setIsSubmitting(false); 
+    showToast(error.message);
+  }
+};
+
+return (
+  <button 
+    onClick={handlePaymentSubmit} 
+    disabled={isSubmitting}
+    className="disabled:opacity-50 disabled:cursor-not-allowed"
+  >
+    {isSubmitting ? "Processing Payment..." : "Pay Now"}
+  </button>
+);
+```
+
+- **Step 3: Coordinating with Backend for Idempotency**:
+  *"Knowing that client-side validation can still be bypassed (e.g., via network interruptions or slow retries), I worked with the backend team to add an **Idempotency-Key** header to the payment API payload. The client generates a unique UUID for the checkout session, ensuring the backend rejects identical requests within a 24-hour window."*
+
+### 3. Result: Customer Recovery & Code Reliability
+> *"We deployed the client-side disable fix along with the idempotency key headers within 4 hours. Customer support reported zero duplicate orders after the fix. To prevent similar issues, I created a custom reusable `<AsyncButton>` wrapper component for our global design system that handles loading states and disables itself automatically, making all buttons across the application resilient by default."*

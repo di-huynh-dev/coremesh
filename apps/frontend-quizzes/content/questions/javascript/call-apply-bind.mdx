@@ -1,0 +1,123 @@
+---
+title: "JavaScript: call vs. apply vs. bind"
+description: "Explain explicit function context binding in JavaScript. Learn the differences between call, apply, and bind, and how to write a custom polyfill for bind."
+difficulty: "Easy"
+category: "javascript"
+tags:
+  - JavaScript
+  - Functions
+  - Context
+keywords:
+  - call vs apply vs bind
+  - explicit binding javascript
+  - bind polyfill javascript
+  - this keyword context
+  - javascript function borrowing
+slug: "call-apply-bind"
+readingTime: 6
+relatedQuestions:
+  - this-keyword
+  - prototype-inheritance
+---
+
+# JavaScript: call vs. apply vs. bind
+
+A classic, essential JavaScript execution context question is:
+
+> What is the difference between call, apply, and bind in JavaScript? When would you use each, and how do you implement a custom polyfill for Function.prototype.bind?
+
+In JavaScript, the value of the `this` keyword is determined dynamically at runtime based on *how* a function is called. The methods `call`, `apply`, and `bind` are built-in utilities on `Function.prototype` that let you explicitly declare the `this` context for a function.
+
+---
+
+## 1. Comparing call, apply, and bind
+
+### call()
+Invokes the function immediately, binding its `this` context to the first argument. Any additional parameters are passed to the function as a comma-separated list of arguments.
+```javascript
+function greet(greeting, punctuation) {
+  console.log(`${greeting}, ${this.name}${punctuation}`);
+}
+
+const user = { name: "Sarah" };
+greet.call(user, "Hello", "!"); // Outputs: "Hello, Sarah!"
+```
+
+### apply()
+Invokes the function immediately, binding its `this` context to the first argument. Any additional parameters are passed to the function as a **single array** of arguments.
+```javascript
+greet.apply(user, ["Hi", "."]); // Outputs: "Hi, Sarah."
+```
+
+### bind()
+Does **not** invoke the function immediately. Instead, it returns a new bound function with the `this` context permanently locked to the first argument. You can pass arguments to `bind` immediately (which will be partially applied) or pass them later when the returned function is called.
+```javascript
+const boundGreet = greet.bind(user);
+boundGreet("Hey", "?"); // Outputs: "Hey, Sarah?"
+```
+
+---
+
+## 2. Key Differences Cheat Sheet
+
+| Method | Invocation | Parameter Format | Returns |
+| :--- | :--- | :--- | :--- |
+| `call` | **Immediate** | Comma-separated list (`arg1, arg2`) | Function execution result |
+| `apply` | **Immediate** | Single array (`[arg1, arg2]`) | Function execution result |
+| `bind` | **Deferred** | Comma-separated list | A new copy of the function |
+
+---
+
+## 3. Implementing a Bind Polyfill
+
+Writing a custom implementation of `bind` is a frequent interview task that demonstrates your understanding of functional prototypes, scopes, closures, and explicit function application.
+
+Here is a modern polyfill for `Function.prototype.myBind`:
+
+```javascript
+Function.prototype.myBind = function (context, ...bindArgs) {
+  // Save a reference to the original function
+  const targetFn = this;
+
+  // Return a new wrapper function
+  return function (...callArgs) {
+    // Invoke original function combining bindArgs and callArgs
+    return targetFn.apply(context, [...bindArgs, ...callArgs]);
+  };
+};
+
+// Verification
+const userObj = { name: "Alex" };
+function showDetails(age, city) {
+  return `${this.name} is ${age} living in ${city}`;
+}
+
+const customBound = showDetails.myBind(userObj, 25);
+console.log(customBound("New York")); // Outputs: "Alex is 25 living in New York"
+```
+
+---
+
+## Senior-Level Interview Answer
+
+> `call`, `apply`, and `bind` are utility methods used to explicitly bind a function\'s execution context (`this`). Both `call` and `apply` invoke functions immediately; the syntactic difference lies in their signature, where `call` accepts arguments as a comma-separated sequence and `apply` accepts arguments wrapped in a single array. `bind` differs by returning a new closure where the context and initial arguments are locked, allowing deferred execution. A custom implementation of `bind` leverages closures to hold references to the target function and initial arguments, returning a nested wrapper that executes the target function using `Function.prototype.apply` to merge initial binding parameters with active invocation parameters.
+
+---
+
+## Common Interview Mistakes
+
+### ❌ Forgetting to return a value in the bind polyfill
+When writing the custom `bind` polyfill, failing to return the result of `targetFn.apply(...)` inside the wrapper function. If you omit the return keyword, your bound function will return `undefined` instead of the function's computed value.
+
+### ❌ Expecting `bind` to re-bind arrow functions
+Arrow functions do not have their own `this` binding. They lexically inherit `this` from their enclosing execution scope. Consequently, calling `call`, `apply`, or `bind` on an arrow function will quietly ignore the passed context argument.
+
+---
+
+## Key Takeaways
+
+- **Explicit Context**: These methods allow developers to control and bind the `this` execution context of JavaScript functions manually.
+- **Immediate Execution**: `call` and `apply` execute functions immediately, whereas `bind` returns a wrapper function for later invocation.
+- **Parameters Layout**: `call` accepts arguments individually (`arg1, arg2`), while `apply` groups arguments in an array (`[arg1, arg2]`).
+- **Function Reusability**: Use binding to borrow methods (such as borrowing array prototype methods for use on array-like arguments objects).
+- **Lexical Arrow Bounds**: Arrow functions ignore explicit context binding calls (`call`, `apply`, `bind`) as they maintain lexical scoping rules.

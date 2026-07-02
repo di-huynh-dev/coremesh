@@ -1,0 +1,163 @@
+---
+title: "JavaScript: Iterators, Generators, and Async Generators"
+description: "Learn JavaScript iteration protocols, custom iterators using Symbol.iterator, generator functions, and handling async streams with async generators."
+difficulty: "Hard"
+category: "javascript"
+tags:
+  - JavaScript
+  - Iteration
+  - Async
+keywords:
+  - javascript iterators and generators
+  - Symbol.iterator javascript
+  - yield keyword generators
+  - async generators javascript
+  - custom iterable object
+slug: "generators-iterators"
+readingTime: 8
+relatedQuestions:
+  - asyn-await
+  - promises
+---
+
+# JavaScript: Iterators, Generators, and Async Generators
+
+An advanced JavaScript evaluation question is:
+
+> What are iterators and generator functions in JavaScript? How does the iterator protocol work, and how do you write an async generator to poll or stream data chunk-by-chunk?
+
+JavaScript uses standard protocols to define how data can be traversed. By understanding these protocols, you can customize how your objects interact with language constructs like `for...of` loops, spread operators, and asynchronous streams.
+
+---
+
+## 1. The Iteration Protocols
+
+For an object to be traversed, it must implement the **Iterable Protocol**:
+- It must have a method with the key **`Symbol.iterator`**.
+- This method must return an object that adheres to the **Iterator Protocol**.
+
+The **Iterator Protocol** requires the returned object to have a `.next()` method:
+- `.next()` returns `{ value: any, done: boolean }`.
+- When `done` is `true`, iteration terminates.
+
+Here is a custom iterable object:
+```javascript
+const customCounter = {
+  start: 1,
+  end: 3,
+  [Symbol.iterator]() {
+    let current = this.start;
+    const last = this.end;
+
+    return {
+      next() {
+        if (current <= last) {
+          return { value: current++, done: false };
+        }
+        return { value: undefined, done: true };
+      }
+    };
+  }
+};
+
+for (const num of customCounter) {
+  console.log(num); // Outputs: 1, then 2, then 3
+}
+```
+
+---
+
+## 2. Generator Functions: Simplifying Iteration
+
+Writing custom iterators manually involves a lot of boilerplate. **Generator functions** (`function*`) simplify this. 
+
+When invoked, a generator returns a **Generator Object**, which implements both protocols automatically. Inside a generator, the **`yield`** keyword pauses execution:
+
+```javascript
+function* numberGenerator() {
+  yield 1;
+  yield 2;
+  yield 3;
+}
+
+const iterator = numberGenerator();
+console.log(iterator.next()); // { value: 1, done: false }
+console.log(iterator.next()); // { value: 2, done: false }
+console.log(iterator.next()); // { value: 3, done: false }
+console.log(iterator.next()); // { value: undefined, done: true }
+```
+
+---
+
+## 3. Two-Way Communication in Generators
+
+Generators are not just one-way streams; you can pass values back into the generator via `.next(value)`. The passed value becomes the result of the currently suspended `yield` expression:
+
+```javascript
+function* dynamicGenerator() {
+  const result = yield "Give me a value";
+  console.log("Received inside generator:", result);
+  yield `The value was: ${result}`;
+}
+
+const gen = dynamicGenerator();
+console.log(gen.next().value); // "Give me a value"
+console.log(gen.next("Hello").value); // Logs: "Received inside generator: Hello", returns "The value was: Hello"
+```
+
+---
+
+## 4. Async Generators
+
+If your data retrieval is asynchronous (such as fetching pages of data from an API), you can use an **Async Generator** (`async function*`):
+- Instead of returning a value immediately, `.next()` returns a **Promise** resolving to `{ value, done }`.
+- You traverse it using a **`for await...of`** loop.
+
+Here is an async generator that streams page data from a paginated API:
+
+```javascript
+async function* fetchPages(baseUrl, maxPages = 3) {
+  let page = 1;
+  while (page <= maxPages) {
+    const response = await fetch(`${baseUrl}?page=${page}`);
+    const data = await response.json();
+    yield data.items; // Stream the items array
+    page++;
+  }
+}
+
+// Consumer using for await...of
+async function consumeStream() {
+  const stream = fetchPages("https://api.example.com/items");
+
+  for await (const items of stream) {
+    console.log("Received a page of items:", items);
+  }
+}
+```
+
+---
+
+## Senior-Level Interview Answer
+
+> The Iterator protocol requires a `Symbol.iterator` method that returns an object containing a `.next()` signature, which outputs `{ value, done }` objects. Generator functions (`function*`) act as factory routines for Iterators. They suspend their execution contexts and call stacks upon hitting a `yield` statement, resuming state parameters only when `.next()` is called. In asynchronous environments, Async Generators (`async function*`) throw or yield Promises at each suspend boundary, allowing developers to consume chunked or paginated network streams natively using `for await...of` loops. This provides a highly clean, sequential way to handle asynchronous streams without managing raw callbacks or streams API complexities.
+
+---
+
+## Common Interview Mistakes
+
+### ❌ Believing `yield` blocks the main browser thread
+The `yield` keyword pauses the generator's execution, but it does **not** freeze the browser's main thread. It yields control back to the call site that executed `.next()`, keeping the page fully responsive.
+
+### ❌ Trying to reuse a consumed generator
+Once a generator has run to completion (returned `{ done: true }`), it cannot be reset or run again. To iterate the sequence a second time, you must instantiate a new generator object by calling the function generator again.
+
+---
+
+## Key Takeaways
+
+- **Iterable Protocol**: Objects become iterable by exposing a `Symbol.iterator` hook returning a next-oriented pointer.
+- **Generator Pause**: Generator routines pause execution at `yield` points, saving call stack states dynamically.
+- **Bidirectional Pipes**: You can push values back into generators by passing arguments to the `.next(value)` invocation.
+- **Async Yielding**: Async generators yield promises, enabling clean, sequential consumption of dynamic web streams via `for await...of`.
+- **One-time Stream**: Generator objects represent one-time streams; once consumed to a `done` state, they cannot be restarted.
