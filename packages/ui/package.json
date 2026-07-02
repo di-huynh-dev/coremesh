@@ -9,12 +9,52 @@
   ],
   "exports": {
     "./styles.css": "./dist/index.css",
-    "./types/post": "./dist/types/post.js",
-    "./post-card": "./dist/post-card.js",
-    "./post-list": "./dist/post-list.js",
-    "./featured-posts": "./dist/featured-posts.js",
-    "./post-filters": "./dist/post-filters.js",
-    "./*": "./dist/*.js"
+    "./types/post": {
+      "types": "./dist/types/post.d.ts",
+      "default": "./dist/types/post.js"
+    },
+    "./post-card": {
+      "types": "./dist/post-card.d.ts",
+      "default": "./dist/post-card.js"
+    },
+    "./post-list": {
+      "types": "./dist/post-list.d.ts",
+      "default": "./dist/post-list.js"
+    },
+    "./featured-posts": {
+      "types": "./dist/featured-posts.d.ts",
+      "default": "./dist/featured-posts.js"
+    },
+    "./post-filters": {
+      "types": "./dist/post-filters.d.ts",
+      "default": "./dist/post-filters.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "types/post": [
+        "./dist/types/post.d.ts"
+      ],
+      "post-card": [
+        "./dist/post-card.d.ts"
+      ],
+      "post-list": [
+        "./dist/post-list.d.ts"
+      ],
+      "featured-posts": [
+        "./dist/featured-posts.d.ts"
+      ],
+      "post-filters": [
+        "./dist/post-filters.d.ts"
+      ],
+      "*": [
+        "./dist/*.d.ts"
+      ]
+    }
   },
   "license": "MIT",
   "scripts": {
