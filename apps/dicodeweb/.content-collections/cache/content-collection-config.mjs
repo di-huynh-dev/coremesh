@@ -121,7 +121,7 @@ var mdxOptions = {
   ]
 };
 function createPlainContent(content) {
-  return content.replace(/^---[\s\S]*?---/, "").replace(/`{1,3}[^`]*`{1,3}/g, " ").replace(/[#>*_\-\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+  return content.replace(/^---[\s\S]*?---/, "").replace(/`{1,3}[^`]*`{1,3}/g, " ").replace(/[#>*_[\]()-]/g, " ").replace(/\s+/g, " ").trim();
 }
 var blogPosts = defineCollection({
   name: "posts",
