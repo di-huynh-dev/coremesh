@@ -14,6 +14,7 @@ const navLinks = [
   { href: "#techstack", label: "Stack" },
   { href: "#experience", label: "Experience" },
   { href: "#blog", label: "Blog" },
+  { href: "#contact", label: "Contact" },
 ];
 
 const menuPanelVariants = {
@@ -85,9 +86,9 @@ export function Navbar() {
   return (
     <header
       data-affix={affixed}
-      className="fixed inset-x-0 top-0 z-50 max-w-screen overflow-x-hidden bg-background px-2 pt-2 transition-shadow duration-300 data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.08)] dark:data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.45)]"
+      className="fixed inset-x-0 top-0 z-50 max-w-screen overflow-x-hidden border-b border-edge bg-background/98 px-2 pt-2 backdrop-blur-md transition-shadow duration-300 supports-[backdrop-filter]:bg-background/92 data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.08)] dark:data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.45)]"
     >
-      <div className="profile-rail rail-box screen-line-after flex h-12 items-center justify-between gap-4 px-6 max-sm:px-4">
+      <div className="profile-rail rail-box screen-line-after flex h-12 items-center justify-between gap-4 bg-background px-6 max-sm:px-4">
         <Link
           href="/"
           aria-label="Home"
