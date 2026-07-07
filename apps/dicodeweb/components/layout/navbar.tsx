@@ -34,6 +34,7 @@ const defaultNavbarCopy: Record<
     localeLabel: string;
     questions: string;
     roadmap: string;
+    assessment: string;
     blog: string;
   }
 > = {
@@ -41,45 +42,43 @@ const defaultNavbarCopy: Record<
     localeLabel: 'Language',
     questions: 'Questions',
     roadmap: 'Roadmap',
+    assessment: 'Assessment',
     blog: 'Blog',
   },
   vi: {
-    localeLabel: 'Ngôn ngữ',
-    questions: 'Câu hỏi',
-    roadmap: 'Lộ trình',
+    localeLabel: 'Language',
+    questions: 'Questions',
+    roadmap: 'Roadmap',
+    assessment: 'Assessment',
     blog: 'Blog',
   },
   ja: {
-    localeLabel: '言語',
-    questions: '質問',
-    roadmap: 'ロードマップ',
-    blog: 'ブログ',
+    localeLabel: 'Language',
+    questions: 'Questions',
+    roadmap: 'Roadmap',
+    assessment: 'Assessment',
+    blog: 'Blog',
   },
 };
 
 function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  const mounted = useSyncExternalStore(
-    () => () => {},
-    () => true,
-    () => false,
-  );
+  const { resolvedTheme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
 
-  if (!mounted) {
-    return (
-      <button className="border-border bg-card flex h-10 w-10 items-center justify-center rounded-full border">
-        <Sun className="text-muted-foreground h-4 w-4" />
-      </button>
-    );
-  }
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const isDark = mounted && resolvedTheme === 'dark';
 
   return (
     <button
-      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-      className="border-border bg-card text-muted-foreground hover:text-foreground flex h-10 w-10 items-center justify-center rounded-full border transition-colors"
+      onClick={() => setTheme(isDark ? 'light' : 'dark')}
+      className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:border-primary/35 hover:text-foreground"
       aria-label="Toggle theme"
+      type="button"
     >
-      {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
   );
 }
@@ -103,6 +102,7 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
       label: labels?.questions ?? labels?.tracks ?? activeCopy.questions,
     },
     { href: '/roadmap', label: labels?.roadmap ?? activeCopy.roadmap },
+    { href: '/free-assessment', label: activeCopy.assessment },
     { href: '/blog', label: labels?.blog ?? activeCopy.blog },
   ];
 
@@ -118,24 +118,16 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
     setMobileMenuOpen(false);
   };
 
-  const handleLinkClick = () => {
-    setMobileMenuOpen(false);
-  };
-
   useEffect(() => {
     const updateNavOffset = () => {
       if (!headerRef.current) return;
 
       const { bottom } = headerRef.current.getBoundingClientRect();
-      const offset = Math.ceil(bottom + 12);
-      document.documentElement.style.setProperty('--site-nav-offset', `${offset}px`);
+      document.documentElement.style.setProperty('--site-nav-offset', `${Math.ceil(bottom + 12)}px`);
     };
 
     updateNavOffset();
-
-    const resizeObserver = new ResizeObserver(() => {
-      updateNavOffset();
-    });
+    const resizeObserver = new ResizeObserver(updateNavOffset);
 
     if (headerRef.current) {
       resizeObserver.observe(headerRef.current);
@@ -150,51 +142,42 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
   }, [mobileMenuOpen]);
 
   return (
-    <header ref={headerRef} className="fixed top-4 left-1/2 z-50 w-[calc(100%-2rem)] max-w-6xl -translate-x-1/2">
-      <nav
-        className="flex items-center justify-between rounded-full px-4 py-3 md:px-6"
-        style={{
-          background: 'var(--nav-bg)',
-          backdropFilter: 'blur(12px)',
-          WebkitBackdropFilter: 'blur(12px)',
-          border: '1px solid var(--nav-border)',
-          boxShadow: 'var(--nav-shadow)',
-        }}
-      >
-        <button onClick={handleLogoClick} className="flex shrink-0 items-center gap-3 rounded-full">
+    <header ref={headerRef} className="fixed left-1/2 top-4 z-50 w-[calc(100%-2rem)] max-w-6xl -translate-x-1/2">
+      <nav className="flex h-[68px] items-center justify-between rounded-full border border-[var(--nav-border)] bg-[var(--nav-bg)] px-3 shadow-[var(--nav-shadow)] backdrop-blur-xl md:px-4">
+        <button onClick={handleLogoClick} className="flex shrink-0 items-center gap-3 rounded-full" type="button">
           <Image
             src="/d-logo.svg"
             alt="Dicodeweb"
-            width={64}
-            height={64}
-            className="border-border bg-card h-10 w-10 rounded-full border p-1 md:h-12 md:w-12"
+            width={44}
+            height={44}
+            className="h-11 w-11 rounded-full border border-border bg-background p-1"
           />
-          <span
-            className="hidden items-baseline text-[1.9rem] leading-none font-extrabold tracking-[-0.06em] md:inline-flex"
-            aria-label="DiCodeWeb"
-          >
-            <span className="text-[#0F447A]">DiCode</span>
-            <span className="text-[#79C700]">Web</span>
+          <span className="hidden items-baseline text-xl font-bold leading-none tracking-[-0.04em] text-foreground md:inline-flex">
+            DiCodeWeb
           </span>
         </button>
 
-        <div className="hidden items-center gap-8 md:flex">
-          {navLinks.map((link) => (
-            <Link
-              key={link.href}
-              href={link.href}
-              className={`text-sm font-medium transition-colors duration-200 ${
-                pathname === link.href
-                  ? 'font-semibold text-[#071B3A] dark:text-[#AAF85D]'
-                  : 'text-muted-foreground hover:text-[#071B3A] dark:hover:text-[#AAF85D]'
-              }`}
-            >
-              {link.label}
-            </Link>
-          ))}
+        <div className="hidden items-center gap-1 md:flex">
+          {navLinks.map((link) => {
+            const active = pathname === link.href;
+
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
+                  active
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 md:gap-3">
+        <div className="flex shrink-0 items-center gap-2">
           <LanguageSwitcher
             currentLocale={activeLocale}
             locales={homeLocales}
@@ -206,22 +189,18 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
           <ThemeToggle />
 
           <button
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="border-border bg-card text-muted-foreground hover:text-foreground rounded-full border p-2 transition-colors md:hidden"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:text-foreground md:hidden"
             aria-label="Toggle menu"
+            type="button"
           >
             {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
         </div>
       </nav>
 
-      {mobileMenuOpen && (
-        <div
-          className="paper-card mt-2 space-y-1 rounded-3xl p-4 md:hidden"
-          style={{
-            background: 'var(--nav-bg)',
-          }}
-        >
+      {mobileMenuOpen ? (
+        <div className="mt-2 overflow-hidden rounded-[28px] border border-border bg-popover p-3 shadow-[var(--nav-shadow)] backdrop-blur-xl md:hidden">
           <LanguageSwitcher
             currentLocale={activeLocale}
             locales={homeLocales}
@@ -234,14 +213,14 @@ export function Navbar({ labels, locale, localeLabel, onLocaleChange }: NavbarPr
             <Link
               key={link.href}
               href={link.href}
-              onClick={handleLinkClick}
-              className="text-muted-foreground hover:bg-muted hover:text-foreground block rounded-2xl px-4 py-3 font-medium transition-colors"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block rounded-2xl px-4 py-3 text-sm font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               {link.label}
             </Link>
           ))}
         </div>
-      )}
+      ) : null}
     </header>
   );
 }

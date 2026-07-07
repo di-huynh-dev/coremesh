@@ -21,6 +21,11 @@ const nextConfig: NextConfig = {
         hostname: 'cdn.hailuoai.video',
         pathname: '/**',
       },
+      {
+        protocol: 'https',
+        hostname: 'picsum.photos',
+        pathname: '/**',
+      },
     ],
   },
 };
