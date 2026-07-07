@@ -1,16 +1,6 @@
 {
   "$schema": "https://turborepo.dev/schema.json",
   "ui": "tui",
-  "globalEnv": [
-    "GOOGLE_CLIENT_ID",
-    "GOOGLE_CLIENT_SECRET",
-    "NEXTAUTH_SECRET",
-    "NEXT_PUBLIC_BLOGS_URL",
-    "NEXT_PUBLIC_CLARITY_ID",
-    "NEXT_PUBLIC_GA_ID",
-    "NEXT_PUBLIC_SITE_URL",
-    "NEXT_PUBLIC_VERCEL_URL"
-  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -22,7 +12,7 @@
       "inputs": ["$TURBO_DEFAULT$", ".eslintrc*", "eslint.config.*"]
     },
     "check-types": {
-      "dependsOn": ["^check-types"],
+      "dependsOn": ["^check-types", "^build"],
       "inputs": ["$TURBO_DEFAULT$", "tsconfig.json", "next-env.d.ts", ".next/types/**/*.ts"]
     },
     "dev": {

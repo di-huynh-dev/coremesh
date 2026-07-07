@@ -1,5 +1,20 @@
-import NextAuth from "next-auth";
-import GoogleProvider from "next-auth/providers/google";
+import NextAuthModule from "next-auth";
+import GoogleProviderModule from "next-auth/providers/google";
+
+const NextAuth =
+  (
+    (NextAuthModule as unknown as { default?: unknown }).default ??
+    NextAuthModule
+  ) as typeof import("next-auth/next").default;
+
+const GoogleProvider =
+  (
+    (
+      GoogleProviderModule as unknown as {
+        default?: unknown;
+      }
+    ).default ?? GoogleProviderModule
+  ) as typeof import("next-auth/providers/google").default;
 
 function readEnv(name: string) {
   return process.env[name] ?? "";

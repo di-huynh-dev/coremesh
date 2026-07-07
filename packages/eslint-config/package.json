@@ -9,6 +9,11 @@
     "./node-internal": "./node-internal.js",
     "./react-internal": "./react-internal.js"
   },
+  "scripts": {
+    "build": "node -e \"\"",
+    "check-types": "node -e \"\"",
+    "lint": "node -e \"\""
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@next/eslint-plugin-next": "^16.2.0",

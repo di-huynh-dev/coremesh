@@ -28,11 +28,22 @@ Each app should expose these scripts when applicable:
 - `check-types`
 - `start`
 
-Shared libraries should expose:
+Buildable shared libraries should expose:
 
 - `build`
 - `lint`
 - `check-types`
+
+Config-only packages may expose only the scripts they need.
+
+- Config-only packages in this repo:
+  - `@repo/eslint-config`
+  - `@repo/tailwind-config`
+  - `@repo/typescript-config`
+- Buildable shared libraries in this repo:
+  - `@repo/auth`
+  - `@repo/ui`
+  - `@repo/utils`
 
 ## Commands
 
@@ -49,6 +60,7 @@ bun run validate
 
 - Prefer shared packages over copy-pasted config.
 - Keep framework versions aligned unless a workspace has a documented exception.
+- Use the root `bun.lock` as the single source of truth for workspace dependency resolution.
 - Do not add new workspaces under `tmp/`.
 - Treat `tmp/` as scratch space or migration input, not production workspace code.
 - Update this README when repo-level tooling or conventions change.

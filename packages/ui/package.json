@@ -58,6 +58,7 @@
   },
   "license": "MIT",
   "scripts": {
+    "build": "bun run build:styles && bun run build:components",
     "build:styles": "tailwindcss -i ./src/styles.css -o ./dist/index.css",
     "build:components": "tsc",
     "check-types": "tsc --noEmit",

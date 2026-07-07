@@ -7,6 +7,11 @@
     ".": "./shared-styles.css",
     "./postcss": "./postcss.config.js"
   },
+  "scripts": {
+    "build": "node -e \"\"",
+    "check-types": "node -e \"\"",
+    "lint": "node -e \"\""
+  },
   "devDependencies": {
     "postcss": "^8.5.3",
     "tailwindcss": "^4.1.5"

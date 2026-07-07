@@ -1,0 +1,11 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "env": ["NEXT_PUBLIC_BLOGS_URL"]
+    },
+    "dev": {
+      "env": ["NEXT_PUBLIC_BLOGS_URL"]
+    }
+  }
+}
