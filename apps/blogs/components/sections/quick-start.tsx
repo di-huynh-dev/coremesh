@@ -67,7 +67,7 @@ cp .env.example .env.local
 GOOGLE_CLIENT_ID=your-google-client-id
 GOOGLE_CLIENT_SECRET=your-google-client-secret
 NEXTAUTH_SECRET=your-random-secret
-NEXTAUTH_URL=http://localhost:3000`,
+NEXTAUTH_URL=http://localhost:3002`,
   },
   {
     number: 3,
@@ -80,7 +80,7 @@ bun install
 # Start development server
 bun run dev
 
-# Open http://localhost:3000`,
+# Open http://localhost:3002`,
   },
 ];
 

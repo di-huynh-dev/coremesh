@@ -5,7 +5,7 @@
   "author": "Steven Huynh",
   "license": "MIT",
   "scripts": {
-    "dev": "next dev --port 3002",
+    "dev": "next dev --port 3001",
     "build": "next build && bun ./scripts/build-pagefind.ts",
     "start": "next start",
     "lint": "eslint . --max-warnings 0",

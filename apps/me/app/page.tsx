@@ -12,7 +12,7 @@ import type { BlogPost } from "@repo/ui/types/post";
 
 const blogsBaseUrl =
   process.env.NEXT_PUBLIC_BLOGS_URL?.replace(/\/$/, "") ??
-  "http://localhost:3003/en";
+  "http://localhost:3002/en";
 
 export default function Home() {
   const posts: BlogPost[] = getAllPosts("en")
