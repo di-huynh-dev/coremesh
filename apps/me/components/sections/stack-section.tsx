@@ -1,3 +1,5 @@
+"use client";
+
 import { AntDesignDarkTheme } from "@/components/ui/svgs/antDesignDarkTheme";
 import { Cloudflare } from "@/components/ui/svgs/cloudflare";
 import { CssOld } from "@/components/ui/svgs/cssOld";
@@ -24,7 +26,10 @@ import { ThreejsDark } from "@/components/ui/svgs/threejsDark";
 import { Typescript } from "@/components/ui/svgs/typescript";
 import { Vite } from "@/components/ui/svgs/vite";
 import { Vue } from "@/components/ui/svgs/vue";
+import { Reveal } from "@/components/ui/reveal";
+import { SectionHeading } from "@/components/ui/section-heading";
 import { BadgeCheck, Bug, FlaskConical, Zap } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { ComponentType, SVGProps } from "react";
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
@@ -112,6 +117,7 @@ const technologyGroups: TechnologyGroup[] = [
         Icon: ExpressjsDark,
         className: "bg-[#6aa84f] text-white",
       },
+      { name: "NestJS", className: "bg-[#e0234e] text-white" },
       {
         name: "Firebase",
         Icon: Firebase,
@@ -179,34 +185,111 @@ const technologyGroups: TechnologyGroup[] = [
   },
 ];
 
+const RELATION_PAIRS: Array<[string, string[]]> = [
+  ["Reactjs", ["Nextjs", "Typescript", "Javascript", "Vitejs", "Tailwindcss", "shadcn/ui", "AntDesign", "Material UI", "Three.js"]],
+  ["Nextjs", ["Typescript", "Tailwindcss", "shadcn/ui", "Nodejs", "Cloudflare"]],
+  ["Typescript", ["Javascript", "Vuejs", "Nodejs", "NestJS", "Jest"]],
+  ["Javascript", ["Vuejs", "Svelte", "Nodejs", "Three.js", "GSAP"]],
+  ["HTML5", ["CSS3", "Javascript"]],
+  ["CSS3", ["SASS", "LESS", "Tailwindcss"]],
+  ["Vuejs", ["Vitejs"]],
+  ["Svelte", ["Vitejs"]],
+  ["Vitejs", ["Webpack"]],
+  ["Nodejs", ["Expressjs", "NestJS", "Swagger", "PostgreSQL", "MySQL", "Firebase", "Docker"]],
+  ["NestJS", ["Expressjs", "Swagger", "PostgreSQL", "MySQL"]],
+  ["Docker", ["Nginx", "Git", "Cloudflare"]],
+  ["Jest", ["Unit Testing"]],
+  ["Cypress", ["E2E Testing"]],
+  ["Three.js", ["GSAP"]],
+];
+
+const RELATED = new Map<string, Set<string>>();
+for (const [name, others] of RELATION_PAIRS) {
+  for (const other of others) {
+    if (!RELATED.has(name)) RELATED.set(name, new Set());
+    if (!RELATED.has(other)) RELATED.set(other, new Set());
+    RELATED.get(name)!.add(other);
+    RELATED.get(other)!.add(name);
+  }
+}
+
 export function StackSection() {
+  const [focused, setFocused] = useState<string | null>(null);
+  const related = useMemo(
+    () => (focused ? (RELATED.get(focused) ?? new Set<string>()) : null),
+    [focused],
+  );
+
   return (
     <section
       id="techstack"
-      className="profile-rail rail-box screen-line-after px-4 py-8"
+      className="profile-rail rail-box screen-line-after scroll-mt-16 px-4 py-8"
     >
-      <h2 className="mb-5 text-3xl font-semibold leading-9">Stack</h2>
+      <SectionHeading index="02" title="Stack" vi="Công cụ" />
+      <p
+        className="mt-3 min-h-8 font-mono text-xs leading-5 text-muted-foreground"
+        aria-live="polite"
+      >
+        {focused ? (
+          <>
+            <span className="text-brand">{focused}</span>
+            {related && related.size > 0 ? (
+              <>
+                {" "}
+                <span className="text-brand">→</span>{" "}
+                {Array.from(related).join(" · ")}
+              </>
+            ) : null}
+          </>
+        ) : (
+          "Hover a chip to light up its constellation."
+        )}
+      </p>
 
-      <div className="dot-pattern space-y-4 px-6 py-4 max-sm:px-4">
-        {technologyGroups.map((group) => (
-          <div key={group.label} className="space-y-2">
-            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">
-              {group.label}
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {group.technologies.map((tech) => (
-                <span
-                  key={tech.name}
-                  className={`inline-flex h-7 items-center gap-1.5 rounded-[2px] px-2 font-sans text-[11px] font-medium leading-none shadow-[inset_0_0_0_0.5px_rgba(255,255,255,0.14)] ${tech.className}`}
-                >
-                  {tech.Icon ? (
-                    <tech.Icon className="size-3.5 shrink-0" />
-                  ) : null}
-                  {tech.name}
+      <div
+        className="mt-3 border border-edge"
+        onMouseLeave={() => setFocused(null)}
+      >
+        {technologyGroups.map((group, groupIndex) => (
+          <Reveal key={group.label} delay={groupIndex * 0.04}>
+            <div
+              className={`grid gap-3 px-4 py-4 sm:grid-cols-[150px_1fr] ${
+                groupIndex > 0 ? "border-t border-edge" : ""
+              }`}
+            >
+              <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                <span className="mr-2 text-brand">
+                  {String(groupIndex + 1).padStart(2, "0")}
                 </span>
-              ))}
+                {group.label}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {group.technologies.map((tech) => {
+                  const state = !focused
+                    ? undefined
+                    : tech.name === focused || related?.has(tech.name)
+                      ? "lit"
+                      : "dim";
+                  return (
+                    <span
+                      key={tech.name}
+                      tabIndex={0}
+                      data-state={state}
+                      onMouseEnter={() => setFocused(tech.name)}
+                      onFocus={() => setFocused(tech.name)}
+                      onBlur={() => setFocused(null)}
+                      className={`stack-chip inline-flex h-7 items-center gap-1.5 rounded-[2px] px-2 font-sans text-[11px] font-medium leading-none shadow-[inset_0_0_0_0.5px_rgba(255,255,255,0.14)] ${tech.className}`}
+                    >
+                      {tech.Icon ? (
+                        <tech.Icon className="size-3.5 shrink-0" />
+                      ) : null}
+                      {tech.name}
+                    </span>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          </Reveal>
         ))}
       </div>
     </section>

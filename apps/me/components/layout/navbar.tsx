@@ -4,7 +4,7 @@ import { ModeToggle } from "@/components/ui/mode-toggle";
 import { GithubDark } from "@/components/ui/svgs/githubDark";
 import { GithubLight } from "@/components/ui/svgs/githubLight";
 import { AnimatePresence, motion } from "framer-motion";
-import { Menu, X } from "lucide-react";
+import { Menu, Search, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -15,106 +15,117 @@ const navLinks = [
   { href: "#experience", label: "Experience" },
   { href: "#blog", label: "Blog" },
   { href: "#contact", label: "Contact" },
+  { href: "/story", label: "Story ✦" },
 ];
 
-const menuPanelVariants = {
-  closed: {
-    opacity: 0,
-    y: -10,
-    scaleY: 0.92,
-    filter: "blur(8px)",
-    transformOrigin: "top",
-    transition: {
-      duration: 0.18,
-      when: "afterChildren",
-      staggerDirection: -1,
-    },
-  },
-  open: {
-    opacity: 1,
-    y: 0,
-    scaleY: 1,
-    filter: "blur(0px)",
-    transformOrigin: "top",
-    transition: {
-      duration: 0.24,
-      when: "beforeChildren",
-      staggerChildren: 0.05,
-      delayChildren: 0.02,
-    },
-  },
-};
+const ease = [0.22, 1, 0.36, 1] as const;
 
-const menuItemVariants = {
-  closed: { opacity: 0, x: -14 },
-  open: {
-    opacity: 1,
-    x: 0,
-    transition: { duration: 0.22 },
-  },
-};
+function useActiveSection() {
+  const [active, setActive] = useState<string>("");
+
+  useEffect(() => {
+    const targets = navLinks
+      .filter((link) => link.href.startsWith("#"))
+      .map((link) => document.querySelector(link.href))
+      .filter((el): el is Element => el !== null);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (visible) setActive(`#${visible.target.id}`);
+      },
+      { rootMargin: "-30% 0px -55% 0px", threshold: [0, 0.25, 0.5, 1] },
+    );
+
+    targets.forEach((target) => observer.observe(target));
+
+    const onScroll = () => {
+      if (window.scrollY < 240) setActive("");
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  return active;
+}
 
 export function Navbar() {
   const [affixed, setAffixed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const active = useActiveSection();
 
   useEffect(() => {
-    const handleScroll = () => {
-      setAffixed(window.scrollY > 8);
-    };
-
+    const handleScroll = () => setAffixed(window.scrollY > 8);
     handleScroll();
     window.addEventListener("scroll", handleScroll, { passive: true });
-
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
   useEffect(() => {
     if (!mobileOpen) return;
-
     const handleResize = () => {
-      if (window.innerWidth >= 640) {
-        setMobileOpen(false);
-      }
+      if (window.innerWidth >= 640) setMobileOpen(false);
     };
-
     window.addEventListener("resize", handleResize);
-
     return () => window.removeEventListener("resize", handleResize);
   }, [mobileOpen]);
 
   return (
     <header
       data-affix={affixed}
-      className="fixed inset-x-0 top-0 z-50 max-w-screen overflow-x-hidden border-b border-edge bg-background/98 px-2 pt-2 backdrop-blur-md transition-shadow duration-300 supports-[backdrop-filter]:bg-background/92 data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.08)] dark:data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.45)]"
+      className="fixed inset-x-0 top-0 z-50 max-w-screen overflow-x-hidden border-b border-edge bg-background/92 px-2 pt-2 backdrop-blur-md transition-shadow duration-300 data-[affix=true]:shadow-[0_0_16px_0_rgba(40,20,0,0.10)] dark:data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.5)]"
     >
       <div className="profile-rail rail-box screen-line-after flex h-12 items-center justify-between gap-4 bg-background px-6 max-sm:px-4">
         <Link
           href="/"
           aria-label="Home"
-          className="inline-flex size-10 items-center justify-center rounded-full transition-transform duration-300 hover:scale-105"
+          className="group inline-flex items-center gap-2.5"
         >
           <Image
             src="/round-avatar.svg"
             alt=""
             width={40}
             height={40}
-            className="size-10"
+            className="size-9 transition-transform duration-500 group-hover:rotate-[24deg]"
             priority
           />
+          <span className="font-display hidden text-lg font-medium italic sm:inline">
+            Di<span className="text-brand">.</span>dev
+          </span>
         </Link>
 
         <div className="flex items-center gap-4 max-sm:gap-2">
-          <nav className="hidden items-center gap-4 sm:flex">
-            {navLinks.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className="font-mono text-sm font-medium text-muted-foreground transition-all duration-300 hover:text-foreground"
-              >
-                {link.label}
-              </Link>
-            ))}
+          <nav className="hidden items-center gap-1 sm:flex">
+            {navLinks.map((link) => {
+              const isActive = active === link.href;
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  aria-current={isActive ? "location" : undefined}
+                  className={`relative px-2.5 py-1.5 font-mono text-sm transition-colors duration-300 ${
+                    isActive
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {link.label}
+                  {isActive ? (
+                    <motion.span
+                      layoutId="nav-active"
+                      transition={{ duration: 0.35, ease }}
+                      className="absolute inset-x-2.5 -bottom-[7px] h-[2px] bg-brand"
+                    />
+                  ) : null}
+                </Link>
+              );
+            })}
           </nav>
 
           <div className="flex items-center gap-2">
@@ -123,12 +134,20 @@ export function Navbar() {
               target="_blank"
               rel="noopener noreferrer"
               aria-label="GitHub"
-              className="relative inline-flex size-10 items-center justify-center overflow-hidden rounded-full border border-black/20 bg-background text-foreground transition-all duration-300 hover:bg-zinc-50 dark:border-white/75 dark:hover:bg-muted/80"
+              className="relative inline-flex size-10 items-center justify-center overflow-hidden rounded-full border border-edge bg-background text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted"
             >
-              <span className="absolute inset-[3px] rounded-full bg-zinc-100/80 dark:bg-white/[0.03]" />
               <GithubLight className="relative z-10 size-[18px] dark:hidden" />
               <GithubDark className="relative z-10 hidden size-[18px] dark:block" />
             </a>
+            <button
+              type="button"
+              aria-label="Open command palette"
+              data-cursor="Ctrl K"
+              onClick={() => window.dispatchEvent(new Event("palette:open"))}
+              className="inline-flex size-10 items-center justify-center rounded-full border border-edge bg-background text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted"
+            >
+              <Search className="size-4" />
+            </button>
             <ModeToggle />
             <motion.button
               type="button"
@@ -136,14 +155,11 @@ export function Navbar() {
               aria-expanded={mobileOpen}
               onClick={() => setMobileOpen((open) => !open)}
               whileTap={{ scale: 0.96 }}
-              className="inline-flex size-10 items-center justify-center rounded-full border-[0.5px] border-border bg-background text-foreground transition-all duration-300 hover:border-foreground/22 hover:bg-muted/60 dark:hover:bg-muted/80 sm:hidden"
+              className="inline-flex size-10 items-center justify-center rounded-full border border-edge bg-background text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted sm:hidden"
             >
               <motion.span
-                animate={{
-                  rotate: mobileOpen ? 180 : 0,
-                  scale: mobileOpen ? 0.96 : 1,
-                }}
-                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                animate={{ rotate: mobileOpen ? 180 : 0 }}
+                transition={{ duration: 0.25, ease }}
                 className="inline-flex items-center justify-center"
               >
                 {mobileOpen ? (
@@ -160,36 +176,23 @@ export function Navbar() {
       <AnimatePresence>
         {mobileOpen ? (
           <motion.div
-            initial="closed"
-            animate="open"
-            exit="closed"
-            variants={menuPanelVariants}
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.22, ease }}
             className="profile-rail overflow-hidden px-2 pb-2 sm:hidden"
           >
-            <nav className="dot-pattern relative overflow-hidden rounded-[1.35rem] border border-black/8 bg-white/92 p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/92 dark:shadow-[0_22px_48px_rgba(0,0,0,0.4)]">
-              <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.10),transparent_58%)] dark:bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.12),transparent_58%)]" />
-              <motion.span
-                initial={{ scaleX: 0, opacity: 0 }}
-                animate={{ scaleX: 1, opacity: 1 }}
-                exit={{ scaleX: 0, opacity: 0 }}
-                transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
-                className="absolute inset-x-4 top-0 h-px origin-left bg-gradient-to-r from-sky-500/0 via-sky-500/70 to-sky-500/0"
-              />
-              {navLinks.map((link) => (
-                <motion.div key={link.href} variants={menuItemVariants} className="relative">
-                  <Link
-                    href={link.href}
-                    onClick={() => setMobileOpen(false)}
-                    className="group flex items-center gap-3 rounded-xl border border-black/6 bg-black/[0.03] px-4 py-3 font-mono text-sm font-medium text-foreground/84 transition-all duration-200 hover:border-sky-500/25 hover:bg-sky-500/[0.08] hover:text-foreground dark:border-white/8 dark:bg-white/[0.04] dark:text-white/88 dark:hover:border-sky-400/30 dark:hover:bg-sky-400/[0.09] dark:hover:text-white"
-                  >
-                    <span className="inline-flex size-6 items-center justify-center rounded-full border border-sky-500/18 bg-sky-500/10 text-sky-700 transition-colors duration-200 group-hover:bg-sky-500/16 dark:border-sky-400/22 dark:bg-sky-400/12 dark:text-sky-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                    </span>
-                    <span className="inline-flex items-center gap-2">
-                      {link.label}
-                    </span>
-                  </Link>
-                </motion.div>
+            <nav className="dot-pattern relative overflow-hidden rounded-2xl border border-edge bg-card p-2 shadow-[0_18px_40px_rgba(40,20,0,0.14)]">
+              {navLinks.map((link, i) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setMobileOpen(false)}
+                  className="group flex items-center gap-3 rounded-xl px-4 py-3 font-mono text-sm text-foreground/85 transition-colors hover:bg-brand/10 hover:text-foreground"
+                >
+                  <span className="text-xs text-brand">0{i + 1}</span>
+                  {link.label}
+                </Link>
               ))}
             </nav>
           </motion.div>

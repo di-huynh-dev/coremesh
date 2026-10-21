@@ -6,6 +6,10 @@ import { ExperienceSection } from "@/components/sections/experience-section";
 import { OverviewSection } from "@/components/sections/overview-section";
 import { StackSection } from "@/components/sections/stack-section";
 import { ContactSection } from "@/components/sections/contact-section";
+import { CommandPalette } from "@/components/ui/command-palette";
+import { CursorLabel } from "@/components/ui/cursor-label";
+import { EasterEgg } from "@/components/ui/easter-egg";
+import { ScrollProgress } from "@/components/ui/scroll-progress";
 import { ScrollToTop } from "@/components/ui/scroll-to-top";
 import { getAllPosts } from "../../blogs/lib/blog";
 import type { BlogPost } from "@repo/ui/types/post";
@@ -30,8 +34,14 @@ export default function Home() {
 
   return (
     <main className="min-h-screen max-w-screen overflow-x-hidden bg-background px-2 pt-14 text-foreground">
+      <ScrollProgress />
       <Navbar />
-      <OverviewSection blogsBaseUrl={blogsBaseUrl} />
+      <OverviewSection
+        blogsBaseUrl={blogsBaseUrl}
+        latestPost={
+          posts[0] ? { slug: posts[0].slug, title: posts[0].title } : undefined
+        }
+      />
       <AboutSection />
       <StackSection />
       <ExperienceSection />
@@ -39,6 +49,9 @@ export default function Home() {
       <ContactSection />
       <Footer />
       <ScrollToTop />
+      <CommandPalette blogsBaseUrl={blogsBaseUrl} />
+      <CursorLabel />
+      <EasterEgg />
     </main>
   );
 }

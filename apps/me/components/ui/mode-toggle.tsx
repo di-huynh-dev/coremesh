@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Sparkles, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { flushSync } from "react-dom";
 import { useEffect, useRef, useState } from "react";
@@ -13,8 +13,17 @@ type ViewTransitionDocument = Document & {
   };
 };
 
+const THEMES = ["light", "dark", "night"] as const;
+type ThemeName = (typeof THEMES)[number];
+
+const THEME_META: Record<ThemeName, { label: string; Icon: typeof Sun }> = {
+  light: { label: "Giấy dó", Icon: Sun },
+  dark: { label: "Mực tàu", Icon: Moon },
+  night: { label: "Đêm Sài Gòn", Icon: Sparkles },
+};
+
 export function ModeToggle() {
-  const { theme, resolvedTheme, setTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const isAnimatingRef = useRef(false);
@@ -23,19 +32,16 @@ export function ModeToggle() {
     setMounted(true);
   }, []);
 
-  const currentTheme = mounted
-    ? theme === "system"
-      ? resolvedTheme
-      : theme
-    : "light";
-  const isDark = currentTheme === "dark";
+  const current: ThemeName =
+    mounted && THEMES.includes(theme as ThemeName) ? (theme as ThemeName) : "light";
+  const next = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
+  const { Icon, label } = THEME_META[current];
 
   const toggleTheme = async () => {
     if (!buttonRef.current || isAnimatingRef.current) {
       return;
     }
 
-    const nextTheme = isDark ? "light" : "dark";
     const prefersReducedMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
     ).matches;
@@ -45,7 +51,7 @@ export function ModeToggle() {
       prefersReducedMotion ||
       typeof transitionDocument.startViewTransition !== "function"
     ) {
-      setTheme(nextTheme);
+      setTheme(next);
       return;
     }
 
@@ -64,22 +70,16 @@ export function ModeToggle() {
     ];
 
     try {
-      root.style.setProperty("--theme-transition-x", `${x}px`);
-      root.style.setProperty("--theme-transition-y", `${y}px`);
-      root.style.setProperty("--theme-transition-radius", `${radius}px`);
-
       const transition = transitionDocument.startViewTransition(() => {
         flushSync(() => {
-          setTheme(nextTheme);
+          setTheme(next);
         });
       });
 
       await transition.ready;
 
       const animation = root.animate(
-        {
-          clipPath: revealFrames,
-        },
+        { clipPath: revealFrames },
         {
           duration: 900,
           easing: "cubic-bezier(0.22, 1, 0.36, 1)",
@@ -89,11 +89,8 @@ export function ModeToggle() {
 
       await Promise.allSettled([transition.finished, animation.finished]);
     } catch {
-      setTheme(nextTheme);
+      setTheme(next);
     } finally {
-      root.style.removeProperty("--theme-transition-x");
-      root.style.removeProperty("--theme-transition-y");
-      root.style.removeProperty("--theme-transition-radius");
       requestAnimationFrame(() => {
         isAnimatingRef.current = false;
       });
@@ -104,37 +101,28 @@ export function ModeToggle() {
     <motion.button
       ref={buttonRef}
       type="button"
-      aria-label="Toggle theme"
-      aria-pressed={isDark}
+      aria-label={`Theme: ${label}. Switch to ${THEME_META[next].label}`}
+      title={label}
+      data-cursor={label}
       onClick={() => void toggleTheme()}
       whileTap={{ scale: 0.96 }}
-      className="group relative inline-flex size-10 items-center justify-center overflow-hidden rounded-full border border-black/20 bg-background text-foreground transition-all duration-300 hover:bg-zinc-50 dark:border-white/75 dark:hover:bg-muted/80"
+      className="group relative inline-flex size-10 items-center justify-center overflow-hidden rounded-full border border-edge bg-background text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted"
     >
-      <span className="absolute inset-[3px] rounded-full bg-zinc-100/80 dark:bg-white/[0.03]" />
       <motion.span
         suppressHydrationWarning
-        animate={{
-          scale: isDark ? 1.04 : 0.94,
-          opacity: isDark ? 0.16 : 0.08,
-        }}
+        animate={{ opacity: current === "light" ? 0.08 : 0.2 }}
         transition={{ duration: 0.35, ease: "easeOut" }}
-        className="pointer-events-none absolute inset-[8px] rounded-full bg-sky-400/35 blur-md dark:bg-sky-500/25"
+        className="pointer-events-none absolute inset-[8px] rounded-full bg-brand/40 blur-md"
       />
       <motion.span
+        key={current}
         suppressHydrationWarning
-        animate={{
-          rotate: isDark ? 0 : 90,
-          scale: isDark ? 1 : 0.92,
-          y: isDark ? 0 : 0.5,
-        }}
+        initial={{ rotate: -90, scale: 0.6, opacity: 0 }}
+        animate={{ rotate: 0, scale: 1, opacity: 1 }}
         transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
         className="relative z-10 inline-flex items-center justify-center"
       >
-        {isDark ? (
-          <Moon className="size-[18px]" strokeWidth={1.8} />
-        ) : (
-          <Sun className="size-[18px]" strokeWidth={1.8} />
-        )}
+        <Icon className="size-[18px]" strokeWidth={1.8} />
       </motion.span>
     </motion.button>
   );

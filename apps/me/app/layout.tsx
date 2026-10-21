@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import { IBM_Plex_Mono, IBM_Plex_Sans, Playfair_Display } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 
@@ -7,6 +7,12 @@ const ibmPlexSans = IBM_Plex_Sans({
   subsets: ["latin", "vietnamese"],
   weight: ["400", "500", "600"],
   variable: "--font-ibm-plex-sans",
+});
+
+const displaySerif = Playfair_Display({
+  subsets: ["latin", "vietnamese"],
+  style: ["normal", "italic"],
+  variable: "--font-display-serif",
 });
 
 const ibmPlexMono = IBM_Plex_Mono({
@@ -56,7 +62,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} antialiased font-sans`}
+        className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} ${displaySerif.variable} antialiased font-sans`}
       >
         <Providers>{children}</Providers>
       </body>
