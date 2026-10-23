@@ -11,9 +11,11 @@ const nextConfig: NextConfig = {
     viewTransition: true,
   },
   // Guides are read from disk at request time; ship the markdown with the server build.
+  // Content is read from disk at request time (ISR home page, RSS, fallback renders):
+  // ship it with every server function under /[locale].
   outputFileTracingIncludes: {
-    "/[locale]/guides/**": ["./content/guides/**/*", "./content/guides-localized/**/*"],
-    "/[locale]": ["./content/guides/**/*", "./content/guides-localized/**/*"],
+    "/[locale]": ["./content/**/*"],
+    "/[locale]/**": ["./content/**/*"],
   },
   turbopack: {
     root: path.join(configDir, "..", ".."),
