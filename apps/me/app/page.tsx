@@ -11,15 +11,19 @@ import { CursorLabel } from "@/components/ui/cursor-label";
 import { EasterEgg } from "@/components/ui/easter-egg";
 import { ScrollProgress } from "@/components/ui/scroll-progress";
 import { ScrollToTop } from "@/components/ui/scroll-to-top";
-import { getAllPosts } from "../../blogs/lib/blog";
+import path from "node:path";
+import { getAllPosts } from "../../blogs/lib/content/posts";
 import type { BlogPost } from "@repo/ui/types/post";
+
+// Latest posts come straight from the blog's content folder in this monorepo.
+const BLOG_POSTS_DIR = path.join(process.cwd(), "..", "blogs", "content", "posts");
 
 const blogsBaseUrl =
   process.env.NEXT_PUBLIC_BLOGS_URL?.replace(/\/$/, "") ??
   "http://localhost:3002/en";
 
 export default function Home() {
-  const posts: BlogPost[] = getAllPosts("en")
+  const posts: BlogPost[] = getAllPosts("en", BLOG_POSTS_DIR)
     .slice(0, 3)
     .map((post) => ({
       slug: post.slug,
@@ -27,7 +31,7 @@ export default function Home() {
       excerpt: post.excerpt,
       date: post.date,
       readingTime: post.readingTime,
-      category: post.category,
+      category: post.topic,
       tags: post.tags,
       image: post.image,
     }));

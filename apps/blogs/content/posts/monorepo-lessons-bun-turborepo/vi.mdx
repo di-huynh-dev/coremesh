@@ -1,0 +1,55 @@
+---
+title: "Những gì monorepo Bun + Turborepo dạy mình"
+excerpt: "Ba app Next.js, năm package dùng chung, một lockfile. Ghi chép về ranh giới, caching và những sai lầm mình sẽ tránh lần sau."
+---
+
+<Lead>Trang này nằm trong một monorepo cùng với portfolio và một ứng dụng học tập. Gom chúng về một chỗ bằng Bun workspaces và Turborepo phần lớn là dễ chịu — và đôi khi khiến mình khiêm tốn hơn. Đây là những điều đọng lại.</Lead>
+
+## Bắt đầu từ ranh giới, không phải thư mục
+
+Phản xạ đầu tiên thường là dồn mọi thứ dùng chung vào `packages/ui`. Đừng vội. Một package dùng chung là một lời hứa: mọi app import nó đều đồng ý với API của nó. Giờ mình chỉ tách code ra khi có app **thứ hai** thật sự cần.
+
+Những package xứng đáng tồn tại đều khá nhàm chán: cấu hình ESLint, cấu hình TypeScript, preset Tailwind, vài tiện ích nhỏ và helper cho auth.
+
+```json
+// apps/blogs/package.json
+"dependencies": {
+  "@repo/ui": "*",
+  "@repo/utils": "*"
+}
+```
+
+## Để Turborepo quản lý đồ thị task
+
+Tiền tố `^` trong `dependsOn` nghĩa là "chạy task này ở các dependency trước". Kết hợp với `outputs` chính xác, Turborepo có thể bỏ qua mọi task mà đầu vào không đổi.
+
+```json
+{
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "!.next/cache/**"]
+    },
+    "check-types": { "dependsOn": ["^check-types"] },
+    "dev": { "cache": false, "persistent": true }
+  }
+}
+```
+
+<Callout>
+  **Cẩn thận:** biến môi trường cũng là đầu vào của task. Nếu build đọc `NEXTAUTH_URL` mà Turbo không biết, bạn sẽ nhận cache hit với giá trị sai đã được đóng gói sẵn. Hãy khai báo chúng.
+</Callout>
+
+## Một lockfile, nhiều cổng
+
+Lockfile duy nhất của Bun giữ version đồng bộ giữa các app, loại bỏ cả một nhóm lỗi kiểu "chạy được ở app này". Điều phiền nhỏ nhưng có thật là cổng: hãy gán cho mỗi app một cổng dev cố định trong `package.json` để `turbo dev` không tranh nhau cổng 3000.
+
+## Lần sau mình sẽ bỏ qua
+
+- **UI dùng chung quá sớm.** Mỗi app có bản sắc riêng; thư viện button dùng chung chủ yếu tạo ra ràng buộc.
+- **Import chéo giữa app bằng đường dẫn tương đối.** Nếu dùng chung, biến nó thành package. Nếu không, cứ chép.
+- **Bỏ type check trong CI.** Pipeline nhanh thì tốt, cho đến khi một lỗi type lọt vào cả ba app cùng lúc.
+
+## Có đáng không?
+
+Có. Một lần cài đặt, một chỗ để nâng cấp Next.js, và build được cache khiến CI gần như tức thì. Bí quyết là coi monorepo như tập hợp những sản phẩm nhỏ ở chung một nhà, chứ không phải một app khổng lồ.

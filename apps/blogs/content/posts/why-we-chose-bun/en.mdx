@@ -1,0 +1,32 @@
+---
+title: "Why I Chose Bun Over npm for This Monorepo"
+excerpt: "The performance wins and day-to-day developer experience improvements that made Bun my package manager of choice."
+---
+
+<Lead>When setting up a new codebase, every default decision compounds. The choice of package manager looks small, but it touches every install, every CI run and every new teammate. Here's why I picked Bun.</Lead>
+
+## Speed That Actually Matters
+
+Bun installs packages dramatically faster than npm. That isn't just a benchmark number — it's time saved on every `install`, every CI run, every onboarding.
+
+When you run `bun install`, you notice the difference immediately. On this repo, a cold install takes a couple of seconds with Bun versus well over half a minute with npm.
+
+## Native TypeScript Support
+
+Bun runs TypeScript natively without a separate compile step. That means faster script startup, quicker test runs and a simpler toolchain.
+
+No more waiting for `tsc` or wiring complex build configuration just to run a one-off script.
+
+## Built-in Bundler and Test Runner
+
+Instead of juggling multiple tools, Bun ships a bundler and a test runner out of the box. Fewer dependencies, less configuration, and tools that are designed to work together.
+
+## The Developer Experience
+
+Beyond raw performance, the CLI is intuitive, error messages are helpful and the docs are good. It feels like a tool built by people who know the daily friction of JavaScript development.
+
+## Making the Switch
+
+Coming from npm or yarn, the transition is smooth. Bun understands existing `package.json` files and workspaces, so you can adopt it without restructuring the project.
+
+> Fast tooling isn't a luxury — it's what keeps the feedback loop short enough to stay in flow.

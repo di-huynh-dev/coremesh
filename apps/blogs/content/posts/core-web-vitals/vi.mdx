@@ -1,0 +1,371 @@
+---
+title: "Core Web Vitals: hiểu đúng LCP, INP, CLS và cách tối ưu"
+excerpt: "Ba chỉ số Google dùng để đo trải nghiệm thật của người dùng — đo thế nào, được tính ra sao, vì sao ảnh hưởng SEO, và quy trình cụ thể để tìm đúng nguyên nhân rồi sửa."
+---
+
+<Lead>Một trang "nhanh" trên laptop của developer chưa chắc đã nhanh với người dùng thật trên điện thoại tầm trung và mạng 4G chập chờn. Core Web Vitals là cách Google biến trải nghiệm đó thành con số đo được — và từ giữa năm 2021, chúng là một phần của tín hiệu xếp hạng tìm kiếm. Bài này đi từ định nghĩa đến cách tính, rồi đến quy trình debug mình dùng khi một chỉ số bị đỏ.</Lead>
+
+## Web Vitals là gì?
+
+Web Vitals là bộ chỉ số của Google để đánh giá trải nghiệm người dùng bằng những thước đo rõ ràng, kèm hướng dẫn cụ thể để cải thiện. Chúng nằm trong nhóm tín hiệu "page experience" mà Google dùng để đánh giá một trang, bên cạnh các tiêu chí khác:
+
+- **Largest Contentful Paint (LCP)** — tốc độ tải nội dung chính
+- **Interaction to Next Paint (INP)** — độ phản hồi khi tương tác (thay cho First Input Delay từ tháng 3/2024)
+- **Cumulative Layout Shift (CLS)** — độ ổn định thị giác
+- **Thân thiện với di động** — hiển thị và dùng tốt trên mọi màn hình
+- **Duyệt web an toàn** — không có mã độc, nội dung lừa đảo
+- **HTTPS** — kết nối được mã hoá
+- **Không có pop-up xâm lấn** — quảng cáo hay hộp thoại không che mất nội dung chính
+
+**Core Web Vitals** là tập con quan trọng nhất: LCP, INP và CLS. Mỗi chỉ số đại diện cho một câu hỏi người dùng tự đặt ra khi mở trang: *"Nó có đang tải không?"*, *"Bấm vào có phản hồi không?"*, *"Mọi thứ có đứng yên không?"*.
+
+## Vì sao Core Web Vitals quan trọng với SEO
+
+- **Là tín hiệu xếp hạng:** Core Web Vitals chính thức trở thành một phần của hệ thống xếp hạng của Google từ giữa tháng 6/2021.
+- **Đo trải nghiệm thật:** chúng phản ánh điều người dùng cảm nhận sau khi bấm vào kết quả tìm kiếm, không phải thời gian tải trên máy developer.
+- **Không chỉ là tốc độ:** một trang tải nhanh nhưng nhảy layout liên tục hoặc bấm không phản hồi vẫn bị điểm kém. CWV cân bằng giữa tốc độ, độ phản hồi và độ ổn định.
+- **Khung đánh giá rõ ràng:** mỗi chỉ số có ngưỡng "Tốt / Cần cải thiện / Kém" cụ thể.
+
+<Callout>
+  **Đừng thần thánh hoá:** nội dung phù hợp với truy vấn vẫn là yếu tố quan trọng nhất. Core Web Vitals giống một yếu tố "phá thế hoà" giữa những trang có chất lượng nội dung tương đương — nhưng chúng ảnh hưởng trực tiếp đến tỉ lệ thoát và chuyển đổi, nên đáng làm kể cả khi bỏ qua SEO.
+</Callout>
+
+## Đo ở đâu: dữ liệu field và dữ liệu lab
+
+Đây là chỗ nhiều người hiểu nhầm nhất, nên cần nói rõ trước khi đi vào từng chỉ số.
+
+| | Dữ liệu field (người dùng thật) | Dữ liệu lab (mô phỏng) |
+| --- | --- | --- |
+| **Nguồn** | Chrome UX Report (CrUX), thư viện `web-vitals` gắn trên trang | Lighthouse, PageSpeed Insights (phần lab), DevTools |
+| **Phản ánh** | Thiết bị, mạng, hành vi thật — đa dạng và "bẩn" | Một máy, một cấu hình mạng cố định |
+| **Dùng để** | Biết trang *có* vấn đề hay không — Google xếp hạng theo số này | Tìm *vì sao* có vấn đề, thử nghiệm cách sửa |
+| **Đo được INP?** | Có | Không — Lighthouse dùng Total Blocking Time (TBT) làm chỉ số thay thế |
+
+Vài chi tiết quan trọng về dữ liệu field:
+
+- Google đánh giá ở **phân vị thứ 75**: một trang đạt "Tốt" khi ít nhất 75% lượt truy cập có chỉ số trong ngưỡng tốt. Nghĩa là bạn đang tối ưu cho cả những người dùng chậm hơn trung bình.
+- Dữ liệu CrUX là **trung bình trượt 28 ngày**. Sửa xong hôm nay, phải vài tuần sau số liệu trong Search Console mới phản ánh hết.
+- **Mobile và desktop được tính riêng.** Trang tốt trên desktop vẫn có thể đỏ trên mobile, và mobile thường là nơi khó hơn.
+
+## Ba chỉ số và ngưỡng đánh giá
+
+| Chỉ số | Đo cái gì | Tốt | Cần cải thiện | Kém |
+| --- | --- | --- | --- | --- |
+| **LCP** | Nội dung chính hiện ra nhanh đến đâu | ≤ 2,5s | 2,5s – 4,0s | > 4,0s |
+| **INP** | Trang phản hồi tương tác nhanh đến đâu | ≤ 200ms | 200ms – 500ms | > 500ms |
+| **CLS** | Bố cục bị xê dịch bất ngờ bao nhiêu | ≤ 0,1 | 0,1 – 0,25 | > 0,25 |
+
+## LCP — Largest Contentful Paint
+
+**Định nghĩa:** thời gian từ lúc người dùng bắt đầu điều hướng đến khi phần tử nội dung lớn nhất trong viewport được render xong. Mục tiêu là tốc độ tải *cảm nhận được*: người dùng thấy nội dung chính càng sớm càng tốt.
+
+### Phần tử nào được tính là "lớn nhất"?
+
+Trình duyệt liên tục ghi nhận phần tử lớn nhất đã hiển thị trong lúc trang tải, và giá trị cuối cùng là phần tử lớn nhất tại thời điểm người dùng tương tác lần đầu (cuộn, bấm, gõ phím). Các ứng viên gồm:
+
+- Thẻ `img`, ảnh `image` bên trong `svg`
+- Ảnh poster hoặc khung hình đầu của `video`
+- Phần tử có `background-image` qua `url()`
+- Khối chữ (đoạn văn, tiêu đề) lớn
+
+Phần tử có `opacity: 0` và ảnh ít chi tiết (như placeholder mờ, ảnh một màu) không được tính. Trên phần lớn các trang, LCP là **ảnh hero** hoặc **tiêu đề chính**.
+
+### Bốn giai đoạn tạo nên LCP
+
+Con số LCP tổng ít nói lên điều gì. Muốn sửa, phải tách nó ra để biết thời gian đang mất ở đâu:
+
+| Giai đoạn | Là khoảng thời gian | Tỉ lệ mục tiêu trong LCP |
+| --- | --- | --- |
+| **Time to First Byte (TTFB)** | Từ lúc điều hướng đến byte HTML đầu tiên | khoảng 40% |
+| **Resource load delay** | Từ TTFB đến lúc trình duyệt *bắt đầu* tải tài nguyên LCP | dưới 10% |
+| **Resource load duration** | Thời gian tải xong tài nguyên LCP | khoảng 40% |
+| **Element render delay** | Từ lúc tải xong đến lúc thật sự vẽ lên màn hình | dưới 10% |
+
+Một trang có LCP 2,5s mà "load delay" chiếm 1s là dấu hiệu rõ ràng: ảnh được phát hiện quá muộn. Ngược lại, nếu TTFB đã chiếm 1,8s thì tối ưu ảnh bao nhiêu cũng không cứu được.
+
+<Callout>
+  Trong Chrome DevTools → **Performance**, ghi lại một lần tải trang rồi chọn mục LCP: DevTools hiển thị sẵn bốn giai đoạn này. Với dữ liệu người dùng thật, bản *attribution* của thư viện `web-vitals` trả về đúng bốn con số trên (xem phần cuối bài).
+</Callout>
+
+### Tối ưu theo từng giai đoạn
+
+**1. TTFB** — mục tiêu tốt là dưới 0,8s.
+
+- Render tĩnh (SSG) hoặc cache HTML ở CDN thay vì render lại mỗi request.
+- Đặt server hoặc edge gần người dùng; tránh chuỗi redirect (`http` → `https` → `www` → trang đích).
+- Giảm việc phải làm trước khi trả HTML: truy vấn tuần tự, gọi API nối tiếp nhau.
+
+**2. Resource load delay** — để trình duyệt thấy tài nguyên LCP *ngay trong HTML*.
+
+- Ảnh hero nên là thẻ `img` trong HTML ban đầu, không phải chèn bằng JavaScript sau khi hydrate.
+- Tránh dùng `background-image` trong CSS cho phần tử LCP: trình duyệt chỉ phát hiện ảnh sau khi tải và phân tích xong CSS.
+- Dùng `fetchpriority="high"` cho ảnh LCP, và `preload` khi ảnh không nằm sẵn trong HTML.
+
+**3. Resource load duration** — làm tài nguyên nhỏ đi.
+
+- Dùng AVIF hoặc WebP, nén hợp lý, và phục vụ đúng kích thước cho từng màn hình bằng `srcset` và `sizes`.
+- Phục vụ ảnh qua CDN ảnh có cache dài hạn.
+
+**4. Element render delay** — đừng để thứ gì chặn việc vẽ.
+
+- Giảm CSS chặn render, tách CSS không cần cho màn hình đầu tiên.
+- Không để phần tử LCP phụ thuộc vào JavaScript (ẩn cho đến khi hydrate, A/B test ẩn trang để đổi nội dung).
+- Font web chặn hiển thị chữ cũng có thể làm trễ LCP khi LCP là khối chữ.
+
+```html
+<!-- Ảnh hero: có trong HTML ngay từ đầu, ưu tiên cao, đúng kích thước theo màn hình -->
+<img
+  src="/hero-1200.avif"
+  srcset="/hero-640.avif 640w, /hero-1200.avif 1200w, /hero-1920.avif 1920w"
+  sizes="(min-width: 1024px) 1200px, 100vw"
+  width="1200"
+  height="630"
+  alt="..."
+  fetchpriority="high"
+/>
+```
+
+Trong Next.js, `next/image` lo phần `srcset`, định dạng và kích thước. Từ Next.js 16, đánh dấu ảnh LCP bằng `preload` (bản cũ hơn dùng `priority`):
+
+```jsx
+import Image from "next/image";
+
+export function Hero() {
+  return (
+    <Image
+      src="/hero.jpg"
+      alt="..."
+      width={1200}
+      height={630}
+      sizes="(min-width: 1024px) 1200px, 100vw"
+      preload
+    />
+  );
+}
+```
+
+<Callout>
+  **Đừng lazy-load ảnh LCP.** `loading="lazy"` rất tốt cho ảnh nằm dưới màn hình đầu tiên, nhưng đặt nó lên ảnh hero sẽ khiến trình duyệt trì hoãn đúng tài nguyên quan trọng nhất. Đây là một trong những lỗi LCP phổ biến nhất mình gặp.
+</Callout>
+
+## INP — Interaction to Next Paint
+
+INP thay thế First Input Delay (FID) từ tháng 3/2024. FID chỉ đo độ trễ *trước khi* xử lý lần tương tác *đầu tiên*; INP xét gần như **mọi** lần click, chạm và gõ phím trong suốt phiên, và đo đến tận lúc trình duyệt vẽ được khung hình kế tiếp — tức là lúc người dùng *thấy* phản hồi. Cuộn trang và hover không được tính.
+
+### Ba thành phần của một lần tương tác
+
+| Thành phần | Là gì | Nguyên nhân thường gặp |
+| --- | --- | --- |
+| **Input delay** | Từ lúc người dùng tương tác đến khi event handler bắt đầu chạy | Main thread đang bận việc khác: hydration, script bên thứ ba, timer |
+| **Processing duration** | Thời gian chạy các event handler | Handler làm quá nhiều việc đồng bộ, cập nhật state lớn |
+| **Presentation delay** | Từ khi handler xong đến khi khung hình mới được vẽ | DOM lớn, layout và style phức tạp, render lại nhiều |
+
+INP của trang là lần tương tác **chậm nhất** (với trang có rất nhiều tương tác, cứ mỗi 50 lần thì bỏ qua một lần chậm nhất để loại nhiễu). Vì vậy chỉ một nút "nặng" thôi cũng đủ kéo INP của cả trang xuống.
+
+### Nguyên nhân gốc: main thread bị chiếm
+
+Mọi thứ trên — chạy JavaScript, tính style, layout, vẽ — đều dùng chung một main thread. Một tác vụ chạy hơn 50ms được gọi là **long task**; mọi tương tác xảy ra trong lúc đó phải xếp hàng chờ. API **Long Animation Frames (LoAF)** trong Chrome cho biết chính xác script nào gây ra các khung hình chậm, và được thư viện `web-vitals` gắn sẵn vào dữ liệu attribution.
+
+### Tối ưu theo từng thành phần
+
+**Giảm input delay:**
+
+- Chia nhỏ việc chạy lúc tải trang (khởi tạo, hydration) để main thread có khoảng trống xử lý tương tác.
+- Hoãn hoặc cắt bớt script bên thứ ba; tải chúng sau khi trang đã tương tác được.
+- **Code splitting** để giảm lượng JavaScript cần parse và chạy lúc đầu.
+
+**Giảm processing duration:** làm phần cập nhật giao diện trước, đẩy việc nặng ra sau và nhường main thread giữa chừng.
+
+```js
+// Nhường main thread giữa các phần việc để tương tác không phải chờ.
+function yieldToMain() {
+  if (globalThis.scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+button.addEventListener("click", async () => {
+  showSpinner(); // phản hồi người dùng thấy ngay
+  await yieldToMain(); // để trình duyệt vẽ khung hình đó trước
+  const result = expensiveCalculation();
+  render(result);
+  await yieldToMain();
+  sendAnalytics(result); // việc không gấp đi sau cùng
+});
+```
+
+Trong React, đánh dấu những cập nhật không gấp để React có thể ngắt chúng khi có tương tác mới:
+
+```jsx
+import { useDeferredValue, useState } from "react";
+
+function SearchPage({ items }) {
+  const [query, setQuery] = useState("");
+  // Ô input cập nhật ngay; danh sách nặng được render với độ ưu tiên thấp hơn.
+  const deferredQuery = useDeferredValue(query);
+
+  return (
+    <>
+      <input value={query} onChange={(event) => setQuery(event.target.value)} />
+      <ResultList items={items} query={deferredQuery} />
+    </>
+  );
+}
+```
+
+<Callout>
+  `requestIdleCallback` phù hợp cho việc *không gấp* (gửi analytics, prefetch). Còn để chia nhỏ một tác vụ người dùng đang chờ, `scheduler.yield()` (hoặc `setTimeout` làm phương án dự phòng) cho kết quả tốt hơn vì phần việc còn lại được tiếp tục sớm.
+</Callout>
+
+**Giảm presentation delay:**
+
+- Giữ DOM gọn — hàng nghìn node khiến mỗi lần tính style và layout đều đắt.
+- Dùng `content-visibility: auto` cho các phần dài nằm ngoài màn hình để trình duyệt bỏ qua việc render chúng.
+- **Tránh layout thrashing:** đọc và ghi layout xen kẽ trong vòng lặp buộc trình duyệt tính lại layout liên tục.
+
+```js
+// ❌ Mỗi vòng lặp đọc offsetWidth sau khi vừa ghi style → layout bị tính lại N lần
+for (const box of boxes) {
+  box.style.width = `${container.offsetWidth / 2}px`;
+}
+
+// ✅ Đọc một lần, rồi ghi hàng loạt
+const half = container.offsetWidth / 2;
+for (const box of boxes) {
+  box.style.width = `${half}px`;
+}
+```
+
+## CLS — Cumulative Layout Shift
+
+**Định nghĩa:** đo mức độ các phần tử nhìn thấy được bị xê dịch *bất ngờ* — ví dụ bạn định bấm nút thì một banner quảng cáo chèn vào và đẩy nút xuống, và bạn bấm nhầm vào quảng cáo.
+
+### Cái gì được tính, cái gì không
+
+- Chỉ tính xê dịch **bất ngờ**: xê dịch xảy ra trong vòng 500ms sau khi người dùng click, chạm hay gõ phím được coi là có chủ đích và **không bị tính** (ví dụ mở accordion).
+- Animation bằng `transform` không làm phần tử "xê dịch" theo định nghĩa của CLS, nên không bị tính.
+- Từ năm 2021, CLS dùng **session window**: các lần xê dịch được gom thành từng cụm, mỗi cụm kéo dài tối đa 5 giây và các lần dịch trong cụm cách nhau dưới 1 giây. CLS của trang là **tổng của cụm tệ nhất**, chứ không cộng dồn cả phiên. Nhờ vậy, single-page app mở lâu cũng không bị phạt oan.
+
+### Cách tính một lần xê dịch
+
+**layout shift score = impact fraction × distance fraction**
+
+- **Impact fraction:** diện tích *hợp* của vùng phần tử chiếm ở khung hình trước **và** khung hình sau, chia cho diện tích viewport.
+- **Distance fraction:** quãng đường lớn nhất phần tử bị dịch, chia cho **cạnh lớn nhất** của viewport (chiều rộng hoặc chiều cao).
+
+**Ví dụ:** viewport 1920×1080. Một thẻ rộng toàn màn hình, cao 300px, đang ở `top: 64px`. Một quảng cáo cao 100px kèm 48px margin được chèn phía trên, đẩy thẻ xuống 148px (đến `top: 212px`).
+
+1. Vùng hợp của thẻ trước và sau: từ 64px đến 512px → cao 448px.
+2. **Impact fraction** = 448 / 1080 ≈ 0,415
+3. **Distance fraction** = 148 / 1920 ≈ 0,077 (cạnh lớn nhất là chiều rộng 1920px)
+4. **Điểm** = 0,415 × 0,077 ≈ **0,032** → vẫn "Tốt", nhưng chỉ cần vài lần như vậy trong cùng một cụm là vượt 0,1.
+
+Thử đổi các con số bên dưới để thấy điểm thay đổi thế nào — ví dụ đổi viewport thành điện thoại 390×844:
+
+<ClsCalculator />
+
+<Callout>
+  **Lỗi tính hay gặp:** dùng chiều cao phần tử (300/1080 ≈ 0,278) làm impact fraction và chiều cao viewport làm mẫu số của distance fraction. Theo định nghĩa, impact fraction lấy vùng *hợp* của hai vị trí, còn distance fraction chia cho cạnh lớn nhất của viewport. Cùng một lần dịch 148px, trên màn hình điện thoại dọc (cạnh lớn nhất là chiều cao) điểm sẽ cao hơn nhiều.
+</Callout>
+
+### Nguyên nhân và cách khắc phục
+
+| Nguyên nhân | Cách khắc phục |
+| --- | --- |
+| Ảnh, video, iframe không khai báo kích thước | Đặt `width` và `height` trên thẻ; trình duyệt tự suy ra tỉ lệ khung và giữ chỗ |
+| Nội dung động (quảng cáo, banner, embed) chèn vào không có chỗ trống | Giữ chỗ trước bằng `min-height` hoặc skeleton cùng kích thước |
+| Banner cookie, thông báo chèn vào đầu trang | Hiển thị dạng lớp phủ `position: fixed` thay vì đẩy nội dung xuống |
+| Font web thay thế font dự phòng (FOIT/FOUT) làm chữ đổi kích thước | Preload font, `font-display: optional`, hoặc chỉnh font dự phòng bằng `size-adjust` |
+| Animation đổi `top`, `height`, `margin` | Dùng `transform` và `opacity` — không gây reflow, không tính vào CLS |
+
+```css
+/* Có width/height trên thẻ img, trình duyệt tự suy ra tỉ lệ khung và giữ chỗ trước khi ảnh tải xong */
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Khi không biết trước kích thước (ví dụ embed), khai báo tỉ lệ trực tiếp */
+.video-embed {
+  aspect-ratio: 16 / 9;
+}
+
+/* Font dự phòng được chỉnh cho khớp số đo với font web → chữ không nhảy khi font tải xong */
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial");
+  size-adjust: 107%;
+  ascent-override: 90%;
+}
+```
+
+<Callout>
+  Trong Next.js, `next/font` tự tạo font dự phòng đã chỉnh `size-adjust` cho bạn — một cách gần như miễn phí để loại bỏ CLS do font. Ngoài ra, hãy đảm bảo trang dùng được **back/forward cache** (không dùng `unload`, không `Cache-Control: no-store` khi không cần): khi người dùng bấm Back, trang hiện ra tức thì và không có xê dịch nào.
+</Callout>
+
+## Đo và theo dõi trong thực tế
+
+- **PageSpeed Insights:** dữ liệu field (CrUX) cho URL và cả domain, kèm báo cáo Lighthouse — nơi bắt đầu nhanh nhất.
+- **Search Console → Core Web Vitals:** nhóm các URL giống nhau theo trạng thái để biết nên sửa *loại* trang nào trước.
+- **Chrome DevTools → Performance:** xem long task, bốn giai đoạn của LCP, và từng lần layout shift được tô sáng trên trang.
+- **Thư viện `web-vitals`:** gửi số liệu của người dùng thật về hệ thống của bạn. Bản *attribution* cho biết *vì sao*: phần tử LCP nào, giai đoạn nào chậm, tương tác nào làm INP cao, phần tử nào gây layout shift.
+
+```js
+import { onCLS, onINP, onLCP } from "web-vitals/attribution";
+
+function send(metric) {
+  const body = JSON.stringify({
+    name: metric.name,
+    value: metric.value,
+    rating: metric.rating, // "good" | "needs-improvement" | "poor"
+    page: location.pathname,
+    // Mỗi chỉ số có attribution riêng, ví dụ:
+    // LCP → phần tử LCP và bốn giai đoạn; INP → phần tử được tương tác và loại tương tác;
+    // CLS → phần tử gây xê dịch lớn nhất.
+    attribution: metric.attribution,
+  });
+  navigator.sendBeacon("/analytics/vitals", body);
+}
+
+onLCP(send);
+onINP(send);
+onCLS(send);
+```
+
+Với Next.js App Router, hook `useReportWebVitals` cho ra cùng dữ liệu mà không cần cài thêm gì:
+
+```jsx
+"use client";
+
+import { useReportWebVitals } from "next/web-vitals";
+
+export function WebVitals() {
+  useReportWebVitals((metric) => {
+    navigator.sendBeacon("/analytics/vitals", JSON.stringify(metric));
+  });
+  return null;
+}
+```
+
+## Quy trình debug mình hay dùng
+
+Khi Search Console báo một nhóm URL bị đỏ, mình đi theo thứ tự này thay vì đoán:
+
+1. **Xác nhận bằng dữ liệu field:** chỉ số nào đỏ, trên mobile hay desktop, nhóm trang nào. Đừng sửa thứ chỉ đỏ trong Lighthouse trên máy mình.
+2. **Tìm "cái gì":** với LCP là phần tử nào, với INP là tương tác nào, với CLS là phần tử nào bị dịch — attribution của `web-vitals` trả lời câu này.
+3. **Tìm "vì sao":** tái hiện trong DevTools với CPU throttling (4x hoặc 6x) và mạng chậm. Với LCP, xem giai đoạn nào chiếm nhiều thời gian nhất; với INP, xem input delay, processing hay presentation dài nhất.
+4. **Sửa đúng một nguyên nhân rồi đo lại** bằng dữ liệu lab để chắc chắn có cải thiện.
+5. **Theo dõi field data vài tuần** (CrUX là trung bình 28 ngày) và đặt cảnh báo khi chỉ số xấu đi để lỗi không quay lại sau mỗi lần release.
+
+## Tóm tắt
+
+<Checklist>
+
+- Trải nghiệm người dùng là mục tiêu — Core Web Vitals chỉ là cách đo nó.
+- Core Web Vitals là một tín hiệu xếp hạng của Google, đánh giá ở phân vị 75 của người dùng thật.
+- LCP: tách thành bốn giai đoạn và sửa giai đoạn chiếm nhiều thời gian nhất.
+- INP: giải phóng main thread — chia nhỏ tác vụ, nhường main thread, giảm JavaScript và DOM.
+- CLS: giữ chỗ cho mọi thứ sẽ xuất hiện, và chỉ animate bằng transform.
+- Đo bằng dữ liệu người dùng thật, biết "vì sao" trước khi sửa, và theo dõi liên tục — hiệu năng không bao giờ "xong".
+
+</Checklist>

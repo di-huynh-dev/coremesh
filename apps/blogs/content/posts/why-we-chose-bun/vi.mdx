@@ -1,0 +1,32 @@
+---
+title: "Vì sao mình chọn Bun thay vì npm cho monorepo này"
+excerpt: "Những lợi ích về tốc độ và trải nghiệm phát triển hằng ngày khiến Bun trở thành trình quản lý gói mình chọn."
+---
+
+<Lead>Khi dựng một codebase mới, mọi lựa chọn mặc định đều cộng dồn theo thời gian. Trình quản lý gói trông có vẻ là chuyện nhỏ, nhưng nó chạm vào mọi lần cài đặt, mọi lần chạy CI và mọi đồng đội mới. Đây là lý do mình chọn Bun.</Lead>
+
+## Tốc độ thật sự có ý nghĩa
+
+Bun cài gói nhanh hơn npm rất nhiều. Đó không chỉ là con số benchmark — đó là thời gian tiết kiệm được ở mỗi lần `install`, mỗi lần chạy CI, mỗi lần onboarding.
+
+Chạy `bun install` là thấy khác biệt ngay. Với repo này, cài đặt từ đầu chỉ mất vài giây với Bun, so với hơn nửa phút khi dùng npm.
+
+## Hỗ trợ TypeScript sẵn có
+
+Bun chạy TypeScript trực tiếp, không cần bước biên dịch riêng. Nghĩa là script khởi động nhanh hơn, test chạy nhanh hơn và toolchain đơn giản hơn.
+
+Không còn phải chờ `tsc` hay cấu hình build phức tạp chỉ để chạy một script nhỏ.
+
+## Bundler và test runner tích hợp
+
+Thay vì phải xoay xở với nhiều công cụ, Bun đi kèm sẵn bundler và test runner. Ít dependency hơn, ít cấu hình hơn, và các công cụ được thiết kế để chạy cùng nhau.
+
+## Trải nghiệm của lập trình viên
+
+Ngoài hiệu năng, CLI của Bun dễ dùng, thông báo lỗi rõ ràng và tài liệu tốt. Cảm giác như công cụ được làm bởi những người hiểu những phiền toái hằng ngày khi làm JavaScript.
+
+## Chuyển đổi
+
+Nếu bạn đang dùng npm hay yarn, việc chuyển sang khá trơn tru. Bun hiểu sẵn `package.json` và workspaces hiện có, nên bạn có thể dùng ngay mà không phải tái cấu trúc dự án.
+
+> Công cụ nhanh không phải là xa xỉ — nó giữ vòng phản hồi đủ ngắn để mình không bị đứt mạch.

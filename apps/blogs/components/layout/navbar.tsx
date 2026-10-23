@@ -1,271 +1,167 @@
 "use client";
 
+import { SearchDialog } from "@/components/layout/search-dialog";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
-import { Menu, Moon, Sun, X } from "lucide-react";
-import { useSession } from "next-auth/react";
-import { useLocale } from "next-intl";
+import type { SearchEntry } from "@/lib/content/types";
+import { cn } from "@/lib/utils";
+import { Menu, Moon, Search, Sun, X } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
-
-import { useTranslations } from "next-intl";
+import { usePathname } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 
 function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
+  const t = useTranslations("navigation");
 
   return (
     <button
       onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-      className="w-9 h-9 rounded-full bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 flex items-center justify-center transition-colors"
-      aria-label="Toggle theme"
+      className="flex size-9 items-center justify-center rounded-full text-ink/75 transition-colors hover:bg-paper hover:text-ink"
+      aria-label={t("toggleTheme")}
     >
-      {resolvedTheme === "dark" ? (
-        <Sun className="w-4 h-4 text-foreground/70 hover:text-foreground transition-colors" />
-      ) : (
-        <Moon className="w-4 h-4 text-foreground/70 hover:text-foreground transition-colors" />
-      )}
+      <Sun className="hidden size-4 dark:block" />
+      <Moon className="size-4 dark:hidden" />
     </button>
   );
 }
 
-export function Navbar() {
-  useSession();
-  const router = useRouter();
+export function Navbar({ searchIndex }: { searchIndex: SearchEntry[] }) {
   const pathname = usePathname();
   const locale = useLocale();
   const t = useTranslations("navigation");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const navLinks = [
-    { href: "#about", label: t("about") },
-    { href: "/blog", label: t("blog") },
-    { href: "#contact", label: t("contact") },
+    { href: `/${locale}/blog`, label: t("explore"), match: `/${locale}/blog` },
+    { href: `/${locale}/roadmap`, label: t("roadmaps"), match: `/${locale}/roadmap` },
+    { href: `/${locale}/guides`, label: t("guides"), match: `/${locale}/guides` },
+    { href: `/${locale}/tools`, label: t("tools"), match: `/${locale}/tools` },
+    { href: `/${locale}#about`, label: t("about") },
   ];
 
-  const handleLogoClick = () => {
-    if (pathname === `/${locale}`) {
-      window.scrollTo({
-        top: 0,
-        behavior: "smooth",
-      });
-    } else {
-      router.push(`/${locale}`);
-    }
-    setMobileMenuOpen(false);
-  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      const typing =
+        target.isContentEditable ||
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
 
-  const handleLinkClick = () => {
-    setMobileMenuOpen(false);
-  };
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchOpen((open) => !open);
+      } else if (event.key === "/" && !typing) {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   return (
-    <header className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-3xl">
-      <nav
-        className="rounded-2xl md:rounded-full px-4 md:px-6 py-3 flex items-center justify-between"
-        style={{
-          background: "var(--nav-bg, rgba(255, 255, 255, 0.7))",
-          backdropFilter: "blur(20px)",
-          WebkitBackdropFilter: "blur(20px)",
-          border: "1px solid var(--nav-border, rgba(255, 255, 255, 0.3))",
-          boxShadow: "var(--nav-shadow, 0 8px 32px rgba(0, 0, 0, 0.08))",
-        }}
-      >
-        {/* Logo */}
-        <button
-          onClick={handleLogoClick}
-          className="flex items-center gap-2 shrink-0 cursor-pointer"
-        >
-          <Image
-            src="/round-avatar.svg"
-            alt="DiCodeWeb Logo"
-            width={24}
-            height={24}
-            className="rounded-full md:w-7 md:h-7"
-          />
-          <span className="text-base md:text-lg font-semibold text-foreground tracking-tight">
-            DiCodeWeb
-          </span>
-        </button>
+    <header className="sticky top-0 z-50 border-b border-line bg-background/85 backdrop-blur-xl [view-transition-name:site-header]">
+      <nav className="wrap flex h-16 items-center justify-between gap-4">
+        <div className="flex items-center gap-10">
+          <Link
+            href={`/${locale}`}
+            className="flex shrink-0 items-center gap-2.5"
+            onClick={() => setMobileMenuOpen(false)}
+          >
+            <Image
+              src="/round-avatar.svg"
+              alt=""
+              width={28}
+              height={28}
+              className="rounded-full"
+            />
+            <span className="text-[1.05rem] font-bold tracking-[-0.02em] text-ink">
+              DiCodeWeb
+            </span>
+          </Link>
 
-        {/* Desktop Navigation Links */}
-        <div className="hidden md:flex items-center gap-8">
-          {navLinks.map((link) => (
-            <Link
-              key={link.href}
-              href={`/${locale}${link.href}`}
-              className="text-sm font-medium text-foreground/70 hover:text-foreground transition-colors duration-200"
-            >
-              {link.label}
-            </Link>
-          ))}
+          <div className="hidden items-center gap-6 lg:flex">
+            {navLinks.map((link) => {
+              const active = link.match ? pathname.startsWith(link.match) : false;
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "text-sm font-medium transition-colors",
+                    active ? "text-ink" : "text-soft hover:text-ink",
+                  )}
+                >
+                  {link.label}
+                </Link>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Right Side */}
-        <div className="flex items-center gap-2 md:gap-3 shrink-0">
-          <ThemeToggle />
-          <LanguageSwitcher />
-
-          {/* User Avatar - Desktop */}
-          {/* <div className="hidden md:block">
-            {session?.user ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button className="relative rounded-full ring-2 ring-transparent hover:ring-[#FF4D8E]/50 transition-all duration-200">
-                    <Avatar className="w-9 h-9 border-2 border-[#FF4D8E]/30">
-                      <AvatarImage
-                        src={session.user.image || undefined}
-                        alt={session.user.name || "User"}
-                      />
-                      <AvatarFallback className="bg-gradient-to-br from-[#FF4D8E] to-[#FF9100] text-white text-sm font-medium">
-                        {session.user.name?.[0]?.toUpperCase() || "U"}
-                      </AvatarFallback>
-                    </Avatar>
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  className="w-56 glass-panel-dark border-white/10"
-                >
-                  <div className="px-3 py-2">
-                    <p className="text-sm font-medium text-white">
-                      {session.user.name}
-                    </p>
-                    <p className="text-xs text-white/60 truncate">
-                      {session.user.email}
-                    </p>
-                  </div>
-                  <DropdownMenuSeparator className="bg-white/10" />
-                  <DropdownMenuItem
-                    asChild
-                    className="text-white/80 hover:text-white hover:bg-white/10 cursor-pointer"
-                  >
-                    <Link href="/profile">
-                      <User className="w-4 h-4 mr-2" />
-                      Profile
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="text-white/80 hover:text-white hover:bg-white/10 cursor-pointer">
-                    <Settings className="w-4 h-4 mr-2" />
-                    Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator className="bg-white/10" />
-                  <DropdownMenuItem
-                    onClick={() => signOut()}
-                    className="text-red-400 hover:text-red-300 hover:bg-white/10 cursor-pointer"
-                  >
-                    <LogOut className="w-4 h-4 mr-2" />
-                    Sign Out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <Avatar
-                className="w-9 h-9 border-2 border-[#FF4D8E]/30 cursor-pointer hover:border-[#FF4D8E]/60 transition-colors"
-                onClick={() => signIn("google")}
-              >
-                <AvatarFallback className="bg-gradient-to-br from-[#FF4D8E] to-[#FF9100] text-white text-sm font-medium">
-                  YA
-                </AvatarFallback>
-              </Avatar>
-            )}
-          </div> */}
-
-          {/* Mobile Menu Button */}
+        <div className="flex shrink-0 items-center gap-1">
           <button
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="md:hidden p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-            aria-label="Toggle menu"
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            className="mr-1 hidden h-9 items-center gap-2 rounded-full border border-line pr-2 pl-3.5 text-sm text-soft transition-colors hover:border-ink/25 hover:text-ink sm:inline-flex"
           >
-            {mobileMenuOpen ? (
-              <X className="w-5 h-5 text-foreground/70" />
-            ) : (
-              <Menu className="w-5 h-5 text-foreground/70" />
-            )}
+            <Search className="size-4" />
+            <span>{t("search")}</span>
+            <kbd className="rounded-md border border-line bg-paper px-1.5 py-0.5 font-mono text-[0.65rem] text-faint">
+              ⌘K
+            </kbd>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            aria-label={t("search")}
+            className="flex size-9 items-center justify-center rounded-full text-ink/75 hover:bg-paper sm:hidden"
+          >
+            <Search className="size-4" />
+          </button>
+          <ThemeToggle />
+          <Suspense fallback={<span className="w-15" />}>
+            <LanguageSwitcher />
+          </Suspense>
+
+          <button
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            className="flex size-9 items-center justify-center rounded-full text-ink/75 hover:bg-paper lg:hidden"
+            aria-label={t("menu")}
+            aria-expanded={mobileMenuOpen}
+          >
+            {mobileMenuOpen ? <X className="size-5" /> : <Menu className="size-5" />}
           </button>
         </div>
       </nav>
 
-      {/* Mobile Menu Dropdown */}
-      {mobileMenuOpen && (
-        <div
-          className="md:hidden mt-2 rounded-2xl p-4 space-y-1"
-          style={{
-            background: "var(--nav-bg, rgba(255, 255, 255, 0.95))",
-            backdropFilter: "blur(20px)",
-            WebkitBackdropFilter: "blur(20px)",
-            border: "1px solid var(--nav-border, rgba(255, 255, 255, 0.3))",
-            boxShadow: "var(--nav-shadow, 0 8px 32px rgba(0, 0, 0, 0.12))",
-          }}
-        >
-          {navLinks.map((link) => (
-            <Link
-              key={link.href}
-              href={`/${locale}${link.href}`}
-              onClick={handleLinkClick}
-              className="block px-4 py-3 rounded-xl text-foreground/80 hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 transition-colors font-medium"
-            >
-              {link.label}
-            </Link>
-          ))}
-
-          {/* Mobile User Section */}
-          {/* <div className="pt-3 mt-3 border-t border-black/5 dark:border-white/10">
-            {session?.user ? (
-              <div className="space-y-1">
-                <div className="flex items-center gap-3 px-4 py-2">
-                  <Avatar className="w-8 h-8 border-2 border-[#FF4D8E]/30">
-                    <AvatarImage
-                      src={session.user.image || undefined}
-                      alt={session.user.name || "User"}
-                    />
-                    <AvatarFallback className="bg-gradient-to-br from-[#FF4D8E] to-[#FF9100] text-white text-xs font-medium">
-                      {session.user.name?.[0]?.toUpperCase() || "U"}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">
-                      {session.user.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground truncate">
-                      {session.user.email}
-                    </p>
-                  </div>
-                </div>
-                <Link
-                  href={`/${locale}/profile`}
-                  onClick={handleLinkClick}
-                  className="block px-4 py-3 rounded-xl text-foreground/80 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-                >
-                  <User className="w-4 h-4 inline mr-2" />
-                  Profile
-                </Link>
-                <button
-                  onClick={() => {
-                    signOut();
-                    setMobileMenuOpen(false);
-                  }}
-                  className="w-full text-left px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
-                >
-                  <LogOut className="w-4 h-4 inline mr-2" />
-                  Sign Out
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => {
-                  signIn("google");
-                  setMobileMenuOpen(false);
-                }}
-                className="w-full px-4 py-3 rounded-xl bg-[#FF4D8E] text-white font-medium hover:bg-[#FF4D8E]/90 transition-colors"
+      {mobileMenuOpen ? (
+        <div className="border-t border-line bg-background lg:hidden">
+          <div className="wrap flex flex-col py-3">
+            {navLinks.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                onClick={() => setMobileMenuOpen(false)}
+                className="rounded-lg py-3 text-base font-medium text-ink"
               >
-                Sign In with Google
-              </button>
-            )}
-          </div> */}
+                {link.label}
+              </Link>
+            ))}
+          </div>
         </div>
-      )}
+      ) : null}
+
+      <SearchDialog
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        entries={searchIndex}
+      />
     </header>
   );
 }

@@ -1,0 +1,371 @@
+---
+title: "Core Web Vitals: Understanding LCP, INP and CLS — and How to Fix Them"
+excerpt: "The three metrics Google uses to measure real user experience: how they're measured and calculated, why they matter for SEO, and a concrete process to find the real cause before you fix anything."
+---
+
+<Lead>A page that feels fast on a developer laptop isn't necessarily fast for a real user on a mid-range phone and patchy 4G. Core Web Vitals are how Google turns that experience into numbers you can measure — and since mid-2021 they've been part of search ranking. This post goes from definitions to the math, then to the debugging process I use when one of them turns red.</Lead>
+
+## What are Web Vitals?
+
+Web Vitals are Google's set of metrics for evaluating user experience, with clear measurements and actionable guidance. They sit inside the broader "page experience" signals Google uses to assess a page, next to other criteria:
+
+- **Largest Contentful Paint (LCP)** — loading speed of the main content
+- **Interaction to Next Paint (INP)** — responsiveness to interaction (replaced First Input Delay in March 2024)
+- **Cumulative Layout Shift (CLS)** — visual stability
+- **Mobile-friendly** — renders and works well on every screen size
+- **Safe browsing** — no malware or deceptive content
+- **HTTPS** — encrypted connections
+- **No intrusive interstitials** — no ads or dialogs covering the main content
+
+**Core Web Vitals** are the most important subset: LCP, INP and CLS. Each one answers a question users silently ask when a page opens: *"Is it loading?"*, *"Does it respond when I tap?"*, *"Will things stay put?"*
+
+## Why Core Web Vitals matter for SEO
+
+- **A ranking signal:** Core Web Vitals officially became part of Google's ranking systems in mid-June 2021.
+- **They measure real experience:** they reflect what people feel after clicking a search result, not load time on a developer machine.
+- **More than raw speed:** a page that loads quickly but jumps around or ignores taps still scores badly. CWV balance speed, responsiveness and stability.
+- **A clear framework:** each metric has explicit "Good / Needs improvement / Poor" thresholds.
+
+<Callout>
+  **Keep it in proportion:** relevant content is still the strongest factor. Core Web Vitals act more like a tie-breaker between pages of similar quality — but they directly affect bounce and conversion rates, so they're worth fixing even if you ignore SEO entirely.
+</Callout>
+
+## Where it's measured: field data vs lab data
+
+This is the most common source of confusion, so it's worth settling before looking at each metric.
+
+| | Field data (real users) | Lab data (simulated) |
+| --- | --- | --- |
+| **Source** | Chrome UX Report (CrUX), the `web-vitals` library on your page | Lighthouse, PageSpeed Insights (lab section), DevTools |
+| **Reflects** | Real devices, networks and behavior — diverse and messy | One machine, one fixed network profile |
+| **Use it to** | Know *whether* a page has a problem — Google ranks on these numbers | Find out *why*, and test fixes |
+| **Measures INP?** | Yes | No — Lighthouse uses Total Blocking Time (TBT) as a proxy |
+
+A few details about field data that matter:
+
+- Google assesses the **75th percentile**: a page is "Good" when at least 75% of visits fall within the good threshold. You're optimizing for users slower than average, not the median.
+- CrUX is a **rolling 28-day window**. Fix something today and it takes weeks for Search Console to fully reflect it.
+- **Mobile and desktop are assessed separately.** A page can be green on desktop and red on mobile — and mobile is usually the harder one.
+
+## The three metrics and their thresholds
+
+| Metric | What it measures | Good | Needs improvement | Poor |
+| --- | --- | --- | --- | --- |
+| **LCP** | How fast the main content appears | ≤ 2.5s | 2.5s – 4.0s | > 4.0s |
+| **INP** | How fast the page responds to interaction | ≤ 200ms | 200ms – 500ms | > 500ms |
+| **CLS** | How much the layout moves unexpectedly | ≤ 0.1 | 0.1 – 0.25 | > 0.25 |
+
+## LCP — Largest Contentful Paint
+
+**Definition:** the time from when the user starts navigating until the largest content element in the viewport has rendered. The goal is fast *perceived* loading: users see the main content as early as possible.
+
+### Which element counts as "largest"?
+
+The browser keeps track of the largest element painted while the page loads; the final value is the largest one at the moment of the user's first interaction (scroll, tap, key press). Candidates are:
+
+- `img` elements and `image` inside `svg`
+- A `video` poster image or first frame
+- Elements with a `background-image` via `url()`
+- Large blocks of text (paragraphs, headings)
+
+Elements with `opacity: 0` and low-detail images (blurry placeholders, solid colors) don't count. On most pages, the LCP element is the **hero image** or the **main heading**.
+
+### The four phases of LCP
+
+The total LCP number on its own says little. To fix it, split it up and find where the time goes:
+
+| Phase | The time between | Target share of LCP |
+| --- | --- | --- |
+| **Time to First Byte (TTFB)** | Navigation start and the first byte of HTML | about 40% |
+| **Resource load delay** | TTFB and the browser *starting* to fetch the LCP resource | under 10% |
+| **Resource load duration** | Fetching the LCP resource completely | about 40% |
+| **Element render delay** | The resource finishing and the element actually painting | under 10% |
+
+A 2.5s LCP where "load delay" takes 1s is a clear signal: the image is discovered too late. Conversely, if TTFB alone takes 1.8s, no amount of image optimization will save you.
+
+<Callout>
+  In Chrome DevTools → **Performance**, record a page load and select the LCP marker: DevTools shows these four phases directly. For real-user data, the *attribution* build of the `web-vitals` library reports the same four numbers (see the end of this post).
+</Callout>
+
+### Fixing each phase
+
+**1. TTFB** — aim for under 0.8s.
+
+- Render statically (SSG) or cache HTML at the CDN instead of rendering on every request.
+- Serve from close to the user; avoid redirect chains (`http` → `https` → `www` → final page).
+- Cut work done before the HTML is sent: sequential queries, chained API calls.
+
+**2. Resource load delay** — let the browser see the LCP resource *in the initial HTML*.
+
+- The hero image should be an `img` in the server HTML, not injected by JavaScript after hydration.
+- Avoid a CSS `background-image` for the LCP element: the browser only discovers it after downloading and parsing the stylesheet.
+- Use `fetchpriority="high"` on the LCP image, and `preload` when it isn't in the HTML.
+
+**3. Resource load duration** — make the resource smaller.
+
+- Use AVIF or WebP, compress sensibly, and serve the right size per screen with `srcset` and `sizes`.
+- Serve images from an image CDN with long-lived caching.
+
+**4. Element render delay** — don't let anything block painting.
+
+- Reduce render-blocking CSS; split out CSS not needed for the first screen.
+- Don't make the LCP element depend on JavaScript (hidden until hydration, A/B testing scripts that hide the page).
+- Web fonts that block text rendering can delay LCP when the LCP element is text.
+
+```html
+<!-- Hero image: in the HTML from the start, high priority, sized per screen -->
+<img
+  src="/hero-1200.avif"
+  srcset="/hero-640.avif 640w, /hero-1200.avif 1200w, /hero-1920.avif 1920w"
+  sizes="(min-width: 1024px) 1200px, 100vw"
+  width="1200"
+  height="630"
+  alt="..."
+  fetchpriority="high"
+/>
+```
+
+In Next.js, `next/image` handles `srcset`, formats and sizing. Since Next.js 16, mark the LCP image with `preload` (older versions use `priority`):
+
+```jsx
+import Image from "next/image";
+
+export function Hero() {
+  return (
+    <Image
+      src="/hero.jpg"
+      alt="..."
+      width={1200}
+      height={630}
+      sizes="(min-width: 1024px) 1200px, 100vw"
+      preload
+    />
+  );
+}
+```
+
+<Callout>
+  **Don't lazy-load the LCP image.** `loading="lazy"` is great for below-the-fold images, but on the hero it delays exactly the resource that matters most. It's one of the most common LCP mistakes I run into.
+</Callout>
+
+## INP — Interaction to Next Paint
+
+INP replaced First Input Delay (FID) in March 2024. FID only measured the delay *before* handling the *first* interaction; INP looks at nearly **every** click, tap and key press during the visit, and measures all the way until the browser paints the next frame — the moment the user *sees* a response. Scrolling and hovering don't count.
+
+### The three parts of an interaction
+
+| Part | What it is | Common causes |
+| --- | --- | --- |
+| **Input delay** | From the interaction until event handlers start running | Main thread busy elsewhere: hydration, third-party scripts, timers |
+| **Processing duration** | Running the event handlers | Handlers doing too much synchronous work, large state updates |
+| **Presentation delay** | From handlers finishing until the next frame is painted | Large DOM, expensive style and layout, heavy re-rendering |
+
+A page's INP is its **slowest** interaction (on pages with many interactions, one outlier is ignored for every 50 to filter noise). So a single heavy button can drag down INP for the whole page.
+
+### The root cause: a busy main thread
+
+Everything above — running JavaScript, calculating styles, layout, painting — shares one main thread. A task longer than 50ms is a **long task**, and any interaction during it has to wait. Chrome's **Long Animation Frames (LoAF)** API tells you exactly which scripts caused slow frames, and the `web-vitals` library includes it in its attribution data.
+
+### Fixing each part
+
+**Reduce input delay:**
+
+- Break up work that runs during page load (initialization, hydration) so the main thread has gaps to handle input.
+- Defer or remove third-party scripts; load them after the page is interactive.
+- **Code-split** so less JavaScript is parsed and run up front.
+
+**Reduce processing duration:** update the UI first, defer heavy work, and yield to the main thread in between.
+
+```js
+// Yield to the main thread between chunks so interactions don't wait.
+function yieldToMain() {
+  if (globalThis.scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+button.addEventListener("click", async () => {
+  showSpinner(); // feedback the user sees right away
+  await yieldToMain(); // let the browser paint that frame first
+  const result = expensiveCalculation();
+  render(result);
+  await yieldToMain();
+  sendAnalytics(result); // non-urgent work goes last
+});
+```
+
+In React, mark non-urgent updates so React can interrupt them when new input arrives:
+
+```jsx
+import { useDeferredValue, useState } from "react";
+
+function SearchPage({ items }) {
+  const [query, setQuery] = useState("");
+  // The input updates immediately; the heavy list renders at lower priority.
+  const deferredQuery = useDeferredValue(query);
+
+  return (
+    <>
+      <input value={query} onChange={(event) => setQuery(event.target.value)} />
+      <ResultList items={items} query={deferredQuery} />
+    </>
+  );
+}
+```
+
+<Callout>
+  `requestIdleCallback` suits *non-urgent* work (sending analytics, prefetching). To break up a task the user is waiting on, `scheduler.yield()` (with `setTimeout` as a fallback) works better because the remaining work resumes promptly.
+</Callout>
+
+**Reduce presentation delay:**
+
+- Keep the DOM lean — thousands of nodes make every style and layout pass expensive.
+- Use `content-visibility: auto` on long off-screen sections so the browser skips rendering them.
+- **Avoid layout thrashing:** interleaving layout reads and style writes in a loop forces the browser to recalculate layout again and again.
+
+```js
+// ❌ Reading offsetWidth right after a style write, every iteration → N layouts
+for (const box of boxes) {
+  box.style.width = `${container.offsetWidth / 2}px`;
+}
+
+// ✅ Read once, then write in a batch
+const half = container.offsetWidth / 2;
+for (const box of boxes) {
+  box.style.width = `${half}px`;
+}
+```
+
+## CLS — Cumulative Layout Shift
+
+**Definition:** how much visible elements move *unexpectedly* — say you're about to tap a button when an ad loads above it, pushes it down, and you tap the ad instead.
+
+### What counts and what doesn't
+
+- Only **unexpected** shifts count: shifts within 500ms of a click, tap or key press are treated as intentional and **excluded** (opening an accordion, for example).
+- Animations using `transform` don't "shift" elements in CLS terms, so they aren't counted.
+- Since 2021, CLS uses **session windows**: shifts are grouped into bursts lasting at most 5 seconds, with less than 1 second between shifts. A page's CLS is the **sum of its worst burst**, not the total over the whole visit — so long-lived single-page apps aren't unfairly penalized.
+
+### Scoring a single shift
+
+**layout shift score = impact fraction × distance fraction**
+
+- **Impact fraction:** the *union* of the area the element occupies in the previous **and** current frame, divided by the viewport area.
+- **Distance fraction:** the greatest distance the element moved, divided by the viewport's **largest dimension** (width or height).
+
+**Example:** a 1920×1080 viewport. A full-width card, 300px tall, sits at `top: 64px`. A 100px ad with a 48px margin is inserted above it, pushing the card down 148px (to `top: 212px`).
+
+1. Union of the card's old and new position: from 64px to 512px → 448px tall.
+2. **Impact fraction** = 448 / 1080 ≈ 0.415
+3. **Distance fraction** = 148 / 1920 ≈ 0.077 (the largest dimension is the 1920px width)
+4. **Score** = 0.415 × 0.077 ≈ **0.032** → still "Good", but a few of these in the same burst will cross 0.1.
+
+Change the numbers below to see how the score moves — try a 390×844 phone viewport, for example:
+
+<ClsCalculator />
+
+<Callout>
+  **A common miscalculation:** using the element height (300/1080 ≈ 0.278) as the impact fraction and the viewport height as the distance denominator. By definition, the impact fraction uses the *union* of both positions and the distance fraction divides by the largest viewport dimension. The same 148px shift scores much higher on a portrait phone screen, where the largest dimension is the height.
+</Callout>
+
+### Causes and fixes
+
+| Cause | Fix |
+| --- | --- |
+| Images, videos and iframes without dimensions | Set `width` and `height` on the tag; the browser derives the aspect ratio and reserves space |
+| Dynamic content (ads, banners, embeds) inserted with no reserved space | Reserve space with `min-height` or a same-size skeleton |
+| Cookie banners and notices inserted at the top | Show them as a `position: fixed` overlay instead of pushing content down |
+| Web fonts swapping in and resizing text (FOIT/FOUT) | Preload fonts, use `font-display: optional`, or tune the fallback with `size-adjust` |
+| Animating `top`, `height` or `margin` | Animate `transform` and `opacity` — no reflow, not counted in CLS |
+
+```css
+/* With width/height on the img tag, the browser derives the aspect ratio and reserves space before the image loads */
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* When intrinsic size is unknown (e.g. embeds), declare the ratio directly */
+.video-embed {
+  aspect-ratio: 16 / 9;
+}
+
+/* A fallback font tuned to match the web font's metrics → text doesn't jump when the font arrives */
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial");
+  size-adjust: 107%;
+  ascent-override: 90%;
+}
+```
+
+<Callout>
+  In Next.js, `next/font` generates a `size-adjust`-tuned fallback font for you — a nearly free way to eliminate font-related CLS. Also make sure the page is eligible for the **back/forward cache** (no `unload` handlers, no `Cache-Control: no-store` unless you need it): when users hit Back, the page appears instantly with no shifts at all.
+</Callout>
+
+## Measuring and monitoring in practice
+
+- **PageSpeed Insights:** field data (CrUX) for the URL and the whole origin, plus a Lighthouse report — the quickest place to start.
+- **Search Console → Core Web Vitals:** groups similar URLs by status so you know which *kind* of page to fix first.
+- **Chrome DevTools → Performance:** inspect long tasks, the four LCP phases, and every layout shift highlighted on the page.
+- **The `web-vitals` library:** send real-user numbers to your own backend. The *attribution* build tells you *why*: which LCP element, which phase was slow, which interaction drove INP, which element shifted.
+
+```js
+import { onCLS, onINP, onLCP } from "web-vitals/attribution";
+
+function send(metric) {
+  const body = JSON.stringify({
+    name: metric.name,
+    value: metric.value,
+    rating: metric.rating, // "good" | "needs-improvement" | "poor"
+    page: location.pathname,
+    // Each metric has its own attribution, for example:
+    // LCP → the LCP element and its four phases; INP → the target element and interaction type;
+    // CLS → the element behind the largest shift.
+    attribution: metric.attribution,
+  });
+  navigator.sendBeacon("/analytics/vitals", body);
+}
+
+onLCP(send);
+onINP(send);
+onCLS(send);
+```
+
+With the Next.js App Router, the `useReportWebVitals` hook gives you the same data with nothing extra to install:
+
+```jsx
+"use client";
+
+import { useReportWebVitals } from "next/web-vitals";
+
+export function WebVitals() {
+  useReportWebVitals((metric) => {
+    navigator.sendBeacon("/analytics/vitals", JSON.stringify(metric));
+  });
+  return null;
+}
+```
+
+## The debugging process I use
+
+When Search Console flags a group of URLs, I go through this in order instead of guessing:
+
+1. **Confirm with field data:** which metric is red, on mobile or desktop, for which group of pages. Don't fix something that's only red in Lighthouse on your own machine.
+2. **Find the "what":** for LCP, which element; for INP, which interaction; for CLS, which element moved — the `web-vitals` attribution answers this.
+3. **Find the "why":** reproduce it in DevTools with CPU throttling (4x or 6x) and a slow network. For LCP, see which phase dominates; for INP, whether input delay, processing or presentation is longest.
+4. **Fix exactly one cause, then re-measure** with lab data to confirm the improvement.
+5. **Watch field data for a few weeks** (CrUX is a 28-day window) and alert on regressions so the problem doesn't come back with the next release.
+
+## Key takeaways
+
+<Checklist>
+
+- User experience is the goal — Core Web Vitals are how it gets measured.
+- Core Web Vitals are a Google ranking signal, assessed at the 75th percentile of real users.
+- LCP: split it into four phases and fix the one that takes the most time.
+- INP: free up the main thread — break up tasks, yield, and ship less JavaScript and DOM.
+- CLS: reserve space for everything that will appear, and only animate with transforms.
+- Measure with real-user data, know the "why" before fixing, and keep monitoring — performance is never "done".
+
+</Checklist>

@@ -1,21 +1,160 @@
 {
   "navigation": {
+    "home": "Trang chủ",
+    "explore": "Khám phá",
+    "topics": "Chủ đề",
     "about": "Giới thiệu",
-    "projects": "Dự án",
     "blog": "Blog",
-    "contact": "Liên hệ"
+    "contact": "Liên hệ",
+    "search": "Tìm kiếm",
+    "menu": "Menu",
+    "skip": "Đi tới nội dung",
+    "toggleTheme": "Đổi giao diện",
+    "language": "Ngôn ngữ",
+    "roadmaps": "Lộ trình",
+    "guides": "Guides",
+    "tools": "Công cụ"
   },
-  "hero": {
-    "badge": "Kinh nghiệm thực chiến • Frontend & Hệ thống",
-    "headlinePrefix": "Ngừng viết Code.",
-    "headlineHighlight": "Bắt đầu hiểu Hệ thống.",
-    "subtitle": "Một blog cá nhân về kỹ thuật phần mềm, thiết kế hệ thống và những bài học thực tế từ việc xây dựng các ứng dụng thực tiễn.",
-    "subtitleHighlight": "Không có tutorial cơ bản. Không cường điệu. Chỉ có những kiến thức thực tế thực sự quan trọng.",
-    "value1": "Case study thực tế",
-    "value2": "Tư duy thực chiến",
-    "value3": "Giải thích cặn kẽ",
-    "readArticles": "Đọc Bài viết",
-    "exploreTopics": "Khám phá Chủ đề"
+  "search": {
+    "title": "Tìm bài viết",
+    "placeholder": "Tìm bài viết, guide, lộ trình, công cụ…",
+    "empty": "Tìm trong bài viết, guide, lộ trình và công cụ.",
+    "noResults": "Không có bài nào khớp với “{query}”.",
+    "hint": "để mở",
+    "close": "Đóng tìm kiếm",
+    "results": "{count} kết quả",
+    "kinds": {
+      "post": "Bài viết",
+      "guide": "Guide",
+      "chapter": "Chương",
+      "roadmap": "Lộ trình",
+      "stage": "Chặng",
+      "tool": "Công cụ"
+    }
+  },
+  "topics": {
+    "systems": {
+      "title": "Hệ thống & kiến trúc",
+      "description": "State, luồng dữ liệu và những ranh giới giữ cho ứng dụng gọn gàng khi lớn dần."
+    },
+    "frontend": {
+      "title": "Frontend & giao diện",
+      "description": "Component, design system và nghề làm giao diện khiến người dùng thấy dễ chịu."
+    },
+    "performance": {
+      "title": "Hiệu năng",
+      "description": "Bundle, rendering và đo lường những gì thật sự khiến ứng dụng nhanh."
+    },
+    "tooling": {
+      "title": "Công cụ & quy trình",
+      "description": "Runtime, monorepo và những công cụ giữ vòng phản hồi luôn ngắn."
+    },
+    "growth": {
+      "title": "Học hỏi & sự nghiệp",
+      "description": "Ghi chép về việc học, viết và trưởng thành như một kỹ sư."
+    }
+  },
+  "levels": {
+    "Starter": "Cơ bản",
+    "Intermediate": "Trung cấp",
+    "Advanced": "Nâng cao"
+  },
+  "common": {
+    "minRead": "{minutes} phút đọc",
+    "minutes": "{minutes} phút",
+    "viewAll": "Xem tất cả",
+    "readArticle": "Đọc bài",
+    "posts": "{count} bài",
+    "latest": "Mới nhất"
+  },
+  "home": {
+    "eyebrow": "Huỳnh Tiến Dĩ / DiCodeWeb",
+    "title": "Code, hệ thống và những người xây dựng chúng.",
+    "lead": "Mình làm sản phẩm web và ghi lại những gì học được trên đường đi — ghi chép, bài giải thích và hướng dẫn về frontend, thiết kế hệ thống, công cụ và hành trình trưởng thành của một kỹ sư.",
+    "startHere": "Bắt đầu đọc",
+    "exploreTopics": "Xem các chủ đề",
+    "portraitRole": "Software Engineer · TP. Hồ Chí Minh",
+    "stats": {
+      "since": "năm bắt đầu viết",
+      "posts": "bài viết & ghi chép",
+      "topics": "chủ đề",
+      "tags": "thẻ",
+      "minutes": "phút đọc"
+    },
+    "rhythm": {
+      "title": "Nhịp viết theo tháng",
+      "none": "Chưa có bài",
+      "postsIn": "{count} bài · {month}",
+      "count": "{count} bài"
+    },
+    "latestTitle": "Mới viết, mới chia sẻ",
+    "latestSubtitle": "Những bài viết và ghi chép gần đây nhất.",
+    "topicsTitle": "Chủ đề",
+    "topicsSubtitle": "Năm lăng kính cho mọi thứ trên blog này.",
+    "archiveTitle": "Toàn bộ kho",
+    "archiveSubtitle": "Mỗi bài viết là một ô. Rê chuột hoặc focus để xem nhanh, lọc theo chủ đề để thu hẹp.",
+    "archiveAll": "Tất cả",
+    "aboutTitle": "Về tác giả",
+    "aboutBody": "Chào bạn, mình là Dĩ — kỹ sư phần mềm ở TP. Hồ Chí Minh, chủ yếu làm việc với React, Next.js và những hệ thống phía sau chúng. Blog này là nơi mình chậm lại để viết về cách mọi thứ thật sự vận hành ở production: những đánh đổi, những sai lầm và những pattern đáng giữ lại.",
+    "aboutCta": "Tìm hiểu thêm về mình"
+  },
+  "thinkingCta": "Đọc các bài viết",
+  "explore": {
+    "title": "Khám phá",
+    "subtitle": "Toàn bộ bài viết, ghi chép và hướng dẫn — tìm kiếm, lọc theo chủ đề và cấp độ, hoặc duyệt theo năm.",
+    "search": "Tìm bài viết, chủ đề và thẻ",
+    "topic": "Chủ đề",
+    "level": "Cấp độ",
+    "all": "Tất cả",
+    "sort": "Sắp xếp",
+    "newest": "Mới nhất",
+    "oldest": "Cũ nhất",
+    "clear": "Xoá bộ lọc",
+    "results": "{count} bài viết",
+    "empty": "Không có bài viết nào khớp với bộ lọc.",
+    "emptyHint": "Thử từ khoá khác hoặc xoá bộ lọc."
+  },
+  "post": {
+    "breadcrumbHome": "Trang chủ",
+    "breadcrumbExplore": "Khám phá",
+    "publishedOn": "Đăng ngày",
+    "copyLink": "Sao chép link",
+    "copied": "Đã sao chép",
+    "listen": "Nghe bài",
+    "toc": "Trong bài",
+    "tags": "Thẻ",
+    "newer": "Bài mới hơn",
+    "older": "Bài cũ hơn",
+    "related": "Đọc tiếp",
+    "authorBio": "Kỹ sư phần mềm, viết về frontend, thiết kế hệ thống và những bài học thực tế từ production.",
+    "backToExplore": "Tất cả bài viết",
+    "player": {
+      "restart": "Phát lại",
+      "play": "Phát",
+      "pause": "Tạm dừng",
+      "stop": "Dừng",
+      "settings": "Cài đặt phát",
+      "speed": "Tốc độ",
+      "voice": "Giọng đọc",
+      "close": "Đóng trình phát",
+      "applyHint": "Thay đổi áp dụng khi phát lại"
+    }
+  },
+  "footer": {
+    "followTitle": "Theo dõi bài viết mới",
+    "followBody": "Nhận bài mới qua RSS. Hiện chưa có bản tin email — chỉ có feed.",
+    "description": "Viết về frontend, tư duy hệ thống và xây dựng ứng dụng web có khả năng mở rộng.",
+    "topics": "Chủ đề",
+    "explore": "Khám phá",
+    "connect": "Kết nối",
+    "allArticles": "Tất cả bài viết",
+    "rights": "Huỳnh Tiến Dĩ · DiCodeWeb",
+    "italicText": "Dành cho những lập trình viên muốn nghĩ sâu hơn, không chỉ code nhanh hơn."
+  },
+  "notFound": {
+    "title": "Trang này đã đi lạc.",
+    "body": "Bài viết bạn tìm không tồn tại hoặc đã được chuyển đi.",
+    "cta": "Xem tất cả bài viết"
   },
   "thinking": {
     "title": "Cách tôi tư duy về phát triển phần mềm",
@@ -40,19 +179,121 @@
     "item6Tag": "Sự đơn giản",
     "footerText": "Những nguyên lý định hướng mọi bài viết trên blog — không chạy theo xu hướng, mà là những lối tư duy bền vững theo thời gian."
   },
-  "cta": {
-    "badge": "Kết nối & Theo dõi",
-    "title": "Cập nhật thông tin mới nhất",
-    "subtitle": "Tôi chia sẻ những suy nghĩ về kỹ thuật frontend, thiết kế hệ thống và phát triển phần mềm thực chiến — vượt xa những dòng code đơn thuần.",
-    "button": "Theo dõi Công việc của tôi",
-    "aboutSubtitle": "Kỹ sư Phần mềm • Tư duy Hệ thống • Xây dựng ứng dụng web mở rộng",
-    "tag1": "Phát triển Web",
-    "tag2": "Thiết kế Hệ thống",
-    "tag3": "Kỹ thuật phần mềm"
+  "roadmap": {
+    "title": "Lộ trình học",
+    "lead": "Hai lộ trình có thứ tự mình dùng để mentor và để giữ việc học của chính mình được rõ ràng: React cho giao diện, NestJS cho backend — rồi dùng project để nối cả hai.",
+    "breadcrumb": "Lộ trình",
+    "pathsTitle": "Chọn hướng đi",
+    "pathsSubtitle": "Mỗi lộ trình là một chuỗi chặng học, từ nền tảng đến mức làm việc ở production.",
+    "view": "Xem lộ trình",
+    "stages": "{count} chặng",
+    "focusPoints": "{count} trọng tâm",
+    "practice": "{count} bài thực hành",
+    "comingSoon": "Sắp mở thêm",
+    "fullStackTitle": "Full-stack Project Path",
+    "fullStackSummary": "Nối React và NestJS qua các project thực tế: dashboard, hệ thống auth, blog CMS, e-commerce API và portfolio app.",
+    "fullStackItems": [
+      "Dashboard",
+      "Auth System",
+      "Blog CMS",
+      "E-commerce API",
+      "Portfolio Apps"
+    ],
+    "flowTitle": "Các lộ trình nối với nhau thế nào",
+    "flowSubtitle": "React dạy bạn xây giao diện. NestJS dạy bạn xây backend. Project dạy bạn nối cả hai.",
+    "flowSteps": [
+      "JavaScript / TypeScript",
+      "React Frontend",
+      "API Integration",
+      "NestJS Backend",
+      "Database + Auth",
+      "Full-stack Project",
+      "Interview / Portfolio"
+    ],
+    "flowNotes": [
+      "Nền tảng ngôn ngữ trước",
+      "Component, state, dữ liệu",
+      "Hợp đồng giữa front và back",
+      "Module, DI, validation",
+      "Lưu trữ, phiên, phân quyền",
+      "Một sản phẩm thật từ đầu đến cuối",
+      "Giải thích được các đánh đổi"
+    ],
+    "phases": [
+      "Dễ vào",
+      "Xây nền",
+      "Nâng cao"
+    ],
+    "overview": "Tổng quan hành trình",
+    "stagesTitle": "Các chặng học",
+    "start": "Bắt đầu từ chặng 01",
+    "stageLabel": "Chặng {step}",
+    "outcomes": "Bạn sẽ làm được",
+    "ecosystem": "Hệ sinh thái",
+    "skills": "Kỹ năng trên đường đi",
+    "otherPath": "Lộ trình còn lại",
+    "related": "Bài viết cho lộ trình này",
+    "home": {
+      "title": "Lộ trình học",
+      "subtitle": "Các lộ trình có thứ tự từ nền tảng đến production — frontend và backend."
+    },
+    "statLabels": {
+      "stages": "chặng học",
+      "focus": "trọng tâm",
+      "practice": "bài thực hành",
+      "weeks": "tuần"
+    }
   },
-  "footer": {
-    "description": "Viết về kỹ thuật frontend, tư duy hệ thống và xây dựng các ứng dụng web có thể mở rộng.",
-    "rights": "DiCodeWeb. Đã đăng ký bản quyền.",
-    "italicText": "Dành cho những lập trình viên muốn tư duy sâu hơn, không chỉ là gõ code nhanh hơn."
+  "guides": {
+    "title": "Hướng dẫn",
+    "lead": "Các hướng dẫn nhiều chương giúp bạn học từ nền tảng đến triển khai thực tế — Docker, Kubernetes, Terraform, Git, Linux, bảo mật và hơn thế nữa.",
+    "breadcrumb": "Hướng dẫn",
+    "sourceNote": "Các hướng dẫn được đăng lại từ <source>DevOps Daily</source> theo giấy phép <license>MIT</license>. Bản tiếng Việt được dịch tự động từ bản gốc tiếng Anh.",
+    "english": "EN",
+    "all": "Tất cả",
+    "search": "Tìm hướng dẫn",
+    "chapters": "{count} chương",
+    "minutes": "{count} phút",
+    "results": "{count} hướng dẫn",
+    "empty": "Không có hướng dẫn nào khớp với từ khoá.",
+    "start": "Bắt đầu chương 1",
+    "chapterLabel": "Chương {n}",
+    "chapterOf": "Chương {n} / {total}",
+    "chaptersTitle": "Các chương",
+    "updated": "Cập nhật",
+    "previous": "Chương trước",
+    "next": "Chương sau",
+    "backToGuide": "Tổng quan hướng dẫn",
+    "finished": "Bạn đã đọc hết hướng dẫn này.",
+    "allGuides": "Tất cả hướng dẫn",
+    "viewOriginal": "Xem bản gốc",
+    "copy": "Sao chép",
+    "copied": "Đã chép",
+    "home": {
+      "title": "Hướng dẫn",
+      "subtitle": "Các hướng dẫn chi tiết, đi từng chương cho những công cụ bạn dùng hằng ngày."
+    }
+  },
+  "tools": {
+    "title": "Công cụ",
+    "lead": "Các tiện ích nhỏ cho developer chạy hoàn toàn trên trình duyệt — không dữ liệu nào bạn dán vào rời khỏi máy.",
+    "breadcrumb": "Công cụ",
+    "sourceNote": "Các công cụ được port từ <source>DevOps Daily</source> theo giấy phép <license>MIT</license>.",
+    "browserOnly": "Chạy cục bộ trên trình duyệt",
+    "categories": {
+      "networking": "Mạng",
+      "security": "Bảo mật",
+      "encoding": "Mã hoá & định dạng",
+      "scheduling": "Thời gian & lịch",
+      "kubernetes": "Kubernetes"
+    },
+    "open": "Mở công cụ",
+    "howItWorks": "Cách hoạt động",
+    "faq": "Câu hỏi thường gặp",
+    "others": "Công cụ khác",
+    "home": {
+      "title": "Công cụ",
+      "subtitle": "Tiện ích chạy trên trình duyệt cho công việc dev hằng ngày."
+    }
   }
 }

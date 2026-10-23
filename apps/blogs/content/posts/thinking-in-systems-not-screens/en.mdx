@@ -1,0 +1,42 @@
+---
+title: "Think in Systems, Not Screens"
+excerpt: "Frontend apps break when we design them page by page. A short field guide to mapping state, data flow and ownership before drawing the UI."
+---
+
+<Lead>Most frontend projects I've seen go sideways didn't fail because of a bad component. They failed because nobody drew the system behind the screens — where data lives, who changes it, and what happens when two things change it at once.</Lead>
+
+## Screens are a projection
+
+A screen is a snapshot of state, rendered for one person at one moment. When we design page by page, we quietly duplicate that state: the list page fetches users, the detail page fetches the same user, the header fetches the current user again. Each copy drifts.
+
+Thinking in systems flips the order. First decide what the **sources of truth** are, then let screens become cheap projections of them.
+
+## Four questions before any UI
+
+1. **What are the entities?** Name them — Order, Cart, Session — and decide which ones the client owns versus merely caches.
+2. **Who writes?** For each entity, list every place that can mutate it. More than one writer means you need a rule for conflicts.
+3. **How fresh must it be?** "Live", "on focus", "on navigation" and "on reload" are four very different architectures.
+4. **What happens when it fails?** Offline, slow, partially saved. Design the unhappy path while it's still cheap.
+
+## Classify your state
+
+A simple split removes most of the accidental complexity:
+
+- **Server state** — owned by the backend, cached on the client. Use a query cache (TanStack Query, SWR, RSC) and never copy it into a global store.
+- **URL state** — filters, tabs, pagination. If it should survive a refresh or a shared link, it belongs in the URL.
+- **Local UI state** — open/closed, hover, draft input. Keep it next to the component that uses it.
+- **Global client state** — the small remainder: theme, auth session, feature flags.
+
+<Callout>
+  **Smell test:** if a global store contains a list fetched from an API, you probably have two sources of truth.
+</Callout>
+
+## Draw the data flow
+
+Before building a feature, I sketch boxes for entities and arrows for reads and writes. It takes ten minutes and usually reveals the real work: an invalidation nobody planned, a race between two forms, a permission check that only exists in the UI.
+
+> If you can't draw how data moves through a feature, you can't predict how it will break.
+
+## Design for change
+
+Systems survive because their boundaries are clear, not because they're clever. Keep entity logic out of components, keep side effects at the edges, and make the URL the first place you look for state. The screens will change many times; the system underneath should not have to.

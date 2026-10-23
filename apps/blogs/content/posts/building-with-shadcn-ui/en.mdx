@@ -1,0 +1,30 @@
+---
+title: "Building Production UIs with shadcn/ui"
+excerpt: "Why owning your component source beats installing a black box — and where shadcn/ui hits the right level of abstraction."
+---
+
+<Lead>Component libraries have always been a trade-off. You get speed and consistency, but you give up control and flexibility. shadcn/ui changes that equation.</Lead>
+
+## The Copy-Paste Philosophy
+
+Unlike traditional libraries where you `npm install` and import, shadcn/ui gives you the actual source code. You copy it into your project, and it's yours.
+
+Want to change a button? Edit the file. No more fighting CSS overrides or wrapping components in styled wrappers.
+
+You're never locked in. Your components evolve with your design system, not against it.
+
+## Built on Radix UI
+
+Under the hood, shadcn/ui uses Radix UI primitives, which brings solid accessibility out of the box: screen readers, keyboard navigation and focus management just work.
+
+## Tailwind CSS Integration
+
+Every component is styled with Tailwind CSS. If you know Tailwind, you already know how to customize them — the utility classes are right there in the code.
+
+## The Right Level of Abstraction
+
+shadcn/ui sits between too primitive and too opinionated. The components are complete enough to use immediately but simple enough to read end to end.
+
+<Callout>
+  **Rule of thumb:** treat copied components as a starting point. Rename, trim and adapt them to your product's vocabulary early, before they spread.
+</Callout>

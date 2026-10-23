@@ -1,0 +1,42 @@
+---
+title: "Tư duy hệ thống, đừng chỉ nghĩ theo màn hình"
+excerpt: "Ứng dụng frontend dễ vỡ khi ta thiết kế từng trang một. Một cẩm nang ngắn để vẽ state, luồng dữ liệu và quyền sở hữu trước khi vẽ UI."
+---
+
+<Lead>Phần lớn những dự án frontend mình thấy đi chệch hướng không phải vì một component tệ. Chúng hỏng vì không ai vẽ ra hệ thống đằng sau các màn hình — dữ liệu nằm ở đâu, ai thay đổi nó, và chuyện gì xảy ra khi hai nơi cùng thay đổi một lúc.</Lead>
+
+## Màn hình chỉ là một hình chiếu
+
+Một màn hình là ảnh chụp của state, được render cho một người tại một thời điểm. Khi thiết kế từng trang, ta vô tình nhân bản state: trang danh sách fetch users, trang chi tiết fetch lại đúng user đó, header lại fetch current user lần nữa. Mỗi bản sao dần lệch nhau.
+
+Tư duy hệ thống đảo ngược thứ tự. Trước tiên xác định đâu là **nguồn sự thật**, rồi để màn hình trở thành những hình chiếu rẻ của chúng.
+
+## Bốn câu hỏi trước khi vẽ UI
+
+1. **Có những thực thể nào?** Đặt tên — Order, Cart, Session — và quyết định client sở hữu cái nào, chỉ cache cái nào.
+2. **Ai ghi dữ liệu?** Với mỗi thực thể, liệt kê mọi nơi có thể thay đổi nó. Nhiều hơn một nơi ghi nghĩa là bạn cần luật xử lý xung đột.
+3. **Cần mới đến mức nào?** "Realtime", "khi focus", "khi chuyển trang" và "khi tải lại" là bốn kiến trúc rất khác nhau.
+4. **Khi lỗi thì sao?** Offline, chậm, lưu dở dang. Hãy thiết kế luồng không như ý khi nó còn rẻ.
+
+## Phân loại state
+
+Một cách chia đơn giản loại bỏ phần lớn độ phức tạp không cần thiết:
+
+- **Server state** — backend sở hữu, client chỉ cache. Dùng query cache (TanStack Query, SWR, RSC) và đừng bao giờ chép nó vào global store.
+- **URL state** — bộ lọc, tab, phân trang. Nếu cần giữ lại khi refresh hoặc khi chia sẻ link, nó thuộc về URL.
+- **Local UI state** — mở/đóng, hover, nội dung đang nhập. Để nó cạnh component dùng nó.
+- **Global client state** — phần nhỏ còn lại: theme, phiên đăng nhập, feature flag.
+
+<Callout>
+  **Dấu hiệu cần để ý:** nếu global store chứa một danh sách fetch từ API, có lẽ bạn đang có hai nguồn sự thật.
+</Callout>
+
+## Vẽ luồng dữ liệu
+
+Trước khi làm một tính năng, mình phác các ô cho thực thể và mũi tên cho đọc/ghi. Mất mười phút, nhưng thường lộ ra phần việc thật: một chỗ invalidation chưa ai tính, một race condition giữa hai form, một kiểm tra quyền chỉ tồn tại ở UI.
+
+> Nếu không vẽ được dữ liệu đi qua một tính năng thế nào, bạn sẽ không đoán được nó sẽ hỏng ra sao.
+
+## Thiết kế cho sự thay đổi
+
+Hệ thống tồn tại lâu vì ranh giới rõ ràng, không phải vì khéo léo. Giữ logic thực thể ra khỏi component, đẩy side effect ra rìa, và coi URL là nơi đầu tiên để tìm state. Màn hình sẽ đổi nhiều lần; hệ thống bên dưới thì không nên phải đổi theo.

@@ -1,0 +1,91 @@
+---
+title: "Code Splitting và Lazy Loading trong React"
+excerpt: "Hướng dẫn thực tế giúp giảm lượng JavaScript tải ban đầu bằng cách kết hợp lazy loading theo route và theo component."
+---
+
+<Lead>Trải nghiệm nhanh bắt đầu từ bundle nhỏ. Code splitting và lazy loading là hai kỹ thuật cốt lõi trong React giúp bạn chỉ gửi những gì người dùng cần, vào đúng lúc họ cần.</Lead>
+
+<Figure src="/blog/code-splitting-route-based.svg" alt="Sơ đồ code splitting theo route" caption="Tách theo route giúp các trang không liên quan không lọt vào bundle ban đầu." />
+
+## Vì sao kích thước bundle trở thành vấn đề
+
+Khi ứng dụng lớn dần, bundle JavaScript chính thường chứa cả những component mà người dùng có thể không bao giờ mở trong một phiên. Bundle lớn làm chậm lần render đầu tiên, nhất là trên thiết bị di động và mạng yếu.
+
+## Tách theo route trước tiên
+
+Cách dễ ăn điểm nhất là tách theo route. Với các framework như **Next.js**, việc này gần như tự động; còn với ứng dụng React tự dựng, bạn có thể làm bằng `React.lazy` và ranh giới route.
+
+```jsx
+import { Suspense, lazy } from "react";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+
+const Login = lazy(() => import("./Login"));
+const Dashboard = lazy(() => import("./Dashboard"));
+
+export default function App() {
+  return (
+    <Router>
+      <Suspense fallback={<LoadingSpinner />}>
+        <Routes>
+          <Route path="/" element={<Login />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+        </Routes>
+      </Suspense>
+    </Router>
+  );
+}
+```
+
+## Lazy loading ở cấp component
+
+<Figure src="/blog/code-splitting-component-based.svg" alt="Sơ đồ code splitting theo component" caption="Tách ở cấp component rất hợp với modal, trình soạn thảo và biểu đồ." />
+
+Với những component nặng nằm bên trong một trang, lazy loading vẫn rất hữu ích. Ví dụ: thư viện biểu đồ, trình soạn thảo rich text, bản đồ, hay bộ lọc nâng cao.
+
+```jsx
+import { useState, lazy, Suspense } from "react";
+
+const Modal = lazy(() => import("./Modal"));
+
+export default function App() {
+  const [showModal, setShowModal] = useState(false);
+
+  return (
+    <div>
+      <button onClick={() => setShowModal(true)}>Open Modal</button>
+      {showModal && (
+        <Suspense fallback={<ModalSkeleton />}>
+          <Modal onClose={() => setShowModal(false)} />
+        </Suspense>
+      )}
+    </div>
+  );
+}
+```
+
+## Prefetch cho hành động có khả năng xảy ra tiếp
+
+Lazy loading không chỉ là trì hoãn. Bạn có thể tải trước các chunk khi người dùng hover vào link hoặc khi trang đang rảnh.
+
+```jsx
+// Webpack prefetch example
+const Modal = lazy(() => import(/* webpackPrefetch: true */ "./Modal"));
+```
+
+<Callout>
+  **Mẹo:** Tối ưu chỉ thật sự xong khi số liệu ở production cải thiện. Hãy dùng Lighthouse và dữ liệu người dùng thật để kiểm chứng.
+</Callout>
+
+## Checklist thực tế
+
+<Checklist>
+
+- Tách theo route trước.
+- Lazy load các component nặng và không bắt buộc (biểu đồ, editor).
+- Thêm fallback chỉn chu (skeleton).
+- Prefetch các chunk có khả năng được dùng tiếp.
+- Đo LCP và TTI.
+
+</Checklist>
+
+Khi được áp dụng có chủ đích, code splitting và lazy loading có thể khiến ứng dụng React nhanh hơn rõ rệt mà không cần viết lại lớn.

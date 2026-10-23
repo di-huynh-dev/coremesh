@@ -1,0 +1,55 @@
+---
+title: "What a Bun + Turborepo Monorepo Taught Me"
+excerpt: "Three Next.js apps, five shared packages, one lockfile. Notes on boundaries, caching and the mistakes I'd skip next time."
+---
+
+<Lead>This site lives in a monorepo next to my portfolio and a learning app. Moving them under one roof with Bun workspaces and Turborepo was mostly pleasant — and occasionally humbling. Here's what stuck.</Lead>
+
+## Start with boundaries, not folders
+
+The tempting first move is to dump everything shared into `packages/ui`. Resist it. A shared package is a promise: every app that imports it agrees to its API. I now only extract code once a **second** app genuinely needs it.
+
+The packages that earned their place were boring: an ESLint config, a TypeScript config, a Tailwind preset, small utilities and auth helpers.
+
+```json
+// apps/blogs/package.json
+"dependencies": {
+  "@repo/ui": "*",
+  "@repo/utils": "*"
+}
+```
+
+## Let Turborepo own the task graph
+
+The `^` prefix in `dependsOn` means "run this in my dependencies first". With that and correct `outputs`, Turborepo can skip any task whose inputs haven't changed.
+
+```json
+{
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "!.next/cache/**"]
+    },
+    "check-types": { "dependsOn": ["^check-types"] },
+    "dev": { "cache": false, "persistent": true }
+  }
+}
+```
+
+<Callout>
+  **Gotcha:** environment variables are part of a task's inputs. If a build reads `NEXTAUTH_URL` but Turbo doesn't know about it, you'll get a cache hit with the wrong value baked in. Declare them.
+</Callout>
+
+## One lockfile, many ports
+
+Bun's single lockfile keeps versions aligned across apps, which removes a whole class of "works in one app" bugs. The small but real annoyance was ports: give every app a fixed dev port in its `package.json` so `turbo dev` never races for 3000.
+
+## What I'd skip next time
+
+- **Premature shared UI.** Each app has its own visual identity; a shared button library mostly created coupling.
+- **Cross-app imports by relative path.** If it's shared, make it a package. If it isn't, copy it.
+- **Skipping type checks in CI.** Fast pipelines are great until a broken type ships to all three apps at once.
+
+## Was it worth it?
+
+Yes. One install, one place to upgrade Next.js, and cached builds that make CI feel instant. The trick is to treat the monorepo as a set of small products that happen to share a home, not as one big app.

@@ -1,98 +1,138 @@
-"use client";
-
+import { BLOG_TOPICS } from "@/lib/content/types";
+import { topicStyles } from "@/lib/topic-style";
+import { cn } from "@/lib/utils";
+import { Github, Linkedin, Rss } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import Link from "next/link";
-import { Github, Linkedin, ExternalLink } from "lucide-react";
-import { useTranslations } from "next-intl";
 
 const socialLinks = [
-  {
-    href: "https://github.com/di-huynh-dev",
-    icon: Github,
-    label: "GitHub",
-  },
-  {
-    href: "https://www.linkedin.com/feed/",
-    icon: Linkedin,
-    label: "LinkedIn",
-  },
-  {
-    href: "https://www.tiktok.com/@dicodeweb",
-    icon: ExternalLink,
-    label: "TikTok",
-  },
+  { href: "https://github.com/di-huynh-dev", label: "GitHub", icon: Github },
+  { href: "https://www.linkedin.com/feed/", label: "LinkedIn", icon: Linkedin },
+  { href: "https://www.tiktok.com/@dicodeweb", label: "TikTok", icon: null },
 ];
 
 export function Footer() {
-  const currentYear = new Date().getFullYear();
-  const tNav = useTranslations("navigation");
+  const locale = useLocale();
   const t = useTranslations("footer");
-
-  const footerLinks = [
-    { href: "#about", label: tNav("about") },
-    { href: "#blog", label: tNav("blog") },
-    { href: "#contact", label: tNav("contact") },
-  ];
+  const tNav = useTranslations("navigation");
+  const tTopics = useTranslations("topics");
+  const rssHref = `/${locale}/rss.xml`;
 
   return (
-    <footer id="contact" className="py-16 px-6 bg-[#1C1C1E] text-white">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex flex-col items-center gap-10">
-          {/* ===== Brand ===== */}
-          <div className="flex flex-col items-center gap-3 text-center">
-            <Link href="/" className="text-2xl font-semibold">
+    <footer className="on-dark mt-24 bg-night text-white">
+      <div className="wrap">
+        <section
+          aria-labelledby="follow-title"
+          className="flex flex-col gap-6 border-b border-white/10 py-12 md:flex-row md:items-center md:justify-between"
+        >
+          <div>
+            <h2
+              id="follow-title"
+              className="text-2xl font-semibold tracking-[-0.02em]"
+            >
+              {t("followTitle")}
+            </h2>
+            <p className="mt-2 max-w-xl text-white/60">{t("followBody")}</p>
+          </div>
+          <a href={rssHref} className="btn btn-primary self-start md:self-auto">
+            <Rss className="size-4" />
+            RSS
+          </a>
+        </section>
+
+        <div className="grid gap-10 py-12 sm:grid-cols-2 lg:grid-cols-[1.5fr_1fr_1fr_1fr]">
+          <div>
+            <Link href={`/${locale}`} className="text-xl font-bold">
               DiCodeWeb
             </Link>
-
-            <p className="text-white/50 text-sm max-w-md">
+            <p className="mt-3 max-w-xs text-sm leading-6 text-white/55">
               {t("description")}
             </p>
           </div>
 
-          {/* ===== Navigation ===== */}
-          <nav className="flex flex-wrap items-center justify-center gap-6">
-            {footerLinks.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className="text-sm text-white/60 hover:text-white transition-colors"
-              >
-                {link.label}
-              </Link>
-            ))}
-          </nav>
+          <div>
+            <h2 className="eyebrow">{t("topics")}</h2>
+            <ul className="mt-4 space-y-2.5">
+              {BLOG_TOPICS.map((topic) => (
+                <li key={topic}>
+                  <Link
+                    href={`/${locale}/blog?topic=${topic}`}
+                    className="inline-flex items-center gap-2 text-sm text-white/70 transition-colors hover:text-white"
+                  >
+                    <span className={cn("topic-dot", topicStyles[topic].dot)} />
+                    {tTopics(`${topic}.title`)}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
 
-          {/* ===== Social ===== */}
-          <div className="flex items-center gap-5">
-            {socialLinks.map((social) => {
-              const IconComponent = social.icon;
-              return (
-                <a
-                  key={social.label}
-                  href={social.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white/60 hover:text-[#FF4D8E] hover:bg-white/10 transition-all"
-                  aria-label={social.label}
-                >
-                  <IconComponent className="w-5 h-5" />
+          <div>
+            <h2 className="eyebrow">{t("explore")}</h2>
+            <ul className="mt-4 space-y-2.5 text-sm text-white/70">
+              <li>
+                <Link href={`/${locale}/blog`} className="hover:text-white">
+                  {t("allArticles")}
+                </Link>
+              </li>
+              <li>
+                <Link href={`/${locale}/roadmap`} className="hover:text-white">
+                  {tNav("roadmaps")}
+                </Link>
+              </li>
+              <li>
+                <Link href={`/${locale}/guides`} className="hover:text-white">
+                  {tNav("guides")}
+                </Link>
+              </li>
+              <li>
+                <Link href={`/${locale}/tools`} className="hover:text-white">
+                  {tNav("tools")}
+                </Link>
+              </li>
+              <li>
+                <Link href={`/${locale}#topics`} className="hover:text-white">
+                  {tNav("topics")}
+                </Link>
+              </li>
+              <li>
+                <Link href={`/${locale}#about`} className="hover:text-white">
+                  {tNav("about")}
+                </Link>
+              </li>
+              <li>
+                <a href={rssHref} className="hover:text-white">
+                  RSS
                 </a>
-              );
-            })}
+              </li>
+            </ul>
           </div>
 
-          {/* ===== Divider ===== */}
-          <div className="w-full h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
-
-          {/* ===== Bottom ===== */}
-          <div className="text-center space-y-2">
-            <p className="text-sm text-white/40">
-              © {currentYear} {t("rights")}
-            </p>
-
-            <p className="text-xs text-white/30 italic">
-              {t("italicText")}
-            </p>
+          <div>
+            <h2 className="eyebrow">{t("connect")}</h2>
+            <ul className="mt-4 space-y-2.5 text-sm text-white/70">
+              {socialLinks.map(({ href, label, icon: Icon }) => (
+                <li key={label}>
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 hover:text-white"
+                  >
+                    {Icon ? <Icon className="size-4" /> : null}
+                    {label}
+                  </a>
+                </li>
+              ))}
+            </ul>
           </div>
+        </div>
+
+        <div className="flex flex-col gap-2 border-t border-white/10 py-6 text-xs text-white/40 sm:flex-row sm:justify-between">
+          <span>
+            © {new Date().getFullYear()} {t("rights")}
+          </span>
+          <span className="italic">{t("italicText")}</span>
         </div>
       </div>
     </footer>

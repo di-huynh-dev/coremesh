@@ -1,21 +1,160 @@
 {
   "navigation": {
+    "home": "Home",
+    "explore": "Explore",
+    "topics": "Topics",
     "about": "About",
-    "projects": "Projects",
     "blog": "Blog",
-    "contact": "Contact"
+    "contact": "Contact",
+    "search": "Search",
+    "menu": "Menu",
+    "skip": "Skip to content",
+    "toggleTheme": "Toggle theme",
+    "language": "Language",
+    "roadmaps": "Roadmaps",
+    "guides": "Guides",
+    "tools": "Tools"
   },
-  "hero": {
-    "badge": "Production Notes • Frontend & Systems",
-    "headlinePrefix": "Stop Writing Code.",
-    "headlineHighlight": "Start Understanding Systems.",
-    "subtitle": "A personal blog about engineering, system design, and real-world lessons from building production applications.",
-    "subtitleHighlight": "No tutorials. No hype. Just practical insights that actually matter.",
-    "value1": "Real-world case studies",
-    "value2": "Production mindset",
-    "value3": "No-fluff explanations",
-    "readArticles": "Read Articles",
-    "exploreTopics": "Explore Topics"
+  "search": {
+    "title": "Search articles",
+    "placeholder": "Search posts, guides, roadmaps and tools…",
+    "empty": "Search across posts, guides, roadmaps and tools.",
+    "noResults": "No articles match “{query}”.",
+    "hint": "to open",
+    "close": "Close search",
+    "results": "{count, plural, one {# result} other {# results}}",
+    "kinds": {
+      "post": "Post",
+      "guide": "Guide",
+      "chapter": "Chapter",
+      "roadmap": "Roadmap",
+      "stage": "Stage",
+      "tool": "Tool"
+    }
+  },
+  "topics": {
+    "systems": {
+      "title": "Systems & architecture",
+      "description": "State, data flow and the boundaries that keep apps sane as they grow."
+    },
+    "frontend": {
+      "title": "Frontend & UI",
+      "description": "Components, design systems and the craft of interfaces people enjoy."
+    },
+    "performance": {
+      "title": "Performance",
+      "description": "Bundles, rendering and measuring what actually makes apps feel fast."
+    },
+    "tooling": {
+      "title": "Tooling & workflow",
+      "description": "Runtimes, monorepos and the tools that keep the feedback loop short."
+    },
+    "growth": {
+      "title": "Learning & career",
+      "description": "Notes on learning, writing and growing as an engineer."
+    }
+  },
+  "levels": {
+    "Starter": "Starter",
+    "Intermediate": "Intermediate",
+    "Advanced": "Advanced"
+  },
+  "common": {
+    "minRead": "{minutes} min read",
+    "minutes": "{minutes} min",
+    "viewAll": "View all",
+    "readArticle": "Read article",
+    "posts": "{count, plural, one {# post} other {# posts}}",
+    "latest": "Latest"
+  },
+  "home": {
+    "eyebrow": "Huỳnh Tiến Dĩ / DiCodeWeb",
+    "title": "Code, systems and the people who build them.",
+    "lead": "I build web products for a living and write down what I learn along the way — notes, explainers and guides on frontend engineering, system design, tooling and growing as an engineer.",
+    "startHere": "Start reading",
+    "exploreTopics": "Browse topics",
+    "portraitRole": "Software Engineer · Ho Chi Minh City",
+    "stats": {
+      "since": "started writing",
+      "posts": "articles & notes",
+      "topics": "topics",
+      "tags": "tags",
+      "minutes": "minutes of reading"
+    },
+    "rhythm": {
+      "title": "Writing rhythm by month",
+      "none": "No posts",
+      "postsIn": "{count, plural, one {# post} other {# posts}} · {month}",
+      "count": "{count, plural, one {# post} other {# posts}}"
+    },
+    "latestTitle": "Fresh off the keyboard",
+    "latestSubtitle": "The newest articles and notes.",
+    "topicsTitle": "Topics",
+    "topicsSubtitle": "Five lenses for everything on this blog.",
+    "archiveTitle": "The whole archive",
+    "archiveSubtitle": "Every article as a tile. Hover or focus a tile to peek, filter by topic to narrow down.",
+    "archiveAll": "All",
+    "aboutTitle": "About the author",
+    "aboutBody": "Hi, I’m Dĩ — a software engineer in Ho Chi Minh City, mostly working with React, Next.js and the systems behind them. This blog is where I slow down and write about how things actually work in production: the trade-offs, the mistakes and the patterns worth keeping.",
+    "aboutCta": "More about me"
+  },
+  "thinkingCta": "Read the articles",
+  "explore": {
+    "title": "Explore",
+    "subtitle": "Every article, note and guide — search, filter by topic and level, or browse by year.",
+    "search": "Search articles, topics and tags",
+    "topic": "Topic",
+    "level": "Level",
+    "all": "All",
+    "sort": "Sort",
+    "newest": "Newest",
+    "oldest": "Oldest",
+    "clear": "Clear filters",
+    "results": "{count, plural, =0 {No articles} one {# article} other {# articles}}",
+    "empty": "No articles matched your filters.",
+    "emptyHint": "Try a different keyword or clear the filters."
+  },
+  "post": {
+    "breadcrumbHome": "Home",
+    "breadcrumbExplore": "Explore",
+    "publishedOn": "Published",
+    "copyLink": "Copy link",
+    "copied": "Copied",
+    "listen": "Listen",
+    "toc": "In this article",
+    "tags": "Tags",
+    "newer": "Newer",
+    "older": "Older",
+    "related": "Keep reading",
+    "authorBio": "Software engineer writing about frontend engineering, system design and real-world lessons from production.",
+    "backToExplore": "All articles",
+    "player": {
+      "restart": "Restart",
+      "play": "Play",
+      "pause": "Pause",
+      "stop": "Stop",
+      "settings": "Playback settings",
+      "speed": "Speed",
+      "voice": "Voice",
+      "close": "Close player",
+      "applyHint": "Changes apply when you restart"
+    }
+  },
+  "footer": {
+    "followTitle": "Follow new writing",
+    "followBody": "Get new articles through RSS. There’s no email newsletter — just the feed.",
+    "description": "Writing about frontend engineering, system thinking, and building scalable web applications.",
+    "topics": "Topics",
+    "explore": "Explore",
+    "connect": "Connect",
+    "allArticles": "All articles",
+    "rights": "Huỳnh Tiến Dĩ · DiCodeWeb",
+    "italicText": "Built for developers who want to think deeper, not just code faster."
+  },
+  "notFound": {
+    "title": "This page wandered off.",
+    "body": "The article you’re looking for doesn’t exist or has moved.",
+    "cta": "Browse all articles"
   },
   "thinking": {
     "title": "How I Think About Building Software",
@@ -40,19 +179,121 @@
     "item6Tag": "Simplicity",
     "footerText": "These principles guide every article on this blog — not trends, but ways of thinking that scale over time."
   },
-  "cta": {
-    "badge": "Connect & Follow",
-    "title": "Stay in the Loop",
-    "subtitle": "I share thoughts on frontend engineering, system design, and real-world development — beyond just code.",
-    "button": "Follow My Work",
-    "aboutSubtitle": "Software Engineer • System Thinking • Building scalable web applications",
-    "tag1": "Web Development",
-    "tag2": "System Design",
-    "tag3": "Engineering"
+  "roadmap": {
+    "title": "Learning roadmaps",
+    "lead": "Two ordered paths I use to mentor and to keep my own learning honest: React for the interface, NestJS for the backend — then projects to connect both.",
+    "breadcrumb": "Roadmaps",
+    "pathsTitle": "Pick a direction",
+    "pathsSubtitle": "Each path is a sequence of stages, from foundations to production-level work.",
+    "view": "View roadmap",
+    "stages": "{count} stages",
+    "focusPoints": "{count} focus points",
+    "practice": "{count} practice items",
+    "comingSoon": "Coming next",
+    "fullStackTitle": "Full-stack Project Path",
+    "fullStackSummary": "Connect React and NestJS through real projects: dashboards, an auth system, a blog CMS, an e-commerce API and portfolio apps.",
+    "fullStackItems": [
+      "Dashboard",
+      "Auth System",
+      "Blog CMS",
+      "E-commerce API",
+      "Portfolio Apps"
+    ],
+    "flowTitle": "How the paths connect",
+    "flowSubtitle": "React teaches you to build the interface. NestJS teaches you to build the backend. Projects teach you to connect both.",
+    "flowSteps": [
+      "JavaScript / TypeScript",
+      "React Frontend",
+      "API Integration",
+      "NestJS Backend",
+      "Database + Auth",
+      "Full-stack Project",
+      "Interview / Portfolio"
+    ],
+    "flowNotes": [
+      "Language fundamentals first",
+      "Components, state, data",
+      "Contracts between front and back",
+      "Modules, DI, validation",
+      "Persistence, sessions, roles",
+      "One real product end to end",
+      "Explain the trade-offs you made"
+    ],
+    "phases": [
+      "Warm-up",
+      "Foundation",
+      "Advanced"
+    ],
+    "overview": "Journey overview",
+    "stagesTitle": "Stages",
+    "start": "Start at stage 01",
+    "stageLabel": "Stage {step}",
+    "outcomes": "What you'll be able to do",
+    "ecosystem": "Ecosystem",
+    "skills": "Skills along the way",
+    "otherPath": "The other path",
+    "related": "Articles for this path",
+    "home": {
+      "title": "Learning roadmaps",
+      "subtitle": "Ordered paths from foundations to production — frontend and backend."
+    },
+    "statLabels": {
+      "stages": "stages",
+      "focus": "focus points",
+      "practice": "practice items",
+      "weeks": "weeks"
+    }
   },
-  "footer": {
-    "description": "Writing about frontend engineering, system thinking, and building scalable web applications.",
-    "rights": "DiCodeWeb. All rights reserved.",
-    "italicText": "Built for developers who want to think deeper, not just code faster."
+  "guides": {
+    "title": "Guides",
+    "lead": "Multi-chapter guides that take one topic from zero to production — Docker, Kubernetes, Terraform, Git, Linux, security and more.",
+    "breadcrumb": "Guides",
+    "sourceNote": "Guides are republished from <source>DevOps Daily</source> under the <license>MIT</license> license. Original content, in English.",
+    "english": "EN",
+    "all": "All",
+    "search": "Search guides",
+    "chapters": "{count, plural, one {# chapter} other {# chapters}}",
+    "minutes": "{count} min",
+    "results": "{count, plural, =0 {No guides} one {# guide} other {# guides}}",
+    "empty": "No guide matches your search.",
+    "start": "Start chapter 1",
+    "chapterLabel": "Chapter {n}",
+    "chapterOf": "Chapter {n} of {total}",
+    "chaptersTitle": "Chapters",
+    "updated": "Updated",
+    "previous": "Previous chapter",
+    "next": "Next chapter",
+    "backToGuide": "Guide overview",
+    "finished": "You've reached the end of this guide.",
+    "allGuides": "All guides",
+    "viewOriginal": "View original",
+    "copy": "Copy",
+    "copied": "Copied",
+    "home": {
+      "title": "Guides",
+      "subtitle": "Long-form, chapter-by-chapter guides for the tools you ship with."
+    }
+  },
+  "tools": {
+    "title": "Tools",
+    "lead": "Small developer utilities that run entirely in your browser — nothing you paste leaves your machine.",
+    "breadcrumb": "Tools",
+    "sourceNote": "Tools are ported from <source>DevOps Daily</source> under the <license>MIT</license> license.",
+    "browserOnly": "Runs locally in your browser",
+    "categories": {
+      "networking": "Networking",
+      "security": "Security",
+      "encoding": "Encoding",
+      "scheduling": "Time & scheduling",
+      "kubernetes": "Kubernetes"
+    },
+    "open": "Open tool",
+    "howItWorks": "How it works",
+    "faq": "Frequently asked questions",
+    "others": "More tools",
+    "home": {
+      "title": "Tools",
+      "subtitle": "Browser-only utilities for everyday dev work."
+    }
   }
 }

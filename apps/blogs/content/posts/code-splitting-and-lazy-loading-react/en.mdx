@@ -1,0 +1,91 @@
+---
+title: "Code Splitting and Lazy Loading in React"
+excerpt: "A practical guide to shrinking the JavaScript you ship up front by combining route-level and component-level lazy loading."
+---
+
+<Lead>Fast experiences start with smaller bundles. Code splitting and lazy loading are two core techniques in React that help you send only what users need, when they need it.</Lead>
+
+<Figure src="/blog/code-splitting-route-based.svg" alt="Route-based code splitting diagram" caption="Route-level splitting keeps unrelated pages out of the initial bundle." />
+
+## Why Bundle Size Becomes a Problem
+
+As apps grow, the main JavaScript bundle often includes components that users may never open in a session. Large bundles slow down initial render, especially on mobile devices and weaker networks.
+
+## Route-Level Splitting First
+
+The easiest win is route-level splitting. In frameworks like **Next.js**, this is mostly automatic, but custom React apps can implement it with `React.lazy` and route boundaries.
+
+```jsx
+import { Suspense, lazy } from "react";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+
+const Login = lazy(() => import("./Login"));
+const Dashboard = lazy(() => import("./Dashboard"));
+
+export default function App() {
+  return (
+    <Router>
+      <Suspense fallback={<LoadingSpinner />}>
+        <Routes>
+          <Route path="/" element={<Login />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+        </Routes>
+      </Suspense>
+    </Router>
+  );
+}
+```
+
+## Component-Level Lazy Loading
+
+<Figure src="/blog/code-splitting-component-based.svg" alt="Component-based code splitting diagram" caption="Component-level splitting is ideal for modal dialogs, editors, and charts." />
+
+For heavy components inside a page, lazy loading is still useful. Examples include chart libraries, rich text editors, map components, and advanced filters.
+
+```jsx
+import { useState, lazy, Suspense } from "react";
+
+const Modal = lazy(() => import("./Modal"));
+
+export default function App() {
+  const [showModal, setShowModal] = useState(false);
+
+  return (
+    <div>
+      <button onClick={() => setShowModal(true)}>Open Modal</button>
+      {showModal && (
+        <Suspense fallback={<ModalSkeleton />}>
+          <Modal onClose={() => setShowModal(false)} />
+        </Suspense>
+      )}
+    </div>
+  );
+}
+```
+
+## Prefetch for Likely Next Actions
+
+Lazy loading is not only about delay. You can prefetch chunks when users hover a link or idle on a page.
+
+```jsx
+// Webpack prefetch example
+const Modal = lazy(() => import(/* webpackPrefetch: true */ "./Modal"));
+```
+
+<Callout>
+  **Pro tip:** Optimization is complete only when metrics improve in production. Use Lighthouse and real-user data to verify the impact.
+</Callout>
+
+## A Practical Checklist
+
+<Checklist>
+
+- Split by route first.
+- Lazy load heavy optional components (charts, editors).
+- Add polished fallbacks (skeletons).
+- Prefetch likely-next chunks.
+- Measure LCP and TTI metrics.
+
+</Checklist>
+
+When applied with intent, code splitting and lazy loading can make React apps feel significantly faster without major rewrites.

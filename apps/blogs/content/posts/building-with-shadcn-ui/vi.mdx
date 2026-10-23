@@ -1,0 +1,30 @@
+---
+title: "Xây dựng UI production với shadcn/ui"
+excerpt: "Vì sao sở hữu mã nguồn component tốt hơn cài một hộp đen — và shadcn/ui chọn đúng mức trừu tượng ở đâu."
+---
+
+<Lead>Thư viện component luôn là một sự đánh đổi. Bạn có tốc độ và sự nhất quán, nhưng mất đi quyền kiểm soát và sự linh hoạt. shadcn/ui thay đổi phương trình đó.</Lead>
+
+## Triết lý copy-paste
+
+Khác với thư viện truyền thống, nơi bạn `npm install` rồi import, shadcn/ui đưa cho bạn chính mã nguồn. Bạn chép nó vào dự án, và nó thuộc về bạn.
+
+Muốn sửa một button? Sửa file. Không còn phải vật lộn với việc override CSS hay bọc component trong các wrapper.
+
+Bạn không bao giờ bị khoá chặt. Component phát triển cùng design system của bạn, chứ không chống lại nó.
+
+## Xây trên Radix UI
+
+Bên dưới, shadcn/ui dùng các primitive của Radix UI, nên khả năng truy cập được lo sẵn: trình đọc màn hình, điều hướng bàn phím và quản lý focus đều hoạt động.
+
+## Tích hợp Tailwind CSS
+
+Mọi component đều được style bằng Tailwind CSS. Nếu bạn biết Tailwind, bạn đã biết cách tuỳ biến — các utility class nằm ngay trong code.
+
+## Đúng mức trừu tượng
+
+shadcn/ui nằm giữa "quá sơ khai" và "quá áp đặt". Component đủ hoàn chỉnh để dùng ngay, nhưng đủ đơn giản để đọc hiểu từ đầu đến cuối.
+
+<Callout>
+  **Kinh nghiệm:** hãy xem component chép về là điểm khởi đầu. Đổi tên, cắt gọn và điều chỉnh theo ngôn ngữ của sản phẩm càng sớm càng tốt, trước khi chúng lan ra khắp nơi.
+</Callout>
