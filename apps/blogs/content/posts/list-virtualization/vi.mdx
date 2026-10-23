@@ -1,0 +1,640 @@
+---
+title: "List virtualization từ con số 0: render 100.000 dòng mà vẫn mượt"
+excerpt: "Tự tay viết một virtual list bằng React + TypeScript: toán windowing với số liệu cụ thể, overscan, chiều cao thay đổi với prefix sum và binary search, đo bằng ResizeObserver, chống giật khi scroll, accessibility — và khi nào không nên virtualize."
+---
+
+<Lead>Lần đầu mình gặp một bảng 100.000 dòng trong production, cả tab trình duyệt đứng hình vài giây mỗi khi đổi bộ lọc. Không có thuật toán nào sai cả — chỉ đơn giản là mình bắt trình duyệt dựng và giữ quá nhiều DOM mà người dùng không bao giờ nhìn thấy cùng lúc. Virtualization (hay windowing) giải quyết đúng chỗ đó: chỉ render những dòng đang nằm trong khung nhìn. Bài này đi từ phép toán, đến một cài đặt hoàn chỉnh với chiều cao cố định, rồi mở rộng sang chiều cao thay đổi — kèm những cái giá về accessibility mà ít bài nói tới.</Lead>
+
+## Vì sao 100.000 dòng làm trình duyệt "đứng hình"
+
+Một dòng trong bảng thực tế hiếm khi chỉ là một thẻ `div`. Có avatar, vài ô chữ, một badge trạng thái, một nút menu — dễ dàng mười phần tử DOM trở lên. Nhân với 100.000 dòng là khoảng một triệu node. Cái giá phải trả nằm ở nhiều tầng:
+
+- **React:** phải tạo element, chạy component và reconcile cho từng dòng — mỗi lần list re-render là một lần duyệt lại toàn bộ.
+- **Style và layout:** trình duyệt phải tính style và vị trí cho mọi node, kể cả những node nằm cách viewport hàng triệu pixel.
+- **Bộ nhớ:** mỗi node DOM, mỗi fiber của React, mỗi closure của event handler đều chiếm RAM. Trên điện thoại tầm trung, tab có thể bị hệ điều hành kill.
+- **Tương tác:** mọi thao tác làm thay đổi list (lọc, sắp xếp, chọn dòng) đều kéo theo một tác vụ dài trên main thread — đây chính là thứ làm INP xấu đi.
+
+Điều đáng chú ý là người dùng chỉ thấy khoảng 15–20 dòng tại một thời điểm. Phần còn lại là chi phí không mang lại gì cho họ.
+
+## Ý tưởng cốt lõi: chỉ render những gì nhìn thấy
+
+Virtualization tách hai thứ thường đi liền với nhau: **chiều cao của nội dung** và **số phần tử DOM**. Cấu trúc gồm ba lớp:
+
+1. **Scroll container:** một phần tử có chiều cao cố định và `overflow-y: auto`. Đây là "cửa sổ".
+2. **Spacer:** một phần tử bên trong có chiều cao bằng tổng chiều cao của toàn bộ list. Nó không chứa gì đáng kể, chỉ để thanh cuộn có kích thước và vị trí đúng như thể mọi dòng đều tồn tại.
+3. **Các dòng đang hiển thị:** chỉ vài chục dòng, được đặt `position: absolute` và dịch xuống đúng toạ độ bằng `transform: translateY(...)`.
+
+Mỗi khi người dùng scroll, mình đọc `scrollTop`, tính xem những dòng nào nằm trong cửa sổ, và chỉ render đúng những dòng đó. Trình duyệt vẫn thấy một thanh cuộn dài 4 triệu pixel, nhưng DOM chỉ có vài chục dòng.
+
+## Toán windowing với chiều cao cố định
+
+Trường hợp đơn giản nhất: mọi dòng cao bằng nhau. Mình dùng một bộ số cụ thể xuyên suốt phần này:
+
+- `itemHeight` = 40px
+- `count` = 100.000 dòng
+- `viewportHeight` = 600px
+- `scrollTop` = 12.345px (người dùng đã cuộn xuống một đoạn)
+
+### Bước 1 — tổng chiều cao
+
+```ts
+totalHeight = count * itemHeight; // 100_000 * 40 = 4_000_000px
+```
+
+Đây là chiều cao của spacer. Thanh cuộn sẽ có tỉ lệ đúng như thể 100.000 dòng thật sự nằm đó.
+
+### Bước 2 — dòng đầu tiên nhìn thấy
+
+Dòng `i` chiếm đoạn từ `i * 40` đến `(i + 1) * 40`. Dòng chứa pixel trên cùng của viewport là:
+
+```ts
+first = Math.floor(scrollTop / itemHeight); // Math.floor(12_345 / 40) = Math.floor(308.625) = 308
+```
+
+Dòng 308 bắt đầu ở 12.320px, tức là 25px đầu của nó đã bị cuộn khuất lên trên, 15px còn lại vẫn nhìn thấy. Đó là lý do phải dùng `floor` chứ không phải `round`: một dòng chỉ ló ra 1px vẫn phải được render.
+
+### Bước 3 — dòng cuối cùng nhìn thấy
+
+Đáy viewport nằm ở `12.345 + 600 = 12.945px`:
+
+```ts
+last = Math.ceil((scrollTop + viewportHeight) / itemHeight) - 1;
+// Math.ceil(12_945 / 40) - 1 = Math.ceil(323.625) - 1 = 324 - 1 = 323
+```
+
+Kiểm tra lại: dòng 323 chiếm 12.920–12.960px, đáy viewport ở 12.945px nên nó nhìn thấy được 25px. Vậy các dòng 308 đến 323 — tổng cộng 16 dòng — là những gì người dùng thấy. Với viewport 600px và dòng 40px, số dòng nhìn thấy tối đa luôn là `Math.ceil(600 / 40) + 1 = 16`: 15 dòng trọn vẹn cộng thêm một dòng khi mép trên và mép dưới cùng bị cắt dở.
+
+### Bước 4 — overscan
+
+Nếu chỉ render đúng 16 dòng, khi người dùng cuộn nhanh sẽ thấy những khoảng trắng loé lên ở mép. Nguyên nhân là scroll trên trình duyệt hiện đại được xử lý phần lớn ngoài main thread: nội dung đã dịch chuyển trên màn hình *trước khi* JavaScript kịp chạy và render dòng mới. **Overscan** là render thêm vài dòng ở mỗi phía làm vùng đệm:
+
+```ts
+const overscan = 3;
+start = Math.max(0, first - overscan);       // max(0, 305) = 305
+end = Math.min(count - 1, last + overscan);  // min(99_999, 326) = 326
+// → render 22 dòng, dòng đầu tiên nằm ở 305 * 40 = 12_200px
+```
+
+22 dòng thay vì 100.000 — giảm hơn 4.500 lần số dòng trong DOM.
+
+| Tham số | Giá trị ví dụ | Công thức |
+| --- | --- | --- |
+| Tổng chiều cao spacer | 4.000.000px | `count * itemHeight` |
+| Dòng đầu nhìn thấy | 308 | `floor(scrollTop / itemHeight)` |
+| Dòng cuối nhìn thấy | 323 | `ceil((scrollTop + viewportHeight) / itemHeight) - 1` |
+| Khoảng render (overscan 3) | 305 – 326 | kẹp vào `0` và `count - 1` |
+| Toạ độ của dòng `i` | `i * 40` | `translateY(i * itemHeight)` |
+
+<Callout>
+  **Overscan không phải càng nhiều càng tốt.** Overscan 3–5 dòng thường đủ cho cuộn bằng chuột và trackpad. Tăng lên 50 dòng không làm khoảng trắng biến mất khi người dùng kéo thẳng thanh cuộn từ đầu đến cuối — lúc đó không overscan nào theo kịp — mà chỉ làm mỗi lần render nặng thêm. Nếu dòng của bạn render chậm, sửa dòng đó trước khi tăng overscan.
+</Callout>
+
+## Cài đặt: virtual list chiều cao cố định
+
+Đây là một cài đặt tối thiểu nhưng hoàn chỉnh. Mình tách phần toán ra thành một hàm thuần để dễ test, phần component chỉ lo đọc `scrollTop` và vẽ.
+
+```tsx
+"use client";
+
+import { useState, type Key, type ReactNode } from "react";
+
+export type Range = { start: number; end: number };
+
+export function getFixedRange(
+  scrollTop: number,
+  viewportHeight: number,
+  itemHeight: number,
+  count: number,
+  overscan: number,
+): Range {
+  if (count === 0 || viewportHeight <= 0) return { start: 0, end: -1 };
+  // Cuộn đàn hồi trên một số trình duyệt có thể cho scrollTop âm
+  const top = Math.max(0, scrollTop);
+  const first = Math.floor(top / itemHeight);
+  const last = Math.ceil((top + viewportHeight) / itemHeight) - 1;
+  return {
+    start: Math.max(0, first - overscan),
+    end: Math.min(count - 1, last + overscan),
+  };
+}
+
+type FixedVirtualListProps<T> = {
+  items: readonly T[];
+  itemHeight: number;
+  height: number;
+  label: string;
+  overscan?: number;
+  getKey: (item: T, index: number) => Key;
+  renderItem: (item: T, index: number) => ReactNode;
+};
+
+export function FixedVirtualList<T>({
+  items,
+  itemHeight,
+  height,
+  label,
+  overscan = 3,
+  getKey,
+  renderItem,
+}: FixedVirtualListProps<T>) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const { start, end } = getFixedRange(scrollTop, height, itemHeight, items.length, overscan);
+
+  const rows: ReactNode[] = [];
+  for (let i = start; i <= end; i++) {
+    const item = items[i];
+    rows.push(
+      <div
+        key={getKey(item, i)}
+        role="listitem"
+        aria-setsize={items.length}
+        aria-posinset={i + 1}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: itemHeight,
+          transform: `translateY(${i * itemHeight}px)`,
+        }}
+      >
+        {renderItem(item, i)}
+      </div>,
+    );
+  }
+
+  return (
+    <div
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      style={{ height, overflowY: "auto", position: "relative" }}
+    >
+      <div role="list" style={{ position: "relative", height: items.length * itemHeight }}>
+        {rows}
+      </div>
+    </div>
+  );
+}
+```
+
+Và cách dùng với 100.000 dòng:
+
+```tsx
+"use client";
+
+import { FixedVirtualList } from "./fixed-virtual-list";
+
+type Order = { id: number; customer: string; total: number };
+
+const ORDERS: Order[] = Array.from({ length: 100_000 }, (_, i) => ({
+  id: i,
+  customer: `Khách hàng #${i}`,
+  total: (i * 7919) % 10_000,
+}));
+
+export default function OrdersPage() {
+  return (
+    <FixedVirtualList
+      label="Danh sách đơn hàng"
+      items={ORDERS}
+      itemHeight={40}
+      height={600}
+      getKey={(order) => order.id}
+      renderItem={(order) => (
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "0 12px", lineHeight: "40px" }}>
+          <span>{order.customer}</span>
+          <span>{order.total.toLocaleString("vi-VN")} ₫</span>
+        </div>
+      )}
+    />
+  );
+}
+```
+
+### Vài quyết định đáng giải thích
+
+- **`transform` thay vì `top`:** cả hai đều chạy được. Mình chọn `translateY` vì nó không làm thay đổi layout của các phần tử khác, và mọi dòng đều có cùng `top: 0` nên trình duyệt có ít thứ phải tính lại hơn.
+- **Key ổn định từ dữ liệu:** dùng `order.id` chứ không dùng index. Khi list bị lọc hay sắp xếp lại, key theo index làm React gắn state của dòng cũ (ô input đang gõ dở, trạng thái mở rộng) sang dòng mới.
+- **`tabIndex={0}` trên scroll container:** nếu các dòng không chứa phần tử focus được, người dùng bàn phím cần focus vào container để cuộn bằng phím mũi tên và Page Up/Page Down. Kèm theo `role="region"` và `aria-label` để screen reader đọc được vùng này là gì.
+- **Re-render mỗi lần scroll:** mỗi scroll event là một lần `setScrollTop`. Với 22 dòng nhẹ, chi phí này không đáng kể. Nếu dòng nặng, bọc component dòng bằng `memo` và truyền props ổn định — React sẽ chỉ render những dòng mới đi vào khoảng hiển thị.
+
+<Callout>
+  **Giới hạn chiều cao phần tử.** Trình duyệt có giới hạn trên cho kích thước một phần tử, cỡ vài chục triệu pixel và khác nhau giữa các engine. 100.000 dòng × 40px = 4 triệu pixel là an toàn, nhưng nếu bạn có hàng triệu dòng, spacer có thể bị cắt mà không báo lỗi gì — các dòng cuối đơn giản là không cuộn tới được. Lúc đó cần kỹ thuật scale toạ độ, hoặc tốt hơn: xem lại vì sao người dùng cần cuộn qua hàng triệu dòng.
+</Callout>
+
+## Khi chiều cao các dòng không bằng nhau
+
+Chiều cao cố định đẹp về toán nhưng hiếm khi đúng với UI thật: một comment dài ba dòng, một tin nhắn có ảnh, một mô tả sản phẩm bị xuống dòng trên màn hình hẹp. Khi đó `i * itemHeight` không còn cho ra toạ độ đúng, và `floor(scrollTop / itemHeight)` không còn cho ra dòng đúng.
+
+### Prefix sum: toạ độ của từng dòng
+
+Thay cho phép nhân, mình dựng một mảng `offsets` với `count + 1` phần tử, trong đó `offsets[i]` là tổng chiều cao của các dòng từ 0 đến `i - 1` — tức là toạ độ mép trên của dòng `i`. Phần tử cuối là tổng chiều cao.
+
+Ví dụ với 5 dòng có chiều cao `[40, 80, 40, 120, 60]`:
+
+| Dòng `i` | Chiều cao | `offsets[i]` (mép trên) | Mép dưới |
+| --- | --- | --- | --- |
+| 0 | 40 | 0 | 40 |
+| 1 | 80 | 40 | 120 |
+| 2 | 40 | 120 | 160 |
+| 3 | 120 | 160 | 280 |
+| 4 | 60 | 280 | 340 |
+
+Mảng đầy đủ là `[0, 40, 120, 160, 280, 340]`, và `offsets[5] = 340` là chiều cao của spacer. Dựng mảng này tốn O(n) — một vòng lặp cộng dồn, với 100.000 dòng vẫn rất nhanh.
+
+### Binary search: tìm dòng đầu tiên
+
+Câu hỏi "dòng nào chứa toạ độ `scrollTop`?" giờ trở thành: tìm index `i` lớn nhất sao cho `offsets[i] ≤ scrollTop`. Vì `offsets` tăng dần, đây là bài toán binary search kinh điển.
+
+Với `scrollTop = 150` trên mảng trên:
+
+1. `lo = 0`, `hi = 4`. Giữa là 2: `offsets[2] = 120 ≤ 150` → đáp án nằm ở 2 hoặc sau đó, `lo = 2`.
+2. `lo = 2`, `hi = 4`. Giữa là 3: `offsets[3] = 160`, lớn hơn 150 → `hi = 2`.
+3. `lo = hi = 2` → dòng 2 (chiếm 120–160px) chứa toạ độ 150. Đúng.
+
+Với 100.000 dòng, binary search cần khoảng 17 lần so sánh (`log2(100_000) ≈ 16,6`), so với tối đa 100.000 lần nếu duyệt tuần tự. Dòng cuối được tìm bằng đúng hàm đó với toạ độ `scrollTop + viewportHeight`.
+
+```ts
+// virtual-math.ts
+import type { Range } from "./fixed-virtual-list";
+
+/** offsets[i] = mép trên của dòng i; offsets[count] = tổng chiều cao */
+export function buildOffsets(count: number, getHeight: (i: number) => number): Float64Array {
+  const offsets = new Float64Array(count + 1);
+  for (let i = 0; i < count; i++) {
+    offsets[i + 1] = offsets[i] + getHeight(i);
+  }
+  return offsets;
+}
+
+/** Index lớn nhất i sao cho offsets[i] ≤ y — tức là dòng chứa toạ độ y */
+export function findIndex(offsets: Float64Array, y: number): number {
+  let lo = 0;
+  let hi = offsets.length - 2; // index của dòng cuối
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1; // làm tròn lên để vòng lặp luôn tiến
+    if (offsets[mid] <= y) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+export function getVariableRange(
+  offsets: Float64Array,
+  scrollTop: number,
+  viewportHeight: number,
+  overscan: number,
+): Range {
+  const count = offsets.length - 1;
+  if (count === 0 || viewportHeight <= 0) return { start: 0, end: -1 };
+  const top = Math.max(0, scrollTop);
+  const first = findIndex(offsets, top);
+  const last = findIndex(offsets, top + viewportHeight);
+  return {
+    start: Math.max(0, first - overscan),
+    end: Math.min(count - 1, last + overscan),
+  };
+}
+```
+
+### Ước lượng trước, đo sau
+
+Vấn đề còn lại: phần lớn thời gian mình không *biết* chiều cao của một dòng cho tới khi nó được render. Chiến lược phổ biến là:
+
+1. Gán cho mọi dòng một chiều cao **ước lượng** (ví dụ 50px).
+2. Khi một dòng được render, **đo** chiều cao thật và lưu vào cache.
+3. Dựng lại `offsets` từ cache: dòng đã đo dùng số đo, dòng chưa đo dùng số ước lượng.
+
+Với 100.000 dòng ước lượng 50px, spacer ban đầu cao 5.000.000px. Nếu chiều cao thật trung bình là 80px, tổng thật là 8.000.000px — spacer sẽ "lớn dần" khi người dùng cuộn và các dòng được đo. Hệ quả dễ thấy là con trượt của thanh cuộn co lại và nhảy vị trí. Ước lượng càng sát trung bình thật thì hiện tượng này càng ít.
+
+### Đo bằng ResizeObserver
+
+Đo bằng `getBoundingClientRect()` ngay sau khi render có hai nhược điểm: nó buộc trình duyệt tính layout đồng bộ, và nó chỉ đo một lần — trong khi chiều cao dòng có thể đổi về sau (ảnh tải xong, font web tải xong, người dùng mở rộng một comment, viewport hẹp lại làm chữ xuống dòng). `ResizeObserver` giải quyết cả hai: callback được gọi sau khi layout đã tính xong, và được gọi lại mỗi khi kích thước phần tử thay đổi.
+
+Mình dùng **một** observer chung cho mọi dòng, mỗi dòng mang `data-index` để biết số đo thuộc về dòng nào. React 19 cho phép ref callback trả về hàm cleanup, nên việc `observe` khi dòng mount và `unobserve` khi dòng unmount rất gọn.
+
+### Scroll anchoring: chống giật khi chiều cao thay đổi
+
+Đây là phần làm virtual list tự viết "trông nghiệp dư" nếu bỏ qua. Giả sử người dùng đang ở `scrollTop = 2.000`, và dòng 10 — nằm ở toạ độ 500px, đã cuộn khuất phía trên — vừa được đo lại: ước lượng 50px, thật ra cao 130px. Mọi dòng sau dòng 10 bị đẩy xuống 80px. `scrollTop` vẫn là 2.000, nên nội dung người dùng đang đọc đột ngột trôi xuống 80px dù họ không làm gì.
+
+Cách sửa: khi một dòng nằm **phía trên** viewport đổi chiều cao một lượng `delta`, mình cộng đúng `delta` vào `scrollTop`. Trong ví dụ trên, `scrollTop` thành 2.080 và nội dung đứng yên trên màn hình. Điều quan trọng là thời điểm: phải chỉnh `scrollTop` *sau khi* React đã vẽ các dòng ở toạ độ mới nhưng *trước khi* trình duyệt paint, nếu không người dùng sẽ thấy một frame bị lệch. `useLayoutEffect` cho đúng thời điểm đó.
+
+Dòng nằm *bên dưới* hoặc *trong* viewport thì không cần bù: nội dung phía dưới bị đẩy xuống là hành vi tự nhiên, giống như một trang bình thường.
+
+<Callout>
+  **Một nguồn bù duy nhất.** CSS có cơ chế scroll anchoring riêng (`overflow-anchor`), nhưng nó được thiết kế cho layout theo luồng bình thường. Với layout tự tính toạ độ bằng `absolute` và `transform`, mình đặt `overflow-anchor: none` trên scroll container và tự bù hoàn toàn bằng code — để không bao giờ có hai cơ chế cùng chỉnh `scrollTop` một lúc.
+</Callout>
+
+### Cài đặt hoàn chỉnh với chiều cao thay đổi
+
+```tsx
+"use client";
+
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type Key, type ReactNode } from "react";
+import { buildOffsets, getVariableRange } from "./virtual-math";
+
+type VariableVirtualListProps<T> = {
+  items: readonly T[];
+  estimateHeight: number;
+  label: string;
+  className?: string; // container phải có chiều cao, ví dụ "h-[70vh]"
+  overscan?: number;
+  getKey: (item: T, index: number) => Key;
+  renderItem: (item: T, index: number) => ReactNode;
+};
+
+export function VariableVirtualList<T>({
+  items,
+  estimateHeight,
+  label,
+  className,
+  overscan = 4,
+  getKey,
+  renderItem,
+}: VariableVirtualListProps<T>) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const heightsRef = useRef(new Map<number, number>()); // index → chiều cao đã đo
+  const pendingAdjustRef = useRef(0);
+  const observerRef = useRef<ResizeObserver | null>(null);
+
+  const [version, setVersion] = useState(0); // tăng mỗi khi có số đo mới
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+
+  const count = items.length;
+  const offsets = useMemo(
+    () => buildOffsets(count, (i) => heightsRef.current.get(i) ?? estimateHeight),
+    // version là tín hiệu "cache chiều cao đã đổi"
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [count, estimateHeight, version],
+  );
+
+  // Callback của ResizeObserver cần đọc offsets mới nhất
+  const offsetsRef = useRef(offsets);
+  useLayoutEffect(() => {
+    offsetsRef.current = offsets;
+  }, [offsets]);
+
+  // Chiều cao viewport cũng được đo, không hard-code
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    setViewportHeight(el.clientHeight);
+    const ro = new ResizeObserver(() => setViewportHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Bù scrollTop sau khi các dòng đã ở toạ độ mới, trước khi paint
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    const delta = pendingAdjustRef.current;
+    if (el && delta !== 0) {
+      pendingAdjustRef.current = 0;
+      el.scrollTop += delta;
+    }
+  }, [version]);
+
+  const getRowObserver = useCallback(() => {
+    if (observerRef.current) return observerRef.current;
+    observerRef.current = new ResizeObserver((entries) => {
+      const heights = heightsRef.current;
+      const currentOffsets = offsetsRef.current;
+      const currentTop = scrollerRef.current?.scrollTop ?? 0;
+      let changed = false;
+
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const index = Number(el.dataset.index);
+        const size = entry.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
+        const previous = heights.get(index) ?? estimateHeight;
+        if (size === 0 || size === previous) continue;
+
+        heights.set(index, size);
+        changed = true;
+        // Dòng bắt đầu phía trên viewport → bù để nội dung đang xem đứng yên
+        if (currentOffsets[index] < currentTop) {
+          pendingAdjustRef.current += size - previous;
+        }
+      }
+
+      if (changed) setVersion((v) => v + 1);
+    });
+    return observerRef.current;
+  }, [estimateHeight]);
+
+  // Ref ổn định: React chỉ gọi khi dòng mount, cleanup khi dòng unmount
+  const measureRef = useCallback(
+    (el: HTMLDivElement) => {
+      const ro = getRowObserver();
+      ro.observe(el);
+      return () => ro.unobserve(el);
+    },
+    [getRowObserver],
+  );
+
+  const { start, end } = getVariableRange(offsets, scrollTop, viewportHeight, overscan);
+
+  const rows: ReactNode[] = [];
+  for (let i = start; i <= end; i++) {
+    const item = items[i];
+    rows.push(
+      <div
+        key={getKey(item, i)}
+        ref={measureRef}
+        data-index={i}
+        role="listitem"
+        aria-setsize={count}
+        aria-posinset={i + 1}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          transform: `translateY(${offsets[i]}px)`,
+        }}
+      >
+        {renderItem(item, i)}
+      </div>,
+    );
+  }
+
+  return (
+    <div
+      ref={scrollerRef}
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      className={className}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      style={{ overflowY: "auto", overflowAnchor: "none", position: "relative" }}
+    >
+      <div role="list" style={{ position: "relative", height: offsets[count] }}>
+        {rows}
+      </div>
+    </div>
+  );
+}
+```
+
+Những điểm khác so với bản chiều cao cố định:
+
+- Các dòng **không** có `height` cố định — chúng cao theo nội dung, và ResizeObserver báo lại con số thật.
+- `offsets` chỉ được dựng lại khi `version` đổi, tức là khi có số đo mới, không phải mỗi lần scroll.
+- `measureRef` được tạo bằng `useCallback` nên ổn định giữa các lần render. Nếu viết ref dạng arrow function inline, React sẽ gọi cleanup rồi gọi lại ref sau mỗi lần render — nghĩa là `unobserve` rồi `observe` liên tục, và observer bắn lại callback không cần thiết.
+- Nếu chiều rộng container đổi (xoay màn hình, kéo sidebar), chữ xuống dòng khác đi, các dòng đổi chiều cao và observer tự cập nhật — không cần code thêm.
+
+<Callout>
+  **Cache theo index chỉ đúng khi list không đổi thứ tự.** Bản tối giản ở trên lưu chiều cao theo index cho dễ hiểu. Khi list bị lọc, sắp xếp hoặc chèn phần tử, số đo của dòng cũ sẽ bị gán nhầm cho dòng mới. Trong production, hãy lưu cache theo key của item (ví dụ `Map` từ `id` sang chiều cao) và dựng `offsets` theo thứ tự hiện tại của `items`. Ngoài ra, dựng lại toàn bộ `offsets` là O(n) mỗi lần có số đo mới; nếu đó trở thành nút thắt, có thể chỉ dựng lại từ index nhỏ nhất vừa đổi trở đi, hoặc dùng Fenwick tree để cập nhật và truy vấn tổng trong O(log n).
+</Callout>
+
+## Giữ vị trí scroll
+
+Có ba tình huống mình hay gặp: người dùng rời trang rồi quay lại, list được tải thêm phần tử ở **đầu** (ví dụ chat tải tin nhắn cũ), và nhảy tới một dòng cụ thể.
+
+Với chiều cao thay đổi, `scrollTop` là một con số không đáng tin để lưu lại: nó phụ thuộc vào việc bao nhiêu dòng đã được đo và ước lượng sai bao nhiêu. Thay vào đó, mình lưu một **anchor**: index của dòng đang ở đỉnh viewport và khoảng cách từ mép trên dòng đó tới `scrollTop`.
+
+```ts
+// virtual-math.ts (tiếp)
+type ScrollAnchor = { index: number; offsetInRow: number };
+
+export function captureAnchor(offsets: Float64Array, scrollTop: number): ScrollAnchor {
+  const index = findIndex(offsets, scrollTop);
+  return { index, offsetInRow: scrollTop - offsets[index] };
+}
+
+export function scrollTopFromAnchor(offsets: Float64Array, anchor: ScrollAnchor): number {
+  return offsets[anchor.index] + anchor.offsetInRow;
+}
+
+// Nhảy tới dòng: đặt mép trên của dòng sát đỉnh viewport
+export function scrollTopForIndex(offsets: Float64Array, index: number): number {
+  return offsets[Math.max(0, Math.min(index, offsets.length - 2))];
+}
+```
+
+Với trường hợp tải thêm ở đầu list: nếu chèn 50 tin nhắn cũ lên trên, anchor `{ index: 0, offsetInRow: 12 }` phải trở thành `{ index: 50, offsetInRow: 12 }` — dòng mà người dùng đang đọc giờ có index mới. Sau đó tính lại `scrollTop` từ `offsets` mới, gán trong `useLayoutEffect` để không có frame nào bị nhảy. Đây cũng là lý do cache chiều cao nên theo key chứ không theo index: chèn ở đầu làm mọi index dịch đi.
+
+Khi nhảy tới dòng chưa từng được đo, `scrollTopForIndex` dựa trên ước lượng nên có thể lệch. Cách thực tế là nhảy một lần, đợi các dòng xung quanh được đo, rồi chỉnh lại một lần nữa nếu toạ độ thay đổi.
+
+## Accessibility: cái giá ít ai nhắc tới
+
+Virtualization về bản chất là nói dối trình duyệt: DOM chỉ có 22 dòng, nhưng UI giả vờ có 100.000 dòng. Mọi công cụ đọc DOM — screen reader, tính năng tìm trong trang, phím Tab, chức năng in — đều chỉ thấy 22 dòng đó. Mình không xoá được cái giá này, chỉ giảm được nó.
+
+### Cho screen reader biết tổng số
+
+Screen reader thường thông báo vị trí kiểu "mục 3 trên 22" dựa trên số phần tử trong DOM. Với list, `aria-setsize` và `aria-posinset` trên từng `listitem` sửa lại thông tin đó thành "mục 309 trên 100.000" — cả hai cài đặt ở trên đều đã làm việc này. Lưu ý `aria-posinset` bắt đầu từ 1.
+
+Với dữ liệu dạng bảng (có cột), dùng `role="grid"` hoặc `role="table"` với `aria-rowcount` trên bảng và `aria-rowindex` trên từng dòng. Cả hai đều đếm từ 1 và **tính cả dòng header**:
+
+```html
+<div role="grid" aria-label="Đơn hàng" aria-rowcount="100001">
+  <div role="row" aria-rowindex="1">
+    <div role="columnheader">Khách hàng</div>
+    <div role="columnheader">Tổng tiền</div>
+  </div>
+  <!-- Dòng dữ liệu index 308 (đếm từ 0) → aria-rowindex = 308 + 1 (đổi sang đếm từ 1) + 1 (header) = 310 -->
+  <div role="row" aria-rowindex="310">
+    <div role="gridcell">Khách hàng #308</div>
+    <div role="gridcell">9.052 ₫</div>
+  </div>
+</div>
+```
+
+Mức hỗ trợ của các thuộc tính này khác nhau giữa các tổ hợp screen reader và trình duyệt, nên đừng chỉ tin vào spec — hãy thử với ít nhất một screen reader thật.
+
+### Tìm trong trang không thấy dòng chưa render
+
+Người dùng bấm Ctrl+F và gõ tên một khách hàng nằm ở dòng 80.000: trình duyệt báo không tìm thấy, vì dòng đó không tồn tại trong DOM. Không có cách nào để find-in-page của trình duyệt tìm được nội dung không có trong DOM. Giải pháp thực tế là cung cấp ô tìm kiếm riêng: lọc dữ liệu trong JavaScript, hoặc tìm index của kết quả rồi `scrollTopForIndex` tới đó. Nếu người dùng của bạn thật sự phụ thuộc vào Ctrl+F (tài liệu, log), đó là một tín hiệu mạnh rằng virtualization có thể không phải lựa chọn đúng.
+
+### Focus bàn phím rời khỏi cửa sổ render
+
+Đây là bug mình thấy nhiều nhất. Người dùng Tab vào nút menu ở dòng 310, rồi dùng bánh xe chuột cuộn xuống 2.000px. Dòng 310 rời khỏi khoảng render và bị unmount — phần tử đang giữ focus biến mất khỏi DOM, focus rơi về `body`. Lần nhấn Tab tiếp theo đưa người dùng về đầu trang.
+
+Cách mình xử lý:
+
+- **Luôn render dòng đang có focus**, kể cả khi nó nằm ngoài khoảng. Theo dõi index đang focus qua `onFocus`/`onBlur` (hai event này nổi bọt trong React), rồi gộp nó vào tập dòng cần render.
+- **Một tab stop cho cả list** (roving tabindex): chỉ dòng "đang chọn" có `tabIndex={0}`, các dòng khác là `-1`, di chuyển bằng phím mũi tên. Khi người dùng bấm mũi tên xuống ở dòng cuối của khoảng render, cuộn trước rồi mới focus dòng tiếp theo.
+- Nếu dùng `aria-activedescendant` thay vì focus thật, phần tử được tham chiếu cũng **phải tồn tại** trong DOM — quy tắc "luôn render dòng đang active" vẫn áp dụng.
+
+```ts
+// Gộp dòng đang focus vào khoảng render để nó không bao giờ bị unmount
+export function getRenderedIndexes(range: Range, focusedIndex: number | null): number[] {
+  const indexes: number[] = [];
+  for (let i = range.start; i <= range.end; i++) indexes.push(i);
+  if (focusedIndex !== null && (focusedIndex < range.start || focusedIndex > range.end)) {
+    indexes.push(focusedIndex); // toạ độ vẫn tính từ offsets, nên nó nằm đúng chỗ dù ở xa
+  }
+  return indexes;
+}
+```
+
+<Callout>
+  **Đừng quên chức năng in.** Người dùng in một trang có virtual list sẽ chỉ nhận được vài chục dòng đang render. Nếu in là một use case thật (báo cáo, hoá đơn), hãy cung cấp một view riêng không virtualize, hoặc xuất file.
+</Callout>
+
+## Khi nào KHÔNG nên virtualize
+
+Virtualization giải quyết một vấn đề cụ thể với cái giá về độ phức tạp và accessibility. Mình chỉ dùng nó khi đã đo và thấy vấn đề, không dùng mặc định.
+
+### Khi list không đủ lớn
+
+Vài trăm dòng đơn giản thường render ổn mà không cần làm gì. Hãy mở DevTools → Performance, ghi lại một lần lọc hoặc cuộn trên điện thoại tầm trung (hoặc CPU throttling 4x), và chỉ hành động khi thấy tác vụ dài thật sự. Đôi khi chỉ cần `memo` cho component dòng và bỏ bớt vài node thừa là đủ.
+
+### `content-visibility: auto`
+
+CSS có một lựa chọn nằm giữa "render tất cả" và "virtualize": `content-visibility: auto` cho phép trình duyệt bỏ qua việc layout và paint các phần tử nằm ngoài màn hình, nhưng **DOM vẫn còn nguyên**. Nhờ vậy find-in-page, screen reader, anchor link và focus vẫn hoạt động bình thường.
+
+```css
+.feed-item {
+  content-visibility: auto;
+  /* Kích thước giữ chỗ khi phần tử chưa được render;
+     "auto" để trình duyệt nhớ kích thước thật sau lần render đầu tiên */
+  contain-intrinsic-size: auto 120px;
+}
+```
+
+Cái giá: React vẫn phải tạo và reconcile mọi node, bộ nhớ vẫn tỉ lệ với số dòng. Nó hợp với vài nghìn phần tử có nội dung nặng về layout (bài viết dài, feed), nhưng không cứu được 100.000 dòng.
+
+### Phân trang
+
+Phân trang bị coi là "lỗi thời", nhưng nó có những ưu điểm mà virtual list khó có: URL chia sẻ được cho từng trang, nút Back hoạt động đúng, footer chạm tới được, và người dùng biết mình đang ở đâu. Với kết quả tìm kiếm hay trang quản trị mà người dùng hiếm khi xem quá trang thứ ba, phân trang phía server thường là lựa chọn đơn giản và tốt hơn cả.
+
+| Cách tiếp cận | DOM chứa | Ctrl+F / screen reader | Độ phức tạp | Hợp với |
+| --- | --- | --- | --- | --- |
+| Render tất cả | Mọi dòng | Hoạt động đầy đủ | Thấp | Vài trăm dòng |
+| `content-visibility: auto` | Mọi dòng, bỏ qua layout/paint ngoài màn hình | Hoạt động đầy đủ | Thấp | Vài nghìn phần tử nặng về layout |
+| Phân trang | Một trang | Hoạt động trong trang hiện tại | Thấp – trung bình | Tìm kiếm, trang quản trị |
+| Virtualization | Vài chục dòng | Chỉ thấy phần đang render | Cao | Hàng chục nghìn dòng trở lên, cần cuộn liên tục |
+
+## So sánh với thư viện
+
+Mình viết từ đầu để hiểu cơ chế, nhưng trong production mình thường dùng thư viện. Phần khó không nằm ở phép toán mà ở hàng tá trường hợp biên: scroll theo `window` thay vì container, list ngang và dạng lưới, sticky header, đảo chiều cho chat, server rendering, và những khác biệt nhỏ giữa các trình duyệt.
+
+- **TanStack Virtual** là headless: nó tính toán khoảng render, toạ độ và đo phần tử, còn markup hoàn toàn do bạn viết. Mô hình rất gần với những gì bài này dựng — nếu bạn hiểu `offsets`, `overscan` và việc đo bằng ResizeObserver, bạn sẽ đọc API của nó rất nhanh.
+- **react-window** đi theo hướng cung cấp component dựng sẵn, gọn nhẹ, hợp nhất khi bạn biết trước kích thước dòng. Nếu dòng có chiều cao động, hãy kiểm tra kỹ phiên bản bạn đang dùng hỗ trợ đo tự động đến đâu.
+
+| | Tự viết | TanStack Virtual | react-window |
+| --- | --- | --- | --- |
+| Kiểm soát markup | Toàn bộ | Toàn bộ (headless) | Qua component của thư viện |
+| Chiều cao động | Tự xử lý đo và bù scroll | Có sẵn cơ chế đo phần tử | Tuỳ phiên bản |
+| Trường hợp biên đã được xử lý | Chỉ những gì bạn gặp | Nhiều | Nhiều, với phạm vi hẹp hơn |
+| Accessibility | Tự làm | Tự làm | Tự làm |
+
+Dòng cuối là điều mình muốn nhấn mạnh: **không thư viện nào làm accessibility hộ bạn.** `aria-setsize`, giữ focus, ô tìm kiếm thay cho Ctrl+F — đều là trách nhiệm của người dùng thư viện.
+
+## Tóm tắt
+
+<Checklist>
+
+- Virtualization tách chiều cao nội dung khỏi số node DOM: spacer cao bằng cả list, chỉ vài chục dòng thật được render.
+- Chiều cao cố định: `floor(scrollTop / itemHeight)` cho dòng đầu, `ceil((scrollTop + viewportHeight) / itemHeight) - 1` cho dòng cuối, cộng overscan vài dòng mỗi phía.
+- Chiều cao thay đổi: prefix sum cho toạ độ, binary search để tìm dòng đầu — khoảng 17 lần so sánh cho 100.000 dòng.
+- Ước lượng trước, đo bằng ResizeObserver sau, và bù `scrollTop` trong `useLayoutEffect` khi dòng phía trên viewport đổi chiều cao.
+- Lưu vị trí scroll dưới dạng anchor (index + độ lệch), cache chiều cao theo key của item chứ không theo index.
+- Accessibility: `aria-setsize`/`aria-posinset` hoặc `aria-rowcount`/`aria-rowindex`, luôn render dòng đang focus, cung cấp ô tìm kiếm thay cho Ctrl+F.
+- Đo trước khi virtualize — `content-visibility: auto` hoặc phân trang thường đủ và rẻ hơn nhiều.
+
+</Checklist>

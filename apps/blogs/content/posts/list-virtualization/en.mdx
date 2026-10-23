@@ -1,0 +1,640 @@
+---
+title: "List Virtualization from Scratch: Rendering 100,000 Rows Smoothly"
+excerpt: "Building a virtual list in React + TypeScript by hand: windowing math with real numbers, overscan, variable heights with prefix sums and binary search, measuring with ResizeObserver, preventing scroll jumps, accessibility — and when not to virtualize at all."
+---
+
+<Lead>The first time I met a 100,000-row table in production, the whole browser tab froze for seconds every time someone changed a filter. No algorithm was wrong — I was simply asking the browser to build and keep far more DOM than a user could ever see at once. Virtualization (or windowing) fixes exactly that: render only the rows inside the viewport. This post goes from the math, to a complete fixed-height implementation, then extends it to variable heights — along with the accessibility costs that few articles talk about.</Lead>
+
+## Why 100,000 rows freeze the browser
+
+A row in a real table is rarely a single `div`. There's an avatar, a few text cells, a status badge, a menu button — easily ten or more DOM elements. Multiply by 100,000 rows and you're at roughly a million nodes. The cost shows up at several layers:
+
+- **React:** it has to create elements, run components and reconcile every row — every re-render of the list walks the whole thing again.
+- **Style and layout:** the browser computes style and geometry for every node, including those millions of pixels away from the viewport.
+- **Memory:** every DOM node, every React fiber, every event-handler closure takes RAM. On a mid-range phone, the OS may simply kill the tab.
+- **Interaction:** anything that changes the list (filtering, sorting, selecting) triggers a long task on the main thread — exactly the thing that ruins INP.
+
+The telling part is that the user only sees about 15–20 rows at any moment. Everything else is cost that gives them nothing.
+
+## The core idea: render only what's visible
+
+Virtualization decouples two things that normally go together: **the height of the content** and **the number of DOM elements**. The structure has three layers:
+
+1. **Scroll container:** an element with a fixed height and `overflow-y: auto`. This is the "window".
+2. **Spacer:** an inner element whose height equals the total height of the whole list. It holds nothing meaningful; it exists so the scrollbar has the right size and position, as if every row existed.
+3. **The visible rows:** just a few dozen, set to `position: absolute` and moved to their exact coordinate with `transform: translateY(...)`.
+
+On every scroll, I read `scrollTop`, work out which rows fall inside the window, and render only those. The browser still sees a 4-million-pixel scrollbar, but the DOM holds a few dozen rows.
+
+## Windowing math with fixed row heights
+
+The simplest case: every row has the same height. I'll use one concrete set of numbers throughout this section:
+
+- `itemHeight` = 40px
+- `count` = 100,000 rows
+- `viewportHeight` = 600px
+- `scrollTop` = 12,345px (the user has scrolled down a bit)
+
+### Step 1 — total height
+
+```ts
+totalHeight = count * itemHeight; // 100_000 * 40 = 4_000_000px
+```
+
+This is the spacer's height. The scrollbar now has the right proportions, as if all 100,000 rows were really there.
+
+### Step 2 — the first visible row
+
+Row `i` occupies the range from `i * 40` to `(i + 1) * 40`. The row containing the top pixel of the viewport is:
+
+```ts
+first = Math.floor(scrollTop / itemHeight); // Math.floor(12_345 / 40) = Math.floor(308.625) = 308
+```
+
+Row 308 starts at 12,320px, so its first 25px have scrolled out of view above and the remaining 15px are still visible. That's why it's `floor` and not `round`: a row peeking out by a single pixel still has to be rendered.
+
+### Step 3 — the last visible row
+
+The bottom of the viewport is at `12,345 + 600 = 12,945px`:
+
+```ts
+last = Math.ceil((scrollTop + viewportHeight) / itemHeight) - 1;
+// Math.ceil(12_945 / 40) - 1 = Math.ceil(323.625) - 1 = 324 - 1 = 323
+```
+
+Sanity check: row 323 spans 12,920–12,960px, and the viewport ends at 12,945px, so 25px of it is visible. Rows 308 through 323 — 16 rows in total — are what the user sees. With a 600px viewport and 40px rows, the maximum number of visible rows is always `Math.ceil(600 / 40) + 1 = 16`: 15 full rows plus one more when both the top and bottom edges are cut mid-row.
+
+### Step 4 — overscan
+
+If you render exactly those 16 rows, fast scrolling flashes blank gaps at the edges. The reason is that modern browsers handle most scrolling off the main thread: the content has already moved on screen *before* your JavaScript gets to run and render the new rows. **Overscan** renders a few extra rows on each side as a buffer:
+
+```ts
+const overscan = 3;
+start = Math.max(0, first - overscan);       // max(0, 305) = 305
+end = Math.min(count - 1, last + overscan);  // min(99_999, 326) = 326
+// → render 22 rows, the first one positioned at 305 * 40 = 12_200px
+```
+
+22 rows instead of 100,000 — more than 4,500 times fewer rows in the DOM.
+
+| Parameter | Example value | Formula |
+| --- | --- | --- |
+| Spacer height | 4,000,000px | `count * itemHeight` |
+| First visible row | 308 | `floor(scrollTop / itemHeight)` |
+| Last visible row | 323 | `ceil((scrollTop + viewportHeight) / itemHeight) - 1` |
+| Rendered range (overscan 3) | 305 – 326 | clamped to `0` and `count - 1` |
+| Position of row `i` | `i * 40` | `translateY(i * itemHeight)` |
+
+<Callout>
+  **More overscan is not always better.** 3–5 rows is usually enough for mouse wheel and trackpad scrolling. Bumping it to 50 won't remove the blank flash when someone drags the scrollbar thumb from top to bottom — no amount of overscan keeps up with that — it only makes every render heavier. If your rows are slow to render, fix the row before raising overscan.
+</Callout>
+
+## Implementation: a fixed-height virtual list
+
+Here's a minimal but complete implementation. I keep the math in a pure function so it's easy to test; the component only reads `scrollTop` and draws.
+
+```tsx
+"use client";
+
+import { useState, type Key, type ReactNode } from "react";
+
+export type Range = { start: number; end: number };
+
+export function getFixedRange(
+  scrollTop: number,
+  viewportHeight: number,
+  itemHeight: number,
+  count: number,
+  overscan: number,
+): Range {
+  if (count === 0 || viewportHeight <= 0) return { start: 0, end: -1 };
+  // Elastic overscroll in some browsers can report a negative scrollTop
+  const top = Math.max(0, scrollTop);
+  const first = Math.floor(top / itemHeight);
+  const last = Math.ceil((top + viewportHeight) / itemHeight) - 1;
+  return {
+    start: Math.max(0, first - overscan),
+    end: Math.min(count - 1, last + overscan),
+  };
+}
+
+type FixedVirtualListProps<T> = {
+  items: readonly T[];
+  itemHeight: number;
+  height: number;
+  label: string;
+  overscan?: number;
+  getKey: (item: T, index: number) => Key;
+  renderItem: (item: T, index: number) => ReactNode;
+};
+
+export function FixedVirtualList<T>({
+  items,
+  itemHeight,
+  height,
+  label,
+  overscan = 3,
+  getKey,
+  renderItem,
+}: FixedVirtualListProps<T>) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const { start, end } = getFixedRange(scrollTop, height, itemHeight, items.length, overscan);
+
+  const rows: ReactNode[] = [];
+  for (let i = start; i <= end; i++) {
+    const item = items[i];
+    rows.push(
+      <div
+        key={getKey(item, i)}
+        role="listitem"
+        aria-setsize={items.length}
+        aria-posinset={i + 1}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: itemHeight,
+          transform: `translateY(${i * itemHeight}px)`,
+        }}
+      >
+        {renderItem(item, i)}
+      </div>,
+    );
+  }
+
+  return (
+    <div
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      style={{ height, overflowY: "auto", position: "relative" }}
+    >
+      <div role="list" style={{ position: "relative", height: items.length * itemHeight }}>
+        {rows}
+      </div>
+    </div>
+  );
+}
+```
+
+And using it with 100,000 rows:
+
+```tsx
+"use client";
+
+import { FixedVirtualList } from "./fixed-virtual-list";
+
+type Order = { id: number; customer: string; total: number };
+
+const ORDERS: Order[] = Array.from({ length: 100_000 }, (_, i) => ({
+  id: i,
+  customer: `Customer #${i}`,
+  total: (i * 7919) % 10_000,
+}));
+
+export default function OrdersPage() {
+  return (
+    <FixedVirtualList
+      label="Orders"
+      items={ORDERS}
+      itemHeight={40}
+      height={600}
+      getKey={(order) => order.id}
+      renderItem={(order) => (
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "0 12px", lineHeight: "40px" }}>
+          <span>{order.customer}</span>
+          <span>${order.total.toLocaleString("en-US")}</span>
+        </div>
+      )}
+    />
+  );
+}
+```
+
+### A few decisions worth explaining
+
+- **`transform` instead of `top`:** both work. I prefer `translateY` because it doesn't affect the layout of other elements, and with every row sharing `top: 0` the browser has less to recompute.
+- **Stable keys from the data:** `order.id`, not the index. When the list is filtered or re-sorted, index keys make React carry the old row's state (a half-typed input, an expanded panel) over to a different row.
+- **`tabIndex={0}` on the scroll container:** if the rows contain nothing focusable, keyboard users need to focus the container to scroll it with the arrow keys and Page Up/Page Down. Pair it with `role="region"` and an `aria-label` so screen readers can announce what the region is.
+- **Re-rendering on every scroll:** each scroll event calls `setScrollTop`. With 22 lightweight rows, that's negligible. If rows are heavy, wrap the row component in `memo` with stable props — React will then only render the rows that newly enter the range.
+
+<Callout>
+  **Element size limits.** Browsers cap how tall a single element can be, somewhere in the tens of millions of pixels, and the exact limit differs between engines. 100,000 rows × 40px = 4 million pixels is safe, but with millions of rows the spacer can get silently clamped — the last rows simply become unreachable. At that point you need coordinate-scaling tricks, or better: question why anyone needs to scroll through millions of rows.
+</Callout>
+
+## When rows have different heights
+
+Fixed heights make for clean math but rarely match a real UI: a comment that wraps to three lines, a chat message with an image, a product description that wraps on a narrow screen. Now `i * itemHeight` no longer gives the right position, and `floor(scrollTop / itemHeight)` no longer gives the right row.
+
+### Prefix sums: the position of every row
+
+Instead of multiplying, I build an `offsets` array with `count + 1` entries, where `offsets[i]` is the total height of rows 0 through `i - 1` — that is, the top edge of row `i`. The last entry is the total height.
+
+Example with 5 rows of heights `[40, 80, 40, 120, 60]`:
+
+| Row `i` | Height | `offsets[i]` (top) | Bottom |
+| --- | --- | --- | --- |
+| 0 | 40 | 0 | 40 |
+| 1 | 80 | 40 | 120 |
+| 2 | 40 | 120 | 160 |
+| 3 | 120 | 160 | 280 |
+| 4 | 60 | 280 | 340 |
+
+The full array is `[0, 40, 120, 160, 280, 340]`, and `offsets[5] = 340` is the spacer height. Building it is O(n) — a single accumulating loop, still very fast for 100,000 rows.
+
+### Binary search: finding the first row
+
+The question "which row contains `scrollTop`?" becomes: find the largest index `i` such that `offsets[i] ≤ scrollTop`. Since `offsets` is increasing, this is textbook binary search.
+
+With `scrollTop = 150` on the array above:
+
+1. `lo = 0`, `hi = 4`. Middle is 2: `offsets[2] = 120 ≤ 150` → the answer is 2 or later, `lo = 2`.
+2. `lo = 2`, `hi = 4`. Middle is 3: `offsets[3] = 160`, which is greater than 150 → `hi = 2`.
+3. `lo = hi = 2` → row 2 (spanning 120–160px) contains position 150. Correct.
+
+For 100,000 rows, binary search needs about 17 comparisons (`log2(100_000) ≈ 16.6`), versus up to 100,000 with a linear scan. The last row is found with the same function, using `scrollTop + viewportHeight`.
+
+```ts
+// virtual-math.ts
+import type { Range } from "./fixed-virtual-list";
+
+/** offsets[i] = top edge of row i; offsets[count] = total height */
+export function buildOffsets(count: number, getHeight: (i: number) => number): Float64Array {
+  const offsets = new Float64Array(count + 1);
+  for (let i = 0; i < count; i++) {
+    offsets[i + 1] = offsets[i] + getHeight(i);
+  }
+  return offsets;
+}
+
+/** Largest i such that offsets[i] ≤ y — the row containing position y */
+export function findIndex(offsets: Float64Array, y: number): number {
+  let lo = 0;
+  let hi = offsets.length - 2; // index of the last row
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1; // round up so the loop always makes progress
+    if (offsets[mid] <= y) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+export function getVariableRange(
+  offsets: Float64Array,
+  scrollTop: number,
+  viewportHeight: number,
+  overscan: number,
+): Range {
+  const count = offsets.length - 1;
+  if (count === 0 || viewportHeight <= 0) return { start: 0, end: -1 };
+  const top = Math.max(0, scrollTop);
+  const first = findIndex(offsets, top);
+  const last = findIndex(offsets, top + viewportHeight);
+  return {
+    start: Math.max(0, first - overscan),
+    end: Math.min(count - 1, last + overscan),
+  };
+}
+```
+
+### Estimate first, measure later
+
+The remaining problem: most of the time you don't *know* a row's height until it's rendered. The common strategy is:
+
+1. Give every row an **estimated** height (say 50px).
+2. When a row renders, **measure** its real height and store it in a cache.
+3. Rebuild `offsets` from the cache: measured rows use their measurement, unmeasured rows use the estimate.
+
+With 100,000 rows estimated at 50px, the spacer starts at 5,000,000px. If the real average is 80px, the true total is 8,000,000px — the spacer "grows" as the user scrolls and rows get measured. The visible symptom is a scrollbar thumb that shrinks and jumps. The closer your estimate is to the real average, the less of this you'll see.
+
+### Measuring with ResizeObserver
+
+Measuring with `getBoundingClientRect()` right after render has two drawbacks: it forces a synchronous layout, and it measures only once — while row heights can change later (an image loads, a web font arrives, the user expands a comment, the viewport narrows and text wraps). `ResizeObserver` solves both: its callback runs after layout has been computed, and runs again whenever the element's size changes.
+
+I use **one** shared observer for all rows, and each row carries a `data-index` so I know which row a measurement belongs to. React 19 lets a ref callback return a cleanup function, which makes "`observe` on mount, `unobserve` on unmount" very tidy.
+
+### Scroll anchoring: no jumps when heights change
+
+This is the part that makes a hand-rolled virtual list feel amateurish if you skip it. Say the user is at `scrollTop = 2,000`, and row 10 — at position 500px, already scrolled out of view above — gets re-measured: estimated at 50px, actually 130px. Every row after row 10 moves down 80px. `scrollTop` is still 2,000, so the content the user is reading suddenly slides down 80px even though they did nothing.
+
+The fix: when a row **above** the viewport changes height by `delta`, add exactly `delta` to `scrollTop`. In the example, `scrollTop` becomes 2,080 and the content stays put on screen. Timing matters: the adjustment has to happen *after* React has drawn the rows at their new positions but *before* the browser paints, otherwise the user sees one misaligned frame. `useLayoutEffect` gives you exactly that moment.
+
+Rows *below* or *inside* the viewport need no compensation: content below getting pushed down is the natural behaviour, just like on a normal page.
+
+<Callout>
+  **One source of correction.** CSS has its own scroll anchoring mechanism (`overflow-anchor`), but it's designed for normal-flow layout. With positions computed by hand using `absolute` and `transform`, I set `overflow-anchor: none` on the scroll container and do all the compensation in code — so there are never two mechanisms adjusting `scrollTop` at the same time.
+</Callout>
+
+### The complete variable-height implementation
+
+```tsx
+"use client";
+
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type Key, type ReactNode } from "react";
+import { buildOffsets, getVariableRange } from "./virtual-math";
+
+type VariableVirtualListProps<T> = {
+  items: readonly T[];
+  estimateHeight: number;
+  label: string;
+  className?: string; // the container needs a height, e.g. "h-[70vh]"
+  overscan?: number;
+  getKey: (item: T, index: number) => Key;
+  renderItem: (item: T, index: number) => ReactNode;
+};
+
+export function VariableVirtualList<T>({
+  items,
+  estimateHeight,
+  label,
+  className,
+  overscan = 4,
+  getKey,
+  renderItem,
+}: VariableVirtualListProps<T>) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const heightsRef = useRef(new Map<number, number>()); // index → measured height
+  const pendingAdjustRef = useRef(0);
+  const observerRef = useRef<ResizeObserver | null>(null);
+
+  const [version, setVersion] = useState(0); // bumped whenever a new measurement arrives
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+
+  const count = items.length;
+  const offsets = useMemo(
+    () => buildOffsets(count, (i) => heightsRef.current.get(i) ?? estimateHeight),
+    // version is the "height cache changed" signal
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [count, estimateHeight, version],
+  );
+
+  // The ResizeObserver callback needs the latest offsets
+  const offsetsRef = useRef(offsets);
+  useLayoutEffect(() => {
+    offsetsRef.current = offsets;
+  }, [offsets]);
+
+  // The viewport height is measured too, not hard-coded
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    setViewportHeight(el.clientHeight);
+    const ro = new ResizeObserver(() => setViewportHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Compensate scrollTop after rows are at their new positions, before paint
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    const delta = pendingAdjustRef.current;
+    if (el && delta !== 0) {
+      pendingAdjustRef.current = 0;
+      el.scrollTop += delta;
+    }
+  }, [version]);
+
+  const getRowObserver = useCallback(() => {
+    if (observerRef.current) return observerRef.current;
+    observerRef.current = new ResizeObserver((entries) => {
+      const heights = heightsRef.current;
+      const currentOffsets = offsetsRef.current;
+      const currentTop = scrollerRef.current?.scrollTop ?? 0;
+      let changed = false;
+
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const index = Number(el.dataset.index);
+        const size = entry.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
+        const previous = heights.get(index) ?? estimateHeight;
+        if (size === 0 || size === previous) continue;
+
+        heights.set(index, size);
+        changed = true;
+        // Row starts above the viewport → compensate so visible content stays put
+        if (currentOffsets[index] < currentTop) {
+          pendingAdjustRef.current += size - previous;
+        }
+      }
+
+      if (changed) setVersion((v) => v + 1);
+    });
+    return observerRef.current;
+  }, [estimateHeight]);
+
+  // Stable ref: React calls it when a row mounts and runs the cleanup when it unmounts
+  const measureRef = useCallback(
+    (el: HTMLDivElement) => {
+      const ro = getRowObserver();
+      ro.observe(el);
+      return () => ro.unobserve(el);
+    },
+    [getRowObserver],
+  );
+
+  const { start, end } = getVariableRange(offsets, scrollTop, viewportHeight, overscan);
+
+  const rows: ReactNode[] = [];
+  for (let i = start; i <= end; i++) {
+    const item = items[i];
+    rows.push(
+      <div
+        key={getKey(item, i)}
+        ref={measureRef}
+        data-index={i}
+        role="listitem"
+        aria-setsize={count}
+        aria-posinset={i + 1}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          transform: `translateY(${offsets[i]}px)`,
+        }}
+      >
+        {renderItem(item, i)}
+      </div>,
+    );
+  }
+
+  return (
+    <div
+      ref={scrollerRef}
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      className={className}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      style={{ overflowY: "auto", overflowAnchor: "none", position: "relative" }}
+    >
+      <div role="list" style={{ position: "relative", height: offsets[count] }}>
+        {rows}
+      </div>
+    </div>
+  );
+}
+```
+
+What's different from the fixed-height version:
+
+- Rows have **no** fixed `height` — they size to their content, and the ResizeObserver reports the real number.
+- `offsets` is only rebuilt when `version` changes — when a new measurement arrives — not on every scroll.
+- `measureRef` comes from `useCallback`, so it's stable across renders. With an inline arrow-function ref, React would run the cleanup and call the ref again after every render — meaning constant `unobserve`/`observe` churn and redundant observer callbacks.
+- If the container width changes (device rotation, a resized sidebar), text re-wraps, row heights change and the observer updates everything — no extra code needed.
+
+<Callout>
+  **An index-keyed cache is only correct while the order never changes.** The minimal version above stores heights by index to keep things readable. Once the list is filtered, sorted or has items inserted, old measurements get assigned to the wrong rows. In production, key the cache by item key (for example a `Map` from `id` to height) and build `offsets` in the current order of `items`. Also, rebuilding all of `offsets` is O(n) per new measurement; if that ever becomes the bottleneck, rebuild only from the smallest changed index onward, or use a Fenwick tree for O(log n) updates and prefix queries.
+</Callout>
+
+## Keeping the scroll position
+
+Three situations come up again and again: the user navigates away and comes back, items get loaded at the **top** of the list (a chat loading older messages), and jumping to a specific row.
+
+With variable heights, `scrollTop` is an unreliable number to save: it depends on how many rows have been measured and how wrong the estimates were. Instead, I save an **anchor**: the index of the row at the top of the viewport, plus the distance from that row's top edge to `scrollTop`.
+
+```ts
+// virtual-math.ts (continued)
+type ScrollAnchor = { index: number; offsetInRow: number };
+
+export function captureAnchor(offsets: Float64Array, scrollTop: number): ScrollAnchor {
+  const index = findIndex(offsets, scrollTop);
+  return { index, offsetInRow: scrollTop - offsets[index] };
+}
+
+export function scrollTopFromAnchor(offsets: Float64Array, anchor: ScrollAnchor): number {
+  return offsets[anchor.index] + anchor.offsetInRow;
+}
+
+// Jump to a row: put its top edge at the top of the viewport
+export function scrollTopForIndex(offsets: Float64Array, index: number): number {
+  return offsets[Math.max(0, Math.min(index, offsets.length - 2))];
+}
+```
+
+For loading at the top: if you prepend 50 older messages, the anchor `{ index: 0, offsetInRow: 12 }` must become `{ index: 50, offsetInRow: 12 }` — the row the user is reading now has a new index. Then recompute `scrollTop` from the new `offsets` and assign it in `useLayoutEffect` so no frame jumps. This is also why the height cache should be keyed by item key rather than index: prepending shifts every index.
+
+When jumping to a row that has never been measured, `scrollTopForIndex` relies on estimates and may be off. In practice: jump once, let the surrounding rows get measured, then correct once more if the position changed.
+
+## Accessibility: the cost nobody mentions
+
+Virtualization is, at heart, lying to the browser: the DOM has 22 rows, but the UI pretends there are 100,000. Every tool that reads the DOM — screen readers, find-in-page, the Tab key, printing — only sees those 22. You can't eliminate this cost, only reduce it.
+
+### Tell screen readers the real size
+
+Screen readers typically announce position like "item 3 of 22" based on what's in the DOM. For a list, `aria-setsize` and `aria-posinset` on each `listitem` correct that to "item 309 of 100,000" — both implementations above already do this. Note that `aria-posinset` starts at 1.
+
+For tabular data (with columns), use `role="grid"` or `role="table"` with `aria-rowcount` on the container and `aria-rowindex` on each row. Both are 1-based and **include the header row**:
+
+```html
+<div role="grid" aria-label="Orders" aria-rowcount="100001">
+  <div role="row" aria-rowindex="1">
+    <div role="columnheader">Customer</div>
+    <div role="columnheader">Total</div>
+  </div>
+  <!-- Data row at index 308 (0-based) → aria-rowindex = 308 + 1 (to 1-based) + 1 (header) = 310 -->
+  <div role="row" aria-rowindex="310">
+    <div role="gridcell">Customer #308</div>
+    <div role="gridcell">$9,052</div>
+  </div>
+</div>
+```
+
+Support for these attributes varies across screen reader and browser combinations, so don't trust the spec alone — test with at least one real screen reader.
+
+### Find-in-page can't see unrendered rows
+
+A user hits Ctrl+F and types the name of a customer on row 80,000: the browser reports no matches, because that row doesn't exist in the DOM. There's no way for the browser's find-in-page to search content that isn't in the DOM. The practical fix is your own search box: filter the data in JavaScript, or find the index of the match and `scrollTopForIndex` to it. If your users genuinely rely on Ctrl+F (documents, logs), that's a strong signal virtualization may be the wrong choice.
+
+### Keyboard focus leaving the rendered window
+
+This is the bug I see most often. A user tabs to the menu button on row 310, then scrolls down 2,000px with the mouse wheel. Row 310 leaves the rendered range and unmounts — the focused element disappears from the DOM and focus falls back to `body`. The next Tab press sends the user back to the top of the page.
+
+How I handle it:
+
+- **Always render the focused row**, even when it's outside the range. Track the focused index via `onFocus`/`onBlur` (both bubble in React) and merge it into the set of rows to render.
+- **One tab stop for the whole list** (roving tabindex): only the "current" row has `tabIndex={0}`, the rest are `-1`, and arrow keys move between them. When the user presses Down on the last rendered row, scroll first, then focus the next row.
+- If you use `aria-activedescendant` instead of real focus, the referenced element **must still exist** in the DOM — the "always render the active row" rule still applies.
+
+```ts
+// Merge the focused row into the rendered range so it never unmounts
+export function getRenderedIndexes(range: Range, focusedIndex: number | null): number[] {
+  const indexes: number[] = [];
+  for (let i = range.start; i <= range.end; i++) indexes.push(i);
+  if (focusedIndex !== null && (focusedIndex < range.start || focusedIndex > range.end)) {
+    indexes.push(focusedIndex); // its position still comes from offsets, so it sits in the right place even far away
+  }
+  return indexes;
+}
+```
+
+<Callout>
+  **Don't forget printing.** Printing a page with a virtual list gives you only the few dozen rows currently rendered. If printing is a real use case (reports, invoices), provide a separate non-virtualized view or an export.
+</Callout>
+
+## When NOT to virtualize
+
+Virtualization solves a specific problem at a real cost in complexity and accessibility. I only reach for it after measuring a problem, never by default.
+
+### When the list isn't big enough
+
+A few hundred simple rows usually render fine without any tricks. Open DevTools → Performance, record a filter or a scroll on a mid-range phone (or with 4x CPU throttling), and only act if you see real long tasks. Sometimes `memo` on the row component and removing a few redundant nodes is all it takes.
+
+### `content-visibility: auto`
+
+CSS offers a middle ground between "render everything" and "virtualize": `content-visibility: auto` lets the browser skip layout and paint for off-screen elements, while **the DOM stays intact**. Find-in-page, screen readers, anchor links and focus all keep working.
+
+```css
+.feed-item {
+  content-visibility: auto;
+  /* Placeholder size while the element isn't rendered;
+     "auto" lets the browser remember the real size after the first render */
+  contain-intrinsic-size: auto 120px;
+}
+```
+
+The trade-off: React still creates and reconciles every node, and memory still scales with row count. It's a good fit for a few thousand layout-heavy items (long articles, feeds), but it won't save you at 100,000 rows.
+
+### Pagination
+
+Pagination gets called "old-fashioned", but it has strengths a virtual list struggles to match: a shareable URL for every page, a Back button that works, a footer you can actually reach, and users who know where they are. For search results or admin pages where people rarely go past page three, server-side pagination is often the simpler and better choice.
+
+| Approach | DOM contains | Ctrl+F / screen readers | Complexity | Best for |
+| --- | --- | --- | --- | --- |
+| Render everything | Every row | Fully works | Low | A few hundred rows |
+| `content-visibility: auto` | Every row, layout/paint skipped off-screen | Fully works | Low | A few thousand layout-heavy items |
+| Pagination | One page | Works within the current page | Low – medium | Search, admin pages |
+| Virtualization | A few dozen rows | Only sees what's rendered | High | Tens of thousands of rows and up, continuous scrolling |
+
+## Compared to libraries
+
+I built this from scratch to understand the mechanics, but in production I usually use a library. The hard part isn't the math — it's the long tail of edge cases: scrolling with `window` instead of a container, horizontal and grid layouts, sticky headers, reversed lists for chat, server rendering, and small differences between browsers.
+
+- **TanStack Virtual** is headless: it computes the range, the positions and measures elements, while the markup is entirely yours. Its model is very close to what this post builds — if you understand `offsets`, overscan and measuring with ResizeObserver, you'll pick up its API quickly.
+- **react-window** takes the approach of ready-made components, small and lean, and shines when you know row sizes up front. If your rows have dynamic heights, check carefully how far the version you're on supports automatic measurement.
+
+| | Hand-rolled | TanStack Virtual | react-window |
+| --- | --- | --- | --- |
+| Markup control | Full | Full (headless) | Through the library's components |
+| Dynamic heights | You handle measuring and scroll compensation | Built-in element measurement | Depends on the version |
+| Edge cases covered | Only the ones you've hit | Many | Many, within a narrower scope |
+| Accessibility | Your job | Your job | Your job |
+
+That last row is the point I want to stress: **no library does accessibility for you.** `aria-setsize`, keeping focus alive, a search box in place of Ctrl+F — those are all on whoever uses the library.
+
+## Key takeaways
+
+<Checklist>
+
+- Virtualization decouples content height from DOM node count: a spacer as tall as the whole list, with only a few dozen real rows rendered.
+- Fixed heights: `floor(scrollTop / itemHeight)` for the first row, `ceil((scrollTop + viewportHeight) / itemHeight) - 1` for the last, plus a few rows of overscan on each side.
+- Variable heights: prefix sums for positions, binary search for the first row — about 17 comparisons for 100,000 rows.
+- Estimate first, measure with ResizeObserver later, and compensate `scrollTop` in `useLayoutEffect` when a row above the viewport changes height.
+- Save scroll position as an anchor (index + offset), and key the height cache by item key, not index.
+- Accessibility: `aria-setsize`/`aria-posinset` or `aria-rowcount`/`aria-rowindex`, always render the focused row, and provide a search box in place of Ctrl+F.
+- Measure before virtualizing — `content-visibility: auto` or pagination is often enough and much cheaper.
+
+</Checklist>

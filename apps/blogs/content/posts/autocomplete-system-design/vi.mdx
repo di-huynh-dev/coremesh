@@ -1,0 +1,1038 @@
+---
+title: "Thiết kế component autocomplete chuẩn production: từ race condition đến accessibility"
+excerpt: "Một ô gợi ý tìm kiếm trông đơn giản nhưng gom đủ mọi bài toán khó của frontend: race condition, debounce, cache, trạng thái không nhấp nháy, WAI-ARIA combobox, gõ tiếng Việt bằng IME và cách test. Bài này xây từng phần bằng React + TypeScript."
+---
+
+<Lead>Autocomplete là câu hỏi machine-coding mình gặp nhiều nhất khi phỏng vấn frontend, và cũng là component mình thấy bị viết sai nhiều nhất trong code thật. Bản demo mười dòng chạy rất ổn trên localhost; lên production thì kết quả cũ đè kết quả mới, danh sách nhấp nháy mỗi lần gõ, screen reader im lặng, còn người dùng gõ Telex thì bắn ra sáu request cho một chữ "việt". Bài này đi từ yêu cầu, thiết kế API, qua từng vấn đề và cách xử lý, rồi ghép lại thành một hook `useAutocomplete` và một component hoàn chỉnh.</Lead>
+
+## Bài toán: một ô tìm kiếm "đơn giản"
+
+Người dùng gõ vào một ô input, bên dưới hiện danh sách gợi ý lấy từ server, chọn một gợi ý bằng chuột hoặc bàn phím. Nghe thì chỉ cần một `useEffect` gọi `fetch`. Nhưng chỉ cần đặt vài câu hỏi là thấy độ sâu của nó:
+
+- Người dùng gõ 6 ký tự trong một giây thì gửi bao nhiêu request?
+- Request thứ hai về trước request thứ nhất thì hiển thị kết quả nào?
+- Gõ "ha", xoá, gõ lại "ha" — có cần gọi server lần nữa không?
+- Người dùng chỉ dùng bàn phím, hoặc dùng screen reader, thì chọn gợi ý thế nào?
+- Gõ "Hà Nội" bằng bộ gõ tiếng Việt thì những chuỗi trung gian như "Haf" có bị gửi lên không? Gõ "ha noi" không dấu có ra "Hà Nội" không?
+
+Đây chính là lý do mình thích bài này: nó nhỏ đủ để code trong một buổi, nhưng chạm vào gần như mọi chủ đề frontend system design — network, state, hiệu năng, accessibility, i18n và testing.
+
+## Yêu cầu và thiết kế API
+
+### Yêu cầu chức năng và phi chức năng
+
+Trước khi viết dòng code nào, mình luôn chốt yêu cầu. Trong phỏng vấn, đây là phần thể hiện bạn nghĩ như người xây hệ thống chứ không chỉ người gõ code.
+
+**Chức năng:**
+
+- Gợi ý theo nội dung đang gõ, nguồn dữ liệu là bất đồng bộ (API), có thể đổi sang nguồn khác.
+- Chọn được bằng chuột, chạm và bàn phím.
+- Chỉ tìm khi query đủ dài (ví dụ ≥ 2 ký tự).
+- Có trạng thái đang tải, không có kết quả, lỗi kèm nút thử lại.
+- Làm nổi bật phần chữ khớp với query.
+
+**Phi chức năng:**
+
+- **Đúng:** luôn hiển thị kết quả của query *mới nhất*, không bao giờ của query cũ.
+- **Tiết kiệm:** không spam server; query đã tìm thì dùng lại.
+- **Mượt:** không nhấp nháy, không giật khi danh sách dài.
+- **Accessible:** theo WAI-ARIA combobox pattern, dùng hoàn toàn bằng bàn phím, screen reader đọc được.
+- **Quốc tế hoá:** hoạt động đúng với IME (tiếng Việt, Nhật, Trung...) và tìm không phân biệt dấu.
+
+### Ranh giới trách nhiệm
+
+Mình tách làm hai lớp:
+
+- **Hook `useAutocomplete`** giữ toàn bộ logic: giá trị input, debounce, gọi API, huỷ request, cache, trạng thái, phím tắt, các thuộc tính ARIA. Nó không render gì cả.
+- **Component `Autocomplete`** chỉ lo hiển thị: input, popup, từng option, thông báo. Ai muốn giao diện khác có thể dùng thẳng hook.
+
+Hook trả về các *prop getter* — `getInputProps()`, `getListboxProps()`, `getOptionProps(index)` — để component chỉ cần spread vào đúng phần tử. Pattern này giúp các thuộc tính ARIA và event handler luôn đi cùng nhau, khó quên một cái.
+
+### API của hook
+
+```ts
+export interface UseAutocompleteOptions<T> {
+  /** Nguồn dữ liệu bất đồng bộ. Bắt buộc tôn trọng `signal` nếu có thể. */
+  fetchSuggestions: (query: string, signal: AbortSignal) => Promise<T[]>;
+  /** Chữ hiển thị của một item — dùng để điền vào input khi chọn. */
+  getOptionLabel: (item: T) => string;
+  onSelect?: (item: T) => void;
+
+  /** Controlled: truyền `value` + `onInputChange`. Uncontrolled: chỉ cần `defaultValue`. */
+  value?: string;
+  defaultValue?: string;
+  onInputChange?: (value: string) => void;
+
+  debounceMs?: number; // mặc định 250
+  minQueryLength?: number; // mặc định 2
+  cacheSize?: number; // mặc định 50 query
+  staleTimeMs?: number; // mặc định 60 giây
+}
+```
+
+Vài quyết định đáng giải thích:
+
+- **Generic `T`** thay vì ép item phải là `string` hay `{ label, value }`. Thực tế item thường là object từ API (thành phố, sản phẩm, người dùng), nên mình chỉ yêu cầu một hàm `getOptionLabel`.
+- **`fetchSuggestions` nhận `AbortSignal`.** Đây là hợp đồng quan trọng nhất của API: hook sẽ huỷ request cũ, và nguồn dữ liệu nên chuyển signal xuống `fetch`.
+- **Không nhận URL.** Nhận một hàm thì dễ test (truyền hàm giả), dễ đổi nguồn (REST, GraphQL, dữ liệu local), và component không phải biết gì về HTTP.
+
+### Controlled hay uncontrolled
+
+Giá trị trong ô input nên hỗ trợ cả hai chế độ, giống thẻ `<input>` gốc:
+
+- **Uncontrolled** (`defaultValue`): hook tự giữ state. Dùng cho 90% trường hợp.
+- **Controlled** (`value` + `onInputChange`): component cha giữ state, ví dụ để đồng bộ query với URL search params hoặc reset ô tìm kiếm từ bên ngoài.
+
+Quy ước giống React: nếu `value !== undefined` thì là controlled. Một component không nên đổi chế độ giữa vòng đời của nó — trong code thật mình thường thêm một cảnh báo ở môi trường dev cho trường hợp này.
+
+## Kiến trúc và luồng dữ liệu
+
+Mỗi lần người dùng gõ, dữ liệu đi qua một đường ống cố định:
+
+1. **Input change** → cập nhật giá trị hiển thị ngay lập tức (không bao giờ debounce chính ô input).
+2. **Kiểm tra độ dài tối thiểu** → quá ngắn thì đóng popup, huỷ mọi thứ đang chờ.
+3. **Kiểm tra IME** → đang trong composition thì chưa tìm.
+4. **Debounce** → đợi người dùng ngừng gõ một chút.
+5. **Cache** → có kết quả còn mới thì dùng luôn; có kết quả cũ thì hiển thị trước rồi tải lại ngầm.
+6. **Fetch** → huỷ request trước đó, gắn request id cho request mới.
+7. **Commit** → chỉ ghi kết quả vào state nếu request id vẫn là mới nhất.
+
+Giữ được thứ tự này trong đầu thì mọi phần bên dưới chỉ là triển khai từng bước.
+
+## Race condition: khi response về sai thứ tự
+
+### Bug kinh điển
+
+Đây là phiên bản mình thấy nhiều nhất:
+
+```tsx
+useEffect(() => {
+  fetch(`/api/search?q=${query}`)
+    .then((res) => res.json())
+    .then(setResults);
+}, [query]);
+```
+
+Người dùng gõ "re" rồi "react". Hai request được gửi đi. Không có gì đảm bảo chúng về theo đúng thứ tự gửi: request "re" khớp nhiều bản ghi hơn nên server xử lý lâu hơn, hoặc nó đi qua một kết nối chậm hơn. Kết quả là "react" về trước, rồi "re" về sau và **đè lên**. Ô input ghi "react" nhưng danh sách là kết quả của "re". Bug này gần như không tái hiện được trên localhost vì độ trễ quá đều, nên nó hay lọt lên production.
+
+(Nhân tiện, đoạn code trên còn thiếu `encodeURIComponent` — gõ "c&a" là hỏng URL.)
+
+### Sửa bằng AbortController và request id
+
+Có hai cơ chế, và mình dùng cả hai vì chúng giải quyết hai việc khác nhau:
+
+- **`AbortController`** huỷ request cũ ở phía client: `fetch` reject với `AbortError`, trình duyệt bỏ việc đọc response, đỡ tốn băng thông. Nhưng nó chỉ hoạt động khi nguồn dữ liệu thật sự dùng `signal`. Một hàm `fetchSuggestions` do người khác viết có thể quên truyền signal xuống.
+- **Request id ("latest wins")**: mỗi lần tìm tăng một bộ đếm; khi kết quả về, so id của nó với id hiện tại. Không khớp thì bỏ. Cơ chế này không phụ thuộc vào việc nguồn dữ liệu có hợp tác hay không — nó là lưới an toàn cuối cùng.
+
+Đây là phần lõi trong hook (bản đầy đủ ở phía dưới):
+
+```ts
+const cancelPending = useCallback(() => {
+  clearTimeout(timerRef.current);
+  abortRef.current?.abort();
+  abortRef.current = null;
+  // Mọi response đang bay về sau thời điểm này đều bị coi là cũ
+  requestIdRef.current += 1;
+}, []);
+
+const runSearch = useCallback(
+  async (raw: string) => {
+    cancelPending();
+    const id = requestIdRef.current;
+    // ... kiểm tra độ dài, đọc cache ...
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const result = await fetchRef.current(raw.trim(), controller.signal);
+      if (id !== requestIdRef.current) return; // đã có lượt tìm mới hơn
+      setItems(result);
+      setStatus("success");
+    } catch {
+      // Bị huỷ chủ động thì không phải lỗi, không hiện gì cả
+      if (id !== requestIdRef.current || controller.signal.aborted) return;
+      setStatus("error");
+    }
+  },
+  [cancelPending],
+);
+```
+
+Chú ý là `requestIdRef` được tăng ở **mọi** lượt tìm, kể cả lượt đọc từ cache hay lượt bị chặn vì query quá ngắn. Nếu chỉ tăng khi thật sự gọi mạng, một request cũ (từ nguồn không tôn trọng signal) vẫn có thể về sau một lần hiển thị từ cache và đè lên nó.
+
+<Callout>
+  **Abort không dừng được server.** Khi request đã gửi đi, `abort()` chỉ khiến phía client bỏ qua response; server vẫn có thể đang xử lý truy vấn. Vì vậy debounce và cache vẫn cần thiết — chúng giảm số request *được gửi*, còn abort chỉ giảm số response *được xử lý*.
+</Callout>
+
+Nếu bạn dùng React Query hay SWR, phần lớn chuyện này đã được lo: query key là chuỗi tìm kiếm, kết quả được gắn đúng key nên không bị đè lẫn nhau, và thư viện truyền `signal` vào hàm fetch. Mình vẫn viết tay ở đây vì hiểu cơ chế mới biết thư viện đang làm gì cho mình — và vì trong phỏng vấn, đây chính là thứ người ta muốn thấy.
+
+## Debounce, throttle và chọn delay
+
+Hai kỹ thuật này hay bị dùng lẫn lộn:
+
+| | Debounce | Throttle |
+| --- | --- | --- |
+| **Cách chạy** | Chỉ chạy sau khi sự kiện ngừng một khoảng `delay` | Chạy tối đa một lần mỗi khoảng `delay` |
+| **Khi gõ liên tục** | Không gửi gì cho tới khi người dùng dừng | Gửi đều đặn trong lúc gõ |
+| **Số request** | Ít nhất | Nhiều hơn, nhưng có trần |
+| **Hợp với** | Gợi ý từ server — chỉ quan tâm query cuối cùng | Nguồn rẻ, muốn kết quả "chạy theo" ngón tay |
+
+Với autocomplete gọi server, mình gần như luôn chọn **debounce**: query trung gian ("rea", "reac") hiếm khi có giá trị, và mỗi request đều tốn tiền. Throttle hợp hơn khi nguồn dữ liệu rẻ và bạn muốn người gõ thật dài vẫn thấy gợi ý thay đổi — nhưng khi đó thường dữ liệu đã ở client, và có cách tốt hơn (xem phần hiệu năng).
+
+**Chọn delay bao nhiêu?** Mình bắt đầu ở khoảng 200–300ms và điều chỉnh theo dữ liệu thật:
+
+- Khoảng cách giữa hai lần gõ phím của người gõ nhanh thường ngắn hơn mức này, nên debounce đủ để gom một cụm phím. Trên mobile người dùng gõ chậm hơn, delay có thể phải dài hơn mới gom được.
+- Delay cộng với độ trễ API mới là thời gian người dùng thật sự chờ. API mất 400ms thì đừng thêm 500ms debounce.
+- API đắt (search engine tính phí theo request) thì kéo delay lên; nguồn rẻ và nhanh thì hạ xuống.
+
+Một tối ưu nhỏ mà mình rất thích: **nếu query đã có trong cache và còn mới, bỏ qua debounce**. Debounce tồn tại để bảo vệ server; khi không cần gọi server thì không có lý do gì bắt người dùng đợi.
+
+## Cache, độ dài tối thiểu và stale-while-revalidate
+
+### Chuẩn hoá key
+
+Cache chỉ hiệu quả khi những query "giống nhau" có cùng key. "Hà Nội", "  hà nội " và "ha noi" nên trỏ về cùng một entry. Hàm chuẩn hoá của mình:
+
+```ts
+// normalize.ts
+const COMBINING_MARKS = /[̀-ͯ]/g;
+
+/** Bỏ dấu, chữ thường, đ → d. Giữ nguyên độ dài theo từng ký tự gốc khi gọi trên một ký tự. */
+export function fold(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(COMBINING_MARKS, "")
+    .toLowerCase()
+    .replace(/đ/g, "d");
+}
+
+/** Key dùng cho cache và để so khớp: fold + gọn khoảng trắng. */
+export function normalizeQuery(text: string): string {
+  return fold(text).trim().replace(/\s+/g, " ");
+}
+```
+
+Dùng key không dấu cho cache ngầm định một giả định: **server cũng tìm không phân biệt dấu**, nên "ha noi" và "hà nội" trả về cùng kết quả. Nếu server của bạn phân biệt dấu, hãy dùng key chỉ trim và lowercase.
+
+Độ dài tối thiểu (`minQueryLength`) được kiểm tra trên key đã chuẩn hoá. Lý do có giới hạn này: query một ký tự khớp gần như mọi thứ, tốn tài nguyên server nhất mà lại ít hữu ích nhất. Với tiếng Việt hay tiếng Anh, 2 ký tự là mức hợp lý; với tiếng Trung hay tiếng Nhật, một ký tự đã mang nhiều nghĩa nên có thể hạ xuống 1.
+
+### LRU cache bằng Map
+
+Một `Map` không giới hạn sẽ lớn mãi trong một phiên dài. `Map` trong JavaScript giữ thứ tự chèn, nên viết LRU (least recently used) chỉ mất vài dòng: mỗi lần đọc thì xoá và chèn lại để đẩy key về cuối; khi quá kích thước thì xoá key đầu tiên — key lâu nhất không được dùng.
+
+```ts
+// lru-cache.ts
+export class LRUCache<K, V> {
+  readonly #max: number;
+  readonly #map = new Map<K, V>();
+
+  constructor(max: number) {
+    this.#max = max;
+  }
+
+  get(key: K): V | undefined {
+    const value = this.#map.get(key);
+    if (value === undefined) return undefined;
+    // Đưa key về cuối = "vừa được dùng"
+    this.#map.delete(key);
+    this.#map.set(key, value);
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    this.#map.delete(key);
+    this.#map.set(key, value);
+    if (this.#map.size > this.#max) {
+      const oldest = this.#map.keys().next();
+      if (!oldest.done) this.#map.delete(oldest.value);
+    }
+  }
+}
+```
+
+Cache trong bài này sống theo từng instance của hook. Nếu trang có nhiều ô tìm kiếm cùng nguồn, bạn có thể đưa cache ra module scope để chúng dùng chung. Đừng quên còn một lớp cache nữa ở HTTP: header `Cache-Control` trên API gợi ý có thể giúp cả CDN lẫn trình duyệt.
+
+### Stale-while-revalidate
+
+Mỗi entry lưu kèm thời điểm tải (`fetchedAt`). Khi đọc cache có ba trường hợp:
+
+- **Không có:** hiển thị trạng thái loading, gọi API.
+- **Có và còn mới** (dưới `staleTimeMs`): hiển thị ngay, không gọi API.
+- **Có nhưng đã cũ:** hiển thị ngay kết quả cũ, *đồng thời* gọi API để làm mới. Khi kết quả mới về thì thay thế lặng lẽ.
+
+Đây chính là ý tưởng stale-while-revalidate: người dùng luôn thấy thứ gì đó ngay lập tức, còn độ chính xác được cập nhật sau. Với gợi ý tìm kiếm — nơi dữ liệu cũ vài phút gần như vô hại — đây là đánh đổi rất đáng. Một chi tiết: khi làm mới ngầm, đừng reset vị trí đang chọn bằng bàn phím, nếu không người dùng đang bấm mũi tên sẽ bị "giật" về đầu danh sách.
+
+## Trạng thái loading, empty, error không nhấp nháy
+
+Hook có bốn trạng thái: `idle`, `loading`, `success`, `error`. Cái khó không phải là có bốn trạng thái, mà là chuyển giữa chúng mà không làm giao diện nhảy múa.
+
+| Tình huống | Cách hiển thị mình chọn | Vì sao |
+| --- | --- | --- |
+| Đang tải, chưa có kết quả nào | "Đang tìm…" ngay lập tức | Popup đã mở, không hiện gì sẽ trông như hỏng |
+| Đang tải, đã có kết quả của query trước | Giữ nguyên danh sách cũ; chỉ hiện "Đang tìm…" nếu quá 300ms | Tránh danh sách biến mất rồi hiện lại sau mỗi phím |
+| Thành công, 0 kết quả | "Không có kết quả phù hợp" | Phân biệt rõ với đang tải |
+| Lỗi | Thông báo ngắn + nút "Thử lại" | Lỗi mạng thường là tạm thời |
+| Query quá ngắn | Đóng popup | Không có gì để hiển thị |
+
+Nguyên tắc chung: **đừng thay nội dung đang có bằng spinner**. Hầu hết request gợi ý về trong vài trăm mili-giây; nếu mỗi lần gõ danh sách đều biến thành spinner rồi quay lại, mắt người dùng sẽ thấy nhấp nháy liên tục. Mình dùng một hook nhỏ để chỉ bật cờ "chậm" sau một khoảng trễ:
+
+```ts
+function useDelayedFlag(flag: boolean, delayMs: number): boolean {
+  const [elapsed, setElapsed] = useState(false);
+  useEffect(() => {
+    if (!flag) return;
+    const timer = setTimeout(() => setElapsed(true), delayMs);
+    return () => {
+      clearTimeout(timer);
+      setElapsed(false);
+    };
+  }, [flag, delayMs]);
+  return flag && elapsed;
+}
+```
+
+Nếu muốn kỹ hơn nữa, khi spinner đã hiện thì giữ nó tối thiểu vài trăm mili-giây để không chớp một khung hình rồi tắt. Mình bỏ qua chi tiết đó ở đây cho code gọn.
+
+<Callout>
+  **Lỗi khi đang làm mới ngầm:** nếu đang hiển thị kết quả cũ từ cache mà lần làm mới thất bại, mình giữ kết quả cũ và không hiện lỗi. Với người dùng, danh sách hơi cũ tốt hơn nhiều so với một thông báo lỗi thay thế danh sách đang dùng được.
+</Callout>
+
+## Accessibility: WAI-ARIA combobox pattern
+
+Đây là phần phân biệt một component "chạy được" với một component production. WAI-ARIA Authoring Practices mô tả autocomplete là pattern **combobox**: một ô input đi kèm một popup (ở đây là listbox).
+
+### Vai trò và thuộc tính
+
+Trên `<input>`:
+
+- `role="combobox"` — theo ARIA 1.2, role này đặt trực tiếp lên ô input.
+- `aria-expanded` — `true` khi popup đang hiện, `false` khi ẩn. Phải khớp với những gì mắt thấy.
+- `aria-controls` — id của listbox.
+- `aria-autocomplete="list"` — báo rằng gợi ý xuất hiện dưới dạng danh sách (chứ không tự điền vào ô input).
+- `aria-activedescendant` — id của option đang được chọn bằng bàn phím; bỏ thuộc tính này khi không có option nào active.
+- `autoComplete="off"` — tắt gợi ý của trình duyệt để không chồng lên popup của mình.
+
+Trên popup: một phần tử `role="listbox"` có tên (mình dùng `aria-labelledby` trỏ về label của input), bên trong là các phần tử `role="option"`. Option đang active có `aria-selected="true"`, các option khác `false`.
+
+Listbox chỉ nên chứa option. Các thông báo "Đang tìm…", "Không có kết quả", nút "Thử lại" mình đặt *bên cạnh* listbox trong cùng popup, không nhét vào trong.
+
+### Focus luôn ở input
+
+Có hai cách để "di chuyển" giữa các option: chuyển focus thật sang từng option (roving focus), hoặc giữ focus ở input và dùng `aria-activedescendant` để báo cho công nghệ hỗ trợ biết option nào đang active. Với combobox có thể gõ, cách thứ hai là bắt buộc trên thực tế: người dùng đang bấm mũi tên xuống vẫn có thể gõ tiếp, và caret không bị mất.
+
+Hệ quả là hai chi tiết dễ quên:
+
+- **Option phải có `onMouseDown` gọi `preventDefault()`.** Nếu không, bấm chuột vào option sẽ làm input mất focus trước, `blur` đóng popup, và sự kiện `click` không bao giờ tới option. Nút "Thử lại" cũng vậy.
+- **Tự cuộn option active vào tầm nhìn.** Focus không di chuyển nên trình duyệt sẽ không tự cuộn; mình gọi `scrollIntoView({ block: "nearest" })` mỗi khi `activeIndex` đổi.
+
+### Bàn phím
+
+| Phím | Hành vi |
+| --- | --- |
+| `ArrowDown` | Popup đóng: mở ra. Popup mở: sang option kế tiếp, cuối danh sách thì vòng lên đầu |
+| `ArrowUp` | Sang option trước, đầu danh sách thì vòng xuống cuối |
+| `Enter` | Có option active: chọn nó và đóng popup. Không có: để hành vi mặc định (submit form) |
+| `Escape` | Popup mở: đóng popup, giữ nguyên chữ. Popup đã đóng: xoá nội dung ô input |
+| `Home` / `End` | Di chuyển caret về đầu/cuối ô input như bình thường, đồng thời bỏ option active |
+| `Tab` | Đóng popup, focus đi tiếp như bình thường |
+
+Chỗ `Home`/`End` đáng nói thêm. Một số thư viện dùng hai phím này để nhảy tới option đầu/cuối. Nhưng với combobox *có thể gõ*, `Home`/`End` là phím người dùng dùng để sửa chữ trong ô input, và APG cũng mô tả chúng di chuyển caret trong ô. Mình chọn tôn trọng hành vi soạn thảo: để trình duyệt di chuyển caret, chỉ bỏ trạng thái active để "visual focus" quay về input. Đó là lựa chọn có chủ đích — miễn là bạn nhất quán và có lý do.
+
+Wrap-around (vòng từ cuối lên đầu) là tuỳ chọn trong APG, không bắt buộc. Mình bật vì danh sách gợi ý thường ngắn.
+
+### Thông báo cho screen reader
+
+`aria-activedescendant` giúp screen reader đọc option đang active, nhưng không ai báo cho người dùng biết *kết quả vừa về*. Mình thêm một vùng `role="status"` (ngầm định `aria-live="polite"`) ẩn khỏi mắt, nội dung kiểu "5 gợi ý cho “ha noi”" hoặc "Không có kết quả".
+
+Hai lưu ý thực tế:
+
+- **Live region phải có sẵn trong DOM từ đầu**, chỉ đổi nội dung bên trong. Một phần tử live region vừa được mount cùng lúc với nội dung thường không được đọc.
+- **Nội dung phải thay đổi thì mới được đọc.** Nếu query mới cũng ra 5 kết quả, thông báo "5 gợi ý" giống hệt lần trước sẽ bị bỏ qua. Đưa query vào câu thông báo giải quyết việc này.
+
+Và vì thông báo chỉ thay đổi khi kết quả về (sau debounce), screen reader không bị spam theo từng phím gõ.
+
+<Callout>
+  **Kiểm tra bằng screen reader thật.** ARIA đúng spec chưa chắc đã đọc đúng: VoiceOver, NVDA và JAWS mỗi bên xử lý combobox hơi khác nhau. Mình luôn thử ít nhất VoiceOver trên Safari và NVDA trên Chrome hoặc Firefox trước khi coi component là xong.
+</Callout>
+
+## Gõ tiếng Việt: IME composition và tìm không dấu
+
+### compositionstart và compositionend
+
+Đây là phần mà hầu hết hướng dẫn tiếng Anh bỏ qua, nhưng với người dùng Việt thì rất thực tế. Khi gõ qua một IME (Input Method Editor), một số bộ gõ đưa văn bản vào trạng thái *composition*: chữ đang soạn thường có gạch chân, và trình duyệt bắn `compositionstart`, rồi các sự kiện `input` trung gian, rồi `compositionend` khi chữ được xác nhận.
+
+Nếu cứ mỗi sự kiện `input` lại lên lịch tìm kiếm, các chuỗi trung gian kiểu "vie", "viê", "việ" đều có thể bị gửi đi. Với tiếng Nhật hay tiếng Trung còn tệ hơn: chuỗi đang soạn là phiên âm, chưa phải chữ cuối cùng.
+
+Cách xử lý của mình:
+
+- `compositionstart`: bật cờ `composingRef`.
+- `onChange` trong lúc đang composition: vẫn cập nhật giá trị ô input (người dùng phải thấy chữ mình gõ), nhưng **không** lên lịch tìm.
+- `compositionend`: tắt cờ và lên lịch tìm với `e.currentTarget.value`.
+
+Thứ tự giữa `compositionend` và sự kiện `input` cuối cùng không giống nhau giữa các trình duyệt, vì vậy mình lên lịch tìm ở cả hai nơi. Debounce sẽ gộp chúng thành một lần.
+
+Phím `Enter` cũng cần cẩn thận: khi đang soạn, `Enter` dùng để xác nhận chữ trong IME, không phải để chọn option. Trong `onKeyDown`, mình bỏ qua sự kiện nếu `e.nativeEvent.isComposing` là `true`, hoặc `keyCode` là `229` — giá trị trình duyệt gán cho phím được IME xử lý. Kiểm tra `229` là để phòng hờ trường hợp `compositionend` được bắn *trước* `keydown` của phím `Enter` (Safari là nơi hay gặp), khi đó `isComposing` đã là `false`.
+
+<Callout>
+  **Không phải bộ gõ tiếng Việt nào cũng dùng composition.** Có bộ gõ dùng composition (chữ có gạch chân khi đang soạn), có bộ gõ lại sửa chữ bằng cách gửi phím xoá rồi ký tự mới, trình duyệt chỉ thấy các sự kiện `input` bình thường. Vì vậy xử lý composition là cần thiết nhưng chưa đủ — debounce mới là lớp bảo vệ chung cho mọi cách gõ. Hãy thử với các bộ gõ mà người dùng của bạn thật sự dùng.
+</Callout>
+
+### Tìm kiếm không phân biệt dấu
+
+Người dùng Việt rất hay gõ không dấu cho nhanh: "ha noi", "da nang". Hàm `fold` ở trên làm việc này:
+
+1. `normalize("NFD")` tách ký tự có dấu thành chữ gốc + các dấu kết hợp. "ệ" thành "e" + dấu mũ + dấu nặng.
+2. Xoá mọi ký tự trong khoảng `U+0300`–`U+036F` (combining diacritical marks). Tất cả dấu thanh và dấu mũ, dấu móc, dấu trăng của tiếng Việt đều nằm trong khoảng này.
+3. `toLowerCase()`.
+4. Thay "đ" bằng "d" **thủ công**. Đây là cái bẫy kinh điển: "đ" là một chữ cái riêng trong Unicode chứ không phải "d" + dấu, nên NFD không tách nó ra. Quên bước này thì "da nang" không bao giờ khớp "Đà Nẵng".
+
+Còn một lý do nữa để normalize: cùng một chữ "ệ" có thể được biểu diễn bằng một code point (dạng NFC, dựng sẵn) hoặc bằng nhiều code point (dạng NFD, tổ hợp), tuỳ nguồn — dữ liệu copy từ nơi khác, tên file trên một số hệ thống, hay chính bộ gõ. Hai chuỗi trông giống hệt nhau nhưng `===` trả về `false`. Normalize trước khi so sánh loại bỏ cả lớp bug này.
+
+Lý tưởng nhất là server cũng tìm không dấu (ví dụ lưu thêm một cột đã bỏ dấu và đánh index trên đó). Phía client, `fold` dùng cho key cache và cho phần highlight bên dưới.
+
+## Highlight phần khớp một cách an toàn
+
+Cách "nhanh" là thay chuỗi khớp bằng `<mark>` rồi gán vào `innerHTML` (hoặc `dangerouslySetInnerHTML`). Đừng làm vậy: label đến từ server, và chỉ cần một bản ghi có tên chứa thẻ HTML độc hại là bạn có lỗ hổng XSS. Thêm nữa, query được đưa vào regex mà không escape thì gõ "c++" là regex lỗi.
+
+Cách an toàn là cắt chuỗi thành ba đoạn — trước, khớp, sau — và render chúng như text node. React tự escape mọi text, nên không có gì để inject.
+
+Cái khó là highlight phải hoạt động với tìm không dấu: query "ha noi" phải tô đúng "Hà Nội" trong chuỗi gốc. Vị trí tìm được trên chuỗi đã fold không trùng với vị trí trên chuỗi gốc, nên mình fold từng ký tự và giữ một bảng ánh xạ từ vị trí trên chuỗi fold về vị trí trên chuỗi gốc:
+
+```tsx
+// highlight.tsx
+import { fold, normalizeQuery } from "./normalize";
+
+/** Trả về [start, end) trên chuỗi gốc, hoặc null nếu không khớp. */
+function findMatch(text: string, query: string): [number, number] | null {
+  const needle = normalizeQuery(query);
+  if (!needle) return null;
+
+  let folded = "";
+  const starts: number[] = []; // vị trí trên chuỗi fold → vị trí bắt đầu ký tự gốc
+  const ends: number[] = []; // → vị trí kết thúc ký tự gốc
+  let offset = 0;
+  for (const char of text) {
+    const f = fold(char);
+    for (let k = 0; k < f.length; k++) {
+      starts.push(offset);
+      ends.push(offset + char.length);
+    }
+    folded += f;
+    offset += char.length;
+  }
+
+  const index = folded.indexOf(needle);
+  if (index === -1) return null;
+  const start = starts[index];
+  const end = ends[index + needle.length - 1];
+  return start === undefined || end === undefined ? null : [start, end];
+}
+
+export function Highlight({ text, query }: { text: string; query: string }) {
+  // NFC để mỗi chữ có dấu là một ký tự, không bị cắt giữa chữ và dấu
+  const value = text.normalize("NFC");
+  const match = findMatch(value, query);
+  if (!match) return <>{value}</>;
+  const [start, end] = match;
+  return (
+    <>
+      {value.slice(0, start)}
+      <mark>{value.slice(start, end)}</mark>
+      {value.slice(end)}
+    </>
+  );
+}
+```
+
+Vài điểm:
+
+- `for...of` trên chuỗi duyệt theo code point, nên emoji hay ký tự ngoài BMP không bị cắt đôi. `offset` cộng `char.length` (số code unit UTF-16) để khớp với `slice`.
+- Chuyển chuỗi gốc về NFC trước. Nếu chuỗi ở dạng NFD, dấu là ký tự riêng và có thể bị cắt ra khỏi chữ gốc ở ranh giới thẻ `<mark>`, làm hiển thị lỗi.
+- Mình chỉ tô lần khớp đầu tiên. Tô mọi lần khớp hay tô theo từng từ là phần mở rộng dễ làm trên cùng nền này.
+
+## Ghép lại: hook useAutocomplete
+
+Đây là bản đầy đủ. Mình chia thành từng khối và giải thích ngay sau đó.
+
+```ts
+// use-autocomplete.ts
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { ChangeEvent, ComponentProps, CompositionEvent, KeyboardEvent } from "react";
+import { LRUCache } from "./lru-cache";
+import { normalizeQuery } from "./normalize";
+
+export type SearchStatus = "idle" | "loading" | "success" | "error";
+
+export interface UseAutocompleteOptions<T> {
+  fetchSuggestions: (query: string, signal: AbortSignal) => Promise<T[]>;
+  getOptionLabel: (item: T) => string;
+  onSelect?: (item: T) => void;
+  value?: string;
+  defaultValue?: string;
+  onInputChange?: (value: string) => void;
+  debounceMs?: number;
+  minQueryLength?: number;
+  cacheSize?: number;
+  staleTimeMs?: number;
+}
+
+type CacheEntry<T> = { items: T[]; fetchedAt: number };
+
+export function useAutocomplete<T>(options: UseAutocompleteOptions<T>) {
+  const {
+    getOptionLabel,
+    onSelect,
+    value,
+    defaultValue = "",
+    onInputChange,
+    debounceMs = 250,
+    minQueryLength = 2,
+    cacheSize = 50,
+    staleTimeMs = 60_000,
+  } = options;
+
+  // --- id cho ARIA ---
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (index: number) => `${baseId}-option-${index}`;
+
+  // --- controlled / uncontrolled ---
+  const [innerValue, setInnerValue] = useState(defaultValue);
+  const isControlled = value !== undefined;
+  const inputValue = isControlled ? value : innerValue;
+  const setValue = (next: string) => {
+    if (!isControlled) setInnerValue(next);
+    onInputChange?.(next);
+  };
+
+  // --- state hiển thị ---
+  const [items, setItems] = useState<T[]>([]);
+  const [status, setStatus] = useState<SearchStatus>("idle");
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [cache] = useState(() => new LRUCache<string, CacheEntry<T>>(cacheSize));
+
+  // --- ref: không cần render lại khi đổi ---
+  const fetchRef = useRef(options.fetchSuggestions);
+  useLayoutEffect(() => {
+    fetchRef.current = options.fetchSuggestions;
+  });
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const abortRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const composingRef = useRef(false);
+
+  const cancelPending = useCallback(() => {
+    clearTimeout(timerRef.current);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    requestIdRef.current += 1;
+  }, []);
+
+  // Huỷ mọi thứ khi unmount
+  useEffect(() => cancelPending, [cancelPending]);
+
+  const runSearch = useCallback(
+    async (raw: string) => {
+      cancelPending();
+      const id = requestIdRef.current;
+      const key = normalizeQuery(raw);
+      if (key.length < minQueryLength) {
+        setItems([]);
+        setStatus("idle");
+        return;
+      }
+
+      const cached = cache.get(key);
+      if (cached) {
+        setItems(cached.items);
+        setStatus("success");
+        setActiveIndex(-1);
+        if (Date.now() - cached.fetchedAt < staleTimeMs) return; // còn mới
+      } else {
+        setStatus("loading"); // giữ nguyên items cũ trong lúc chờ
+      }
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+      try {
+        const result = await fetchRef.current(raw.trim(), controller.signal);
+        if (id !== requestIdRef.current) return;
+        cache.set(key, { items: result, fetchedAt: Date.now() });
+        setItems(result);
+        setStatus("success");
+        // Làm mới ngầm: giữ vị trí bàn phím nếu còn hợp lệ
+        setActiveIndex((i) => (cached && i < result.length ? i : -1));
+      } catch {
+        if (id !== requestIdRef.current || controller.signal.aborted) return;
+        if (!cached) setStatus("error"); // có dữ liệu cũ thì giữ, không báo lỗi
+      }
+    },
+    [cache, cancelPending, minQueryLength, staleTimeMs],
+  );
+
+  const scheduleSearch = useCallback(
+    (raw: string) => {
+      clearTimeout(timerRef.current);
+      const hit = cache.get(normalizeQuery(raw));
+      // Có sẵn trong cache và còn mới: không cần bảo vệ server, không cần đợi
+      const delay = hit && Date.now() - hit.fetchedAt < staleTimeMs ? 0 : debounceMs;
+      timerRef.current = setTimeout(() => void runSearch(raw), delay);
+    },
+    [cache, debounceMs, runSearch, staleTimeMs],
+  );
+
+  const isExpanded = isOpen && status !== "idle";
+
+  // focus không rời input, nên phải tự cuộn option active vào tầm nhìn
+  useEffect(() => {
+    if (!isExpanded || activeIndex < 0) return;
+    document
+      .getElementById(`${baseId}-option-${activeIndex}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [baseId, isExpanded, activeIndex]);
+
+  const close = () => {
+    setIsOpen(false);
+    setActiveIndex(-1);
+  };
+
+  const selectItem = (item: T) => {
+    cancelPending(); // tránh debounce đang chờ mở lại popup
+    setValue(getOptionLabel(item));
+    onSelect?.(item);
+    setStatus((s) => (s === "loading" ? "idle" : s)); // request vừa bị huỷ
+    close();
+  };
+
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const next = e.target.value;
+    setValue(next);
+    setActiveIndex(-1);
+    if (normalizeQuery(next).length < minQueryLength) {
+      cancelPending();
+      setItems([]);
+      setStatus("idle");
+      setIsOpen(false);
+      return;
+    }
+    setIsOpen(true);
+    if (composingRef.current) return; // đợi compositionend
+    scheduleSearch(next);
+  };
+
+  const handleCompositionStart = () => {
+    composingRef.current = true;
+  };
+
+  const handleCompositionEnd = (e: CompositionEvent<HTMLInputElement>) => {
+    composingRef.current = false;
+    scheduleSearch(e.currentTarget.value);
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    // Phím đang được IME xử lý (ví dụ Enter để xác nhận chữ) thì bỏ qua
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const count = items.length;
+
+    switch (e.key) {
+      case "ArrowDown": {
+        e.preventDefault(); // không cho caret nhảy về cuối
+        if (!isExpanded) {
+          setIsOpen(true);
+          if (status === "idle") void runSearch(inputValue);
+          return;
+        }
+        if (count > 0) setActiveIndex((i) => (i + 1) % count);
+        return;
+      }
+      case "ArrowUp": {
+        if (!isExpanded || count === 0) return;
+        e.preventDefault();
+        setActiveIndex((i) => (i <= 0 ? count - 1 : i - 1));
+        return;
+      }
+      case "Enter": {
+        const item = isExpanded && activeIndex >= 0 ? items[activeIndex] : undefined;
+        if (item === undefined) return; // để form submit bình thường
+        e.preventDefault();
+        selectItem(item);
+        return;
+      }
+      case "Escape": {
+        if (isExpanded) {
+          e.preventDefault();
+          close();
+        } else if (inputValue) {
+          e.preventDefault();
+          cancelPending();
+          setValue("");
+          setItems([]);
+          setStatus("idle");
+        }
+        return;
+      }
+      case "Home":
+      case "End":
+        setActiveIndex(-1); // caret di chuyển như bình thường
+        return;
+      case "Tab":
+        close();
+        return;
+    }
+  };
+
+  const getInputProps = (): ComponentProps<"input"> => ({
+    type: "text",
+    role: "combobox",
+    value: inputValue,
+    autoComplete: "off",
+    "aria-autocomplete": "list",
+    "aria-expanded": isExpanded,
+    "aria-controls": listboxId,
+    "aria-activedescendant":
+      isExpanded && activeIndex >= 0 ? optionId(activeIndex) : undefined,
+    onChange: handleChange,
+    onKeyDown: handleKeyDown,
+    onBlur: close,
+    onCompositionStart: handleCompositionStart,
+    onCompositionEnd: handleCompositionEnd,
+  });
+
+  const getListboxProps = (): ComponentProps<"ul"> => ({
+    id: listboxId,
+    role: "listbox",
+  });
+
+  const getOptionProps = (index: number): ComponentProps<"li"> => ({
+    id: optionId(index),
+    role: "option",
+    "aria-selected": index === activeIndex,
+    // Giữ focus ở input, nếu không blur sẽ đóng popup trước khi click tới
+    onMouseDown: (e) => e.preventDefault(),
+    onMouseMove: () => {
+      if (index !== activeIndex) setActiveIndex(index);
+    },
+    onClick: () => {
+      const item = items[index];
+      if (item !== undefined) selectItem(item);
+    },
+  });
+
+  return {
+    inputValue,
+    items,
+    status,
+    isExpanded,
+    activeIndex,
+    retry: () => void runSearch(inputValue),
+    getInputProps,
+    getListboxProps,
+    getOptionProps,
+  };
+}
+```
+
+Giải thích theo từng khối:
+
+**Id và ARIA.** `useId` cho id ổn định giữa server và client, không đụng nhau khi trang có nhiều autocomplete. Id của option được suy ra từ index, nên `aria-activedescendant` chỉ cần tính lại từ `activeIndex`.
+
+**Ref thay vì state.** Timer, `AbortController`, request id và cờ composition không ảnh hưởng tới giao diện, nên chúng là ref — đổi chúng không gây render lại. `fetchRef` theo pattern "latest ref": người dùng hook hay truyền một hàm inline mới mỗi lần render, và mình không muốn `runSearch` bị tạo lại (hay phải đưa nó vào dependency) chỉ vì điều đó.
+
+**Cache trong `useState` lazy.** `useState(() => new LRUCache(...))` tạo cache đúng một lần cho mỗi instance và không bao giờ đổi tham chiếu. Lưu ý vì thế `cacheSize` chỉ được đọc ở lần render đầu.
+
+**`isExpanded` được suy ra.** `isOpen` là ý định của người dùng (đang gõ, chưa bấm Escape), còn `isExpanded` là trạng thái thật sự hiển thị. Popup chỉ hiện khi có thứ gì để hiện (`status` khác `idle`), và `aria-expanded` dùng đúng giá trị này để khớp với những gì mắt thấy.
+
+**Huỷ khi chọn.** `selectItem` gọi `cancelPending()` để một lượt debounce còn đang chờ không mở lại popup với kết quả của query gõ dở. Vì việc này có thể huỷ luôn một request đang bay, mình đưa trạng thái `loading` về `idle`; nếu không, lần mở popup sau sẽ hiện "Đang tìm…" cho một request không còn tồn tại.
+
+**`onMouseMove` thay vì `onMouseEnter`.** Khi người dùng bấm mũi tên làm danh sách cuộn, con trỏ chuột đứng yên có thể "đi vào" một option khác. Nếu dùng `onMouseEnter`, option dưới chuột sẽ giành lại trạng thái active từ bàn phím. `onMouseMove` chỉ phản ứng khi chuột thật sự di chuyển.
+
+**`Enter` không có option active thì không chặn.** Ô tìm kiếm thường nằm trong một `<form>`; người dùng gõ xong bấm Enter là muốn tìm toàn văn chứ không phải chọn gợi ý.
+
+## Component Autocomplete
+
+Phần hiển thị giờ rất mỏng:
+
+```tsx
+// autocomplete.tsx
+"use client";
+
+import { useEffect, useId, useState } from "react";
+import { Highlight } from "./highlight";
+import { useAutocomplete, type UseAutocompleteOptions } from "./use-autocomplete";
+
+function useDelayedFlag(flag: boolean, delayMs: number): boolean {
+  const [elapsed, setElapsed] = useState(false);
+  useEffect(() => {
+    if (!flag) return;
+    const timer = setTimeout(() => setElapsed(true), delayMs);
+    return () => {
+      clearTimeout(timer);
+      setElapsed(false);
+    };
+  }, [flag, delayMs]);
+  return flag && elapsed;
+}
+
+export interface AutocompleteProps<T> extends UseAutocompleteOptions<T> {
+  label: string;
+  getOptionKey: (item: T) => string;
+  placeholder?: string;
+}
+
+export function Autocomplete<T>({
+  label,
+  getOptionKey,
+  placeholder,
+  ...options
+}: AutocompleteProps<T>) {
+  const inputId = useId();
+  const labelId = useId();
+  const ac = useAutocomplete(options);
+  const { items, status, activeIndex, inputValue, isExpanded } = ac;
+
+  const slow = useDelayedFlag(status === "loading", 300);
+  // Chưa có gì để xem: báo đang tìm ngay. Đã có kết quả cũ: chỉ báo khi chậm.
+  const showLoading = status === "loading" && (items.length === 0 || slow);
+  const showEmpty = status === "success" && items.length === 0;
+
+  const query = inputValue.trim();
+  let announcement = "";
+  if (isExpanded && status === "success") {
+    announcement =
+      items.length > 0
+        ? `${items.length} gợi ý cho “${query}”`
+        : `Không có kết quả cho “${query}”`;
+  } else if (isExpanded && status === "error") {
+    announcement = "Không tải được gợi ý";
+  }
+
+  return (
+    <div className="autocomplete">
+      <label id={labelId} htmlFor={inputId}>
+        {label}
+      </label>
+      <input id={inputId} placeholder={placeholder} {...ac.getInputProps()} />
+
+      <div className="autocomplete-popup" hidden={!isExpanded}>
+        <ul {...ac.getListboxProps()} aria-labelledby={labelId}>
+          {items.map((item, index) => (
+            <li
+              key={getOptionKey(item)}
+              {...ac.getOptionProps(index)}
+              data-active={index === activeIndex ? "" : undefined}
+            >
+              <Highlight text={options.getOptionLabel(item)} query={inputValue} />
+            </li>
+          ))}
+        </ul>
+        {showLoading && <p className="autocomplete-hint">Đang tìm…</p>}
+        {showEmpty && <p className="autocomplete-hint">Không có kết quả phù hợp</p>}
+        {status === "error" && (
+          <p className="autocomplete-hint">
+            Không tải được gợi ý.{" "}
+            <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={ac.retry}>
+              Thử lại
+            </button>
+          </p>
+        )}
+      </div>
+
+      {/* Luôn có trong DOM; chỉ đổi nội dung để screen reader đọc */}
+      <div role="status" className="sr-only">
+        {announcement}
+      </div>
+    </div>
+  );
+}
+```
+
+Và cách dùng, với một nguồn dữ liệu tôn trọng `signal`:
+
+```tsx
+import { Autocomplete } from "./autocomplete";
+
+type City = { id: string; name: string; province: string };
+
+async function searchCities(query: string, signal: AbortSignal): Promise<City[]> {
+  const res = await fetch(`/api/cities?q=${encodeURIComponent(query)}`, { signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as City[];
+}
+
+export function CityPicker() {
+  return (
+    <Autocomplete
+      label="Thành phố"
+      placeholder="Ví dụ: Đà Nẵng"
+      fetchSuggestions={searchCities}
+      getOptionLabel={(city) => city.name}
+      getOptionKey={(city) => city.id}
+      onSelect={(city) => console.log("Đã chọn", city.id)}
+    />
+  );
+}
+```
+
+Option active được style qua `data-active` (hoặc `[aria-selected="true"]` trong CSS) chứ không chỉ dựa vào `:hover`, để người dùng bàn phím thấy rõ mình đang ở đâu. Lớp `sr-only` là lớp "ẩn khỏi mắt nhưng screen reader vẫn đọc" quen thuộc — đừng dùng `display: none` cho live region, vì như vậy nó bị ẩn khỏi cả screen reader.
+
+## Hiệu năng
+
+Với 10–20 gợi ý, component trên đã đủ nhanh. Nhưng có vài điểm đáng biết khi quy mô lớn lên.
+
+**Giới hạn số kết quả ở server.** Đây là tối ưu hiệu năng tốt nhất. Người dùng hiếm khi đọc quá 10 gợi ý; trả về 500 dòng rồi tìm cách render nhanh là giải sai bài toán.
+
+**Tránh render lại không cần thiết.** Mỗi lần bấm mũi tên, `activeIndex` đổi và toàn bộ danh sách render lại. Với vài chục option thì không đáng kể. Nếu mỗi option nặng (ảnh, nhiều dòng), hãy tách thành một component `OptionRow` bọc trong `memo` và chỉ truyền props nguyên thuỷ như `label`, `isActive`; khi đó chỉ hai dòng (cũ và mới) render lại. Lưu ý các handler do `getOptionProps` tạo mới mỗi lần render sẽ làm `memo` vô tác dụng nếu bạn truyền chúng thẳng vào — phải dùng event delegation hoặc callback ổn định. Nếu dự án đã bật React Compiler, phần lớn việc memo hoá này được làm tự động.
+
+**Giữ state cục bộ.** Giá trị input nên nằm trong hook, không đẩy lên một global store mà nửa trang đang subscribe. Mỗi phím gõ chỉ nên render lại component autocomplete.
+
+**Dữ liệu đã ở client thì không cần debounce.** Nếu danh sách nguồn là vài nghìn mục có sẵn trong bộ nhớ (danh sách tỉnh thành, danh sách quốc gia), không có request nào để tiết kiệm. Hãy lọc đồng bộ, fold sẵn chuỗi tìm kiếm của từng mục một lần trong `useMemo`, và dùng `useDeferredValue` cho query để React ưu tiên cập nhật ô input trước, phần lọc danh sách sau.
+
+**Virtualize khi danh sách thật sự dài.** Nếu buộc phải hiển thị hàng trăm option (ví dụ một combobox chọn từ danh mục lớn), chỉ render những dòng trong tầm nhìn bằng thư viện như `@tanstack/react-virtual`. Virtualization mang theo hai yêu cầu accessibility:
+
+```tsx
+const virtualizer = useVirtualizer({
+  count: items.length,
+  getScrollElement: () => listRef.current,
+  estimateSize: () => 36,
+});
+
+// Option active phải luôn được render, nếu không aria-activedescendant trỏ vào hư không
+useEffect(() => {
+  if (activeIndex >= 0) virtualizer.scrollToIndex(activeIndex, { align: "auto" });
+}, [activeIndex, virtualizer]);
+
+// Khi render từng dòng ảo, khai báo vị trí thật trong tổng số
+<li
+  {...getOptionProps(row.index)}
+  aria-setsize={items.length}
+  aria-posinset={row.index + 1}
+/>;
+```
+
+- Option được `aria-activedescendant` trỏ tới **phải tồn tại trong DOM**, nên cuộn virtualizer tới nó mỗi khi `activeIndex` đổi (thay cho `scrollIntoView` trong hook).
+- Vì DOM chỉ có một phần danh sách, thêm `aria-setsize` và `aria-posinset` để screen reader đọc đúng kiểu "mục 37 trên 500".
+
+## Chiến lược test
+
+Autocomplete có ba thứ khó test: thời gian (debounce), bất đồng bộ (response về khi nào) và tương tác bàn phím. Mình dùng Vitest, Testing Library và `user-event`, và giải quyết từng cái:
+
+- **Thời gian:** fake timers, và nói cho `user-event` biết để nó tự đẩy đồng hồ giả khi gõ.
+- **Bất đồng bộ:** một hàm fetch giả mà *test* quyết định khi nào resolve, theo thứ tự nào. Đây là cách duy nhất để tái hiện race condition một cách chắc chắn.
+- **Tương tác:** truy vấn theo role và accessible name (`getByRole("combobox", ...)`). Test kiểu này đồng thời kiểm tra luôn phần ARIA — nếu không tìm được phần tử bằng role, screen reader cũng không tìm được.
+
+```tsx
+// autocomplete.test.tsx
+import { act } from "react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { Autocomplete } from "./autocomplete";
+
+function createControllableFetch() {
+  const pending = new Map<string, (items: string[]) => void>();
+  const fetchSuggestions = vi.fn(
+    (query: string, signal: AbortSignal) =>
+      new Promise<string[]>((resolve, reject) => {
+        pending.set(query, resolve);
+        signal.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      }),
+  );
+  const resolve = (query: string, items: string[]) => pending.get(query)?.(items);
+  return { fetchSuggestions, resolve };
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  // jsdom chưa có scrollIntoView
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function setup() {
+  const api = createControllableFetch();
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(
+    <Autocomplete
+      label="Framework"
+      fetchSuggestions={api.fetchSuggestions}
+      getOptionLabel={(s: string) => s}
+      getOptionKey={(s: string) => s}
+    />,
+  );
+  const input = screen.getByRole("combobox", { name: "Framework" });
+  return { api, user, input };
+}
+
+test("debounce: gõ liên tục chỉ gửi một request", async () => {
+  const { api, user, input } = setup();
+  await user.type(input, "react");
+  expect(api.fetchSuggestions).not.toHaveBeenCalled();
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(api.fetchSuggestions).toHaveBeenCalledTimes(1);
+  expect(api.fetchSuggestions).toHaveBeenCalledWith("react", expect.any(AbortSignal));
+});
+
+test("response cũ về sau không đè kết quả mới", async () => {
+  const { api, user, input } = setup();
+  await user.type(input, "re");
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  await user.type(input, "act");
+  await act(() => vi.advanceTimersByTimeAsync(300));
+
+  // Cố tình resolve sai thứ tự: "react" trước, "re" sau
+  await act(async () => {
+    api.resolve("react", ["React", "React Native"]);
+    api.resolve("re", ["Redux", "Remix"]);
+  });
+
+  const labels = screen.getAllByRole("option").map((o) => o.textContent);
+  expect(labels).toEqual(["React", "React Native"]);
+});
+
+test("bàn phím: ArrowDown + Enter chọn option và đóng popup", async () => {
+  const { api, user, input } = setup();
+  await user.type(input, "re");
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  await act(async () => api.resolve("re", ["Redux", "Remix"]));
+
+  await user.keyboard("{ArrowDown}");
+  const [first] = screen.getAllByRole("option");
+  expect(input).toHaveAttribute("aria-activedescendant", first?.id);
+  expect(first).toHaveAttribute("aria-selected", "true");
+
+  await user.keyboard("{Enter}");
+  expect(input).toHaveValue("Redux");
+  expect(input).toHaveAttribute("aria-expanded", "false");
+});
+```
+
+Vài ghi chú:
+
+- `shouldAdvanceTime: true` cho phép đồng hồ giả vẫn trôi theo thời gian thật, tránh việc `user-event` hay Testing Library treo vì chờ một timer không bao giờ chạy. `advanceTimers` trong `userEvent.setup` là cách chính thức để hai bên phối hợp.
+- Test race condition ở trên thực ra được bảo vệ bởi `AbortController` (request "re" đã bị reject trước khi resolve). Để test riêng lưới an toàn request id, viết thêm một biến thể của fetch giả **bỏ qua** `signal` — đó chính là kịch bản "nguồn dữ liệu không hợp tác".
+- Những thứ đáng test thêm: query ngắn hơn `minQueryLength` không gọi API; gõ lại query cũ dùng cache (`fetchSuggestions` không được gọi thêm); lỗi hiện nút "Thử lại"; Escape hai lần; và composition — `fireEvent.compositionStart`, gõ, rồi `fireEvent.compositionEnd` và kiểm tra chỉ có một request.
+
+<Callout>
+  **Test hành vi, không test implementation.** Mình không bao giờ assert vào `requestIdRef` hay nội dung cache. Test chỉ nói chuyện qua những gì người dùng làm (gõ, bấm phím) và những gì họ nhận được (option nào hiện, thuộc tính ARIA nào). Nhờ vậy mai kia thay hook tự viết bằng React Query, bộ test vẫn giữ nguyên.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Chốt yêu cầu và API trước: generic `T`, nguồn dữ liệu là một hàm nhận `AbortSignal`, hỗ trợ cả controlled lẫn uncontrolled.
+- Chống race condition bằng hai lớp: `AbortController` để huỷ request, request id để chỉ kết quả mới nhất được ghi vào state.
+- Debounce cho nguồn từ server (khoảng 200–300ms), bỏ qua debounce khi đã có cache còn mới.
+- Cache LRU theo key đã chuẩn hoá, stale-while-revalidate để luôn có thứ hiển thị ngay, và độ dài query tối thiểu.
+- Không thay kết quả đang có bằng spinner; chỉ báo đang tải khi chậm thật sự.
+- Theo WAI-ARIA combobox: `role="combobox"`, `aria-expanded`, `aria-controls`, `aria-activedescendant`, listbox với option có `aria-selected`; focus luôn ở input; có live region báo số kết quả.
+- Tôn trọng IME: không tìm trong lúc composition, không chọn option bằng Enter đang dùng để xác nhận chữ; tìm không dấu bằng NFD và nhớ xử lý riêng chữ "đ".
+- Highlight bằng cách cắt chuỗi và render text node, không bao giờ dùng `innerHTML`.
+- Test bằng fake timers và fetch giả có thể điều khiển thứ tự resolve, truy vấn theo role.
+
+</Checklist>
