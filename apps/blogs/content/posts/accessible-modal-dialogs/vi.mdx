@@ -1,0 +1,251 @@
+---
+title: "Modal dialog dễ tiếp cận: dùng thẻ dialog native cho đúng"
+excerpt: "Từ showModal(), top layer, ::backdrop đến quản lý focus, gắn nhãn, khoá cuộn, đóng khi bấm nền và dialog lồng nhau — kèm một component React nhỏ và cách tự kiểm tra bằng bàn phím và screen reader."
+---
+
+<Lead>Modal là một trong những component mình thấy bị làm sai nhiều nhất: focus chạy ra phía sau, bấm Escape không đóng, screen reader đọc cả trang bên dưới, hoặc đóng xong thì focus rơi về đầu trang. Vài năm trước, làm modal "chuẩn" đồng nghĩa với kéo thêm thư viện hoặc tự viết focus trap. Giờ phần tử `<dialog>` native đã làm được phần lớn việc khó. Bài này đi qua những gì trình duyệt lo cho bạn, những gì bạn vẫn phải tự làm, và cách mình kiểm tra trước khi coi một modal là "xong".</Lead>
+
+## Một modal "đúng" cần những gì?
+
+Trước khi nói đến code, mình hay liệt kê hành vi mà người dùng — đặc biệt là người dùng bàn phím và screen reader — mong đợi từ một modal:
+
+- **Focus đi vào dialog** khi mở, đến một phần tử hợp lý.
+- **Nội dung phía sau không tương tác được**: không Tab tới, không bấm được, screen reader không đọc tới.
+- **Escape đóng dialog** (trừ khi có lý do rất rõ ràng để không cho đóng).
+- **Dialog có tên**: screen reader đọc được "Xoá dự án, hộp thoại" chứ không chỉ "hộp thoại".
+- **Đóng xong, focus quay về** nút đã mở nó, để người dùng không bị lạc.
+- **Trang phía sau không cuộn** khi người dùng cuộn trong dialog.
+
+Danh sách này nghe đơn giản, nhưng tự viết bằng `div` thì mỗi dòng là một nguồn bug riêng. Tin tốt là `<dialog>` với `showModal()` xử lý được khoảng một nửa trong số đó.
+
+## `<dialog>` và `showModal()`: trình duyệt làm gì cho bạn
+
+Phần tử `<dialog>` có hai cách mở, và khác biệt giữa chúng rất quan trọng:
+
+| | `show()` hoặc thuộc tính `open` | `showModal()` |
+| --- | --- | --- |
+| **Kiểu** | Non-modal — giống một popup nổi | Modal thật sự |
+| **Top layer** | Không — vẫn bị `z-index` và `overflow` của cha ảnh hưởng | Có — nằm trên mọi thứ, không cần chỉnh `z-index` |
+| **Nội dung phía sau** | Vẫn tương tác được | Trở thành inert |
+| **Escape** | Không tự đóng | Tự đóng, phát sự kiện `cancel` rồi `close` |
+| **`::backdrop`** | Không có | Có, style được bằng CSS |
+
+Điểm đáng giá nhất là **top layer** và **inert**. Top layer nghĩa là bạn không còn phải đánh nhau với `z-index: 9999` hay lo modal bị cắt bởi một phần tử cha có `overflow: hidden` hoặc `transform`. Inert nghĩa là phần còn lại của trang không nhận focus, không nhận click và bị ẩn khỏi cây accessibility — đúng thứ trước đây phải tự viết focus trap mới có.
+
+```html
+<button type="button" id="open-delete">Xoá dự án</button>
+
+<dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-desc">
+  <h2 id="delete-title">Xoá dự án?</h2>
+  <p id="delete-desc">Toàn bộ dữ liệu của dự án sẽ bị xoá vĩnh viễn.</p>
+
+  <!-- method="dialog": submit form sẽ đóng dialog, returnValue = value của nút -->
+  <form method="dialog">
+    <button value="cancel" autofocus>Huỷ</button>
+    <button value="confirm">Xoá</button>
+  </form>
+</dialog>
+
+<script>
+  const dialog = document.getElementById("delete-dialog");
+  document.getElementById("open-delete").addEventListener("click", () => {
+    dialog.showModal();
+  });
+  dialog.addEventListener("close", () => {
+    if (dialog.returnValue === "confirm") deleteProject();
+  });
+</script>
+```
+
+`<form method="dialog">` là một chi tiết nhỏ mà rất tiện: bấm nút submit trong form sẽ đóng dialog và gán `value` của nút vào `dialog.returnValue`, không cần viết handler cho từng nút.
+
+<Callout>
+  **Đừng mở modal bằng cách gắn thuộc tính `open`.** Gắn `open` trực tiếp (hoặc truyền prop `open` trong React) chỉ tạo một dialog non-modal: không top layer, không inert, không đóng bằng Escape. Muốn modal thì phải gọi `showModal()`.
+</Callout>
+
+### Style cho `::backdrop`
+
+```css
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}
+
+dialog {
+  border: none;
+  border-radius: 12px;
+  padding: 0; /* để padding cho phần tử bên trong — lý do ở phần "bấm nền để đóng" */
+  max-width: min(32rem, calc(100vw - 2rem));
+}
+```
+
+## Quản lý focus
+
+### Focus ban đầu
+
+Khi gọi `showModal()`, trình duyệt sẽ chuyển focus vào trong dialog. Cách chọn phần tử nào nhận focus đã thay đổi qua các phiên bản spec và giữa các trình duyệt, nên mình không dựa vào mặc định mà **luôn chỉ định rõ bằng `autofocus`**.
+
+Chọn phần tử nào? Quy tắc mình dùng:
+
+- **Hành động có thể huỷ hoại** (xoá, ghi đè): focus vào nút an toàn như "Huỷ", để người dùng lỡ nhấn Enter cũng không mất dữ liệu.
+- **Form**: focus vào ô nhập đầu tiên.
+- **Nội dung dài** (điều khoản, mô tả): focus vào tiêu đề hoặc vùng nội dung (thêm `tabindex="-1"`), để screen reader bắt đầu đọc từ đầu thay vì nhảy thẳng xuống nút ở cuối.
+
+### Trả focus về nút mở
+
+Khi dialog đóng, trình duyệt hiện đại thường tự đưa focus về phần tử đã được focus trước khi mở. Nhưng có những trường hợp mặc định đó không đủ: nút mở nằm trong một menu đã đóng, nằm trong một hàng bảng vừa bị xoá, hoặc dialog được mở từ code chứ không phải từ một lần bấm. Vì vậy mình vẫn tự lưu lại phần tử trigger và trả focus một cách có chủ đích — nếu trigger không còn trong DOM, focus vào một chỗ hợp lý gần đó (ví dụ tiêu đề danh sách).
+
+## Gắn nhãn cho dialog
+
+Một dialog không có tên sẽ được screen reader đọc là "hộp thoại" trơn trụi. Hai thuộc tính bạn cần:
+
+- `aria-labelledby` trỏ tới `id` của tiêu đề. Đây là tên của dialog.
+- `aria-describedby` trỏ tới đoạn mô tả ngắn — hữu ích với dialog xác nhận, vì screen reader đọc luôn nội dung cảnh báo khi mở.
+
+Với `<dialog>` native bạn **không cần** `role="dialog"` hay `aria-modal="true"`: phần tử đã có role sẵn, và `showModal()` đã làm phần nền inert thật sự. Thêm `aria-describedby` cho dialog có nội dung dài thì nên cân nhắc — screen reader sẽ đọc toàn bộ đoạn văn ngay khi mở, khá mệt với người nghe.
+
+## Khoá cuộn và đóng khi bấm nền
+
+### Khoá cuộn trang phía sau
+
+`showModal()` làm trang phía sau inert nhưng **không** ngăn nó cuộn. Trên trackpad hay điện thoại, cuộn trong dialog rồi chạm cuối là trang phía sau trôi theo. Cách gọn nhất mình dùng là CSS với `:has()` và pseudo-class `:modal`:
+
+```css
+html:has(dialog:modal) {
+  overflow: hidden;
+}
+
+dialog {
+  overscroll-behavior: contain; /* cuộn chạm đáy không "truyền" ra ngoài */
+}
+```
+
+Nếu ẩn thanh cuộn làm layout bị giật ngang, thêm `scrollbar-gutter: stable` cho `html` để giữ chỗ cho thanh cuộn.
+
+### Bấm nền để đóng — cẩn thận
+
+Khi người dùng bấm vào `::backdrop`, sự kiện click được phát trên chính phần tử `dialog`. Cách làm phổ biến là kiểm tra `event.target === dialog`. Có hai cái bẫy:
+
+1. **Padding của dialog cũng là `dialog`.** Bấm vào vùng padding bên trong khung cũng có target là dialog, và modal bị đóng dù người dùng bấm *bên trong*. Vì vậy mình đặt `padding: 0` cho `dialog` và để padding cho một phần tử con.
+2. **Kéo chọn văn bản.** Người dùng nhấn chuột trong ô nhập, kéo ra ngoài để bôi đen rồi thả chuột trên nền: trình duyệt phát click lên phần tử tổ tiên chung, chính là dialog. Kết quả là form đang nhập dở bị đóng mất. Cách sửa là chỉ đóng khi cả lúc nhấn lẫn lúc thả đều nằm trên nền.
+
+```ts
+function closeOnBackdropClick(dialog: HTMLDialogElement): () => void {
+  let pressedOnBackdrop = false;
+
+  const onPointerDown = (event: PointerEvent) => {
+    pressedOnBackdrop = event.target === dialog;
+  };
+  const onClick = (event: MouseEvent) => {
+    if (pressedOnBackdrop && event.target === dialog) dialog.close("dismiss");
+    pressedOnBackdrop = false;
+  };
+
+  dialog.addEventListener("pointerdown", onPointerDown);
+  dialog.addEventListener("click", onClick);
+  return () => {
+    dialog.removeEventListener("pointerdown", onPointerDown);
+    dialog.removeEventListener("click", onClick);
+  };
+}
+```
+
+Và hãy tự hỏi có *nên* đóng khi bấm nền không. Với form dài người dùng đã nhập nhiều, mình thường tắt hành vi này — mất dữ liệu vì một cú click trượt tệ hơn nhiều so với việc phải bấm "Huỷ". Gần đây có thuộc tính `closedby` để khai báo hành vi này bằng HTML, nhưng hãy kiểm tra mức hỗ trợ trình duyệt trước khi dựa vào nó.
+
+<Callout>
+  Escape phát sự kiện `cancel` trước khi đóng. Nếu form đang có thay đổi chưa lưu, bạn có thể gọi `event.preventDefault()` trong `cancel` để hỏi lại người dùng — nhưng đừng chặn Escape vô điều kiện, vì đó là lối thoát quen thuộc nhất của người dùng bàn phím.
+</Callout>
+
+## Khi nào vẫn cần `inert` và dialog lồng nhau
+
+### Tự làm modal: dùng `inert`
+
+Có lúc bạn không dùng được `<dialog>`: thư viện UI có sẵn, animation đặc biệt, hoặc một drawer phức tạp. Khi đó, thuộc tính toàn cục `inert` là công cụ chính. Gắn `inert` lên phần tử gốc của app (anh em với modal, không phải cha của nó) thì toàn bộ cây con không nhận focus, không nhận click và bị ẩn khỏi cây accessibility — thay thế cho cả đống code focus trap và `aria-hidden` ngày trước. Modal tự làm thì vẫn cần `role="dialog"` và `aria-modal="true"`, và bạn phải tự xử lý Escape, focus ban đầu, trả focus.
+
+### Dialog lồng nhau
+
+Gọi `showModal()` cho một dialog thứ hai từ bên trong dialog đầu tiên là được phép: dialog mới được đặt lên trên cùng của top layer, dialog bên dưới trở thành inert, và Escape chỉ đóng dialog trên cùng. Dù vậy, về UX mình cố tránh quá hai tầng. Một dialog xác nhận nằm trên một dialog form là giới hạn hợp lý; nhiều hơn thế thường là dấu hiệu luồng đó nên là một trang riêng.
+
+## Một component React nhỏ
+
+React không có cách khai báo "mở modal" cho `<dialog>`, nên mình bọc lại: prop `open` điều khiển việc gọi `showModal()` và `close()`, và sự kiện `close` của trình duyệt được đồng bộ ngược về state.
+
+```tsx
+import { useEffect, useId, useRef, type ReactNode } from "react";
+
+type ModalProps = {
+  open: boolean;
+  onClose: (returnValue: string) => void;
+  title: string;
+  description?: string;
+  children: ReactNode;
+};
+
+export function Modal({ open, onClose, title, description, children }: ModalProps) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const descId = useId();
+
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      triggerRef.current = document.activeElement as HTMLElement | null;
+      dialog.showModal();
+    } else if (!open && dialog.open) {
+      dialog.close();
+    }
+  }, [open]);
+
+  const handleClose = () => {
+    const dialog = ref.current;
+    onClose(dialog?.returnValue ?? "");
+    const trigger = triggerRef.current;
+    if (trigger?.isConnected) trigger.focus();
+  };
+
+  return (
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      aria-describedby={description ? descId : undefined}
+      onClose={handleClose}
+    >
+      <div className="modal-body">
+        <h2 id={titleId}>{title}</h2>
+        {description ? <p id={descId}>{description}</p> : null}
+        {children}
+      </div>
+    </dialog>
+  );
+}
+```
+
+Vài điểm đáng chú ý: không truyền `open` vào thẻ `dialog` (lý do ở Callout phía trên); `onClose` chạy cho mọi cách đóng — Escape, form `method="dialog"`, hay `close()` từ code — nên state luôn đồng bộ; và `returnValue` cho phép parent biết người dùng chọn gì. Nhớ reset `returnValue` về chuỗi rỗng trước mỗi lần mở nếu bạn tái sử dụng dialog, vì giá trị cũ không tự mất.
+
+## Kiểm tra bằng bàn phím và screen reader
+
+Mình không coi một modal là xong khi chưa tự dùng nó mà không cần chuột:
+
+1. **Chỉ dùng bàn phím:** Tab tới nút mở, Enter. Focus có vào đúng phần tử không? Tab vài lần có lọt ra nội dung phía sau không? (Với `<dialog>` modal, Tab có thể đi lên thanh địa chỉ của trình duyệt — điều đó bình thường; điều không được là focus nằm trên một nút của trang phía sau.)
+2. **Escape** đóng dialog và focus về đúng nút mở.
+3. **Screen reader:** VoiceOver trên macOS hoặc NVDA trên Windows. Khi mở, nó có đọc tên dialog và mô tả không? Dùng phím di chuyển của screen reader có đọc được nội dung phía sau không — nếu có thì nền chưa inert thật.
+4. **Zoom 200% và màn hình hẹp:** nội dung dài có cuộn được trong dialog, nút hành động có bị che không?
+5. **Bấm nền và kéo chọn văn bản** ra ngoài để chắc chắn không đóng nhầm.
+
+Test tự động (ví dụ Testing Library truy vấn `getByRole("dialog", { name: ... })`) rất tốt để giữ cho tên và role không bị hỏng sau refactor, nhưng không thay được vài phút tự dùng bằng bàn phím. Lưu ý jsdom có thể chưa hỗ trợ đầy đủ `showModal()`, nên phần hành vi focus mình kiểm tra bằng test chạy trên trình duyệt thật.
+
+## Tóm tắt
+
+<Checklist>
+
+- Dùng `<dialog>` với `showModal()` — top layer, nền inert và Escape là miễn phí; đừng mở bằng thuộc tính `open`.
+- Chỉ định focus ban đầu bằng `autofocus`, ưu tiên nút an toàn cho hành động huỷ hoại.
+- Trả focus về nút mở một cách có chủ đích, và có phương án khi nút đó đã biến mất.
+- Đặt tên dialog bằng `aria-labelledby`, mô tả ngắn bằng `aria-describedby`.
+- Tự khoá cuộn trang phía sau; `showModal()` không làm việc đó.
+- Đóng khi bấm nền chỉ khi cả nhấn và thả đều trên nền — và cân nhắc tắt nó với form dài.
+- Tự làm modal thì dùng `inert` cho phần còn lại của trang.
+- Kiểm tra bằng bàn phím và một screen reader thật trước khi merge.
+
+</Checklist>

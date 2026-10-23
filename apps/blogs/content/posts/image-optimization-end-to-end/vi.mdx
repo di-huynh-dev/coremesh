@@ -1,0 +1,226 @@
+---
+title: "Tối ưu ảnh từ đầu đến cuối: định dạng, srcset, lazy loading và next/image"
+excerpt: "Chọn định dạng nào, srcset và sizes giúp trình duyệt chọn ảnh ra sao, khi nào lazy và khi nào eager, giữ chỗ để tránh CLS, CDN ảnh, art direction với picture và cách dùng next/image trong Next.js 16."
+---
+
+<Lead>Trên hầu hết các trang mình từng audit, ảnh là phần nặng nhất của lần tải và là phần tử LCP thường gặp nhất. Tin tốt là tối ưu ảnh là một trong những việc có tỉ lệ công sức trên hiệu quả tốt nhất trong performance: không cần refactor kiến trúc, chỉ cần làm đúng một chuỗi quyết định nhỏ. Bài này đi qua chuỗi đó theo đúng thứ tự một tấm ảnh đi từ server đến màn hình — định dạng, kích thước, thời điểm tải, cách giữ chỗ — rồi kết thúc với `next/image`.</Lead>
+
+## Chọn định dạng: không có định dạng "tốt nhất"
+
+Câu hỏi đầu tiên luôn là: ảnh này là gì? Ảnh chụp, đồ hoạ phẳng, icon, hay ảnh chụp màn hình có chữ? Mỗi loại hợp với một định dạng khác nhau.
+
+| Định dạng | Hợp với | Điểm mạnh | Cần lưu ý |
+| --- | --- | --- | --- |
+| **AVIF** | Ảnh chụp, ảnh hero, ảnh sản phẩm | Thường nhỏ nhất ở cùng chất lượng cảm nhận, hỗ trợ trong suốt và HDR | Encode chậm và tốn CPU — nên encode trước hoặc cache kết quả |
+| **WebP** | Ảnh chụp và đồ hoạ cần trong suốt | Nhỏ hơn JPEG/PNG đáng kể, encode nhanh hơn AVIF, hỗ trợ rộng | Thường lớn hơn AVIF một chút với ảnh chụp |
+| **JPEG** | Ảnh chụp, phương án dự phòng | Tương thích mọi nơi, encode rất nhanh | Không trong suốt; nén mạnh dễ thấy khối vỡ |
+| **PNG** | Ảnh chụp màn hình, đồ hoạ cần pixel chính xác | Nén không mất dữ liệu, trong suốt | Rất nặng nếu dùng cho ảnh chụp |
+| **SVG** | Logo, icon, minh hoạ dạng vector | Sắc nét ở mọi kích thước, thường rất nhẹ, chỉnh được bằng CSS | Không hợp với ảnh chụp; SVG từ nguồn ngoài cần sanitize vì có thể chứa script |
+
+Trong thực tế, mình phục vụ AVIF cho trình duyệt hỗ trợ, WebP hoặc JPEG làm phương án dự phòng, và giữ SVG cho mọi thứ dạng vector. Việc chọn định dạng nên được tự động hoá (bởi CDN ảnh hoặc framework) chứ không phải làm tay cho từng ảnh.
+
+<Callout>
+  Định dạng chỉ là một nửa câu chuyện; **chất lượng nén** là nửa còn lại. Ảnh xuất thẳng từ công cụ thiết kế ở chất lượng tối đa có thể nặng gấp mấy lần cần thiết. Mình đặt chất lượng mặc định ở mức vừa phải, rồi so sánh bằng mắt trên màn hình thật thay vì tin vào một con số cố định cho mọi ảnh.
+</Callout>
+
+## Responsive images: srcset và sizes
+
+Gửi một ảnh rộng 2400px cho điện thoại có màn hình hiển thị 390px là lãng phí. Ngược lại, gửi ảnh 400px cho màn hình Retina rộng thì ảnh bị mờ. `srcset` và `sizes` giải quyết bài toán này bằng cách đưa cho trình duyệt một danh sách lựa chọn và đủ thông tin để tự chọn.
+
+```html
+<img
+  src="/photos/team-800.jpg"
+  srcset="
+    /photos/team-400.jpg   400w,
+    /photos/team-800.jpg   800w,
+    /photos/team-1200.jpg 1200w,
+    /photos/team-1600.jpg 1600w
+  "
+  sizes="(min-width: 1024px) 50vw, 100vw"
+  width="1600"
+  height="1067"
+  alt="Cả team trong buổi offsite"
+/>
+```
+
+### Trình duyệt chọn ảnh như thế nào
+
+Điểm mấu chốt cần hiểu: trình duyệt quyết định tải ảnh nào **trước khi** CSS được áp dụng và layout được tính. Nó không biết ảnh sẽ hiển thị rộng bao nhiêu — đó là lý do `sizes` tồn tại. `sizes` là lời bạn hứa với trình duyệt: "ở điều kiện viewport này, ảnh sẽ rộng khoảng chừng này".
+
+Quy trình đại khái:
+
+1. Duyệt `sizes` từ trái sang phải, lấy giá trị đầu tiên có media condition khớp. Với viewport rộng 1280px trong ví dụ trên, ảnh rộng `50vw` = 640 CSS pixel.
+2. Nhân với **device pixel ratio (DPR)**. Màn hình DPR 2 cần khoảng 1280 pixel thật.
+3. Chọn ứng viên trong `srcset` phù hợp với con số đó — ở đây là `team-1200.jpg` hoặc `team-1600.jpg`.
+
+Trình duyệt được phép điều chỉnh lựa chọn: nó có thể dùng ảnh lớn hơn đã có sẵn trong cache, hoặc chọn ảnh nhỏ hơn khi người dùng bật chế độ tiết kiệm dữ liệu. Vì vậy bạn chỉ *gợi ý*, không ra lệnh.
+
+Vài lỗi mình hay gặp:
+
+- **Thiếu `sizes`** khi dùng descriptor `w`: trình duyệt mặc định coi ảnh rộng `100vw`, và một thumbnail nhỏ trên desktop sẽ tải bản lớn nhất.
+- **`sizes` không khớp với CSS thật**: sau khi đổi layout từ hai cột sang ba cột, ai đó quên cập nhật `sizes`. Kiểm tra lại bằng DevTools: tab Network cho biết file nào được tải, so với kích thước hiển thị của ảnh.
+- **Quá ít hoặc quá nhiều ứng viên**: ba đến năm kích thước thường đủ. Mỗi kích thước thêm là thêm một biến thể phải tạo và cache.
+
+Với ảnh có kích thước hiển thị cố định (avatar 48px, logo), dùng descriptor `x` đơn giản hơn: `srcset="/avatar-48.png 1x, /avatar-96.png 2x"`.
+
+## Lazy hay eager: quyết định theo vị trí
+
+Thuộc tính `loading="lazy"` bảo trình duyệt hoãn tải ảnh cho đến khi nó sắp đi vào viewport. Với một trang dài có hàng chục ảnh, điều này tiết kiệm rất nhiều băng thông và giảm cạnh tranh với tài nguyên quan trọng ở đầu trang.
+
+Nhưng lazy loading có cái giá: trình duyệt phải đợi layout để biết ảnh nằm ở đâu, nên ảnh lazy luôn bắt đầu tải muộn hơn. Với ảnh ở màn hình đầu tiên, đó là độ trễ thuần.
+
+| Vị trí ảnh | `loading` | `fetchpriority` | Ghi chú |
+| --- | --- | --- | --- |
+| Ảnh LCP (hero, ảnh sản phẩm chính) | `eager` (mặc định) | `high` | Phải nằm trong HTML ban đầu, không chèn bằng JavaScript |
+| Ảnh khác trong màn hình đầu tiên | `eager` | mặc định | Logo, avatar nhỏ — không cần ưu tiên |
+| Ảnh dưới màn hình đầu tiên | `lazy` | mặc định | Hầu hết ảnh trong bài viết, lưới sản phẩm |
+| Carousel, slide thứ hai trở đi | `lazy` | `low` nếu cần | Người dùng có thể không bao giờ xem tới |
+
+<Callout>
+  Lỗi kinh điển: thêm `loading="lazy"` cho *mọi* ảnh qua một component dùng chung, bao gồm cả ảnh hero. Mình luôn để component ảnh mặc định là lazy, nhưng bắt buộc có một prop rõ ràng cho ảnh ưu tiên — và review mọi trang để chắc chắn ảnh LCP dùng prop đó.
+</Callout>
+
+### Hint `decoding`
+
+Sau khi tải xong, ảnh còn phải được giải mã thành pixel. Thuộc tính `decoding="async"` gợi ý trình duyệt có thể giải mã ảnh mà không chặn việc hiển thị phần còn lại của trang. Đây chỉ là gợi ý, và trình duyệt hiện đại vốn đã xử lý phần lớn việc giải mã ngoài main thread, nên mình coi nó là một tinh chỉnh nhỏ cho ảnh lớn không quan trọng, chứ không phải đòn bẩy chính. Với ảnh LCP, mình không đặt `decoding="async"` để tránh rủi ro ảnh hiện ra muộn hơn chữ xung quanh một khung hình.
+
+## Giữ chỗ để không bị CLS
+
+Khi trình duyệt chưa biết kích thước ảnh, nó dành 0px chiều cao, rồi đẩy mọi thứ bên dưới xuống khi ảnh tải xong — một layout shift điển hình. Cách sửa đơn giản đến bất ngờ: **luôn khai báo `width` và `height`** trên thẻ `img`.
+
+Trình duyệt hiện đại dùng hai thuộc tính này để tính `aspect-ratio` trước khi ảnh tải, nên kể cả khi CSS làm ảnh co giãn, chỗ trống vẫn đúng tỉ lệ:
+
+```css
+img {
+  max-width: 100%;
+  height: auto; /* giữ tỉ lệ từ width/height của thẻ khi co giãn */
+}
+
+/* Ảnh lấp đầy một khung có tỉ lệ cố định, cắt phần thừa */
+.card__thumb {
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  object-fit: cover;
+}
+```
+
+`width` và `height` trong HTML không bắt ảnh hiển thị đúng kích thước đó — chúng chỉ cung cấp *tỉ lệ*. Kích thước hiển thị vẫn do CSS quyết định. Ảnh nền qua CSS và ảnh trong embed bên thứ ba thì không có thuộc tính này, nên cần `aspect-ratio` hoặc `min-height` trên container.
+
+## Art direction với `<picture>`
+
+`srcset` giải bài toán "cùng một ảnh, nhiều kích thước". Nhưng đôi khi bạn cần **ảnh khác hẳn** theo màn hình: ảnh hero ngang rộng trên desktop sẽ biến chủ thể thành chấm nhỏ trên điện thoại, nên mobile cần một bản cắt dọc, cận hơn. Đó là art direction, và công cụ là phần tử `<picture>`.
+
+```html
+<picture>
+  <!-- Mobile: bản cắt dọc, chủ thể ở giữa -->
+  <source
+    media="(max-width: 767px)"
+    type="image/avif"
+    srcset="/hero-portrait-600.avif 600w, /hero-portrait-900.avif 900w"
+    sizes="100vw"
+  />
+  <source
+    media="(max-width: 767px)"
+    srcset="/hero-portrait-600.jpg 600w, /hero-portrait-900.jpg 900w"
+    sizes="100vw"
+  />
+  <!-- Desktop: bản ngang -->
+  <source
+    type="image/avif"
+    srcset="/hero-wide-1200.avif 1200w, /hero-wide-2000.avif 2000w"
+    sizes="100vw"
+  />
+  <img
+    src="/hero-wide-1200.jpg"
+    srcset="/hero-wide-1200.jpg 1200w, /hero-wide-2000.jpg 2000w"
+    sizes="100vw"
+    width="2000"
+    height="900"
+    alt="Không gian làm việc của team"
+    fetchpriority="high"
+  />
+</picture>
+```
+
+Trình duyệt duyệt các `<source>` từ trên xuống và dùng cái đầu tiên khớp cả `media` lẫn `type`. Thẻ `img` ở cuối là bắt buộc: nó là phương án dự phòng, và cũng là phần tử thật sự được hiển thị — `alt`, `width`, `height`, `loading`, `fetchpriority` đều đặt trên `img`. Mỗi `source` cũng có thể khai báo `width` và `height` riêng khi tỉ lệ của bản mobile khác desktop.
+
+Nếu chỉ cần chọn định dạng (AVIF, rồi JPEG) mà không đổi bố cục, bạn có thể dùng `<picture>` chỉ với `type` — hoặc để CDN ảnh làm việc đó.
+
+## CDN ảnh và biến đổi theo yêu cầu
+
+Tạo tay mọi kích thước và định dạng cho mọi ảnh không bền vững. **CDN ảnh** (dịch vụ chuyên dụng, hoặc tính năng tối ưu ảnh của nền tảng hosting) cho phép lưu một ảnh gốc chất lượng cao và yêu cầu biến thể qua URL, ví dụ chiều rộng, chất lượng, kiểu cắt. Biến thể được tạo lần đầu khi có request, sau đó được cache ở edge.
+
+Điều mình quan tâm khi dùng CDN ảnh:
+
+- **Chọn định dạng tự động**: CDN đọc header `Accept` của request để trả AVIF hay WebP. Response cần được cache theo định dạng (thường qua `Vary: Accept` hoặc khoá cache riêng), nếu không trình duyệt cũ có thể nhận nhầm AVIF.
+- **Giới hạn biến thể**: chỉ cho phép một danh sách chiều rộng cố định. Nếu URL nhận chiều rộng tuỳ ý, người khác có thể tạo vô số biến thể, làm đầy cache và tăng hoá đơn.
+- **Chỉ cho phép nguồn tin cậy**: không biến CDN của bạn thành proxy ảnh công cộng cho mọi domain.
+- **Cache dài hạn** cho URL có phiên bản hoặc hash, để lần truy cập sau không tải lại.
+
+## `next/image` trong Next.js 16
+
+Trong Next.js, component `next/image` gói phần lớn những thứ trên: tự tạo `srcset`, phục vụ định dạng hiện đại qua image optimizer, mặc định lazy, và bắt bạn khai báo kích thước để tránh CLS.
+
+```tsx
+import Image from "next/image";
+import hero from "./hero.jpg"; // import tĩnh: Next.js tự biết width, height
+
+export function ProductPage({ product }: { product: { name: string; imageUrl: string } }) {
+  return (
+    <>
+      {/* Ảnh LCP: không lazy, được preload */}
+      <Image src={hero} alt="Bộ sưu tập mùa đông" sizes="100vw" preload placeholder="blur" />
+
+      {/* Ảnh lấp đầy container có tỉ lệ cố định */}
+      <div style={{ position: "relative", aspectRatio: "4 / 3" }}>
+        <Image
+          src={product.imageUrl}
+          alt={product.name}
+          fill
+          sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
+          style={{ objectFit: "cover" }}
+        />
+      </div>
+    </>
+  );
+}
+```
+
+Những điểm cần nhớ:
+
+- **`preload` thay cho `priority`**: từ Next.js 16, `priority` bị đánh dấu deprecated và `preload` là prop dùng cho ảnh LCP — nó chèn thẻ preload vào head để ảnh được phát hiện sớm. Chỉ dùng cho một hoặc hai ảnh mỗi trang; preload mọi thứ nghĩa là không ưu tiên gì cả. Với ảnh đã nằm sẵn trong HTML, `fetchPriority="high"` cũng là một lựa chọn hợp lý.
+- **Luôn có `sizes` khi dùng `fill`** hoặc khi ảnh co giãn theo layout. Với `fill` mà thiếu `sizes`, Next.js giả định ảnh rộng bằng viewport, nên thumbnail nhỏ vẫn tải bản lớn. Với ảnh có `width` cố định mà không có `sizes`, Next.js chỉ tạo `srcset` kiểu `1x`/`2x` — ổn cho avatar, logo, nhưng không hợp với ảnh co giãn.
+- **Ảnh từ domain ngoài** phải được khai báo trong `images.remotePatterns` của `next.config`, đúng tinh thần "chỉ cho phép nguồn tin cậy" ở trên.
+- Định dạng đầu ra cấu hình qua `images.formats`; muốn bật AVIF thì thêm nó vào danh sách, và chấp nhận lần tối ưu đầu tiên chậm hơn.
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const config: NextConfig = {
+  images: {
+    formats: ["image/avif", "image/webp"],
+    remotePatterns: [{ protocol: "https", hostname: "cdn.example.com", pathname: "/products/**" }],
+  },
+};
+
+export default config;
+```
+
+<Callout>
+  Image optimizer của Next.js tốn CPU ở lần đầu tạo mỗi biến thể. Trên nền tảng serverless, mỗi biến thể có thể được tính như một lần xử lý riêng. Với site nhiều ảnh, mình kiểm tra chi phí sớm và cân nhắc dùng `loader` để chuyển việc biến đổi sang CDN ảnh chuyên dụng.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Chọn định dạng theo loại ảnh: AVIF hoặc WebP cho ảnh chụp, SVG cho vector, PNG khi cần pixel chính xác — và tự động hoá việc chọn.
+- Dùng `srcset` với `sizes` khớp CSS thật; trình duyệt chọn ảnh trước khi layout, dựa trên `sizes` nhân DPR.
+- Lazy load ảnh dưới màn hình đầu tiên; ảnh LCP phải eager, có trong HTML ban đầu và được ưu tiên.
+- Luôn khai báo `width` và `height` (hoặc `aspect-ratio`) để trình duyệt giữ chỗ và tránh CLS.
+- Dùng `<picture>` cho art direction khi mobile cần bản cắt khác, không chỉ kích thước khác.
+- Với CDN ảnh: giới hạn biến thể, chỉ cho phép nguồn tin cậy, cache theo định dạng.
+- Trong Next.js 16, dùng `preload` cho ảnh LCP thay cho `priority`, và luôn có `sizes` với ảnh co giãn.
+
+</Checklist>

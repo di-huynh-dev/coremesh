@@ -1,0 +1,259 @@
+---
+title: "Container Queries and Modern Responsive Design: Components That Know Their Own Width"
+excerpt: "Why viewport media queries fall short for reusable components, how to use container-type, named containers and cqi units, how to combine them with clamp() and :has(), plus a complete responsive card and a fallback strategy."
+---
+
+<Lead>I once wrote a very "responsive" card component: under 768px the image sat on top, wider than that it moved to the left. Everything was fine until a designer dropped that exact card into a narrow sidebar on a desktop screen. The viewport was 1440px wide, so the media query said "horizontal layout", while the card only had 280px to live in — and the text got squeezed into a column a few characters wide. The problem wasn't the card. It was the question I was asking: I was asking how wide the *screen* is, when what I needed to know was how wide the card's *container* is. Container queries answer exactly that question.</Lead>
+
+## Why viewport media queries aren't enough
+
+Media queries were born when websites were designed as pages: header, content, footer, with the layout changing based on window size. Today we build interfaces from **components**, and a good component gets reused in many places:
+
+- A product card in a three-column grid on the home page.
+- The same card in a narrow sidebar on a detail page.
+- The same card in a modal, a carousel, or a dashboard with resizable panels.
+
+With media queries, a component has to "know" where it'll be placed in order to pick the right breakpoint. The usual outcome is variants like `Card--compact`, `Card--sidebar`, or a `variant` prop passed down from above — meaning layout logic leaks out of the component.
+
+Container queries flip that around: the component asks how wide its containing element is, and adapts. Put it anywhere.
+
+| | Media query | Container query |
+| --- | --- | --- |
+| **Asks about** | The viewport (browser window) | An ancestor element declared as a container |
+| **Good for** | Page layout: number of columns, showing or hiding navigation | Layout inside a component |
+| **Does the component need to know where it lives?** | Yes | No |
+| **Browser support** | Everywhere | Major browsers since around 2023 |
+
+They don't replace each other. I still use media queries for page-level layout and container queries inside components.
+
+## The basics: `container-type` and `@container`
+
+Two steps: declare an element as a container, then write queries for its descendants.
+
+```css
+.card-wrapper {
+  container-type: inline-size;
+}
+
+.card {
+  display: grid;
+  gap: 1rem;
+}
+
+/* Once the container is at least 28rem wide, switch to a horizontal layout */
+@container (min-width: 28rem) {
+  .card {
+    grid-template-columns: 10rem 1fr;
+  }
+}
+```
+
+A few things that commonly trip people up:
+
+- **`inline-size` is the horizontal axis** in left-to-right writing modes. It's the value you'll use almost all the time. `size` tracks both axes but requires the container to have a definite height, so you rarely need it.
+- **An element can't query itself.** Styles inside `@container` only apply to *descendants* of the container. That's why the example wraps `.card` in `.card-wrapper`.
+- **`@container` finds the nearest container** up the DOM tree.
+- You can use range syntax: `@container (width >= 28rem)` is equivalent to `min-width: 28rem`.
+
+<Callout>
+  **The classic trap:** `container-type: inline-size` turns on *size containment* on the inline axis, which means the container's width is no longer computed from its content. If the container sits somewhere that shrinks to fit its content — a flex item without `flex-grow`, an `inline-block` element, an `auto` grid column — it can collapse to zero. A container should be an element whose width is decided from the *outside*: a normal block element, a `1fr` grid column, or something with an explicit `width`.
+</Callout>
+
+## Named containers
+
+With nested containers, an unnamed `@container` always asks the nearest one. Sometimes you want to skip the closest level and ask a specific one. Give containers names:
+
+```css
+.sidebar {
+  container: sidebar / inline-size; /* shorthand for container-name and container-type */
+}
+
+.card-wrapper {
+  container: card / inline-size;
+}
+
+/* Reacts only to the sidebar's width, even though the card is inside card-wrapper */
+@container sidebar (max-width: 20rem) {
+  .card__actions {
+    flex-direction: column;
+  }
+}
+
+/* Reacts to the card-wrapper itself */
+@container card (min-width: 28rem) {
+  .card {
+    grid-template-columns: 10rem 1fr;
+  }
+}
+```
+
+My convention: component-level containers are named after the component (`card`, `media-object`), layout-level containers after the region (`sidebar`, `main`). Clear names mean anyone reading the CSS knows immediately who a query is asking.
+
+## Container units: `cqi` and friends
+
+Container queries come with a set of units relative to the container's size — like `vw` and `vh`, but for containers:
+
+| Unit | Equals 1% of |
+| --- | --- |
+| `cqw` / `cqh` | The container's width / height |
+| `cqi` / `cqb` | The container's inline size / block size |
+| `cqmin` / `cqmax` | The smaller / larger of `cqi` and `cqb` |
+
+I prefer `cqi` over `cqw` because it follows the inline axis — the same axis `container-type: inline-size` tracks — and stays correct if the writing mode changes. If there's no eligible container above, these units fall back to viewport-based sizes, so they won't break the page — but the result may not be what you intended.
+
+## Combining with fluid type via `clamp()`
+
+Viewport-based fluid typography (`clamp(1rem, 2vw, 1.5rem)`) has the same problem as media queries: a heading in a narrow sidebar stays as big as one in the main area. Swap `vw` for `cqi` and you're done:
+
+```css
+.card__title {
+  /* At least 1.125rem, at most 1.75rem, scaling with the card's width in between */
+  font-size: clamp(1.125rem, 0.875rem + 2.5cqi, 1.75rem);
+  line-height: 1.2;
+}
+
+.card__body {
+  padding: clamp(0.75rem, 4cqi, 1.5rem);
+}
+```
+
+<Callout>
+  **Never use container (or viewport) units alone for font-size.** Something like `font-size: 4cqi` doesn't change when users zoom text in their browser, which is an accessibility problem. Always add a `rem` component (like `0.875rem + 2.5cqi`) and clamp it with `rem`-based minimum and maximum values.
+</Callout>
+
+## `:has()` — styling based on what's inside
+
+Container queries tell a component how wide it is. `:has()` tells a component what it *contains*. The two pair naturally.
+
+Example: a card with an image uses a two-column layout, a card without one spans the full width — no `hasImage` prop, no variant class:
+
+```css
+/* Only split into columns when the card actually has an image AND is wide enough */
+@container card (min-width: 28rem) {
+  .card:has(.card__media) {
+    grid-template-columns: 10rem 1fr;
+  }
+}
+
+/* Highlight the card when the checkbox inside it is checked */
+.card:has(input[type="checkbox"]:checked) {
+  outline: 2px solid var(--color-accent);
+}
+
+/* Show the field's hint as an error once the user has interacted with an invalid input */
+.field:has(input:user-invalid) .field__hint {
+  color: var(--color-danger);
+}
+```
+
+All of these used to need JavaScript to add a class to the parent. Now CSS handles it on its own — which means less state in your components.
+
+## A complete responsive card
+
+Putting it all together. Here's the React component; the layout lives entirely in CSS:
+
+```tsx
+interface ArticleCardProps {
+  title: string;
+  excerpt: string;
+  href: string;
+  imageUrl?: string;
+}
+
+export function ArticleCard({ title, excerpt, href, imageUrl }: ArticleCardProps) {
+  return (
+    <div className="card-wrapper">
+      <article className="card">
+        {imageUrl ? (
+          <img className="card__media" src={imageUrl} alt="" loading="lazy" />
+        ) : null}
+        <div className="card__body">
+          <h3 className="card__title">
+            <a href={href}>{title}</a>
+          </h3>
+          <p className="card__excerpt">{excerpt}</p>
+        </div>
+      </article>
+    </div>
+  );
+}
+```
+
+```css
+.card-wrapper {
+  container: card / inline-size;
+}
+
+.card {
+  display: grid;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.card__media {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.card__excerpt {
+  display: none; /* Too narrow: show only the title */
+}
+
+@container card (min-width: 18rem) {
+  .card__excerpt {
+    display: block;
+  }
+}
+
+@container card (min-width: 32rem) {
+  .card:has(.card__media) {
+    grid-template-columns: 40% 1fr;
+  }
+
+  .card__media {
+    aspect-ratio: auto;
+    height: 100%;
+  }
+}
+```
+
+Drop this card into a three-column grid, a 280px sidebar or a modal and it picks one of three states on its own: title only, stacked, or side by side. No `variant` prop anywhere.
+
+If you use Tailwind CSS v4, container queries are built in via the `@container` class on the container and prefixes like `@md:` on children — same idea, different syntax.
+
+## Fallbacks and progressive enhancement
+
+Container queries and `:has()` have been supported in major browsers for a few years now. But if your product has users on older browsers (managed corporate devices, old WebViews), think in terms of *progressive enhancement*:
+
+1. **Make the default styles the safest layout** — usually stacked, single column. It looks fine at any width.
+2. **Add the enhanced layout inside `@container`.** Browsers that don't understand `@container` skip the whole block and keep the default.
+3. **When you need a genuinely different fallback**, use `@supports`:
+
+```css
+/* Older browsers: use a media query as a rough approximation */
+@supports not (container-type: inline-size) {
+  @media (min-width: 64rem) {
+    .card:has(.card__media) {
+      grid-template-columns: 40% 1fr;
+    }
+  }
+}
+```
+
+Don't try to make old browsers look identical. The goal is content that's readable and usable, not pixel-perfect everywhere.
+
+## Key takeaways
+
+<Checklist>
+
+- Media queries for page layout; container queries for layout inside components.
+- Declare containers with `container-type: inline-size`, and remember an element can't query itself.
+- Watch out for containers in shrink-to-fit contexts — they can collapse to zero.
+- Name containers when nesting so queries target the right level.
+- Use `cqi` for container-relative sizing, always combined with `rem` and `clamp()` for font sizes.
+- `:has()` lets you style based on content, replacing variant props and JavaScript.
+- Write a safe default layout first, enhance inside `@container`, and use `@supports` when you need a dedicated fallback.
+
+</Checklist>

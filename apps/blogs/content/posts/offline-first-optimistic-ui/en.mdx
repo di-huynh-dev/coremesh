@@ -1,0 +1,302 @@
+---
+title: "Offline-First and Optimistic UI: Designing Sync That Never Loses Data"
+excerpt: "Optimistic updates with rollback, an IndexedDB-backed outbox, idempotency keys, retrying when the network returns, conflict resolution strategies, showing sync status and testing offline scenarios."
+---
+
+<Lead>Tap "Done" and the checkmark appears instantly, no spinner, no waiting — that's optimistic UI. Tap it in an elevator with no signal and the change is still there when you step out — that's offline-first. They sound alike, but the second is far harder, because you have to answer questions normal UIs get to ignore: what happens if a request is sent twice, which device wins when two of them edit the same thing, and how does the user know their data is actually saved? This post is the architecture I use to answer them.</Lead>
+
+## Two concepts, two levels of commitment
+
+**Optimistic UI** assumes the request will succeed: update the interface immediately, send the request in the background, and undo if it fails. It fixes perceived slowness, not lost connectivity. If the tab closes while the request is in flight, the change is gone.
+
+**Offline-first** treats the user's device as the first place data is written. Every change is persisted locally first, then synced to the server when possible. The server is still the final source of truth, but the app doesn't depend on the server answering right now.
+
+| | Optimistic UI | Offline-first |
+| --- | --- | --- |
+| **Where changes land first** | Memory (state) | Durable storage (IndexedDB) |
+| **Tab closed mid-request** | Change lost | Resent on next launch |
+| **Conflicts** | Rarely a concern | The central problem |
+| **Complexity** | Low | High — outbox, retries, idempotency |
+| **Good fit** | Likes, toggles, reordering a list | Note apps, field work, POS, apps used on poor networks |
+
+My first piece of advice: **don't make everything offline-first**. Pick the flows where users genuinely need to keep working without a connection. A checkout page should not "save now, send later".
+
+## Optimistic updates and rollback
+
+The basic pattern has three steps: snapshot the old state, apply the change immediately, then confirm or undo based on the server's answer.
+
+```ts
+type Todo = { id: string; title: string; done: boolean; version: number };
+
+interface TodoStore {
+  get(id: string): Todo | undefined;
+  set(todo: Todo): void;
+}
+
+declare const store: TodoStore;
+declare const api: {
+  updateTodo(id: string, patch: Partial<Pick<Todo, "title" | "done">>, baseVersion: number): Promise<Todo>;
+};
+declare function notify(message: string): void;
+
+export async function toggleTodo(id: string): Promise<void> {
+  const previous = store.get(id);
+  if (!previous) return;
+
+  // 1. Update the UI immediately
+  store.set({ ...previous, done: !previous.done });
+
+  try {
+    // 2. The server returns the canonical record (with a new version) — use it instead of the optimistic one
+    const saved = await api.updateTodo(id, { done: !previous.done }, previous.version);
+    store.set(saved);
+  } catch {
+    // 3. Roll back and tell the user clearly
+    store.set(previous);
+    notify("Couldn't save your change, so it was reverted.");
+  }
+}
+```
+
+That's correct for a single action, but it has a subtle bug: if the user taps twice quickly and the first request fails, rolling back to `previous` also wipes out the second change. There are three ways to deal with it, in rising sophistication:
+
+- **Roll back only what changed**, not the whole object — for example, flip `done` back only if the current value is still the one you set.
+- **Separate "server data" from "pending changes".** The UI renders server data with unconfirmed changes layered on top. On failure you just drop that one change from the list — the others survive automatically. This is my favourite, and it's also the foundation for the outbox below.
+- **Refetch from the server after an error**, accepting a visual flicker to get back to the truth.
+
+<Callout>
+  Libraries like TanStack Query ship the `onMutate` / `onError` / `onSettled` pattern for optimistic updates. Use it, but be clear that it only keeps changes in memory — that's optimistic UI, not offline-first.
+</Callout>
+
+## The outbox: a mutation queue in IndexedDB
+
+The central idea of offline-first is the **outbox**: every change the user makes is written as a "pending mutation" record to IndexedDB *first*, and a sync process reads the outbox and sends mutations to the server one by one. When a send succeeds, the record is removed. If the tab is closed, the outbox is still there next time.
+
+A few design decisions worth calling out:
+
+- **Store mutations (intent), not snapshots.** "Set `done = true` on todo X, based on version 7" carries more information than "here's the whole of todo X". The server can detect conflicts and merge more intelligently.
+- **Preserve order.** "Create todo" must arrive before "edit that todo". An auto-increment key makes IndexedDB return records in write order.
+- **Write the local store and the outbox in the same transaction** when both live in IndexedDB, so you can never end up with "the UI changed but the outbox is empty".
+
+```ts
+export interface PendingMutation {
+  seq?: number; // auto-increment key — preserves write order
+  id: string; // UUID, which is also the idempotency key
+  type: "todo.update";
+  payload: {
+    todoId: string;
+    patch: Partial<Pick<Todo, "title" | "done">>;
+    baseVersion: number;
+  };
+  createdAt: number;
+  attempts: number;
+}
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("app-sync", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("outbox", { keyPath: "seq", autoIncrement: true });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function enqueue(
+  type: PendingMutation["type"],
+  payload: PendingMutation["payload"],
+): Promise<void> {
+  const db = await openDb();
+  const mutation: PendingMutation = {
+    id: crypto.randomUUID(),
+    type,
+    payload,
+    createdAt: Date.now(),
+    attempts: 0,
+  };
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("outbox", "readwrite");
+    tx.objectStore("outbox").add(mutation);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+```
+
+In practice I usually reach for a small wrapper like `idb` instead of IndexedDB's raw callback API, but writing it raw here makes it obvious what's going on.
+
+## Idempotency keys and retries
+
+### Why idempotency matters
+
+Networks fail in the most annoying way possible: a request may **reach the server and be processed**, while the response is lost on the way back. The client sees an error and retries. Without protection, the server applies the mutation twice — harmless for "set `done = true`", a real bug for "add 1 to quantity" or "create order".
+
+The fix is an **idempotency key**: each mutation gets a unique ID generated on the client and sent with every retry. The server stores processed keys (with their result) for a while; when it sees a known key again, it returns the stored result instead of reprocessing. That lets the client retry freely — "at least once" delivery plus idempotency gives you effectively "exactly once".
+
+### The sync loop
+
+```ts
+declare function getAllPending(): Promise<PendingMutation[]>;
+declare function removePending(seq: number): Promise<void>;
+declare function markFailed(mutation: PendingMutation, status: number): Promise<void>;
+declare function handleConflict(mutation: PendingMutation, response: Response): Promise<void>;
+
+let flushing = false;
+let retryDelay = 1_000;
+
+export async function flushOutbox(): Promise<void> {
+  if (flushing) return;
+  flushing = true;
+  try {
+    for (const mutation of await getAllPending()) {
+      const response = await fetch("/api/mutations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": mutation.id },
+        body: JSON.stringify(mutation),
+      });
+
+      if (response.status >= 500 || response.status === 429) {
+        throw new Error(`Retryable status ${response.status}`); // retry the whole queue later
+      }
+      if (response.status === 409) {
+        await handleConflict(mutation, response);
+      } else if (!response.ok) {
+        await markFailed(mutation, response.status); // permanent 4xx: retrying won't help
+      }
+      if (mutation.seq !== undefined) await removePending(mutation.seq);
+    }
+    retryDelay = 1_000;
+  } catch {
+    // fetch throws when offline; 5xx/429 land here too. Exponential backoff with jitter.
+    const delay = retryDelay * (0.5 + Math.random());
+    retryDelay = Math.min(retryDelay * 2, 60_000);
+    setTimeout(() => void flushOutbox(), delay);
+  } finally {
+    flushing = false;
+  }
+}
+```
+
+Note the clear split between **transient** failures (offline, 5xx, 429 — retry) and **permanent** ones (400, 403, 422 — retrying changes nothing). Permanent failures move to a "needs attention" state instead of blocking the queue forever.
+
+### `online`/`offline` events are hints
+
+`navigator.onLine === false` is a fairly reliable sign there's no connection. But `true` only means the device is connected to *some* network — a café Wi-Fi with an unaccepted captive portal, a corporate network blocking your API, or your server being down all report `true`. So:
+
+- Treat the `online` event as **one of several triggers to try a flush**, alongside app start, the tab regaining focus (`visibilitychange`) and a periodic timer.
+- **The only truth is whether the request succeeded.** Don't treat `navigator.onLine === true` as a promise that requests will succeed, and never assume you're synced just because `online` fired.
+
+With multiple tabs open, each one might flush the same outbox. The Web Locks API (`navigator.locks.request`) helps ensure only one tab flushes at a time; the idempotency key is your second line of defence if a duplicate still slips through.
+
+<Callout>
+  IndexedDB is not guaranteed forever: browsers can evict data under storage pressure, and some have policies that clear data for sites that haven't been visited in a while. Call `navigator.storage.persist()` to request durable storage, and don't let mutations sit in the outbox longer than necessary.
+</Callout>
+
+## Conflict resolution
+
+A conflict happens when two parties edit the same data from the same starting version — a phone editing offline while a laptop edits online, for example. No strategy is right everywhere; I choose based on **how valuable the data is** and **whether users can live with losing a change**.
+
+| Strategy | How it works | Pros | Cons |
+| --- | --- | --- | --- |
+| **Last-write-wins** | The later write overwrites | Simplest possible | Silently loses changes; "later" by whose clock? |
+| **Field-level merge** | Merge per field; conflict only on the same field | Loses far less data | Requires sending patches, not whole objects |
+| **Server authority** | Server decides by business rules | Correct for critical data (stock, balances) | Client must handle rejections |
+| **Version / ETag** | Send the base version; mismatch means conflict | Detects conflicts reliably | Needs UI or rules to resolve them |
+
+Version numbers are the foundation I use almost everywhere: every record has a `version` field that increments on each write. Mutations carry a `baseVersion`. If it differs from the current version on the server, the server responds `409 Conflict` with the current record instead of overwriting. In plain REST terms the same idea is an `ETag` plus an `If-Match` header, with the server returning `412 Precondition Failed` on mismatch.
+
+Once a conflict is detected, field-level merge resolves most cases automatically:
+
+```ts
+type Patch<T> = Partial<T>;
+
+/** Apply the client's patch on top of the server's latest record, flagging only fields both sides changed. */
+export function mergeFields<T extends Record<string, unknown>>(
+  base: T,
+  server: T,
+  clientPatch: Patch<T>,
+): { merged: T; conflicts: (keyof T)[] } {
+  const merged: T = { ...server };
+  const conflicts: (keyof T)[] = [];
+  for (const key of Object.keys(clientPatch) as (keyof T)[]) {
+    const serverChanged = server[key] !== base[key];
+    if (serverChanged && server[key] !== clientPatch[key]) {
+      conflicts.push(key); // both sides changed this field, in different directions
+    } else {
+      merged[key] = clientPatch[key] as T[keyof T];
+    }
+  }
+  return { merged, conflicts };
+}
+```
+
+The `!==` comparison only works for primitive values; for object or array fields you need a deep comparison or finer-grained patches. For whatever ends up in `conflicts`, it's a product decision: show both versions and let the user pick, or apply a fixed rule.
+
+### Last-write-wins and clocks
+
+If you use last-write-wins, don't rely on the client device's clock — phone clocks drift by minutes and users can change them. Let the server assign order on receipt, or use incrementing versions. And remember that LWW **always** loses data when there's a conflict; only use it when you've accepted that.
+
+### What CRDTs are for
+
+CRDTs (Conflict-free Replicated Data Types) are data types designed so that replicas edited independently always **converge to the same result** once they exchange changes, in any order, without a server acting as referee. They shine in real-time collaboration: multi-user text editing, whiteboards, lists several people reorder at once. Yjs and Automerge are the popular libraries.
+
+But they aren't a silver bullet. They carry extra metadata (data grows with history), and "converge" only means everyone sees the same result — not that the result respects your business rules. Two people buying the last item in stock is not something a CRDT can resolve; that's a job for server authority.
+
+## Showing sync status to users
+
+An offline-first app that hides its sync state won't earn trust. Users need to know where their data is, without being nagged. I usually use four states:
+
+- **Saved** — the outbox is empty, everything is on the server. Show it subtly, or not at all.
+- **Syncing** — sending in progress; a small indicator is enough.
+- **Saved on this device** — offline or the server isn't answering; say clearly that changes are *not* lost and will be sent when possible. The wording matters more than you'd think: "Offline" worries people, "Saved on this device, will sync later" reassures them.
+- **Needs attention** — a mutation was permanently rejected, or a conflict needs the user's choice. Only this state deserves to grab attention.
+
+At the item level, mark records that haven't synced yet (a small clock icon, say), and **warn when the user signs out or closes the tab with mutations still in the outbox** — signing out usually clears local data, which means clearing unsent changes too.
+
+## Testing offline scenarios
+
+Sync code easily works on the "good network" path and breaks everywhere else. These are the scenarios I always test:
+
+- **Fully offline:** create, edit and delete while offline; reload; reconnect and confirm everything reaches the server in order.
+- **Lost response:** the server processes the request but the client never receives the response — verify idempotency prevents duplicates.
+- **Flaky network:** requests fail randomly; the outbox must still converge, without getting stuck or duplicating.
+- **Conflicts:** edit the same record in two browsers, one of them offline.
+- **Multiple tabs:** two tabs flushing the same outbox.
+- **App closed mid-sync:** close the tab with mutations pending, reopen and check they're sent.
+
+Playwright handles most of this neatly:
+
+```ts
+import { expect, test } from "@playwright/test";
+
+test("changes made offline sync once the network returns", async ({ page, context }) => {
+  await page.goto("/todos");
+  await context.setOffline(true);
+
+  await page.getByRole("checkbox", { name: "Write the offline-first post" }).check();
+  await expect(page.getByText("Saved on this device")).toBeVisible();
+
+  await page.reload(); // the outbox must survive a reload
+  await context.setOffline(false);
+
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+});
+```
+
+To simulate a lost response, use `page.route` to let the request reach the server and then return an error to the client. Pure functions like `mergeFields` only need unit tests — and that's exactly where it's worth writing the most test cases.
+
+## Key takeaways
+
+<Checklist>
+
+- Optimistic UI assumes success; offline-first persists locally first. Only go offline-first for flows that truly need it.
+- Roll back only what changed — ideally by separating server data from a list of pending changes.
+- Write mutations to an IndexedDB outbox, keep them ordered, send them one by one and remove them on success.
+- Give every mutation an idempotency key so retries are safe; separate transient from permanent failures and retry with jittered backoff.
+- `online`/`offline` are hints — the truth is whether the request succeeded.
+- Detect conflicts with versions or ETags; prefer field-level merge, and use server authority for critical data.
+- CRDTs are for real-time collaboration, not a replacement for business rules.
+- Show sync status clearly, and test offline, lost responses, conflicts and multiple tabs.
+
+</Checklist>

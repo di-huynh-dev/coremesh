@@ -1,0 +1,273 @@
+---
+title: "State machine cho UI: loại bỏ những trạng thái không thể xảy ra"
+excerpt: "Vì sao isLoading, isError và data cùng tồn tại là mầm mống của bug, cách mô hình hoá UI bằng trạng thái và sự kiện, một state machine có type bằng useReducer cho luồng submit form, và khi nào nên dùng thư viện statechart."
+---
+
+<Lead>Rất nhiều bug UI mình từng sửa không nằm ở logic nghiệp vụ, mà ở chỗ component rơi vào một trạng thái mà không ai nghĩ là có thể xảy ra: spinner quay mãi dù dữ liệu đã về, thông báo lỗi cũ vẫn hiện cạnh kết quả mới, nút submit bấm được hai lần. Gốc rễ thường giống nhau — trạng thái được mô tả bằng một nhóm cờ boolean độc lập. Bài này là cách mình chuyển sang tư duy **state machine**: liệt kê rõ các trạng thái, các sự kiện, và chỉ cho phép những chuyển đổi hợp lệ.</Lead>
+
+## Vấn đề "boolean soup"
+
+Hãy nhìn một component tải dữ liệu viết theo kiểu quen thuộc:
+
+```tsx
+const [isLoading, setIsLoading] = useState(false);
+const [isError, setIsError] = useState(false);
+const [error, setError] = useState<string | null>(null);
+const [data, setData] = useState<Order[] | null>(null);
+
+async function load() {
+  setIsLoading(true);
+  try {
+    setData(await fetchOrders());
+  } catch (e) {
+    setIsError(true);
+    setError(String(e));
+  } finally {
+    setIsLoading(false);
+  }
+}
+```
+
+Trông ổn, nhưng hãy đếm: ba cờ có giá trị boolean hoặc nullable cho ra ít nhất 2 × 2 × 2 = 8 tổ hợp, trong khi UI thật chỉ có khoảng bốn trạng thái có nghĩa. Những tổ hợp còn lại là **trạng thái không thể xảy ra** — nhưng code vẫn cho phép chúng xảy ra:
+
+- Lần tải thứ hai thành công nhưng `isError` từ lần trước vẫn là `true` vì không ai reset nó. Màn hình hiện cả dữ liệu lẫn lỗi.
+- Người dùng bấm "Tải lại" hai lần liên tiếp; response của lần đầu về sau lần hai và ghi đè dữ liệu mới hơn.
+- Component render `isLoading && data` thì hiện gì? Spinner hay danh sách? Mỗi người viết JSX sẽ trả lời khác nhau.
+
+Mỗi lần thêm một cờ, số tổ hợp nhân đôi. Và mỗi `if` trong JSX phải tự ngầm loại trừ những tổ hợp vô lý — một kiểu kiến thức chỉ nằm trong đầu người viết.
+
+## Tư duy state machine: trạng thái, sự kiện, chuyển đổi
+
+Một **finite state machine** (máy trạng thái hữu hạn) gồm ba thứ:
+
+- **Trạng thái (state):** một tập hữu hạn, tại mỗi thời điểm chỉ ở *đúng một* trạng thái.
+- **Sự kiện (event):** những gì xảy ra — người dùng bấm nút, request trả về, timer hết giờ.
+- **Chuyển đổi (transition):** quy tắc "đang ở trạng thái X, nhận sự kiện Y thì sang trạng thái Z". Sự kiện không có chuyển đổi tương ứng thì bị bỏ qua.
+
+Điểm mấu chốt: *không phải sự kiện nào cũng hợp lệ ở mọi trạng thái*. Bấm "Submit" khi đang submit không nên làm gì cả. Response về khi người dùng đã huỷ cũng không nên làm gì cả. Thay vì rải các `if (isLoading) return` khắp nơi, quy tắc này nằm ở một chỗ duy nhất.
+
+Với luồng tải dữ liệu ở trên, bảng chuyển đổi trông như sau:
+
+| Trạng thái hiện tại | Sự kiện | Trạng thái kế tiếp |
+| --- | --- | --- |
+| `idle` | `FETCH` | `loading` |
+| `loading` | `RESOLVE` | `success` |
+| `loading` | `REJECT` | `failure` |
+| `success` | `REFRESH` | `loading` (giữ dữ liệu cũ để hiển thị) |
+| `failure` | `RETRY` | `loading` |
+| bất kỳ | sự kiện khác | giữ nguyên |
+
+Viết bảng này ra giấy trước khi viết code là bước mình thấy có giá trị nhất. Nó buộc mình (và PM, designer) trả lời những câu hỏi thường bị bỏ quên: khi đang refresh thì có hiện dữ liệu cũ không? Lỗi có tự biến mất không? Người dùng có huỷ được không?
+
+<Callout>
+  Bạn không cần thư viện để "dùng state machine". Một discriminated union cho trạng thái và một hàm `(state, event) => state` đã là state machine. Thư viện chỉ giúp khi máy trở nên lớn — phần cuối bài sẽ nói khi nào.
+</Callout>
+
+## Mô hình hoá trạng thái bằng discriminated union
+
+Trong TypeScript, cách tự nhiên nhất để nói "chỉ ở đúng một trạng thái, và mỗi trạng thái có dữ liệu riêng" là discriminated union. Dữ liệu chỉ tồn tại ở những trạng thái mà nó có nghĩa:
+
+```ts
+type FetchState<T> =
+  | { status: "idle" }
+  | { status: "loading"; previous: T | null }
+  | { status: "success"; data: T }
+  | { status: "failure"; error: string; previous: T | null };
+```
+
+Giờ thì `data` cạnh `error` không thể biểu diễn được nữa. Khi render, TypeScript buộc bạn kiểm tra `status` trước khi đọc `data`, và một `switch` có `assertNever` sẽ báo lỗi nếu bạn quên một trạng thái. Trường `previous` cho phép giữ dữ liệu cũ khi refresh — một quyết định UX được ghi rõ trong type thay vì ngầm định.
+
+## Một state machine có type với `useReducer`
+
+Ví dụ thực tế hơn: form đặt lịch hẹn. Yêu cầu: không submit hai lần, lỗi validate hiện ngay, lỗi server cho phép thử lại, sau khi thành công thì có thể bắt đầu lại từ đầu, và người dùng có thể huỷ khi request đang chạy.
+
+```tsx
+import { useReducer } from "react";
+
+type FormValues = { name: string; email: string; slot: string };
+
+type State =
+  | { status: "editing"; values: FormValues; fieldErrors: Partial<Record<keyof FormValues, string>> }
+  | { status: "submitting"; values: FormValues; requestId: number }
+  | { status: "failed"; values: FormValues; message: string }
+  | { status: "confirmed"; bookingId: string };
+
+type Event =
+  | { type: "CHANGE"; field: keyof FormValues; value: string }
+  | { type: "SUBMIT"; requestId: number }
+  | { type: "SUBMIT_OK"; requestId: number; bookingId: string }
+  | { type: "SUBMIT_ERROR"; requestId: number; message: string }
+  | { type: "CANCEL" }
+  | { type: "RETRY"; requestId: number }
+  | { type: "RESET" };
+
+const emptyValues: FormValues = { name: "", email: "", slot: "" };
+export const initialState: State = { status: "editing", values: emptyValues, fieldErrors: {} };
+
+// Guard: điều kiện để một chuyển đổi được phép xảy ra
+function validate(values: FormValues): Partial<Record<keyof FormValues, string>> {
+  const errors: Partial<Record<keyof FormValues, string>> = {};
+  if (!values.name.trim()) errors.name = "Vui lòng nhập tên";
+  if (!values.email.includes("@")) errors.email = "Email không hợp lệ";
+  if (!values.slot) errors.slot = "Hãy chọn khung giờ";
+  return errors;
+}
+
+export function reducer(state: State, event: Event): State {
+  switch (state.status) {
+    case "editing":
+      switch (event.type) {
+        case "CHANGE":
+          return { ...state, values: { ...state.values, [event.field]: event.value } };
+        case "SUBMIT": {
+          const fieldErrors = validate(state.values);
+          if (Object.keys(fieldErrors).length > 0) return { ...state, fieldErrors };
+          return { status: "submitting", values: state.values, requestId: event.requestId };
+        }
+        default:
+          return state;
+      }
+    case "submitting":
+      switch (event.type) {
+        case "SUBMIT_OK":
+          // Bỏ qua response của request cũ (đã huỷ hoặc đã bị thay thế)
+          if (event.requestId !== state.requestId) return state;
+          return { status: "confirmed", bookingId: event.bookingId };
+        case "SUBMIT_ERROR":
+          if (event.requestId !== state.requestId) return state;
+          return { status: "failed", values: state.values, message: event.message };
+        case "CANCEL":
+          return { status: "editing", values: state.values, fieldErrors: {} };
+        default:
+          return state; // SUBMIT lần hai bị bỏ qua — không cần disable thủ công ở nhiều nơi
+      }
+    case "failed":
+      switch (event.type) {
+        case "RETRY":
+          return { status: "submitting", values: state.values, requestId: event.requestId };
+        case "CHANGE":
+          return {
+            status: "editing",
+            values: { ...state.values, [event.field]: event.value },
+            fieldErrors: {},
+          };
+        default:
+          return state;
+      }
+    case "confirmed":
+      return event.type === "RESET" ? initialState : state;
+  }
+}
+```
+
+Một vài điểm đáng chú ý:
+
+- **Switch theo trạng thái trước, sự kiện sau.** Cách này làm rõ câu hỏi "ở trạng thái này, những sự kiện nào có nghĩa?". Mọi sự kiện không liệt kê đều rơi vào `default: return state`.
+- **Guard** là điều kiện kèm theo chuyển đổi. `SUBMIT` chỉ đưa sang `submitting` khi `validate` không trả về lỗi; ngược lại máy ở lại `editing` với `fieldErrors`. Kiểm tra `requestId` cũng là một guard: nó chặn race condition khi response cũ về muộn.
+- **Reducer là hàm thuần.** Nó không gọi API, chỉ tính trạng thái kế tiếp. Nhờ vậy test cực dễ: gọi `reducer(state, event)` và so sánh kết quả, không cần render, không cần mock fetch.
+
+### Side effect nằm ở đâu?
+
+Reducer không được gọi API, vậy request chạy ở đâu? Mình để component (hoặc một custom hook) phản ứng theo trạng thái: khi vào `submitting` thì chạy request, khi rời khỏi thì huỷ.
+
+```tsx
+import { useEffect, useReducer, useRef } from "react";
+
+declare function createBooking(values: FormValues, signal: AbortSignal): Promise<{ id: string }>;
+
+export function useBookingForm() {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const nextId = useRef(0);
+
+  const submitting = state.status === "submitting" ? state : null;
+
+  useEffect(() => {
+    if (!submitting) return;
+    const controller = new AbortController();
+    const { requestId, values } = submitting;
+    createBooking(values, controller.signal)
+      .then((res) => dispatch({ type: "SUBMIT_OK", requestId, bookingId: res.id }))
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        dispatch({ type: "SUBMIT_ERROR", requestId, message: err instanceof Error ? err.message : "Lỗi không xác định" });
+      });
+    return () => controller.abort(); // rời trạng thái submitting → huỷ request
+  }, [submitting]);
+
+  return {
+    state,
+    change: (field: keyof FormValues, value: string) => dispatch({ type: "CHANGE", field, value }),
+    submit: () => dispatch({ type: "SUBMIT", requestId: ++nextId.current }),
+    retry: () => dispatch({ type: "RETRY", requestId: ++nextId.current }),
+    cancel: () => dispatch({ type: "CANCEL" }),
+    reset: () => dispatch({ type: "RESET" }),
+  };
+}
+```
+
+Effect phụ thuộc vào object trạng thái `submitting`. Vì reducer chỉ tạo object mới khi thật sự chuyển trạng thái (các sự kiện bị bỏ qua trả về đúng `state` cũ), effect chỉ chạy lại khi máy vào một lần submit mới, và cleanup tự huỷ request khi máy rời trạng thái đó.
+
+<Callout>
+  Trong development, React Strict Mode chạy effect hai lần (mount, cleanup, mount lại). Với cách trên, request đầu bị abort và request thứ hai chạy bình thường — nhưng phía server vẫn có thể nhận hai request. Với thao tác không idempotent như đặt lịch, mình gửi kèm idempotency key để server tự loại bản trùng; đây là việc nên làm kể cả trên production, vì mạng chập chờn cũng gây ra retry.
+</Callout>
+
+## Render theo trạng thái
+
+Khi trạng thái là một union, JSX trở nên thẳng thắn: mỗi trạng thái một nhánh, không còn tổ hợp cờ mơ hồ.
+
+```tsx
+// Success, Pending, Fields là các component trình bày đơn giản, chỉ nhận props
+function BookingForm() {
+  const { state, change, submit, retry, cancel, reset } = useBookingForm();
+
+  switch (state.status) {
+    case "confirmed":
+      return <Success bookingId={state.bookingId} onNew={reset} />;
+    case "submitting":
+      return <Pending values={state.values} onCancel={cancel} />;
+    case "failed":
+      return <Fields values={state.values} onChange={change} banner={state.message} onRetry={retry} />;
+    case "editing":
+      return <Fields values={state.values} errors={state.fieldErrors} onChange={change} onSubmit={submit} />;
+  }
+}
+```
+
+Designer hỏi "màn hình lỗi trông thế nào?" — bạn chỉ vào đúng một nhánh. QA hỏi "có những trạng thái nào cần test?" — bạn đưa họ bảng chuyển đổi.
+
+## Khi nào nên dùng thư viện statechart
+
+`useReducer` cộng discriminated union đủ cho phần lớn component mình viết. Nhưng có lúc máy trạng thái lớn đến mức tự viết bắt đầu đau. **Statechart** (khái niệm do David Harel đề xuất, được các thư viện như XState hiện thực) mở rộng state machine với:
+
+- **Trạng thái lồng nhau (hierarchical):** `checkout.payment.verifying3DS` — sự kiện `CANCEL` khai báo một lần ở `checkout` áp dụng cho mọi trạng thái con.
+- **Trạng thái song song (parallel):** trình phát video có trạng thái phát/dừng *và* trạng thái âm thanh bật/tắt độc lập với nhau.
+- **Delayed transition và history:** tự chuyển sau N giây, quay lại đúng trạng thái con trước đó.
+- **Actor và công cụ trực quan hoá:** effect được khai báo như một phần của máy, và có thể xem sơ đồ trạng thái.
+
+| Tình huống | Lựa chọn của mình |
+| --- | --- |
+| Fetch, form một bước, toggle có vài trạng thái | `useReducer` + discriminated union |
+| Wizard nhiều bước, có nhánh quay lại và huỷ ở mọi bước | Cân nhắc statechart |
+| Nhiều trạng thái độc lập chạy song song (media player, editor cộng tác) | Statechart |
+| Luồng nghiệp vụ cần chia sẻ và review với người không đọc code | Statechart có sơ đồ trực quan |
+| Dữ liệu server cần cache, dedupe, refetch | Thư viện data fetching (TanStack Query, SWR) — đừng tự viết máy |
+
+Ý cuối đáng nhấn mạnh: với dữ liệu server, những thư viện data fetching đã giải sẵn bài toán loading/error/stale kèm cache và dedupe. State machine tự viết hợp nhất với **trạng thái tương tác** — form, wizard, upload, các bước xác thực — nơi logic thuộc về chính UI của bạn.
+
+<Callout>
+  Cái giá của thư viện statechart là một API và một cách tư duy mới cho cả team. Mình chỉ đưa vào khi bảng chuyển đổi viết tay đã dài hơn một màn hình, hoặc khi cùng một sự kiện phải được xử lý giống nhau ở rất nhiều trạng thái.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Nhiều cờ boolean độc lập tạo ra tổ hợp trạng thái vô lý; mỗi cờ mới nhân đôi số tổ hợp.
+- Liệt kê trạng thái, sự kiện và bảng chuyển đổi trước khi viết code — đó là bản spec tốt nhất cho cả team.
+- Dùng discriminated union để dữ liệu chỉ tồn tại ở trạng thái mà nó có nghĩa.
+- Reducer switch theo trạng thái trước, sự kiện sau; sự kiện không hợp lệ thì trả về nguyên trạng thái.
+- Dùng guard cho validate và để chặn response cũ bằng request id.
+- Giữ reducer thuần, để effect phản ứng theo trạng thái và dọn dẹp khi rời trạng thái.
+- Chuyển sang statechart khi có trạng thái lồng nhau, song song, hoặc máy quá lớn để đọc trong một màn hình.
+
+</Checklist>

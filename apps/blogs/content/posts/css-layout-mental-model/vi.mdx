@@ -1,0 +1,222 @@
+---
+title: "Một mô hình tư duy cho CSS layout: từ normal flow đến flexbox và grid"
+excerpt: "Hiểu normal flow, block và inline, flexbox (một chiều, từ nội dung ra) và grid (hai chiều, từ layout vào), intrinsic sizing, vì sao min-width: 0 cứu flex item bị tràn — để viết layout bằng hiểu biết thay vì thử từng thuộc tính."
+---
+
+<Lead>Hồi mới đi làm, mình viết CSS layout theo kiểu "thử cho đến khi nó chạy": thêm `display: flex`, chưa được thì thêm `width: 100%`, vẫn chưa được thì `overflow: hidden`. Layout chạy, nhưng mình không giải thích được vì sao, và lần sau gặp lại vẫn phải thử lại từ đầu. Thứ thay đổi cách mình làm không phải là thuộc tính mới, mà là một **mô hình tư duy**: trình duyệt quyết định kích thước và vị trí của mỗi phần tử như thế nào. Bài này là mô hình đó, viết cho người mới nhưng hy vọng người đã quen CSS cũng thấy vài chỗ "à, ra là vậy".</Lead>
+
+## Mọi thứ bắt đầu từ normal flow
+
+Trước khi có flexbox hay grid, mỗi phần tử đã có một chỗ đứng mặc định gọi là **normal flow** (luồng bình thường). Nếu bạn không viết dòng CSS layout nào, trang vẫn được sắp xếp — và hiểu cách sắp xếp đó là nền móng cho mọi thứ còn lại.
+
+Trong normal flow có hai kiểu phần tử chính:
+
+- **Block** (`div`, `p`, `h1`, `section`...): xếp chồng từ trên xuống, mỗi phần tử chiếm **toàn bộ chiều rộng** khả dụng của phần tử cha, và chiều cao bằng nội dung bên trong.
+- **Inline** (`span`, `a`, `strong`, chữ thường...): nằm trên cùng một dòng như chữ trong đoạn văn, tự xuống dòng khi hết chỗ. `width`, `height` không có tác dụng, và margin, padding theo chiều dọc không đẩy các dòng khác ra.
+
+`inline-block` là trường hợp lai: nằm trên dòng như inline nhưng nhận `width`, `height` và padding như block.
+
+Một quan sát quan trọng: **chiều rộng đi từ trên xuống, chiều cao đi từ dưới lên**. Block lấy chiều rộng từ cha, còn chiều cao thì được tính từ nội dung con. Đó là lý do `height: 100%` thường không chạy như bạn mong đợi: nếu cha không có chiều cao xác định, phần trăm không có gì để tính.
+
+<Callout>
+  Hiện tượng **margin collapse** chỉ xảy ra trong normal flow giữa các block: margin dưới của phần tử trên và margin trên của phần tử dưới (khi cả hai dương) không cộng lại mà lấy giá trị lớn hơn. Trong flex và grid container, margin của các item không collapse. Nếu bạn từng thấy khoảng cách "biến mất" một cách khó hiểu, đây thường là thủ phạm.
+</Callout>
+
+## Formatting context: mỗi container là một luật chơi
+
+Khi đặt `display: flex` hay `display: grid` lên một phần tử, bạn không đổi cách *chính phần tử đó* nằm trong trang (nó vẫn là block với thế giới bên ngoài), mà đổi **luật sắp xếp các con trực tiếp** của nó. Mỗi bộ luật như vậy gọi là một formatting context.
+
+Hệ quả thực tế:
+
+- Chỉ **con trực tiếp** mới trở thành flex item hay grid item. Cháu chắt vẫn theo normal flow bên trong cha của chúng.
+- Một số thuộc tính chỉ có nghĩa trong một context nhất định: `justify-self` có tác dụng trong grid nhưng bị bỏ qua với flex item; `float` bị bỏ qua với flex item và grid item.
+- `display: flow-root` tạo một block formatting context mới — cách hiện đại để chứa float và chặn margin collapse ra ngoài, thay cho các mẹo clearfix ngày xưa.
+
+## Flexbox và grid: hai cách nghĩ khác nhau
+
+Cách mình phân biệt nhanh nhất: **flexbox đi từ nội dung ra** (content-out), **grid đi từ layout vào** (layout-in).
+
+Với flexbox, bạn đưa ra một hàng (hoặc cột) các item và để kích thước của chính chúng quyết định chiếm bao nhiêu chỗ. Có thêm chỗ trống thì chia theo `flex-grow`, thiếu chỗ thì co lại theo `flex-shrink`. Flexbox làm việc theo **một chiều**: kể cả khi `flex-wrap` xuống nhiều dòng, mỗi dòng được tính độc lập, nên các cột không thẳng hàng giữa các dòng.
+
+Với grid, bạn vẽ trước một khung các track (hàng và cột), rồi đặt item vào ô. Kích thước đến từ định nghĩa track, item nằm trong đó. Grid kiểm soát **hai chiều cùng lúc**, nên các ô cùng cột luôn thẳng hàng.
+
+| | Flexbox | Grid |
+| --- | --- | --- |
+| Số chiều | Một (hàng hoặc cột) | Hai (hàng và cột cùng lúc) |
+| Kích thước đến từ | Nội dung của item, rồi chia chỗ thừa/thiếu | Định nghĩa track của container |
+| Hợp với | Thanh điều hướng, nhóm nút, căn giữa, các thành phần nhỏ | Khung trang, danh sách thẻ, form nhiều cột, bố cục cần thẳng hàng |
+| Wrap | Mỗi dòng tính riêng, cột không thẳng hàng | Item luôn rơi vào ô của lưới |
+| Dấu hiệu chọn nhầm | Phải tính `calc` phần trăm cho từng item để thẳng cột | Phải đặt cột tự co theo nội dung cho từng item |
+
+Trong thực tế mình dùng cả hai lồng nhau: grid cho khung lớn, flexbox cho các thành phần bên trong từng ô.
+
+### Hiểu đúng `flex: 1`
+
+`flex` là viết tắt của ba giá trị: `flex-grow`, `flex-shrink` và `flex-basis`. Điểm dễ nhầm:
+
+```css
+.item {
+  flex: 1;
+  /* = flex-grow: 1; flex-shrink: 1; flex-basis: 0%;
+     Các item chia đều không gian, bất kể nội dung dài ngắn */
+}
+
+.item-auto {
+  flex: auto;
+  /* = flex: 1 1 auto;
+     Mỗi item bắt đầu từ kích thước nội dung, rồi mới chia phần dư.
+     Item nhiều chữ sẽ rộng hơn item ít chữ */
+}
+
+.item-fixed {
+  flex: none;
+  /* = flex: 0 0 auto; không giãn, không co — hợp cho icon, avatar */
+}
+```
+
+Muốn ba cột đều nhau thì dùng `flex: 1`; muốn các tab có độ rộng tự nhiên rồi lấp đầy hàng thì dùng `flex: auto`.
+
+## Intrinsic sizing: để nội dung lên tiếng
+
+Hai từ khoá giúp mình hiểu cả flexbox lẫn grid là **min-content** và **max-content** — kích thước nội tại (intrinsic) của nội dung:
+
+- **`max-content`**: rộng bằng nội dung khi không bao giờ xuống dòng. Một câu dài nằm trọn trên một dòng.
+- **`min-content`**: hẹp nhất có thể mà không làm tràn — thường bằng từ dài nhất (hoặc ảnh rộng nhất).
+- **`fit-content`**: dùng `max-content` nếu đủ chỗ, không thì co lại nhưng không nhỏ hơn `min-content`. Đây chính là cách một phần tử `float` hay `inline-block` tự tính độ rộng.
+
+Trong grid, các từ khoá này kết hợp với `minmax()` để mô tả track linh hoạt:
+
+```css
+.layout {
+  display: grid;
+  /* Sidebar co giãn trong khoảng 200px–280px, phần nội dung lấy phần còn lại;
+     minmax(0, 1fr) cho phép cột co nhỏ hơn min-content để không bị tràn (xem phần sau) */
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  gap: 24px;
+}
+
+.cards {
+  display: grid;
+  /* Bao nhiêu cột vừa thì xếp bấy nhiêu, mỗi cột tối thiểu 240px */
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+```
+
+### `auto-fill` và `auto-fit` khác nhau ở đâu?
+
+Cả hai đều tạo nhiều cột nhất có thể với kích thước tối thiểu cho trước. Khác biệt chỉ lộ ra khi **số item ít hơn số cột vừa**:
+
+- **`auto-fill`** giữ lại các cột trống. Ba thẻ trên màn hình vừa năm cột thì ba thẻ chiếm ba cột, hai cột còn lại trống — thẻ giữ kích thước như khi danh sách đầy.
+- **`auto-fit`** thu các cột trống về 0, nên `1fr` của các cột có item giãn ra lấp đầy hàng — ba thẻ sẽ rộng ra chiếm cả chiều ngang.
+
+Mình dùng `auto-fill` cho lưới sản phẩm (thẻ không nên phình to khi kết quả tìm kiếm chỉ có hai món) và `auto-fit` khi muốn ít item thì trải đều cả hàng.
+
+## Vì sao `min-width: 0` sửa được flex item bị tràn
+
+Đây là bug layout mình gặp nhiều nhất, và cũng là chỗ mô hình tư duy phát huy tác dụng rõ nhất. Tình huống: một hàng flex gồm avatar và một khối chữ, khối chữ có `flex: 1` và một dòng tiêu đề dài với `text-overflow: ellipsis`. Kết quả mong đợi là tiêu đề bị cắt kèm dấu "...", nhưng thực tế cả hàng bị tràn ra ngoài.
+
+Lý do: flex item có `min-width: auto` theo mặc định, và với flex item, `auto` nghĩa là **không được co nhỏ hơn min-content của nội dung**. Dòng tiêu đề có `white-space: nowrap`, nên min-content của nó là *toàn bộ chiều dài tiêu đề*. `flex-shrink` muốn co item lại, nhưng mức sàn `min-width: auto` không cho phép.
+
+```css
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.row__avatar {
+  flex: none;
+}
+
+.row__body {
+  flex: 1;
+  min-width: 0; /* bỏ mức sàn min-content → item được phép co lại */
+}
+
+.row__title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+```
+
+`min-width: 0` (hoặc `overflow: hidden` trên item, vốn cũng đưa mức sàn tự động về 0) cho phép item co lại, và lúc đó phần tử con mới có cơ hội cắt chữ. Với cột flex (`flex-direction: column`), vấn đề tương tự xảy ra theo chiều dọc và cách sửa là `min-height: 0`.
+
+<Callout>
+  Grid có cùng bản chất: track `1fr` có mức sàn tối thiểu là `auto`, nên một khối code dài hay bảng rộng có thể đẩy cột ra. Đó là lý do mình viết `minmax(0, 1fr)` thay vì `1fr` cho cột nội dung chính — đặc biệt trong layout blog có khối code.
+</Callout>
+
+## `gap` thay cho margin giữa các phần tử
+
+Trước đây, khoảng cách giữa các item được tạo bằng margin, kèm những mẹo như `:last-child` để bỏ margin cuối, hay margin âm trên container để bù. Giờ thì `gap` đã được hỗ trợ cho cả flexbox lẫn grid trên các trình duyệt hiện đại, và mình mặc định dùng nó.
+
+Lý do mình thích `gap`:
+
+- **Khoảng cách là trách nhiệm của container**, không phải của từng item. Component con không cần biết nó nằm cạnh ai.
+- Không có khoảng thừa ở đầu hay cuối, kể cả khi wrap xuống nhiều dòng.
+- Không dính vào margin collapse.
+
+Margin vẫn có chỗ dùng: đẩy một item sang một bên trong flex (`margin-left: auto` để đẩy nút "Đăng xuất" về cuối thanh điều hướng), hoặc khoảng cách giữa các khối nội dung trong một bài viết.
+
+## Vài công thức hay dùng
+
+```css
+/* 1. Căn giữa tuyệt đối một phần tử */
+.center {
+  display: grid;
+  place-items: center;
+}
+
+/* 2. Footer luôn nằm cuối trang dù nội dung ngắn */
+.page {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr auto; /* header, main, footer */
+}
+
+/* 3. Thanh điều hướng: logo bên trái, menu bên phải */
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.nav__actions {
+  margin-left: auto;
+}
+
+/* 4. Nội dung đọc có độ rộng giới hạn, nằm giữa */
+.prose {
+  max-width: 68ch;
+  margin-inline: auto;
+  padding-inline: 16px;
+}
+
+/* 5. Media object: ảnh cố định, chữ co giãn */
+.media {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+```
+
+Mỗi công thức trên đều giải thích được bằng các phần trước: `place-items` căn item trong ô grid; `1fr` hút hết phần thừa cho `main`; `margin-left: auto` ăn hết khoảng trống còn lại trong hàng flex; `ch` đo theo độ rộng ký tự để dòng chữ dễ đọc; `minmax(0, 1fr)` tránh tràn.
+
+<Callout>
+  Khi layout sai, mình mở DevTools trước khi sửa CSS. Cả Chrome và Firefox đều có overlay cho flex và grid, hiển thị track, gap và kích thước từng item. Chỉ cần nhìn thấy track đang rộng bao nhiêu là thường đã biết vấn đề nằm ở nội dung, ở định nghĩa track, hay ở mức sàn `min-width`.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Normal flow là nền: block xếp dọc và lấy chiều rộng từ cha, inline chảy theo dòng chữ; chiều cao đến từ nội dung.
+- `display: flex` và `display: grid` đổi luật sắp xếp cho con trực tiếp, không đổi cách container nằm trong trang.
+- Flexbox đi từ nội dung ra, một chiều; grid đi từ layout vào, hai chiều. Kết hợp cả hai là bình thường.
+- `min-content`, `max-content`, `fit-content` và `minmax()` là ngôn ngữ để mô tả kích thước linh hoạt.
+- `auto-fill` giữ cột trống, `auto-fit` thu cột trống để item giãn ra.
+- Flex item tràn ra ngoài thì thêm `min-width: 0`; cột grid tràn thì dùng `minmax(0, 1fr)`.
+- Dùng `gap` cho khoảng cách giữa các item; giữ margin cho việc đẩy item và khoảng cách giữa các khối nội dung.
+
+</Checklist>

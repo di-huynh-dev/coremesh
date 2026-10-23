@@ -1,0 +1,159 @@
+---
+title: "Từ mid-level lên senior frontend: điều gì thật sự thay đổi"
+excerpt: "Lên senior không phải là code nhanh hơn hay biết nhiều framework hơn. Đó là chuyển từ hoàn thành task sang chịu trách nhiệm cho kết quả. Bài này là những hành vi cụ thể, một bảng tự đánh giá, và các cái bẫy mình từng rơi vào."
+---
+
+<Lead>Hồi còn là mid-level, mình nghĩ con đường lên senior rất đơn giản: code giỏi hơn, nhanh hơn, biết thêm vài thứ "khó" như performance hay kiến trúc. Mình làm đúng như vậy suốt gần hai năm và không lên được. Phải đến khi một người lead thẳng thắn nói "em giải quyết task rất tốt, nhưng anh chưa thấy em giải quyết vấn đề", mình mới hiểu khoảng cách thật sự nằm ở đâu. Bài này là những gì mình rút ra — từ phía người đi lên, và sau này là phía người đánh giá.</Lead>
+
+## Khác biệt cốt lõi: từ task sang outcome
+
+Một mid-level tốt nhận một ticket được mô tả rõ ràng và giao nó đúng hạn, chất lượng ổn. Một senior nhận một **vấn đề** — thường mô tả mơ hồ — và chịu trách nhiệm cho **kết quả**: vấn đề đó có thật sự được giải quyết không, sau khi ship thì sao.
+
+Ví dụ cụ thể. Ticket: "Thêm skeleton loading cho trang danh sách đơn hàng".
+
+- Cách làm mid-level: thêm skeleton, review, merge. Xong.
+- Cách làm senior: hỏi *vì sao* cần skeleton. Hoá ra người dùng phàn nàn trang chậm. Đo thử thì API mất 3 giây vì trả về toàn bộ lịch sử đơn hàng không phân trang. Skeleton chỉ là băng dán. Người senior vẫn có thể thêm skeleton — nhưng đồng thời mở một cuộc trao đổi với team backend về phân trang, và đo lại sau khi sửa.
+
+Không phải lúc nào cũng nên đào sâu như vậy. Biết khi nào nên hỏi "vì sao" và khi nào chỉ nên làm đúng ticket cũng là một kỹ năng của senior. Nhưng mặc định của bạn phải là hiểu vấn đề trước khi giải.
+
+| Khía cạnh | Mid-level | Senior |
+| --- | --- | --- |
+| Phạm vi | Một task, một feature | Một vấn đề, một khu vực sản phẩm hoặc hệ thống |
+| Đầu vào | Yêu cầu đã rõ ràng | Yêu cầu mơ hồ, tự làm rõ |
+| Câu hỏi thường gặp | "Làm thế nào?" | "Có nên làm không? Làm cái gì? Đánh đổi gì?" |
+| Định nghĩa "xong" | Merge xong PR | Vấn đề được giải quyết, có số liệu chứng minh |
+| Ảnh hưởng | Code của chính mình | Cách cả team làm việc |
+| Khi có sự cố | Sửa khi được giao | Chủ động nhận, điều phối, viết postmortem |
+
+## Làm việc với sự mơ hồ
+
+Càng lên cao, yêu cầu càng mơ hồ. "Trang checkout cần nhanh hơn." "Design system đang lộn xộn." "Mình cần hỗ trợ đa ngôn ngữ." Không ai đưa bạn danh sách task — việc của bạn là biến câu đó thành danh sách task.
+
+Cách mình tiếp cận:
+
+1. **Làm rõ mục tiêu bằng câu hỏi:** nhanh hơn là chỉ số nào, đo ở đâu, bao nhiêu là đủ? Ai đang bị ảnh hưởng?
+2. **Tìm ràng buộc:** deadline, nhân lực, những gì không được phép thay đổi.
+3. **Đề xuất vài phương án**, mỗi phương án kèm cái giá phải trả.
+4. **Chốt một hướng, chia thành các bước nhỏ ship được**, mỗi bước có giá trị riêng.
+
+Bước 4 rất quan trọng. Một kế hoạch "ba tháng sau mới thấy kết quả" gần như luôn thất bại. Chia nhỏ để mỗi vài tuần có thứ gì đó chạy được trên production — vừa giảm rủi ro, vừa tạo niềm tin.
+
+## Design doc và tư duy đánh đổi
+
+Senior không cần viết tài liệu dài, nhưng cần **viết ra suy nghĩ của mình trước khi code** cho những thay đổi có ảnh hưởng rộng. Một design doc tốt không phải để chứng minh bạn thông minh, mà để người khác phát hiện lỗ hổng sớm — khi sửa còn rẻ.
+
+Đây là khung mình hay dùng, thường chỉ một đến hai trang:
+
+```md
+# Chuyển form checkout sang Server Actions
+
+## Bối cảnh
+Vì sao cần làm bây giờ. Số liệu hiện tại (tỉ lệ lỗi submit, thời gian phản hồi).
+
+## Mục tiêu / Không phải mục tiêu
+- Mục tiêu: giảm lỗi submit do mất mạng giữa chừng.
+- Không phải mục tiêu: thiết kế lại giao diện checkout.
+
+## Đề xuất
+Cách làm chính, đủ chi tiết để người khác review được.
+
+## Các phương án đã cân nhắc
+- Giữ nguyên + thêm retry phía client: rẻ, nhưng không giải quyết gốc.
+- Dùng thư viện form mới: tốn công migrate, lợi ích chưa rõ.
+
+## Rủi ro và cách giảm thiểu
+Rollout sau feature flag, theo dõi tỉ lệ lỗi, có kế hoạch rollback.
+
+## Các bước triển khai
+1. ...
+2. ...
+
+## Câu hỏi còn mở
+```
+
+Phần "Các phương án đã cân nhắc" là phần mình đọc kỹ nhất khi review. Nó cho thấy người viết có nghĩ về đánh đổi hay chỉ chọn thứ mình thích. Không có giải pháp nào miễn phí: thêm cache thì phải lo invalidation, tách micro-frontend thì đổi lấy độ phức tạp vận hành, dùng thư viện thì đổi lấy dependency phải duy trì. Nói được "mình chọn A, chấp nhận nhược điểm X, vì trong bối cảnh này Y quan trọng hơn" là dấu hiệu rõ ràng của tư duy senior.
+
+<Callout>
+  Không phải thay đổi nào cũng cần design doc. Quy tắc của mình: nếu thay đổi ảnh hưởng nhiều team, khó rollback, hoặc mình không chắc chắn về hướng đi — thì viết. Sửa một component thì không.
+</Callout>
+
+## Nhân rộng ảnh hưởng: mentoring và giao tiếp
+
+Một senior làm việc một mình, dù giỏi đến đâu, vẫn chỉ là một người. Phần lớn giá trị của senior đến từ việc làm cho người khác tốt hơn.
+
+### Mentoring không phải là trả lời câu hỏi
+
+Khi một bạn junior hỏi, cách nhanh nhất là đưa đáp án. Cách tốt hơn — khi không quá gấp — là hỏi lại: "Em đã thử gì rồi? Em nghĩ vấn đề nằm ở đâu?". Vài hành vi cụ thể:
+
+- **Review code để dạy, không phải để bắt lỗi.** Giải thích *vì sao*, phân biệt rõ "bắt buộc sửa" và "gợi ý". Khen những chỗ làm tốt — nghe sến, nhưng nó cho người khác biết điều gì nên lặp lại.
+- **Giao việc vừa sức hơi quá một chút**, rồi đứng phía sau hỗ trợ.
+- **Pair programming** cho những đoạn khó, thay vì tự làm hộ.
+
+### Giao tiếp vượt ranh giới team
+
+Frontend nằm ở giao điểm của product, design, backend và QA. Senior frontend là người dịch qua lại giữa các bên: giải thích cho PM vì sao một tính năng "đơn giản" lại tốn hai tuần, thương lượng với backend về hình dạng API, nói với designer rằng animation đó sẽ làm INP tệ đi trên điện thoại tầm trung — và đề xuất phương án thay thế.
+
+Một thói quen nhỏ mà hiệu quả: **viết cập nhật bằng văn bản**. Sau một cuộc họp quan trọng, gửi lại tóm tắt quyết định và việc cần làm. Khi một dự án kéo dài, gửi cập nhật ngắn hàng tuần: đã xong gì, đang làm gì, có gì đang bị chặn. Mọi người sẽ tin tưởng bạn nhiều hơn chỉ vì họ không phải đoán.
+
+## Sở hữu production
+
+Code chạy trên máy bạn chưa phải là xong. Senior quan tâm đến những gì xảy ra sau khi merge:
+
+- **Có cách biết khi nào nó hỏng:** error tracking, log, chỉ số Web Vitals, dashboard cho những luồng quan trọng.
+- **Có cách tắt khi nó hỏng:** feature flag, kế hoạch rollback.
+- **Khi có sự cố, bước lên:** không cần là người gây ra lỗi mới nhận việc. Điều phối, giao tiếp với các bên, sửa tạm để giảm thiệt hại, rồi sửa gốc.
+- **Postmortem không đổ lỗi:** tập trung vào hệ thống đã cho phép lỗi xảy ra, và thay đổi gì để nó không lặp lại.
+
+Mình từng thấy những bạn kỹ thuật rất giỏi nhưng "biến mất" mỗi khi production có vấn đề. Dù code đẹp đến đâu, rất khó để được tin tưởng giao những thứ quan trọng.
+
+## Bảng tự đánh giá
+
+Thử chấm mình từ 1 (hiếm khi) đến 3 (thường xuyên) cho từng dòng. Không có điểm "đạt" — mục đích là tìm ra hai ba điểm yếu nhất để tập trung trong vài tháng tới.
+
+| Hành vi | Câu hỏi tự kiểm tra |
+| --- | --- |
+| Hiểu vấn đề trước khi giải | Mình có thường hỏi "vì sao" trước khi bắt đầu một task lớn? |
+| Xử lý yêu cầu mơ hồ | Khi nhận một yêu cầu chưa rõ, mình có tự làm rõ và đề xuất kế hoạch? |
+| Viết ra suy nghĩ | Thay đổi lớn gần nhất của mình có tài liệu để người khác review không? |
+| Nói về đánh đổi | Mình có giải thích được vì sao không chọn các phương án khác? |
+| Chia nhỏ để ship | Công việc của mình có ra production đều đặn, từng phần nhỏ? |
+| Làm người khác tốt hơn | Trong quý vừa rồi, mình đã giúp ai tiến bộ rõ rệt? |
+| Giao tiếp ngoài team | PM, designer, backend có chủ động tìm mình để hỏi ý kiến? |
+| Sở hữu production | Mình có biết tính năng của mình đang chạy ra sao sau khi ship? |
+
+## Những cái bẫy thường gặp
+
+**Chỉ code nhiều hơn, khó hơn.** Đây là bẫy của chính mình ngày trước. Nhận thêm ticket, làm thêm giờ, viết những abstraction "thông minh". Số lượng output tăng, nhưng phạm vi ảnh hưởng không đổi. Thậm chí abstraction quá thông minh còn làm team chậm đi.
+
+**Trở thành người gác cổng.** Có kiến thức thì dễ biến thành "mọi thứ phải qua mình". Review chặn mọi PR vì những chi tiết nhỏ theo sở thích cá nhân, giữ kiến thức trong đầu thay vì viết ra. Cảm giác quan trọng, nhưng thực chất là đang làm team phụ thuộc vào mình — và trở thành nút thắt cổ chai.
+
+**Chạy theo công nghệ mới.** Biết framework mới nhất không làm bạn senior hơn. Biết *khi nào không nên* dùng nó thì có.
+
+**Chờ được giao việc senior.** Phần lớn mọi người được thăng chức vì đã làm việc ở cấp độ tiếp theo một thời gian, không phải ngược lại. Bạn không cần chức danh để viết một design doc, hướng dẫn một bạn mới, hay nhận xử lý một sự cố.
+
+<Callout>
+  Hành vi senior không có nghĩa là ôm hết mọi thứ. Nhận quá nhiều trách nhiệm rồi kiệt sức cũng là một cái bẫy. Nói "không" — kèm lý do và đề xuất khác — là một kỹ năng senior quan trọng không kém.
+</Callout>
+
+## Làm cho ảnh hưởng của bạn được nhìn thấy
+
+Làm tốt mà không ai biết thì rất khó được ghi nhận — nhất là những việc "vô hình" như giảm sự cố, mentoring, hay dọn dẹp nợ kỹ thuật. Mình không nói đến việc tự khoe, mà là làm cho công việc dễ được thấy:
+
+- **Ghi chép thành tích (brag document):** mỗi tuần vài dòng — đã làm gì, ảnh hưởng ra sao, có số liệu thì càng tốt. Đến kỳ đánh giá, bạn không phải nhớ lại sáu tháng.
+- **Viết về kết quả, không phải hoạt động:** "giảm LCP trang sản phẩm từ 4,1s xuống 2,3s" mạnh hơn nhiều so với "tối ưu ảnh".
+- **Chia sẻ kiến thức công khai:** một buổi tech talk nội bộ, một trang tài liệu, một bài viết. Vừa giúp team, vừa cho mọi người thấy bạn hiểu vấn đề sâu đến đâu.
+- **Nói chuyện thẳng với quản lý:** hỏi rõ "để lên senior, anh/chị thấy em còn thiếu gì?", rồi cùng thống nhất vài mục tiêu cụ thể. Đừng để kỳ đánh giá là lần đầu tiên bạn nghe nhận xét.
+
+## Tóm tắt
+
+<Checklist>
+
+- Senior chịu trách nhiệm cho kết quả, không chỉ hoàn thành task — luôn hiểu "vì sao" trước khi làm.
+- Biến yêu cầu mơ hồ thành kế hoạch, chia nhỏ để ship đều đặn.
+- Viết ra suy nghĩ cho thay đổi lớn, và nói rõ đánh đổi của từng phương án.
+- Nhân rộng ảnh hưởng qua mentoring, review có tính dạy, và giao tiếp rõ ràng với các team khác.
+- Sở hữu production: theo dõi, có cách tắt, bước lên khi có sự cố.
+- Tránh bẫy: chỉ code nhiều hơn, gác cổng, chạy theo công nghệ, chờ được giao việc.
+- Ghi chép kết quả có số liệu và chủ động trao đổi với quản lý về con đường phát triển.
+
+</Checklist>

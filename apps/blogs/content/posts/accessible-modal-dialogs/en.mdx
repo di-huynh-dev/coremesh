@@ -1,0 +1,251 @@
+---
+title: "Accessible Modal Dialogs: Using the Native dialog Element Properly"
+excerpt: "From showModal(), the top layer and ::backdrop to focus management, labelling, scroll locking, backdrop clicks and nested dialogs — plus a small React component and how to test it with a keyboard and a screen reader."
+---
+
+<Lead>Modals are one of the components I see built wrong most often: focus wanders off behind the overlay, Escape does nothing, the screen reader happily reads the whole page underneath, or closing the modal dumps focus at the top of the document. A few years ago, a "proper" modal meant pulling in a library or hand-writing a focus trap. Today the native `<dialog>` element does most of the hard work. This post covers what the browser handles for you, what you still have to do yourself, and how I test a modal before I call it done.</Lead>
+
+## What does a "correct" modal need?
+
+Before writing code, I like to list the behavior users — keyboard and screen reader users in particular — expect from a modal:
+
+- **Focus moves into the dialog** on open, to a sensible element.
+- **Content behind it is unreachable**: no tabbing to it, no clicking it, no screen reader reading it.
+- **Escape closes the dialog** (unless there's a very good reason not to).
+- **The dialog has a name**: the screen reader announces "Delete project, dialog", not just "dialog".
+- **On close, focus returns** to the button that opened it, so the user isn't lost.
+- **The page behind doesn't scroll** while the user scrolls inside the dialog.
+
+The list looks simple, but building it from `div`s turns every line into its own source of bugs. The good news: `<dialog>` with `showModal()` covers roughly half of it.
+
+## `<dialog>` and `showModal()`: what the browser does for you
+
+A `<dialog>` can be opened in two ways, and the difference matters a lot:
+
+| | `show()` or the `open` attribute | `showModal()` |
+| --- | --- | --- |
+| **Kind** | Non-modal — like a floating popup | A real modal |
+| **Top layer** | No — still affected by ancestors' `z-index` and `overflow` | Yes — above everything, no `z-index` needed |
+| **Content behind** | Still interactive | Becomes inert |
+| **Escape** | Doesn't close it | Closes it, firing `cancel` then `close` |
+| **`::backdrop`** | None | Yes, styleable with CSS |
+
+The two most valuable parts are the **top layer** and **inertness**. The top layer means no more `z-index: 9999` wars, and no modal clipped by an ancestor with `overflow: hidden` or a `transform`. Inertness means the rest of the page can't receive focus or clicks and is hidden from the accessibility tree — exactly what we used to hand-roll focus traps for.
+
+```html
+<button type="button" id="open-delete">Delete project</button>
+
+<dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-desc">
+  <h2 id="delete-title">Delete project?</h2>
+  <p id="delete-desc">All project data will be permanently deleted.</p>
+
+  <!-- method="dialog": submitting closes the dialog, returnValue = the button's value -->
+  <form method="dialog">
+    <button value="cancel" autofocus>Cancel</button>
+    <button value="confirm">Delete</button>
+  </form>
+</dialog>
+
+<script>
+  const dialog = document.getElementById("delete-dialog");
+  document.getElementById("open-delete").addEventListener("click", () => {
+    dialog.showModal();
+  });
+  dialog.addEventListener("close", () => {
+    if (dialog.returnValue === "confirm") deleteProject();
+  });
+</script>
+```
+
+`<form method="dialog">` is a small detail that saves a lot of code: submitting the form closes the dialog and puts the submit button's `value` into `dialog.returnValue`, with no per-button handlers.
+
+<Callout>
+  **Don't open a modal by setting the `open` attribute.** Setting `open` directly (or passing an `open` prop in React) only creates a non-modal dialog: no top layer, no inert background, no Escape. For a modal, you have to call `showModal()`.
+</Callout>
+
+### Styling `::backdrop`
+
+```css
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}
+
+dialog {
+  border: none;
+  border-radius: 12px;
+  padding: 0; /* put padding on an inner element — see "closing on backdrop click" */
+  max-width: min(32rem, calc(100vw - 2rem));
+}
+```
+
+## Focus management
+
+### Initial focus
+
+When you call `showModal()`, the browser moves focus into the dialog. Exactly which element it picks has changed across spec revisions and differs between browsers, so I don't rely on the default — I **always say explicitly with `autofocus`**.
+
+Which element? My rules of thumb:
+
+- **Destructive actions** (delete, overwrite): focus the safe button, like "Cancel", so an accidental Enter doesn't lose data.
+- **Forms**: focus the first input.
+- **Long content** (terms, descriptions): focus the heading or the content region (with `tabindex="-1"`), so the screen reader starts reading from the top instead of jumping straight to the buttons at the bottom.
+
+### Returning focus to the trigger
+
+When a dialog closes, modern browsers generally move focus back to whatever was focused before it opened. But there are cases where that default isn't enough: the trigger lived in a menu that has since closed, in a table row that was just deleted, or the dialog was opened from code rather than a click. So I still keep a reference to the trigger and return focus deliberately — and if the trigger is no longer in the DOM, I focus something sensible nearby, such as the list heading.
+
+## Labelling the dialog
+
+An unnamed dialog gets announced as a bare "dialog". Two attributes fix that:
+
+- `aria-labelledby` pointing to the heading's `id`. This becomes the dialog's name.
+- `aria-describedby` pointing to a short description — useful for confirmation dialogs, because the warning is read out as soon as the dialog opens.
+
+With a native `<dialog>` you **don't need** `role="dialog"` or `aria-modal="true"`: the element already has the role, and `showModal()` makes the background genuinely inert. Be careful with `aria-describedby` on dialogs with long content, though — the screen reader reads the whole thing on open, which is tiring to listen to.
+
+## Scroll locking and closing on backdrop click
+
+### Locking the page behind
+
+`showModal()` makes the page inert, but it does **not** stop it from scrolling. On a trackpad or a phone, scroll to the end of the dialog's content and the page behind starts moving. The neatest fix I know uses `:has()` and the `:modal` pseudo-class:
+
+```css
+html:has(dialog:modal) {
+  overflow: hidden;
+}
+
+dialog {
+  overscroll-behavior: contain; /* hitting the end doesn't chain the scroll outwards */
+}
+```
+
+If hiding the scrollbar makes the layout jump sideways, add `scrollbar-gutter: stable` to `html` to reserve the space.
+
+### Closing on backdrop click — carefully
+
+When the user clicks the `::backdrop`, the click event is dispatched on the `dialog` element itself. The common approach is checking `event.target === dialog`. There are two traps:
+
+1. **The dialog's padding is also the `dialog`.** A click in the padding area inside the box also has the dialog as its target, so the modal closes even though the user clicked *inside*. That's why I set `padding: 0` on the `dialog` and pad an inner element instead.
+2. **Text selection drags.** The user presses inside an input, drags outward to select text and releases over the backdrop: the browser fires the click on the common ancestor, which is the dialog. The half-filled form is gone. The fix is to close only when both the press and the release happened on the backdrop.
+
+```ts
+function closeOnBackdropClick(dialog: HTMLDialogElement): () => void {
+  let pressedOnBackdrop = false;
+
+  const onPointerDown = (event: PointerEvent) => {
+    pressedOnBackdrop = event.target === dialog;
+  };
+  const onClick = (event: MouseEvent) => {
+    if (pressedOnBackdrop && event.target === dialog) dialog.close("dismiss");
+    pressedOnBackdrop = false;
+  };
+
+  dialog.addEventListener("pointerdown", onPointerDown);
+  dialog.addEventListener("click", onClick);
+  return () => {
+    dialog.removeEventListener("pointerdown", onPointerDown);
+    dialog.removeEventListener("click", onClick);
+  };
+}
+```
+
+Also ask whether you *should* close on backdrop click at all. For long forms where the user has typed a lot, I usually turn it off — losing input to a stray click is far worse than having to press "Cancel". There's a newer `closedby` attribute for declaring this behavior in HTML, but check browser support before relying on it.
+
+<Callout>
+  Escape fires a `cancel` event before closing. If a form has unsaved changes, you can call `event.preventDefault()` in `cancel` and ask for confirmation — but never block Escape unconditionally; it's the escape hatch keyboard users rely on most.
+</Callout>
+
+## When you still need `inert`, and nested dialogs
+
+### Custom modals: use `inert`
+
+Sometimes you can't use `<dialog>`: an existing UI library, special animation needs, or a complex drawer. In those cases the global `inert` attribute is your main tool. Put `inert` on your app's root element (a sibling of the modal, not its parent) and that entire subtree stops receiving focus and clicks and is removed from the accessibility tree — replacing piles of old focus-trap and `aria-hidden` code. A custom modal still needs `role="dialog"` and `aria-modal="true"`, and you're responsible for Escape, initial focus and returning focus yourself.
+
+### Nested dialogs
+
+Calling `showModal()` on a second dialog from inside the first is allowed: the new one goes on top of the top layer, the one beneath becomes inert, and Escape closes only the topmost. From a UX perspective, though, I try not to go beyond two levels. A confirmation on top of a form dialog is a reasonable limit; anything deeper usually means the flow wants to be its own page.
+
+## A small React component
+
+React has no declarative way to say "open this as a modal", so I wrap it: an `open` prop drives `showModal()` and `close()`, and the browser's `close` event syncs back to state.
+
+```tsx
+import { useEffect, useId, useRef, type ReactNode } from "react";
+
+type ModalProps = {
+  open: boolean;
+  onClose: (returnValue: string) => void;
+  title: string;
+  description?: string;
+  children: ReactNode;
+};
+
+export function Modal({ open, onClose, title, description, children }: ModalProps) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const descId = useId();
+
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      triggerRef.current = document.activeElement as HTMLElement | null;
+      dialog.showModal();
+    } else if (!open && dialog.open) {
+      dialog.close();
+    }
+  }, [open]);
+
+  const handleClose = () => {
+    const dialog = ref.current;
+    onClose(dialog?.returnValue ?? "");
+    const trigger = triggerRef.current;
+    if (trigger?.isConnected) trigger.focus();
+  };
+
+  return (
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      aria-describedby={description ? descId : undefined}
+      onClose={handleClose}
+    >
+      <div className="modal-body">
+        <h2 id={titleId}>{title}</h2>
+        {description ? <p id={descId}>{description}</p> : null}
+        {children}
+      </div>
+    </dialog>
+  );
+}
+```
+
+A few things worth noting: `open` is never passed to the `dialog` tag (see the Callout above); `onClose` runs for every way of closing — Escape, a `method="dialog"` form, or `close()` from code — so state stays in sync; and `returnValue` tells the parent what the user chose. If you reuse a dialog, reset `returnValue` to an empty string before each open, because the old value doesn't clear itself.
+
+## Testing with a keyboard and a screen reader
+
+I don't consider a modal done until I've used it without a mouse:
+
+1. **Keyboard only:** Tab to the trigger, press Enter. Does focus land on the right element? Tab a few times — does it ever reach content behind? (With a modal `<dialog>`, Tab may move to the browser's address bar — that's fine; landing on a button in the page behind is not.)
+2. **Escape** closes the dialog and focus returns to the trigger.
+3. **Screen reader:** VoiceOver on macOS or NVDA on Windows. On open, does it announce the dialog's name and description? Can the screen reader's own navigation keys reach the content behind? If so, the background isn't truly inert.
+4. **200% zoom and narrow screens:** does long content scroll inside the dialog, and are the action buttons still reachable?
+5. **Backdrop clicks and drag-selecting** text outward, to make sure nothing closes by accident.
+
+Automated tests (for example Testing Library querying `getByRole("dialog", { name: ... })`) are great for keeping the name and role from breaking during refactors, but they don't replace a few minutes with the keyboard. Note that jsdom may not fully support `showModal()`, so I check focus behavior in tests that run in a real browser.
+
+## Key takeaways
+
+<Checklist>
+
+- Use `<dialog>` with `showModal()` — top layer, inert background and Escape come for free; never open it with the `open` attribute.
+- Set initial focus explicitly with `autofocus`, preferring the safe button for destructive actions.
+- Return focus to the trigger deliberately, with a fallback when the trigger is gone.
+- Name the dialog with `aria-labelledby` and describe it briefly with `aria-describedby`.
+- Lock page scrolling yourself; `showModal()` doesn't do it.
+- Close on backdrop click only when both press and release hit the backdrop — and consider disabling it for long forms.
+- For custom modals, make the rest of the page `inert`.
+- Test with a keyboard and a real screen reader before merging.
+
+</Checklist>

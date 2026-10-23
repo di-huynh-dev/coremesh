@@ -1,0 +1,187 @@
+---
+title: "A Practical Frontend Testing Strategy: What to Test, at Which Layer, With Which Tools"
+excerpt: "More tests aren't automatically better. This is how I split the work between unit, integration and e2e tests, write behavior-focused tests with Testing Library, mock the network at the boundary, use Playwright, fix flaky tests, and read coverage numbers correctly."
+---
+
+<Lead>I once worked on a project with 90% coverage that still broke checkout after nearly every release. There were plenty of tests, but most of them checked component internals — what a piece of state was called, how many times a function was invoked — so every refactor turned dozens of tests red, while real breakages slipped through untouched. This post is the strategy I use now: fewer tests, but each one buys real confidence.</Lead>
+
+## Pyramid or trophy?
+
+The **test pyramid** is the familiar model: lots of unit tests at the bottom, fewer integration tests in the middle, and a handful of e2e tests at the top. The reasoning: unit tests are fast and cheap, e2e tests are slow and brittle.
+
+For frontend, I find the **testing trophy** a better fit: the base is **static analysis** (TypeScript, ESLint), the biggest part is **integration tests**, and unit and e2e tests are smaller. The reason is that most frontend bugs don't live inside a single function, but where pieces connect: a component with a hook, a form with an API, state with the UI.
+
+| Layer | What it checks | Speed | Confidence | Examples |
+| --- | --- | --- | --- | --- |
+| **Static** | Type errors, syntax errors, dangerous patterns | Instant | Low, but free | TypeScript strict, ESLint |
+| **Unit** | A pure function or module in isolation | Very fast | Low to medium | Currency formatting, pricing, reducers |
+| **Integration** | A feature made of several components, network mocked | Fast | High | Signup form, search page |
+| **E2E** | Real flows in a real browser, with a real or near-real backend | Slow | Highest | Login, checkout |
+
+The question I always ask is: **how much confidence does this test give me, and at what cost?** Not "which category does this test belong to?"
+
+## Unit, integration or e2e — how to choose
+
+**Unit tests** are for pure logic with many branches: tax calculation, date parsing, transforming API data, reducers. This is where unit tests shine — fast, clear, and easy to enumerate edge cases. I don't unit test components that only display data.
+
+**Integration tests** are the bulk. Render a complete feature (a search page, a form, a cart), interact with it like a user, mock the network at the boundary, and assert on what the user sees. One such test covers components, hooks, state and error handling at once — and doesn't break when you refactor the internals.
+
+**E2E tests** are for the handful of flows that matter most to the business: signup, login, checkout, the product's core path. If one of these breaks and you hear about it from users, that's a disaster. Keep the number small — a few dozen stable tests beat a few hundred flaky ones.
+
+## Testing Library: test behavior, not implementation
+
+Testing Library's philosophy fits in one sentence: the more your tests resemble the way your software is used, the more confidence they give you. Users don't know your component has a piece of state called `isOpen`; they see a button labeled "Open menu" and click it.
+
+Query priority:
+
+1. **`getByRole`** with a `name` — how users (and screen readers) identify elements. This is the query I use most.
+2. **`getByLabelText`** for form inputs.
+3. **`getByText`** for non-interactive content.
+4. **`getByTestId`** — the last resort, when nothing more meaningful is available.
+
+There's a bonus: if you can't find a button with `getByRole("button", { name: "Send" })`, there's a good chance a screen reader can't either. Testing by role quietly becomes an accessibility check.
+
+<Callout>
+  Signs you're testing implementation: the test reads internal state, asserts that a child function was called, relies on CSS classes, or snapshots the whole DOM tree. These tests go red when you refactor and stay green when the feature breaks — exactly the opposite of what you need.
+</Callout>
+
+## Mock the network at the boundary
+
+Instead of mocking the `fetch` module or the hook that calls the API, I mock **at the network layer**: intercept HTTP requests and return fake responses. The popular tool for this is MSW (Mock Service Worker). The component still calls the real `fetch` and runs through all its loading, error and parsing code — only the server is fake.
+
+```ts
+// test/server.ts
+import { http, HttpResponse } from "msw";
+import { setupServer } from "msw/node";
+
+export const API = "https://api.example.com";
+
+export const server = setupServer(
+  http.get(`${API}/products`, ({ request }) => {
+    const query = new URL(request.url).searchParams.get("q") ?? "";
+    return HttpResponse.json([
+      { id: "1", name: `Mechanical keyboard (${query})` },
+    ]);
+  }),
+);
+```
+
+```ts
+// test/setup.ts — registered in Vitest's setupFiles
+import "@testing-library/jest-dom/vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
+import { server } from "./server";
+
+// Any request without a handler fails the test instead of silently hitting the network.
+beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+```
+
+And a complete integration test:
+
+```tsx
+// src/features/search/product-search.test.tsx
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { describe, expect, it } from "vitest";
+import { API, server } from "../../../test/server";
+import { ProductSearch } from "./product-search";
+
+describe("ProductSearch", () => {
+  it("shows results when the user searches", async () => {
+    const user = userEvent.setup();
+    render(<ProductSearch />);
+
+    await user.type(screen.getByRole("searchbox", { name: "Search products" }), "keychron");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByRole("listitem")).toHaveTextContent("Mechanical keyboard (keychron)");
+  });
+
+  it("shows an error when the API fails", async () => {
+    server.use(http.get(`${API}/products`, () => new HttpResponse(null, { status: 500 })));
+    const user = userEvent.setup();
+    render(<ProductSearch />);
+
+    await user.type(screen.getByRole("searchbox", { name: "Search products" }), "keychron");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load results");
+  });
+});
+```
+
+Notice the test knows nothing about how `ProductSearch` is written — whether it uses `useState` or a data-fetching library, or which hook calls the API. You can rewrite the internals entirely and the test stays green as long as the behavior is the same. The `findBy...` queries wait for the element to appear (by default for about a second), so there's no need for a `sleep`.
+
+## E2E with Playwright
+
+Playwright runs tests in real Chromium, Firefox and WebKit, and it **auto-waits**: before clicking, it waits for the element to be visible, stable and able to receive events. Assertions of the form `expect(locator)` also retry until they pass or time out.
+
+```ts
+// e2e/login.spec.ts
+import { expect, test } from "@playwright/test";
+
+test("a user logs in and sees the dashboard", async ({ page }) => {
+  await page.goto("/login");
+
+  await page.getByLabel("Email").fill("demo@example.com");
+  await page.getByLabel("Password").fill("correct-horse-battery");
+  await page.getByRole("button", { name: "Log in" }).click();
+
+  await expect(page).toHaveURL(/\/dashboard/);
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+});
+```
+
+A few habits that make e2e less painful:
+
+- **Use role- and label-based locators**, like Testing Library — stable, and they reflect what users actually see.
+- **Don't log in through the UI in every test.** Log in once in a setup step, save the state (Playwright has `storageState`), and reuse it. Test the login flow itself in exactly one place.
+- **Turn on traces for retries** (`trace: "on-first-retry"` in the config): when a test fails on CI, you get a timeline, DOM snapshots and network activity to replay.
+
+## Flaky tests and how to fix them
+
+A flaky test — green one run, red the next, with no code change — is worse than no test. After a few rounds, the whole team learns "just rerun it," and when it fails for a real bug, nobody believes it.
+
+The causes I see most often:
+
+- **Fixed-time waits.** `waitForTimeout(2000)` is slow and still not enough when CI is slow. Wait for a **condition** instead: an element appears, the URL changes, a request completes.
+- **Tests that depend on each other.** Test B only passes when test A runs first and creates the data. Every test must set up its own data and run independently, in any order.
+- **Shared data.** Two tests running in parallel modify the same account. Create data per test (an email with a random suffix, for example).
+- **Time and randomness.** Tests that depend on the current time, the time zone or `Math.random`. Pin time with fake timers or your test tool's clock.
+- **Animations and unstable elements.** Retrying assertions usually handle this; if not, disable animations in the test environment.
+
+<Callout>
+  `retries` on CI is a painkiller, not a cure. I enable retries so the pipeline isn't blocked, but every test that needs a retry to pass gets logged and fixed — or deleted if it isn't worth keeping.
+</Callout>
+
+### Visual regression, briefly
+
+Some bugs no assertion will catch: a misaligned button, the wrong color, overflowing text. Visual regression tests take screenshots and compare them with a baseline — in Playwright, `await expect(page).toHaveScreenshot()`. They're useful for a design system and a few key pages, but prone to flakiness from fonts, anti-aliasing and operating system differences. I only run them in a fixed environment (usually a container on CI) and limit them to components that really need it.
+
+## What coverage numbers do and don't mean
+
+Coverage measures **which lines ran** during tests, not **which behaviors were verified**. A test that renders a component without a single assertion still raises coverage.
+
+- **Low coverage is a useful signal:** areas at 0% are definitely untested. Worth a look, especially in important business logic.
+- **High coverage doesn't prove much.** It can't tell whether tests have meaningful assertions or cover error cases.
+- **Branch coverage** (every `if` branch executed) is a bit more useful than line coverage, but has the same limits.
+- **Hard coverage targets** ("90% required") tend to produce tests written to hit the number, not to catch bugs.
+
+I use coverage as a map for finding untested areas, not a score to hit. The right question isn't "what's our coverage?" but "if feature X breaks, which test goes red?"
+
+## Key takeaways
+
+<Checklist>
+
+- Choose tests by confidence per cost; for frontend, integration tests are usually the best value.
+- Unit test pure logic with many branches; use e2e for the few flows the product can't live without.
+- Test user behavior and query by role and label; avoid testing internal state and implementation details.
+- Mock the network at the boundary (with MSW, for example) so real code runs end to end and only the server is fake.
+- With Playwright: role-based locators, rely on auto-waiting, reuse logged-in state.
+- Fix flaky tests: wait on conditions, isolate data, pin time.
+- Coverage is a map of untested areas, not a target to hit.
+
+</Checklist>

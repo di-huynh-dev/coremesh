@@ -1,0 +1,187 @@
+---
+title: "Chiến lược test frontend thực tế: test cái gì, ở tầng nào, bằng công cụ gì"
+excerpt: "Không phải test càng nhiều càng tốt. Bài này là cách mình chia việc giữa unit, integration và e2e, viết test theo hành vi với Testing Library, mock network ở ranh giới, dùng Playwright, xử lý test chập chờn, và hiểu đúng con số coverage."
+---
+
+<Lead>Mình từng làm ở một dự án có coverage 90% nhưng vẫn vỡ trang checkout sau gần như mỗi lần release. Test thì nhiều, nhưng phần lớn kiểm tra chi tiết bên trong component — state tên gì, hàm nào được gọi bao nhiêu lần — nên mỗi lần refactor là hàng chục test đỏ, còn khi tính năng thật sự hỏng thì không test nào bắt được. Bài này là chiến lược mình dùng bây giờ: ít test hơn, nhưng mỗi test đều cho mình sự tự tin thật.</Lead>
+
+## Kim tự tháp hay chiếc cúp?
+
+**Kim tự tháp test** (test pyramid) là mô hình quen thuộc: rất nhiều unit test ở đáy, ít integration test hơn ở giữa, và một ít e2e test ở đỉnh. Lý do: unit test nhanh và rẻ, e2e test chậm và dễ vỡ.
+
+Với frontend, mình thấy mô hình **chiếc cúp** (testing trophy) hợp hơn: đáy là **static analysis** (TypeScript, ESLint), phần to nhất là **integration test**, còn unit test và e2e nhỏ hơn. Lý do là phần lớn bug ở frontend không nằm trong một hàm đơn lẻ, mà ở chỗ các phần ghép với nhau: component với hook, form với API, state với giao diện.
+
+| Tầng | Kiểm tra cái gì | Tốc độ | Độ tự tin | Ví dụ |
+| --- | --- | --- | --- | --- |
+| **Static** | Lỗi kiểu, lỗi cú pháp, pattern nguy hiểm | Tức thì | Thấp nhưng miễn phí | TypeScript strict, ESLint |
+| **Unit** | Một hàm hoặc module thuần, tách biệt | Rất nhanh | Thấp đến vừa | Hàm định dạng tiền, tính giá, reducer |
+| **Integration** | Một tính năng gồm nhiều component, network được mock | Nhanh | Cao | Form đăng ký, trang tìm kiếm |
+| **E2E** | Luồng thật trên trình duyệt thật, với backend thật hoặc gần thật | Chậm | Cao nhất | Đăng nhập, thanh toán |
+
+Câu hỏi mình luôn tự đặt ra: **test này cho mình bao nhiêu tự tin, với giá bao nhiêu?** Không phải "test này thuộc loại nào".
+
+## Unit, integration hay e2e — chọn thế nào
+
+**Unit test** cho logic thuần có nhiều nhánh: tính thuế, phân tích chuỗi ngày, chuyển đổi dữ liệu từ API, reducer. Đây là nơi unit test toả sáng — nhanh, rõ ràng, dễ liệt kê các trường hợp biên. Mình không unit test component chỉ hiển thị dữ liệu.
+
+**Integration test** là phần lớn nhất. Render một tính năng hoàn chỉnh (trang tìm kiếm, form, giỏ hàng), tương tác như người dùng, mock network ở ranh giới, và kiểm tra những gì người dùng nhìn thấy. Một test như vậy bao phủ component, hook, state, xử lý lỗi cùng lúc — và không vỡ khi bạn refactor bên trong.
+
+**E2E test** cho vài luồng quan trọng nhất với doanh nghiệp: đăng ký, đăng nhập, thanh toán, luồng chính của sản phẩm. Nếu luồng này hỏng mà bạn phát hiện từ người dùng, đó là thảm hoạ. Giữ số lượng ít — vài chục test chạy ổn định tốt hơn vài trăm test chập chờn.
+
+## Testing Library: test hành vi, không test cài đặt
+
+Triết lý của Testing Library gói gọn trong một câu: test càng giống cách phần mềm được sử dụng, nó càng cho bạn nhiều tự tin. Người dùng không biết component của bạn có state tên `isOpen`; họ thấy một nút có chữ "Mở menu" và bấm vào.
+
+Thứ tự ưu tiên khi query phần tử:
+
+1. **`getByRole`** với `name` — cách người dùng (và screen reader) nhận biết phần tử. Đây là query mình dùng nhiều nhất.
+2. **`getByLabelText`** cho input trong form.
+3. **`getByText`** cho nội dung không tương tác.
+4. **`getByTestId`** — phương án cuối cùng, khi không có cách nào có ý nghĩa hơn.
+
+Có một lợi ích phụ: nếu bạn không tìm được nút bằng `getByRole("button", { name: "Gửi" })`, rất có thể screen reader cũng không tìm được. Test theo role vô tình trở thành một lớp kiểm tra accessibility.
+
+<Callout>
+  Dấu hiệu bạn đang test cài đặt: test đọc state nội bộ, kiểm tra một hàm con được gọi, dựa vào class CSS, hoặc snapshot toàn bộ cây DOM. Những test này đỏ khi bạn refactor và xanh khi tính năng hỏng — đúng ngược lại với điều bạn cần.
+</Callout>
+
+## Mock network ở ranh giới
+
+Thay vì mock module `fetch` hay hook gọi API, mình mock **ở tầng network**: chặn request HTTP và trả về response giả. Công cụ phổ biến cho việc này là MSW (Mock Service Worker). Component vẫn gọi `fetch` thật, chạy qua toàn bộ code xử lý loading, lỗi, phân tích dữ liệu — chỉ có server là giả.
+
+```ts
+// test/server.ts
+import { http, HttpResponse } from "msw";
+import { setupServer } from "msw/node";
+
+export const API = "https://api.example.com";
+
+export const server = setupServer(
+  http.get(`${API}/products`, ({ request }) => {
+    const query = new URL(request.url).searchParams.get("q") ?? "";
+    return HttpResponse.json([
+      { id: "1", name: `Bàn phím cơ (${query})` },
+    ]);
+  }),
+);
+```
+
+```ts
+// test/setup.ts — khai báo trong setupFiles của Vitest
+import "@testing-library/jest-dom/vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
+import { server } from "./server";
+
+// Request nào chưa có handler sẽ làm test lỗi, thay vì âm thầm gọi ra ngoài.
+beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+```
+
+Và một integration test hoàn chỉnh:
+
+```tsx
+// src/features/search/product-search.test.tsx
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { describe, expect, it } from "vitest";
+import { API, server } from "../../../test/server";
+import { ProductSearch } from "./product-search";
+
+describe("ProductSearch", () => {
+  it("hiển thị kết quả khi người dùng tìm kiếm", async () => {
+    const user = userEvent.setup();
+    render(<ProductSearch />);
+
+    await user.type(screen.getByRole("searchbox", { name: "Tìm sản phẩm" }), "keychron");
+    await user.click(screen.getByRole("button", { name: "Tìm" }));
+
+    expect(await screen.findByRole("listitem")).toHaveTextContent("Bàn phím cơ (keychron)");
+  });
+
+  it("báo lỗi khi API không phản hồi được", async () => {
+    server.use(http.get(`${API}/products`, () => new HttpResponse(null, { status: 500 })));
+    const user = userEvent.setup();
+    render(<ProductSearch />);
+
+    await user.type(screen.getByRole("searchbox", { name: "Tìm sản phẩm" }), "keychron");
+    await user.click(screen.getByRole("button", { name: "Tìm" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Không tải được kết quả");
+  });
+});
+```
+
+Để ý rằng test không biết gì về cách `ProductSearch` được viết — dùng `useState` hay thư viện data fetching, gọi API trong hook nào. Bạn có thể viết lại toàn bộ bên trong mà test vẫn xanh, miễn là hành vi không đổi. Các query `findBy...` tự chờ phần tử xuất hiện (mặc định tối đa khoảng một giây), nên không cần `sleep`.
+
+## E2E với Playwright
+
+Playwright chạy test trên Chromium, Firefox và WebKit thật, và có cơ chế **auto-waiting**: trước khi click, nó chờ phần tử hiển thị, ổn định và nhận được sự kiện. Các assertion dạng `expect(locator)` cũng tự thử lại cho đến khi đúng hoặc hết thời gian chờ.
+
+```ts
+// e2e/login.spec.ts
+import { expect, test } from "@playwright/test";
+
+test("người dùng đăng nhập và thấy trang tổng quan", async ({ page }) => {
+  await page.goto("/login");
+
+  await page.getByLabel("Email").fill("demo@example.com");
+  await page.getByLabel("Mật khẩu").fill("correct-horse-battery");
+  await page.getByRole("button", { name: "Đăng nhập" }).click();
+
+  await expect(page).toHaveURL(/\/dashboard/);
+  await expect(page.getByRole("heading", { name: "Tổng quan" })).toBeVisible();
+});
+```
+
+Vài thói quen giúp e2e bớt đau đầu:
+
+- **Dùng locator theo role và label**, giống Testing Library — vừa ổn định, vừa phản ánh đúng người dùng.
+- **Không đăng nhập qua giao diện ở mọi test.** Đăng nhập một lần trong bước setup, lưu trạng thái (Playwright có `storageState`), rồi tái sử dụng. Chỉ test luồng đăng nhập ở đúng một chỗ.
+- **Bật trace khi retry** (`trace: "on-first-retry"` trong config): khi test lỗi trên CI, bạn có cả timeline, ảnh chụp DOM và network để xem lại.
+
+## Test chập chờn và cách sửa
+
+Test chập chờn (flaky) — lúc xanh lúc đỏ mà code không đổi — nguy hiểm hơn không có test. Sau vài lần, cả team học được thói quen "chạy lại là xanh", và đến lúc test đỏ vì bug thật thì không ai tin nữa.
+
+Các nguyên nhân mình gặp nhiều nhất:
+
+- **Chờ bằng thời gian cố định.** `waitForTimeout(2000)` vừa chậm, vừa không đủ khi CI chậm. Hãy chờ **điều kiện**: phần tử xuất hiện, URL thay đổi, request hoàn tất.
+- **Test phụ thuộc lẫn nhau.** Test B chỉ xanh khi test A chạy trước và tạo sẵn dữ liệu. Mỗi test phải tự chuẩn bị dữ liệu của mình và chạy được độc lập, theo bất kỳ thứ tự nào.
+- **Dữ liệu dùng chung.** Hai test chạy song song cùng sửa một tài khoản. Tạo dữ liệu riêng cho từng test (ví dụ email có hậu tố ngẫu nhiên).
+- **Thời gian và ngẫu nhiên.** Test phụ thuộc giờ hiện tại, múi giờ hoặc `Math.random`. Cố định thời gian bằng fake timers hoặc clock của công cụ test.
+- **Animation và phần tử chưa ổn định.** Assertion tự thử lại thường giải quyết được; nếu không, tắt animation trong môi trường test.
+
+<Callout>
+  `retries` trên CI là thuốc giảm đau, không phải thuốc chữa. Mình bật retry để pipeline không bị chặn, nhưng mọi test cần retry mới xanh đều được ghi lại và sửa — hoặc xoá nếu nó không đáng để giữ.
+</Callout>
+
+### Visual regression, nói ngắn gọn
+
+Có những lỗi mà assertion không bắt được: nút bị lệch, màu sai, chữ tràn. Visual regression test chụp ảnh màn hình và so sánh với ảnh chuẩn — trong Playwright là `await expect(page).toHaveScreenshot()`. Nó hữu ích cho design system và vài trang quan trọng, nhưng dễ chập chờn vì font, anti-aliasing và hệ điều hành khác nhau. Mình chỉ chạy nó trong một môi trường cố định (thường là container trên CI) và giới hạn ở những component thật sự cần.
+
+## Coverage nói gì và không nói gì
+
+Coverage đo **dòng code nào đã được chạy** trong lúc test, không đo **hành vi nào đã được kiểm tra**. Một test render component mà không có assertion nào vẫn làm coverage tăng.
+
+- **Coverage thấp là tín hiệu có ích:** những vùng 0% chắc chắn chưa được test. Đáng để nhìn vào, đặc biệt ở logic nghiệp vụ quan trọng.
+- **Coverage cao không chứng minh gì nhiều.** Nó không biết test có assertion có ý nghĩa không, có kiểm tra trường hợp lỗi không.
+- **Branch coverage** (mọi nhánh `if` đều được chạy) có ích hơn line coverage một chút, nhưng cùng giới hạn.
+- **Đặt mục tiêu coverage cứng** (ví dụ "bắt buộc 90%") thường dẫn đến test viết cho đủ số, không phải để bắt bug.
+
+Mình dùng coverage như một bản đồ để tìm vùng chưa được test, không phải điểm số để đạt. Câu hỏi đúng không phải "coverage bao nhiêu?" mà là "nếu tính năng X hỏng, test nào sẽ đỏ?".
+
+## Tóm tắt
+
+<Checklist>
+
+- Chọn test theo độ tự tin trên chi phí; với frontend, integration test thường đáng giá nhất.
+- Unit test cho logic thuần nhiều nhánh; e2e cho vài luồng sống còn của sản phẩm.
+- Test hành vi người dùng, query theo role và label; tránh test state nội bộ và chi tiết cài đặt.
+- Mock network ở ranh giới (ví dụ MSW) để code thật chạy hết, chỉ có server là giả.
+- Với Playwright: dùng locator theo role, tận dụng auto-waiting, tái sử dụng trạng thái đăng nhập.
+- Test chập chờn phải được sửa: chờ theo điều kiện, cô lập dữ liệu, cố định thời gian.
+- Coverage là bản đồ để tìm vùng chưa test, không phải mục tiêu để đạt.
+
+</Checklist>

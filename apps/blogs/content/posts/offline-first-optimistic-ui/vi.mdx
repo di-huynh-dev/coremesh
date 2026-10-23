@@ -1,0 +1,302 @@
+---
+title: "Offline-first và optimistic UI: thiết kế đồng bộ không làm mất dữ liệu"
+excerpt: "Cập nhật lạc quan kèm rollback, outbox lưu trong IndexedDB, idempotency key, retry khi có mạng lại, các chiến lược giải quyết xung đột, hiển thị trạng thái đồng bộ và cách test kịch bản offline."
+---
+
+<Lead>Bấm nút "Hoàn thành" và thấy dấu tick hiện ngay, không spinner, không chờ — đó là optimistic UI. Bấm nút đó trong thang máy mất sóng và thay đổi vẫn còn khi ra khỏi thang máy — đó là offline-first. Nghe thì giống nhau, nhưng cái thứ hai khó hơn rất nhiều, vì bạn phải trả lời những câu hỏi mà UI thông thường được phép lờ đi: request gửi hai lần thì sao, hai thiết bị sửa cùng một thứ thì ai thắng, và người dùng làm sao biết dữ liệu của họ đã thật sự được lưu chưa. Bài này là kiến trúc mình dùng để trả lời những câu đó.</Lead>
+
+## Hai khái niệm, hai mức cam kết
+
+**Optimistic UI** là giả định request sẽ thành công: cập nhật giao diện ngay, gửi request ở nền, và nếu thất bại thì hoàn tác. Nó giải quyết cảm giác chậm, chứ không giải quyết chuyện mất mạng. Nếu tab bị đóng khi request còn đang bay, thay đổi biến mất.
+
+**Offline-first** là coi thiết bị của người dùng là nơi ghi dữ liệu đầu tiên. Mọi thay đổi được lưu bền vững ở local trước, rồi mới đồng bộ lên server khi có thể. Server vẫn là nguồn sự thật cuối cùng, nhưng ứng dụng không phụ thuộc vào việc server có trả lời ngay hay không.
+
+| | Optimistic UI | Offline-first |
+| --- | --- | --- |
+| **Lưu thay đổi ở đâu trước** | Bộ nhớ (state) | Storage bền vững (IndexedDB) |
+| **Tab bị đóng giữa chừng** | Mất thay đổi | Gửi lại ở lần mở sau |
+| **Xung đột** | Hiếm khi phải nghĩ tới | Là bài toán trung tâm |
+| **Độ phức tạp** | Thấp | Cao — cần outbox, retry, idempotency |
+| **Phù hợp** | Like, toggle, sắp xếp lại danh sách | App ghi chú, field work, POS, app dùng ở nơi mạng kém |
+
+Lời khuyên đầu tiên của mình: **đừng làm offline-first cho mọi thứ**. Hãy chọn đúng những luồng mà người dùng thật sự cần làm việc khi mất mạng. Một trang thanh toán không nên "lưu tạm rồi gửi sau".
+
+## Optimistic update và rollback
+
+Mẫu cơ bản gồm ba bước: chụp lại trạng thái cũ, áp thay đổi ngay, rồi xác nhận hoặc hoàn tác theo kết quả từ server.
+
+```ts
+type Todo = { id: string; title: string; done: boolean; version: number };
+
+interface TodoStore {
+  get(id: string): Todo | undefined;
+  set(todo: Todo): void;
+}
+
+declare const store: TodoStore;
+declare const api: {
+  updateTodo(id: string, patch: Partial<Pick<Todo, "title" | "done">>, baseVersion: number): Promise<Todo>;
+};
+declare function notify(message: string): void;
+
+export async function toggleTodo(id: string): Promise<void> {
+  const previous = store.get(id);
+  if (!previous) return;
+
+  // 1. Cập nhật UI ngay lập tức
+  store.set({ ...previous, done: !previous.done });
+
+  try {
+    // 2. Server trả về bản chuẩn (kèm version mới) — dùng nó thay cho bản lạc quan
+    const saved = await api.updateTodo(id, { done: !previous.done }, previous.version);
+    store.set(saved);
+  } catch {
+    // 3. Hoàn tác và nói rõ cho người dùng
+    store.set(previous);
+    notify("Không lưu được thay đổi, mình đã khôi phục lại trạng thái cũ.");
+  }
+}
+```
+
+Ví dụ trên đúng cho một thao tác đơn lẻ, nhưng có một lỗi tinh tế: nếu người dùng bấm hai lần liên tiếp và request đầu tiên fail, rollback về `previous` sẽ ghi đè lên cả thay đổi thứ hai. Có ba cách xử lý, tuỳ độ phức tạp:
+
+- **Rollback đúng phần đã đổi**, không phải cả object — ví dụ chỉ đảo lại trường `done` nếu giá trị hiện tại vẫn là giá trị mình đã đặt.
+- **Tách "dữ liệu server" và "các thay đổi đang chờ".** UI hiển thị dữ liệu server cộng với các thay đổi chưa xác nhận áp lên trên. Thất bại thì chỉ cần bỏ thay đổi đó ra khỏi danh sách — các thay đổi khác tự động vẫn còn. Đây là cách mình thích nhất, và cũng là nền tảng cho outbox ở phần sau.
+- **Fetch lại từ server sau khi lỗi**, chấp nhận một nháy giao diện để lấy lại sự thật.
+
+<Callout>
+  Các thư viện như TanStack Query có sẵn mẫu `onMutate` / `onError` / `onSettled` cho optimistic update. Dùng chúng, nhưng hiểu rõ là chúng chỉ giữ thay đổi trong bộ nhớ — đó là optimistic UI, chưa phải offline-first.
+</Callout>
+
+## Outbox: hàng đợi mutation lưu trong IndexedDB
+
+Ý tưởng trung tâm của offline-first là **outbox**: mọi thay đổi người dùng tạo ra được ghi thành một bản ghi "mutation đang chờ" vào IndexedDB *trước*, rồi một tiến trình đồng bộ đọc outbox và gửi lần lượt lên server. Gửi thành công thì xoá khỏi outbox. Tab bị đóng thì lần mở sau outbox vẫn còn đó.
+
+Có vài quyết định thiết kế đáng nói:
+
+- **Ghi mutation (ý định), không ghi snapshot.** "Đặt `done = true` cho todo X, dựa trên version 7" mang nhiều thông tin hơn "đây là toàn bộ todo X". Server có thể kiểm tra xung đột và merge thông minh hơn.
+- **Giữ thứ tự.** Mutation "tạo todo" phải tới trước "sửa todo đó". Dùng key tự tăng để IndexedDB trả về đúng thứ tự ghi.
+- **Ghi local store và outbox trong cùng một transaction** nếu cả hai cùng nằm trong IndexedDB, để không bao giờ có trạng thái "UI đã đổi nhưng outbox không có gì".
+
+```ts
+export interface PendingMutation {
+  seq?: number; // khoá tự tăng — giữ đúng thứ tự ghi
+  id: string; // UUID, cũng chính là idempotency key
+  type: "todo.update";
+  payload: {
+    todoId: string;
+    patch: Partial<Pick<Todo, "title" | "done">>;
+    baseVersion: number;
+  };
+  createdAt: number;
+  attempts: number;
+}
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("app-sync", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("outbox", { keyPath: "seq", autoIncrement: true });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function enqueue(
+  type: PendingMutation["type"],
+  payload: PendingMutation["payload"],
+): Promise<void> {
+  const db = await openDb();
+  const mutation: PendingMutation = {
+    id: crypto.randomUUID(),
+    type,
+    payload,
+    createdAt: Date.now(),
+    attempts: 0,
+  };
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("outbox", "readwrite");
+    tx.objectStore("outbox").add(mutation);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+```
+
+Trong thực tế mình thường dùng một wrapper nhỏ như `idb` thay vì API callback thô của IndexedDB, nhưng viết thô ở đây để thấy rõ chuyện gì đang xảy ra.
+
+## Idempotency key và retry
+
+### Vì sao cần idempotency
+
+Mạng không đáng tin theo cách khó chịu nhất: request có thể **đã tới server và đã được xử lý**, nhưng response bị mất trên đường về. Client thấy lỗi, nên gửi lại. Không có biện pháp gì, server sẽ áp mutation hai lần — với "đặt `done = true`" thì vô hại, nhưng với "cộng 1 vào số lượng" hay "tạo đơn hàng" thì là bug thật.
+
+Giải pháp là **idempotency key**: mỗi mutation có một ID duy nhất được tạo ở client và gửi kèm mọi lần retry. Server lưu các key đã xử lý (kèm kết quả) trong một khoảng thời gian; gặp lại key cũ thì trả về kết quả đã lưu thay vì xử lý lại. Nhờ vậy client có thể retry thoải mái — "gửi ít nhất một lần" cộng với idempotency cho ra hiệu quả gần như "đúng một lần".
+
+### Vòng lặp đồng bộ
+
+```ts
+declare function getAllPending(): Promise<PendingMutation[]>;
+declare function removePending(seq: number): Promise<void>;
+declare function markFailed(mutation: PendingMutation, status: number): Promise<void>;
+declare function handleConflict(mutation: PendingMutation, response: Response): Promise<void>;
+
+let flushing = false;
+let retryDelay = 1_000;
+
+export async function flushOutbox(): Promise<void> {
+  if (flushing) return;
+  flushing = true;
+  try {
+    for (const mutation of await getAllPending()) {
+      const response = await fetch("/api/mutations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": mutation.id },
+        body: JSON.stringify(mutation),
+      });
+
+      if (response.status >= 500 || response.status === 429) {
+        throw new Error(`Retryable status ${response.status}`); // thử lại cả hàng đợi sau
+      }
+      if (response.status === 409) {
+        await handleConflict(mutation, response);
+      } else if (!response.ok) {
+        await markFailed(mutation, response.status); // 4xx vĩnh viễn: retry cũng vô ích
+      }
+      if (mutation.seq !== undefined) await removePending(mutation.seq);
+    }
+    retryDelay = 1_000;
+  } catch {
+    // fetch ném lỗi khi mất mạng; 5xx/429 cũng vào đây. Backoff có jitter.
+    const delay = retryDelay * (0.5 + Math.random());
+    retryDelay = Math.min(retryDelay * 2, 60_000);
+    setTimeout(() => void flushOutbox(), delay);
+  } finally {
+    flushing = false;
+  }
+}
+```
+
+Lưu ý mình phân biệt rõ lỗi **tạm thời** (mất mạng, 5xx, 429 — retry) và lỗi **vĩnh viễn** (400, 403, 422 — retry bao nhiêu cũng vậy). Lỗi vĩnh viễn được chuyển sang trạng thái "cần người dùng xử lý" thay vì chặn cả hàng đợi mãi mãi.
+
+### `online`/`offline` chỉ là gợi ý
+
+`navigator.onLine === false` khá đáng tin là đang không có mạng. Nhưng `true` chỉ có nghĩa là máy có kết nối tới *một mạng nào đó* — Wi-Fi quán cà phê chưa đăng nhập, mạng công ty chặn API của bạn, hay server đang sập đều cho ra `true`. Vì vậy:
+
+- Dùng sự kiện `online` như **một trong các lý do để thử flush**, cùng với lúc mở app, lúc tab được focus lại (`visibilitychange`) và một timer định kỳ.
+- **Sự thật duy nhất là request có thành công hay không.** Đừng coi `navigator.onLine === true` là bảo đảm request sẽ thành công, và đừng tin là đã đồng bộ chỉ vì sự kiện `online` vừa bắn.
+
+Khi người dùng mở nhiều tab, mỗi tab có thể cùng flush một outbox. Web Locks API (`navigator.locks.request`) giúp đảm bảo chỉ một tab flush tại một thời điểm; idempotency key là lớp bảo vệ thứ hai nếu vẫn bị gửi trùng.
+
+<Callout>
+  IndexedDB không phải là storage vĩnh viễn tuyệt đối: trình duyệt có thể dọn dữ liệu khi thiếu dung lượng, và một số trình duyệt có chính sách xoá dữ liệu của site lâu không được truy cập. Gọi `navigator.storage.persist()` để xin giữ lâu dài, và đừng để mutation nằm trong outbox lâu hơn mức cần thiết.
+</Callout>
+
+## Giải quyết xung đột
+
+Xung đột xảy ra khi hai bên cùng sửa một dữ liệu từ cùng một phiên bản gốc — điện thoại sửa offline trong lúc laptop sửa online chẳng hạn. Không có chiến lược nào đúng cho mọi trường hợp; mình chọn theo **giá trị của dữ liệu** và **khả năng người dùng chấp nhận mất thay đổi**.
+
+| Chiến lược | Cách hoạt động | Ưu điểm | Nhược điểm |
+| --- | --- | --- | --- |
+| **Last-write-wins** | Bản ghi đến sau ghi đè | Đơn giản nhất | Âm thầm mất thay đổi; "sau" theo đồng hồ nào? |
+| **Field-level merge** | Merge theo từng trường; chỉ xung đột khi cùng trường | Mất ít dữ liệu hơn nhiều | Cần ghi patch, không ghi cả object |
+| **Server authority** | Server quyết định theo luật nghiệp vụ | Đúng với dữ liệu quan trọng (tồn kho, số dư) | Client phải xử lý khi bị từ chối |
+| **Version / ETag** | Gửi kèm version gốc; lệch thì báo xung đột | Phát hiện xung đột chắc chắn | Phải có UI hoặc luật để giải quyết |
+
+Version number là nền tảng mình dùng gần như mọi nơi: mỗi bản ghi có trường `version` tăng mỗi lần ghi. Mutation gửi kèm `baseVersion`. Nếu khác version hiện tại trên server, server trả về `409 Conflict` kèm bản hiện tại thay vì ghi đè. Với REST thuần, cùng ý tưởng này là `ETag` và header `If-Match`, server trả `412 Precondition Failed` khi không khớp.
+
+Khi phát hiện xung đột, field-level merge giải quyết được phần lớn trường hợp một cách tự động:
+
+```ts
+type Patch<T> = Partial<T>;
+
+/** Áp patch của client lên bản mới nhất của server, chỉ báo xung đột ở trường bị cả hai bên sửa. */
+export function mergeFields<T extends Record<string, unknown>>(
+  base: T,
+  server: T,
+  clientPatch: Patch<T>,
+): { merged: T; conflicts: (keyof T)[] } {
+  const merged: T = { ...server };
+  const conflicts: (keyof T)[] = [];
+  for (const key of Object.keys(clientPatch) as (keyof T)[]) {
+    const serverChanged = server[key] !== base[key];
+    if (serverChanged && server[key] !== clientPatch[key]) {
+      conflicts.push(key); // cả hai bên cùng đổi trường này, theo hai hướng khác nhau
+    } else {
+      merged[key] = clientPatch[key] as T[keyof T];
+    }
+  }
+  return { merged, conflicts };
+}
+```
+
+Cách so sánh `!==` ở đây chỉ đúng cho giá trị nguyên thuỷ; với trường là object hay mảng, bạn cần so sánh sâu hoặc chia nhỏ hơn. Với những trường còn lại trong `conflicts`, quyết định nằm ở sản phẩm: hiển thị cả hai phiên bản cho người dùng chọn, hay áp một luật cố định.
+
+### Last-write-wins và chuyện đồng hồ
+
+Nếu dùng last-write-wins, đừng dựa vào giờ của thiết bị client — đồng hồ điện thoại có thể sai vài phút, thậm chí bị người dùng chỉnh. Hãy để server gán thứ tự khi nhận, hoặc dùng version tăng dần. Và nhớ rằng LWW **luôn** làm mất dữ liệu khi có xung đột; chỉ dùng khi bạn đã chấp nhận điều đó.
+
+### CRDT dùng để làm gì
+
+CRDT (Conflict-free Replicated Data Types) là các kiểu dữ liệu được thiết kế sao cho các bản sao sửa độc lập luôn **hội tụ về cùng một kết quả** khi trao đổi thay đổi với nhau, theo bất kỳ thứ tự nào, mà không cần một server làm trọng tài. Chúng toả sáng ở các bài toán cộng tác thời gian thực: soạn thảo văn bản nhiều người, bảng trắng, danh sách mà nhiều người cùng sắp xếp. Yjs và Automerge là hai thư viện phổ biến.
+
+Nhưng CRDT không phải viên đạn bạc. Chúng mang thêm metadata (dữ liệu lớn dần theo lịch sử), và "hội tụ" chỉ có nghĩa là mọi bên thấy cùng một kết quả — không có nghĩa kết quả đó đúng với luật nghiệp vụ. Hai người cùng đặt món hàng cuối cùng trong kho thì CRDT không giải quyết được; đó là việc của server authority.
+
+## Cho người dùng thấy trạng thái đồng bộ
+
+Offline-first mà giấu trạng thái đồng bộ thì người dùng sẽ không tin vào app. Họ cần biết dữ liệu của mình đang ở đâu, nhưng không cần bị làm phiền liên tục. Mình thường dùng bốn trạng thái:
+
+- **Đã lưu** — outbox rỗng, mọi thay đổi đã lên server. Hiển thị nhẹ nhàng hoặc không cần hiển thị.
+- **Đang đồng bộ** — đang gửi; một chỉ báo nhỏ là đủ.
+- **Đã lưu trên thiết bị** — đang offline hoặc server không trả lời; nói rõ là thay đổi *không* bị mất và sẽ được gửi khi có mạng. Cách diễn đạt này quan trọng hơn bạn nghĩ: "Offline" làm người dùng lo, "Đã lưu trên máy này, sẽ đồng bộ sau" làm họ yên tâm.
+- **Cần xử lý** — có mutation bị từ chối vĩnh viễn hoặc xung đột cần người dùng chọn. Chỉ trạng thái này mới đáng chiếm sự chú ý.
+
+Ở cấp từng mục, đánh dấu những bản ghi chưa đồng bộ (một icon đồng hồ nhỏ chẳng hạn), và **cảnh báo khi người dùng đăng xuất hay đóng tab mà outbox vẫn còn mutation** — đăng xuất thường đi kèm xoá dữ liệu local, tức là xoá luôn thay đổi chưa gửi.
+
+## Test kịch bản offline
+
+Code đồng bộ rất dễ chạy đúng trên đường "mạng tốt" và sai ở mọi chỗ khác. Danh sách kịch bản mình luôn test:
+
+- **Offline hoàn toàn:** tạo, sửa, xoá khi offline; reload trang; bật mạng lại và xác nhận mọi thứ lên server đúng thứ tự.
+- **Mất response:** server xử lý xong nhưng client không nhận được response — kiểm tra idempotency không tạo bản ghi trùng.
+- **Mạng chập chờn:** request fail ngẫu nhiên; outbox vẫn phải hội tụ, không kẹt, không trùng.
+- **Xung đột:** sửa cùng bản ghi trên hai trình duyệt, một bên offline.
+- **Nhiều tab:** hai tab cùng flush một outbox.
+- **Đóng app giữa chừng:** đóng tab khi outbox còn mutation, mở lại và kiểm tra chúng được gửi.
+
+Playwright làm phần lớn việc này khá gọn:
+
+```ts
+import { expect, test } from "@playwright/test";
+
+test("thay đổi khi offline được đồng bộ sau khi có mạng lại", async ({ page, context }) => {
+  await page.goto("/todos");
+  await context.setOffline(true);
+
+  await page.getByRole("checkbox", { name: "Viết bài offline-first" }).check();
+  await expect(page.getByText("Đã lưu trên thiết bị")).toBeVisible();
+
+  await page.reload(); // outbox phải sống sót qua reload
+  await context.setOffline(false);
+
+  await expect(page.getByText("Đã lưu", { exact: true })).toBeVisible();
+});
+```
+
+Để giả lập "mất response", dùng `page.route` cho request đi tới server rồi trả lỗi về client. Còn các hàm thuần như `mergeFields` thì unit test là đủ — đó là chỗ đáng viết thật nhiều test case nhất.
+
+## Tóm tắt
+
+<Checklist>
+
+- Optimistic UI là giả định thành công; offline-first là lưu bền vững ở local trước. Chỉ làm offline-first cho luồng thật sự cần.
+- Rollback đúng phần đã đổi — tốt nhất là tách dữ liệu server và danh sách thay đổi đang chờ.
+- Ghi mutation vào outbox trong IndexedDB, giữ thứ tự, gửi lần lượt và xoá khi thành công.
+- Mọi mutation có idempotency key để retry an toàn; phân biệt lỗi tạm thời và lỗi vĩnh viễn, retry với backoff có jitter.
+- `online`/`offline` chỉ là gợi ý — sự thật là request có thành công hay không.
+- Phát hiện xung đột bằng version hoặc ETag; ưu tiên field-level merge, dùng server authority cho dữ liệu quan trọng.
+- CRDT cho cộng tác thời gian thực, không thay được luật nghiệp vụ.
+- Hiển thị trạng thái đồng bộ rõ ràng, và test cả mất mạng, mất response, xung đột, nhiều tab.
+
+</Checklist>

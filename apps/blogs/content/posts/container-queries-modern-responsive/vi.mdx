@@ -1,0 +1,259 @@
+---
+title: "Container queries và responsive hiện đại: component tự biết mình rộng bao nhiêu"
+excerpt: "Vì sao media query theo viewport không còn đủ cho component tái sử dụng, cách dùng container-type, container có tên, đơn vị cqi, kết hợp clamp() và :has(), kèm một card responsive hoàn chỉnh và chiến lược fallback."
+---
+
+<Lead>Mình từng viết một component card rất "responsive": dưới 768px thì ảnh nằm trên, rộng hơn thì ảnh nằm bên trái. Mọi thứ ổn cho đến khi designer đặt đúng card đó vào sidebar hẹp trên màn hình desktop. Viewport rộng 1440px, nên media query bảo "bố cục ngang", trong khi card chỉ có 280px để sống — kết quả là chữ bị ép thành một cột vài ký tự. Vấn đề không nằm ở card, mà ở câu hỏi mình đặt ra: mình đang hỏi *màn hình* rộng bao nhiêu, trong khi điều cần biết là *chỗ chứa card* rộng bao nhiêu. Container queries trả lời đúng câu hỏi đó.</Lead>
+
+## Vì sao media query theo viewport không đủ
+
+Media query sinh ra khi trang web được thiết kế theo trang: header, nội dung, footer, và bố cục thay đổi theo kích thước cửa sổ. Ngày nay chúng ta xây giao diện từ **component**, và một component tốt được dùng ở nhiều nơi:
+
+- Card sản phẩm trong lưới ba cột ở trang chủ.
+- Cùng card đó trong sidebar hẹp ở trang chi tiết.
+- Cùng card đó trong modal, trong carousel, trong dashboard có panel kéo giãn được.
+
+Với media query, component phải "biết" nó sẽ được đặt ở đâu để chọn breakpoint phù hợp. Thường thì kết quả là những biến thể như `Card--compact`, `Card--sidebar`, hoặc prop `variant` truyền từ trên xuống — nghĩa là logic bố cục bị rò rỉ ra khỏi component.
+
+Container queries đảo ngược điều đó: component tự hỏi phần tử chứa nó rộng bao nhiêu, và tự điều chỉnh. Đặt nó ở đâu cũng được.
+
+| | Media query | Container query |
+| --- | --- | --- |
+| **Hỏi về** | Viewport (cửa sổ trình duyệt) | Một phần tử tổ tiên được khai báo là container |
+| **Phù hợp cho** | Bố cục trang: số cột, ẩn hiện navigation | Bố cục bên trong component |
+| **Component cần biết vị trí của mình?** | Có | Không |
+| **Hỗ trợ trình duyệt** | Mọi nơi | Các trình duyệt chính từ khoảng 2023 |
+
+Hai thứ này không thay thế nhau. Mình vẫn dùng media query cho bố cục cấp trang, và container query cho bên trong component.
+
+## Cú pháp cơ bản: `container-type` và `@container`
+
+Cần hai bước: khai báo một phần tử là container, rồi viết query cho các phần tử con.
+
+```css
+.card-wrapper {
+  container-type: inline-size;
+}
+
+.card {
+  display: grid;
+  gap: 1rem;
+}
+
+/* Khi container rộng từ 28rem trở lên, chuyển sang bố cục ngang */
+@container (min-width: 28rem) {
+  .card {
+    grid-template-columns: 10rem 1fr;
+  }
+}
+```
+
+Vài điểm hay gây nhầm:
+
+- **`inline-size` là chiều ngang** trong chế độ viết từ trái sang phải. Đây là giá trị bạn sẽ dùng gần như mọi lúc. Giá trị `size` theo dõi cả hai chiều, nhưng đòi hỏi container phải có chiều cao xác định, nên hiếm khi cần.
+- **Một phần tử không thể query chính nó.** Style bên trong `@container` chỉ áp dụng cho phần tử *con cháu* của container. Đó là lý do ví dụ trên có `.card-wrapper` bọc ngoài `.card`.
+- **`@container` tìm container gần nhất** phía trên trong cây DOM.
+- Có thể dùng cú pháp khoảng: `@container (width >= 28rem)` tương đương với `min-width: 28rem`.
+
+<Callout>
+  **Cái bẫy kinh điển:** `container-type: inline-size` bật *size containment* theo chiều ngang, nghĩa là chiều rộng của container không còn được tính từ nội dung bên trong. Nếu container nằm ở chỗ tự co theo nội dung — flex item không có `flex-grow`, phần tử `inline-block`, cột grid `auto` — nó có thể co về 0. Container nên là phần tử mà chiều rộng được quyết định từ *bên ngoài*: phần tử block thông thường, cột grid `1fr`, hoặc có `width` rõ ràng.
+</Callout>
+
+## Container có tên
+
+Khi container lồng nhau, `@container` không tên sẽ luôn hỏi container gần nhất. Đôi khi bạn muốn bỏ qua tầng gần và hỏi một tầng cụ thể. Đặt tên cho container:
+
+```css
+.sidebar {
+  container: sidebar / inline-size; /* viết tắt của container-name và container-type */
+}
+
+.card-wrapper {
+  container: card / inline-size;
+}
+
+/* Chỉ phản ứng theo chiều rộng của sidebar, dù card nằm trong card-wrapper */
+@container sidebar (max-width: 20rem) {
+  .card__actions {
+    flex-direction: column;
+  }
+}
+
+/* Phản ứng theo chính card-wrapper */
+@container card (min-width: 28rem) {
+  .card {
+    grid-template-columns: 10rem 1fr;
+  }
+}
+```
+
+Quy ước của mình: container ở cấp component đặt theo tên component (`card`, `media-object`), container ở cấp bố cục đặt theo vùng (`sidebar`, `main`). Đặt tên rõ ràng giúp đọc CSS hiểu ngay câu query đang hỏi ai.
+
+## Đơn vị container: `cqi` và các anh em
+
+Container queries đi kèm một bộ đơn vị tính theo kích thước container, giống `vw` và `vh` nhưng cho container:
+
+| Đơn vị | Bằng 1% của |
+| --- | --- |
+| `cqw` / `cqh` | Chiều rộng / chiều cao của container |
+| `cqi` / `cqb` | Chiều inline / chiều block của container |
+| `cqmin` / `cqmax` | Giá trị nhỏ hơn / lớn hơn giữa `cqi` và `cqb` |
+
+Mình ưu tiên `cqi` hơn `cqw` vì nó theo chiều inline, đúng với chiều mà `container-type: inline-size` theo dõi, và vẫn đúng khi đổi chế độ viết. Nếu không có container phù hợp nào phía trên, các đơn vị này rơi về kích thước theo viewport, nên chúng không làm hỏng trang — nhưng kết quả có thể không như bạn muốn.
+
+## Kết hợp với typography co giãn bằng `clamp()`
+
+Fluid typography theo viewport (`clamp(1rem, 2vw, 1.5rem)`) có cùng vấn đề với media query: tiêu đề trong sidebar hẹp vẫn to như tiêu đề ở vùng chính. Thay `vw` bằng `cqi` là xong:
+
+```css
+.card__title {
+  /* Tối thiểu 1.125rem, tối đa 1.75rem, ở giữa co giãn theo chiều rộng card */
+  font-size: clamp(1.125rem, 0.875rem + 2.5cqi, 1.75rem);
+  line-height: 1.2;
+}
+
+.card__body {
+  padding: clamp(0.75rem, 4cqi, 1.5rem);
+}
+```
+
+<Callout>
+  **Đừng dùng đơn vị container (hay viewport) một mình cho font-size.** Một giá trị như `font-size: 4cqi` không thay đổi khi người dùng phóng to chữ trong trình duyệt, gây vấn đề accessibility. Luôn cộng với một phần `rem` (như `0.875rem + 2.5cqi`) và kẹp bằng `clamp()` với cận dưới, cận trên tính bằng `rem`.
+</Callout>
+
+## `:has()` — style theo nội dung bên trong
+
+Container queries cho component biết nó rộng bao nhiêu. `:has()` cho component biết nó *chứa gì*. Hai thứ kết hợp rất tự nhiên.
+
+Ví dụ: card có ảnh thì dùng bố cục hai cột, card không có ảnh thì chiếm hết chiều rộng — không cần prop `hasImage`, không cần class biến thể:
+
+```css
+/* Chỉ chia cột khi card thật sự có ảnh VÀ đủ rộng */
+@container card (min-width: 28rem) {
+  .card:has(.card__media) {
+    grid-template-columns: 10rem 1fr;
+  }
+}
+
+/* Làm nổi bật card khi checkbox bên trong được chọn */
+.card:has(input[type="checkbox"]:checked) {
+  outline: 2px solid var(--color-accent);
+}
+
+/* Form field báo lỗi khi input bên trong không hợp lệ và người dùng đã tương tác */
+.field:has(input:user-invalid) .field__hint {
+  color: var(--color-danger);
+}
+```
+
+Trước đây những việc này cần JavaScript để thêm class vào phần tử cha. Giờ CSS tự làm được — và vì thế ít state hơn trong component.
+
+## Một card responsive hoàn chỉnh
+
+Gộp tất cả lại. Đây là component React, phần bố cục hoàn toàn nằm trong CSS:
+
+```tsx
+interface ArticleCardProps {
+  title: string;
+  excerpt: string;
+  href: string;
+  imageUrl?: string;
+}
+
+export function ArticleCard({ title, excerpt, href, imageUrl }: ArticleCardProps) {
+  return (
+    <div className="card-wrapper">
+      <article className="card">
+        {imageUrl ? (
+          <img className="card__media" src={imageUrl} alt="" loading="lazy" />
+        ) : null}
+        <div className="card__body">
+          <h3 className="card__title">
+            <a href={href}>{title}</a>
+          </h3>
+          <p className="card__excerpt">{excerpt}</p>
+        </div>
+      </article>
+    </div>
+  );
+}
+```
+
+```css
+.card-wrapper {
+  container: card / inline-size;
+}
+
+.card {
+  display: grid;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.card__media {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.card__excerpt {
+  display: none; /* Card quá hẹp: chỉ hiện tiêu đề */
+}
+
+@container card (min-width: 18rem) {
+  .card__excerpt {
+    display: block;
+  }
+}
+
+@container card (min-width: 32rem) {
+  .card:has(.card__media) {
+    grid-template-columns: 40% 1fr;
+  }
+
+  .card__media {
+    aspect-ratio: auto;
+    height: 100%;
+  }
+}
+```
+
+Đặt card này vào lưới ba cột, vào sidebar 280px hay vào modal, nó tự chọn một trong ba trạng thái: chỉ tiêu đề, xếp dọc, hoặc xếp ngang. Không có prop `variant` nào cả.
+
+Nếu bạn dùng Tailwind CSS v4, container queries được hỗ trợ sẵn qua class `@container` cho container và các tiền tố như `@md:` cho phần tử con — cùng ý tưởng, chỉ khác cú pháp.
+
+## Fallback và progressive enhancement
+
+Container queries và `:has()` đã được hỗ trợ ở các trình duyệt chính được vài năm. Nhưng nếu sản phẩm của bạn có người dùng trên trình duyệt cũ (thiết bị doanh nghiệp, WebView cũ), hãy nghĩ theo hướng *progressive enhancement*:
+
+1. **Viết style mặc định là bố cục an toàn nhất** — thường là xếp dọc, một cột. Bố cục này trông ổn ở mọi chiều rộng.
+2. **Thêm bố cục nâng cao bên trong `@container`.** Trình duyệt không hiểu `@container` sẽ bỏ qua toàn bộ khối đó và giữ bố cục mặc định.
+3. **Khi cần fallback khác hẳn**, dùng `@supports`:
+
+```css
+/* Trình duyệt cũ: dùng media query làm phương án gần đúng */
+@supports not (container-type: inline-size) {
+  @media (min-width: 64rem) {
+    .card:has(.card__media) {
+      grid-template-columns: 40% 1fr;
+    }
+  }
+}
+```
+
+Đừng cố làm cho trình duyệt cũ trông y hệt. Mục tiêu là nội dung đọc được và dùng được, không phải pixel-perfect ở mọi nơi.
+
+## Tóm tắt
+
+<Checklist>
+
+- Media query cho bố cục trang; container query cho bố cục bên trong component.
+- Khai báo container bằng `container-type: inline-size`; nhớ rằng phần tử không query được chính nó.
+- Cẩn thận với container nằm ở chỗ co theo nội dung — nó có thể co về 0.
+- Đặt tên container khi lồng nhau để query đúng tầng.
+- Dùng `cqi` cho kích thước co giãn theo container, luôn kèm `rem` và `clamp()` cho font-size.
+- `:has()` cho phép style theo nội dung bên trong, thay cho prop biến thể và JavaScript.
+- Viết bố cục mặc định an toàn trước, nâng cấp trong `@container`, và dùng `@supports` khi cần fallback riêng.
+
+</Checklist>

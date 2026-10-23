@@ -1,0 +1,315 @@
+---
+title: "Chiến lược xử lý lỗi ở frontend: từ error boundary đến retry và báo cáo lỗi"
+excerpt: "Phân loại lỗi trước khi xử lý, hiểu error boundary bắt được gì và không bắt được gì, retry đúng cách với backoff và jitter, tách thông báo cho người dùng khỏi log cho developer, và báo cáo lỗi mà không làm lộ dữ liệu cá nhân."
+---
+
+<Lead>Phần lớn codebase frontend mình từng tiếp quản đều xử lý lỗi theo kiểu "gặp đâu vá đó": chỗ này một `try/catch` nuốt lỗi im lặng, chỗ kia một `alert("Có lỗi xảy ra")`, và một màn hình trắng mỗi khi API trả về dữ liệu lạ. Không phải vì team lười, mà vì chưa ai ngồi xuống thống nhất một *chiến lược*. Bài này là khung mình dùng: phân loại lỗi trước, rồi quyết định mỗi loại được bắt ở đâu, hiển thị gì cho người dùng, và báo về đâu cho developer.</Lead>
+
+## Phân loại lỗi trước khi viết try/catch
+
+Câu hỏi đầu tiên không phải "bắt lỗi thế nào" mà là "đây là loại lỗi gì". Mình chia theo hai trục.
+
+**Trục thứ nhất: dự đoán được hay không.**
+
+- **Lỗi dự đoán được (expected):** người dùng nhập sai, hết phiên đăng nhập, không có quyền, không tìm thấy dữ liệu, mất mạng. Đây là một phần của nghiệp vụ, không phải bug.
+- **Lỗi không dự đoán được (unexpected):** `undefined is not a function`, API trả về cấu trúc khác hợp đồng, logic sai. Đây là bug và cần được báo về cho developer.
+
+**Trục thứ hai: phục hồi được hay không.**
+
+- **Phục hồi được:** thử lại, đăng nhập lại, sửa form, quay về trang trước.
+- **Không phục hồi được (fatal):** state của ứng dụng đã hỏng, phải tải lại trang.
+
+| | Phục hồi được | Không phục hồi được |
+| --- | --- | --- |
+| **Dự đoán được** | Validate form, 401 → đăng nhập lại, mất mạng → thử lại | Tài khoản bị khoá, tính năng bị tắt |
+| **Không dự đoán được** | Một widget lỗi, phần còn lại của trang vẫn chạy | Lỗi trong layout gốc, state toàn cục hỏng |
+
+Điểm quan trọng: **lỗi dự đoán được không nên đi qua cơ chế exception**. Nếu "không tìm thấy" là một kết quả hợp lệ, hãy trả nó về như một giá trị, để TypeScript buộc nơi gọi phải xử lý:
+
+```ts
+type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
+
+type FetchUserError =
+  | { kind: "not-found" }
+  | { kind: "unauthorized" }
+  | { kind: "network" };
+
+interface User {
+  id: string;
+  name: string;
+}
+
+async function fetchUser(id: string): Promise<Result<User, FetchUserError>> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/users/${id}`);
+  } catch {
+    return { ok: false, error: { kind: "network" } };
+  }
+  if (res.status === 404) return { ok: false, error: { kind: "not-found" } };
+  if (res.status === 401) return { ok: false, error: { kind: "unauthorized" } };
+  // Lỗi 5xx hoặc trạng thái lạ là bất thường: ném ra để tầng trên bắt và báo cáo.
+  if (!res.ok) throw new Error(`Unexpected status ${res.status} for /api/users`);
+  return { ok: true, value: (await res.json()) as User };
+}
+```
+
+Lỗi bất thường thì cứ để nó được ném ra — đừng `catch` rồi nuốt mất. Một lỗi bị nuốt còn tệ hơn lỗi làm sập màn hình, vì không ai biết nó tồn tại.
+
+## Error boundary trong React: bắt được gì, không bắt được gì
+
+Error boundary là component bắt lỗi xảy ra **trong quá trình render** của cây con, hiển thị giao diện thay thế thay vì để React gỡ toàn bộ cây. Hiện tại vẫn phải viết bằng class component (hoặc dùng thư viện như `react-error-boundary`):
+
+```tsx
+import { Component, type ErrorInfo, type ReactNode } from "react";
+
+interface Props {
+  fallback: (reset: () => void) => ReactNode;
+  onError?: (error: Error, info: ErrorInfo) => void;
+  children: ReactNode;
+}
+
+interface State {
+  error: Error | null;
+}
+
+export class ErrorBoundary extends Component<Props, State> {
+  state: State = { error: null };
+
+  static getDerivedStateFromError(error: Error): State {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    // info.componentStack cho biết lỗi nằm ở component nào — rất đáng gửi kèm báo cáo.
+    this.props.onError?.(error, info);
+  }
+
+  reset = () => this.setState({ error: null });
+
+  render() {
+    if (this.state.error) return this.props.fallback(this.reset);
+    return this.props.children;
+  }
+}
+```
+
+Error boundary bắt lỗi ném ra khi render, trong lifecycle method và constructor của component con. Nhưng nó **không** bắt:
+
+- Lỗi trong **event handler** (`onClick`, `onSubmit`) — vì chúng không chạy trong lúc render.
+- Lỗi trong **code bất đồng bộ**: `setTimeout`, callback của promise, `fetch` trong `useEffect` sau khi `await`.
+- Lỗi khi **server-side rendering**.
+- Lỗi xảy ra **bên trong chính error boundary** đó (lỗi sẽ được đẩy lên boundary phía trên).
+
+Với event handler, dùng `try/catch` bình thường và quyết định hiển thị gì. Nếu muốn một lỗi bất đồng bộ đi về error boundary gần nhất, có thể đưa nó vào state rồi ném ra trong lần render kế tiếp:
+
+```tsx
+import { useState } from "react";
+
+export function useThrowToBoundary() {
+  const [error, setError] = useState<Error | null>(null);
+  if (error) throw error; // ném trong lúc render → error boundary bắt được
+  return setError;
+}
+```
+
+<Callout>
+  **Đặt boundary ở nhiều tầng, đừng chỉ một cái ở gốc.** Một boundary ở gốc nghĩa là một widget biểu đồ lỗi cũng làm mất cả trang. Mình thường đặt một boundary ở gốc (lưới an toàn cuối cùng), một ở mỗi route, và thêm cho từng khối độc lập như sidebar, biểu đồ, khung bình luận.
+</Callout>
+
+## Next.js: `error.tsx`, `global-error.tsx` và `not-found.tsx`
+
+App Router đóng gói error boundary sẵn theo từng route segment:
+
+- **`error.tsx`** bọc nội dung của segment đó (và các segment con). Nó phải là client component, nhận `error` và hàm `reset` để thử render lại.
+- **`error.tsx` không bắt lỗi của `layout.tsx` cùng cấp**, vì layout nằm *bên ngoài* boundary của segment đó. Lỗi ở layout sẽ đi lên `error.tsx` của segment cha.
+- **`global-error.tsx`** ở thư mục `app` bắt lỗi của root layout. Vì nó thay thế cả root layout, nó phải tự render thẻ `html` và `body`.
+- **`not-found.tsx`** hiển thị khi gọi `notFound()` từ `next/navigation` — đây là cách đúng cho lỗi "không tìm thấy", một lỗi *dự đoán được*.
+
+```tsx
+// app/dashboard/error.tsx
+"use client";
+
+import { useEffect } from "react";
+
+export default function DashboardError({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string };
+  reset: () => void;
+}) {
+  useEffect(() => {
+    // Ở production, lỗi từ Server Component bị ẩn message;
+    // digest giúp tìm đúng log tương ứng phía server.
+    console.error(error);
+  }, [error]);
+
+  return (
+    <div role="alert">
+      <h2>Không tải được bảng điều khiển</h2>
+      <p>Dữ liệu của bạn vẫn an toàn. Hãy thử lại sau giây lát.</p>
+      <button onClick={() => reset()}>Thử lại</button>
+    </div>
+  );
+}
+```
+
+Chi tiết `digest` rất đáng nhớ: ở production, Next.js không gửi message lỗi của Server Component về trình duyệt (để tránh lộ thông tin nhạy cảm), mà chỉ gửi một mã `digest`. Muốn biết chuyện gì xảy ra, bạn tìm mã đó trong log server.
+
+## Retry: exponential backoff, jitter, và khi nào *không* retry
+
+Lỗi mạng và lỗi tạm thời của server thường tự hết sau vài giây. Retry là hợp lý — nhưng retry ngây thơ có thể biến một sự cố nhỏ thành sự cố lớn.
+
+- **Exponential backoff:** mỗi lần thử sau chờ lâu gấp đôi lần trước (ví dụ 500ms, 1s, 2s, 4s), có giới hạn trên.
+- **Jitter:** thêm độ ngẫu nhiên vào thời gian chờ. Không có jitter, khi server vừa hồi phục, hàng nghìn client sẽ thử lại *cùng một lúc* và đánh sập nó lần nữa.
+
+```ts
+class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(`HTTP ${status}`);
+    this.name = "HttpError";
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function isRetryable(error: unknown): boolean {
+  if (error instanceof HttpError) {
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  }
+  return error instanceof TypeError; // fetch ném TypeError khi lỗi mạng
+}
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  { retries = 3, baseMs = 500, maxMs = 8000 } = {},
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt >= retries || !isRetryable(error)) throw error;
+      const cap = Math.min(maxMs, baseMs * 2 ** attempt);
+      // "Full jitter": chờ ngẫu nhiên trong khoảng 0 đến cap.
+      const delay =
+        error instanceof HttpError && error.retryAfterMs !== undefined
+          ? error.retryAfterMs
+          : Math.random() * cap;
+      await sleep(delay);
+    }
+  }
+}
+```
+
+Và quan trọng không kém, những trường hợp **không nên** retry:
+
+| Tình huống | Có retry? | Lý do |
+| --- | --- | --- |
+| Lỗi mạng, timeout | Có | Thường là tạm thời |
+| 5xx, 503 | Có, với backoff | Server quá tải hoặc đang deploy |
+| 429 Too Many Requests | Có, theo `Retry-After` nếu có | Server đã nói rõ khi nào quay lại |
+| 400, 422 (dữ liệu sai) | Không | Gửi lại y hệt sẽ sai y hệt |
+| 401, 403 | Không | Cần đăng nhập lại hoặc không có quyền |
+| `POST` không idempotent (thanh toán, tạo đơn) | Chỉ khi có idempotency key | Nếu không, có thể tạo trùng đơn |
+
+<Callout>
+  Nếu bạn dùng TanStack Query hay SWR, chúng đã có retry với backoff sẵn. Việc của bạn là cấu hình hàm quyết định có retry hay không — mặc định của thư viện thường retry cả lỗi 4xx, điều hiếm khi đúng.
+</Callout>
+
+## Thông báo cho người dùng khác với chi tiết cho developer
+
+Hai đối tượng, hai nhu cầu hoàn toàn khác nhau:
+
+- **Người dùng** cần biết: chuyện gì xảy ra (bằng ngôn ngữ đời thường), dữ liệu của họ có sao không, và họ có thể làm gì tiếp theo.
+- **Developer** cần: stack trace, component stack, URL, phiên bản build, các bước trước khi lỗi.
+
+Đừng bao giờ hiển thị `error.message` thô cho người dùng. Nó vô nghĩa với họ ("Cannot read properties of undefined"), và đôi khi làm lộ chi tiết nội bộ. Mình giữ một bảng ánh xạ từ loại lỗi sang thông điệp:
+
+- Mất mạng → "Không có kết nối. Mình sẽ tự thử lại khi có mạng."
+- 401 → "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại." kèm nút đăng nhập.
+- Lỗi bất thường → "Đã có lỗi xảy ra. Đội ngũ đã được thông báo." kèm nút thử lại và một mã tham chiếu ngắn để người dùng gửi cho bộ phận hỗ trợ.
+
+Mã tham chiếu đó chính là cầu nối giữa hai thế giới: hỗ trợ viên nhận mã từ người dùng, developer tìm đúng báo cáo lỗi bằng mã đó.
+
+## Lưới an toàn toàn cục: `error` và `unhandledrejection`
+
+Dù cẩn thận đến đâu, vẫn sẽ có lỗi lọt qua mọi lớp. Hai sự kiện toàn cục bắt nốt phần còn lại:
+
+```ts
+type ReportFn = (error: unknown, context: Record<string, unknown>) => void;
+
+export function installGlobalHandlers(report: ReportFn) {
+  window.addEventListener("error", (event) => {
+    report(event.error ?? event.message, {
+      source: "window.error",
+      file: event.filename,
+      line: event.lineno,
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    report(event.reason, { source: "unhandledrejection" });
+  });
+}
+```
+
+Vài lưu ý thực tế:
+
+- Lỗi từ script khác origin thường chỉ hiện là `"Script error."` không kèm chi tiết. Muốn có chi tiết, script đó phải được tải với thuộc tính `crossorigin` và server trả header CORS phù hợp.
+- Extension trình duyệt cũng ném lỗi vào trang của bạn. Lọc theo tên file hoặc giao thức như `chrome-extension://` để giảm nhiễu.
+- Từ React 19, `createRoot` nhận thêm các callback như `onUncaughtError` và `onCaughtError`, cho phép báo cáo lỗi mà React đã bắt ở một nơi tập trung.
+
+## Báo cáo lỗi có ngữ cảnh — nhưng không có dữ liệu cá nhân
+
+Một báo cáo lỗi chỉ có stack trace thường không đủ để tái hiện. Ngữ cảnh mình luôn gửi kèm:
+
+- **Phiên bản build** (commit SHA) — để biết lỗi thuộc bản nào và map được source map.
+- **Route** và **thao tác gần nhất** (breadcrumbs): bấm nút gì, gọi API nào.
+- **Môi trường:** trình duyệt, hệ điều hành, kích thước màn hình.
+- **ID người dùng ẩn danh** (không phải email) để biết lỗi ảnh hưởng bao nhiêu người.
+
+Và những thứ **không bao giờ** được gửi: mật khẩu, token, số thẻ, email, số điện thoại, nội dung form người dùng nhập. Cách an toàn là lọc ở client trước khi gửi:
+
+```ts
+const SENSITIVE_KEY = /pass(word)?|token|secret|authorization|cookie|card|email|phone/i;
+
+export function scrub(value: unknown, depth = 0): unknown {
+  if (depth > 5) return "[truncated]";
+  if (Array.isArray(value)) return value.map((v) => scrub(v, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, v]) => [
+        key,
+        SENSITIVE_KEY.test(key) ? "[redacted]" : scrub(v, depth + 1),
+      ]),
+    );
+  }
+  return value;
+}
+
+export function stripQuery(url: string): string {
+  // Query string hay chứa token reset mật khẩu, mã mời...
+  const u = new URL(url, location.origin);
+  return u.origin + u.pathname;
+}
+```
+
+Đừng quên upload source map lên công cụ giám sát (và không public chúng ra trình duyệt nếu không muốn), nếu không stack trace chỉ toàn tên hàm đã minify.
+
+## Tóm tắt
+
+<Checklist>
+
+- Phân loại lỗi trước: dự đoán được hay không, phục hồi được hay không.
+- Lỗi dự đoán được nên là giá trị trả về có kiểu rõ ràng; lỗi bất thường thì để ném ra và đừng nuốt im lặng.
+- Error boundary chỉ bắt lỗi khi render — event handler và code bất đồng bộ cần xử lý riêng.
+- Đặt boundary nhiều tầng; trong Next.js dùng `error.tsx`, `global-error.tsx` và `notFound()`.
+- Retry với exponential backoff và jitter, chỉ cho lỗi tạm thời; không retry 4xx hay request không idempotent.
+- Người dùng nhận thông điệp dễ hiểu kèm hành động tiếp theo; developer nhận stack, ngữ cảnh và phiên bản build.
+- Bắt nốt lỗi lọt lưới bằng `error` và `unhandledrejection`, và lọc dữ liệu cá nhân trước khi gửi báo cáo.
+
+</Checklist>

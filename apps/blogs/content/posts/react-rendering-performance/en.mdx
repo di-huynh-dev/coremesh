@@ -1,0 +1,321 @@
+---
+title: "React Rendering Performance: Measure First, Optimize Second, and Know When to Stop"
+excerpt: "What makes a component re-render, why a re-render isn't a DOM update, how to measure with the React DevTools Profiler, the real cost of memo/useMemo/useCallback, splitting context, colocating state, keys in lists, and how the React Compiler changes the picture."
+---
+
+<Lead>I once reviewed a PR where nearly every function was wrapped in `useCallback`, every value went through `useMemo`, and every component was a `React.memo`. The author explained: "just to be safe, to avoid re-renders". When I opened the Profiler, the page wasn't any faster — a few spots were actually slower because of the dependency comparisons, and the code was twice as hard to read. Optimizing React rendering isn't about sprinkling memo everywhere. It's about understanding the mechanics, measuring to find the actual slow spot, then fixing that spot. This post follows exactly that order.</Lead>
+
+## What makes a component re-render?
+
+"Rendering" in React means React calls your component function to get a new element tree. There are three main reasons that happens:
+
+1. **The component's own state changes** — via `useState`, `useReducer`, or an external store subscribed through `useSyncExternalStore`.
+2. **Its parent re-renders.** By default, when a parent renders, *every* child renders too — whether or not its props changed.
+3. **A context it consumes changes value.**
+
+The second point is the most misunderstood. "A component re-renders when its props change" is only half true: props change *because* the parent rendered, and when the parent renders the child renders, even if props stay the same. Only when a component is wrapped in `React.memo` does React compare props to decide whether to skip it.
+
+One more detail: if you call `setState` with a value identical to the current one (compared with `Object.is`), React usually skips the render. That's why mutating an object and then calling `setState` with the same object won't update the UI.
+
+### A re-render is not a DOM update
+
+This is what eased my anxiety the most when I was learning. After rendering, React compares the new element tree with the old one (reconciliation) and only touches DOM nodes that actually differ. A component that re-renders and produces the same output leaves the DOM alone.
+
+So what does a re-render cost? The time to run the component function and diff the tree. For a small component, that's very little. Re-renders only become a problem when:
+
+- The component is **expensive**: heavy computation during render, a very large subtree.
+- Re-renders happen **very often**: every keystroke, every scroll event, every animation frame.
+- Re-renders **cascade**: a small change near the root makes hundreds of components render.
+
+| Phase | What React does | Cost comes from |
+| --- | --- | --- |
+| **Render** | Calls component functions, builds a new element tree | Logic in components, size of the subtree |
+| **Reconcile** | Diffs the new tree against the old one | Number of nodes, unstable keys |
+| **Commit** | Applies changes to the DOM, runs effects | Number of changed DOM nodes, layout effects |
+| **Browser** | Style, layout, paint | Complex CSS, large DOM |
+
+## Measure first: the React DevTools Profiler
+
+Rule number one: **don't optimize what you haven't measured**. Intuition about what's slow is usually wrong.
+
+My process:
+
+1. Open React DevTools, **Profiler** tab. In settings, enable **"Record why each component rendered while profiling"** — DevTools will then tell you why each render happened: state changed, which props changed, or because the parent rendered.
+2. Hit record, perform exactly the slow interaction (typing in a search box, opening a dropdown), then stop.
+3. Look at the **flamegraph** for each commit: the wider the bar, the more time that component took. Gray means the component didn't render in that commit.
+4. Switch to the **ranked** view to immediately see the most expensive components.
+
+Also turn on **"Highlight updates when components render"** to visually see which regions flash on every keystroke — great for spotting cascading re-renders.
+
+<Callout>
+  **Measure on a production build.** React's development build runs a lot of extra checks and warnings and is noticeably slower than production. Absolute numbers in dev mode can scare you for no reason. Use the dev build to find *where* things render a lot, but confirm on a production build (with CPU throttling in Chrome DevTools) before concluding there's a real problem.
+</Callout>
+
+If you want to measure in code — to send numbers to your monitoring system, say — React has a `Profiler` component:
+
+```tsx
+import { Profiler, type ProfilerOnRenderCallback, type ReactElement } from "react";
+
+const onRender: ProfilerOnRenderCallback = (id, phase, actualDuration) => {
+  if (actualDuration > 16) {
+    console.warn(`[${id}] ${phase} took ${actualDuration.toFixed(1)}ms`);
+  }
+};
+
+export function App() {
+  return (
+    <Profiler id="ProductList" onRender={onRender}>
+      <ProductList />
+    </Profiler>
+  );
+}
+
+declare function ProductList(): ReactElement;
+```
+
+## Fix the structure before reaching for memo
+
+Most re-render problems I run into are solved by rearranging components, without a single line of memo.
+
+### Keep state close to where it's used (state colocation)
+
+If only a small part of the UI needs some state, don't keep it in a big parent component. The classic example: a search input whose state lives at the page level, so every keystroke re-renders the whole page.
+
+```tsx
+import { useState, type ReactElement } from "react";
+
+// ❌ Every keystroke re-renders ExpensiveChart and Sidebar
+function DashboardBefore() {
+  const [query, setQuery] = useState("");
+  return (
+    <>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} />
+      <ExpensiveChart />
+      <Sidebar />
+    </>
+  );
+}
+
+// ✅ State lives in the component that needs it; the rest stays still
+function SearchBox() {
+  const [query, setQuery] = useState("");
+  return <input value={query} onChange={(e) => setQuery(e.target.value)} />;
+}
+
+function DashboardAfter() {
+  return (
+    <>
+      <SearchBox />
+      <ExpensiveChart />
+      <Sidebar />
+    </>
+  );
+}
+
+declare function ExpensiveChart(): ReactElement;
+declare function Sidebar(): ReactElement;
+```
+
+### Pass the heavy part through `children`
+
+When a component needs state but wraps something heavy, create the heavy part in the parent and pass it in as `children`. Elements in `children` are created by the parent, so when the wrapper re-renders due to its own state, React sees `children` is still the same element and doesn't need to re-render it.
+
+```tsx
+import { useState, type ReactElement, type ReactNode } from "react";
+
+function ScrollTracker({ children }: { children: ReactNode }) {
+  const [scrollY, setScrollY] = useState(0);
+  return (
+    <div onScroll={(e) => setScrollY(e.currentTarget.scrollTop)}>
+      <ProgressBar value={scrollY} />
+      {children}
+    </div>
+  );
+}
+
+// ExpensiveContent is created here and doesn't re-render when scrollY changes
+function Page() {
+  return (
+    <ScrollTracker>
+      <ExpensiveContent />
+    </ScrollTracker>
+  );
+}
+
+declare function ProgressBar(props: { value: number }): ReactElement;
+declare function ExpensiveContent(): ReactElement;
+```
+
+## `React.memo`, `useMemo`, `useCallback` — and what they cost
+
+Once the structure is sensible and the Profiler still points at an expensive component rendering needlessly, that's when memo gets its turn.
+
+- **`React.memo(Component)`**: skips rendering if the new props equal the old ones under a shallow comparison (`Object.is` per prop).
+- **`useMemo(fn, deps)`**: keeps a computed result between renders until a dependency changes.
+- **`useCallback(fn, deps)`**: keeps the same function reference — effectively `useMemo` for functions.
+
+### Referential stability
+
+`React.memo` only works when props are *actually* equal. Objects, arrays and functions are recreated on every render, so even when the contents don't change, the reference does:
+
+```tsx
+import { memo, useCallback, useMemo, useState } from "react";
+
+interface Item {
+  id: string;
+  name: string;
+  price: number;
+}
+
+const ItemList = memo(function ItemList(props: {
+  items: Item[];
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <ul>
+      {props.items.map((item) => (
+        <li key={item.id} onClick={() => props.onSelect(item.id)}>
+          {item.name}
+        </li>
+      ))}
+    </ul>
+  );
+});
+
+function Shop({ items }: { items: Item[] }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [maxPrice, setMaxPrice] = useState(100);
+
+  // Without useMemo: a new array every render → ItemList's memo is useless
+  const visible = useMemo(
+    () => items.filter((item) => item.price <= maxPrice),
+    [items, maxPrice],
+  );
+
+  // setSelected is already stable, so empty deps are enough
+  const handleSelect = useCallback((id: string) => setSelected(id), []);
+
+  return (
+    <>
+      <input
+        type="range"
+        value={maxPrice}
+        onChange={(e) => setMaxPrice(Number(e.target.value))}
+      />
+      <p>Selected: {selected ?? "none"}</p>
+      <ItemList items={visible} onSelect={handleSelect} />
+    </>
+  );
+}
+```
+
+Here, selecting an item re-renders `Shop`, but `ItemList` is skipped because `visible` and `handleSelect` keep their references. Drop either one and the memo stops working.
+
+### Memo isn't free
+
+- Every `useMemo`/`useCallback` costs memory and a dependency comparison on *every* render.
+- If dependencies change on nearly every render, you pay the cost and get nothing back.
+- A single unstable prop (an inline `style` object, for example) is enough to defeat `React.memo`, and that kind of bug is very hard to spot by reading code.
+- Memo-heavy code is harder to read and easier to get dependencies wrong in.
+
+<Callout>
+  **`useMemo` is not a guarantee.** The React docs describe it as a performance optimization, not a semantic guarantee: your code must still work if React decides to recompute the value. Don't rely on `useMemo` to keep an instance that must be created exactly once — use `useRef` or `useState` with an initializer function for that.
+</Callout>
+
+## Context: convenient, but easy to over-render
+
+When a context value changes, **every** component consuming that context re-renders — and `React.memo` can't stop it. The most common mistake is creating a new object as the value on every provider render:
+
+```tsx
+import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from "react";
+
+interface CartState {
+  items: string[];
+}
+type CartAction = { type: "add"; id: string } | { type: "clear" };
+
+function cartReducer(state: CartState, action: CartAction): CartState {
+  switch (action.type) {
+    case "add":
+      return { items: [...state.items, action.id] };
+    case "clear":
+      return { items: [] };
+  }
+}
+
+// Split state and dispatch into two separate contexts
+const CartStateContext = createContext<CartState | null>(null);
+const CartDispatchContext = createContext<Dispatch<CartAction> | null>(null);
+
+export function CartProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(cartReducer, { items: [] });
+  return (
+    <CartDispatchContext.Provider value={dispatch}>
+      <CartStateContext.Provider value={state}>{children}</CartStateContext.Provider>
+    </CartDispatchContext.Provider>
+  );
+}
+
+// "Add to cart" buttons only need dispatch → they don't re-render when the cart changes
+export function useCartDispatch() {
+  const dispatch = useContext(CartDispatchContext);
+  if (!dispatch) throw new Error("useCartDispatch must be used inside CartProvider");
+  return dispatch;
+}
+
+export function useCartCount() {
+  const state = useContext(CartStateContext);
+  if (!state) throw new Error("useCartCount must be used inside CartProvider");
+  return state.items.length;
+}
+```
+
+`dispatch` from `useReducer` has a stable reference, so the context holding it practically never changes. The hundreds of "Add to cart" buttons on the page don't have to re-render whenever the cart changes.
+
+The general rule: split contexts by **how often they change**. Theme and user info rarely change — they can share. Data that changes constantly (mouse position, form values) shouldn't live in a widely consumed context; consider a store with selectors so components only re-render when the slice they use changes.
+
+## Keys and list reconciliation
+
+Keys tell React which item in the new render corresponds to which item in the previous one.
+
+- **Stable, unique keys** (usually an `id` from your data): React preserves each item's DOM and state when the list is reordered, added to or trimmed.
+- **Index as key**: fine if the list never reorders and nothing gets inserted in the middle. Otherwise, adding an item at the top makes *every* item look changed, and internal state (like an input's value) ends up attached to the wrong item.
+- **Random keys** generated on each render (like `Math.random()`): the worst — React destroys and recreates every item every time.
+
+Keys are also a deliberate tool: changing a component's `key` forces React to recreate it from scratch, which is handy for resetting all of a form's state when switching to a different record.
+
+For lists with thousands of items, the problem usually isn't re-rendering anymore but the number of DOM nodes — that's where virtualization comes in, a topic for its own post.
+
+## The React Compiler: automatic memoization
+
+The React Compiler is a build-time tool that analyzes your components and hooks and automatically inserts memoization where it's needed — essentially doing most of the work of `useMemo`, `useCallback` and `React.memo` for you. The key idea is that it relies on your code following the **Rules of React**: pure components, no mutating props or state, hooks called by the rules. Code that breaks those rules may be skipped by the compiler rather than optimized.
+
+If your project has the compiler enabled, most manual memoization becomes unnecessary, and the focus shifts to writing pure components, putting state in the right place, and still measuring with the Profiler. The compiler won't fix a poor data design or a ten-thousand-row list.
+
+## When *not* to optimize
+
+| Situation | What to do |
+| --- | --- |
+| Profiler shows commits of a few ms or less | Leave it |
+| A small component renders a lot but nobody can feel it | Leave it |
+| An expensive component re-renders needlessly on keystrokes | Move state, use `children`, then memo |
+| A context re-renders a whole tree | Split contexts by change frequency |
+| A very long list is slow to scroll | Virtualization, not memo |
+| A heavy update makes typing feel sluggish | `useDeferredValue` or `useTransition` |
+
+A frame at 60fps is about 16ms. If the Profiler shows the whole commit taking 2ms, there's nothing to optimize — even if a component renders ten times. That time is better spent on features, or on real performance problems like an oversized JavaScript bundle or waterfalling requests.
+
+## Key takeaways
+
+<Checklist>
+
+- A component re-renders when its state changes, when its parent renders, or when a consumed context changes.
+- A re-render isn't a DOM update — it only matters when components are expensive, render often, or cascade.
+- Always measure with the React DevTools Profiler before optimizing, and confirm on a production build.
+- Fix structure first: colocate state, pass heavy parts through `children`.
+- `React.memo` only helps when props are referentially stable; memoization always has a cost.
+- Split contexts by change frequency; separate state from dispatch.
+- Use stable keys from your data, and change keys deliberately to reset state.
+- The React Compiler memoizes automatically for code that follows the Rules of React — but it doesn't replace measuring and good design.
+
+</Checklist>

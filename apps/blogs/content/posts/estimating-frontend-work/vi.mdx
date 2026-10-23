@@ -1,0 +1,120 @@
+---
+title: "Ước lượng công việc frontend một cách trung thực"
+excerpt: "Vì sao ước lượng gần như luôn sai, cách chia nhỏ công việc theo trạng thái, accessibility, responsive và i18n, dùng khoảng và độ tự tin thay cho một con số, khi nào cần spike, cách nói chuyện với PM và cách so sánh ước lượng với thực tế để giỏi dần lên."
+---
+
+<Lead>"Cái màn hình này chắc hai ngày là xong." Mình đã nói câu đó không biết bao nhiêu lần, và hầu như lần nào nó cũng thành năm ngày. Không phải vì mình lười hay chậm, mà vì "màn hình" mình hình dung lúc ước lượng chỉ là trạng thái đẹp nhất của nó — dữ liệu đầy đủ, mạng nhanh, màn hình desktop. Bài này là cách mình học được để ước lượng trung thực hơn: không phải đoán chính xác hơn, mà là nhìn thấy nhiều hơn những gì sẽ tốn thời gian, và nói ra sự không chắc chắn thay vì giấu nó đi.</Lead>
+
+## Vì sao ước lượng gần như luôn sai
+
+Trước khi tìm cách làm tốt hơn, cần hiểu thời gian thật sự đi đâu. Theo kinh nghiệm của mình, phần lớn chênh lệch đến từ vài nguồn lặp đi lặp lại:
+
+- **Những thứ không biết là mình không biết.** API trả về dữ liệu khác tài liệu, thư viện có bug ở đúng trường hợp bạn cần, một hành vi của trình duyệt mà bạn chưa từng gặp. Không thể liệt kê trước, nhưng có thể dự phòng cho chúng.
+- **Tích hợp.** Từng phần làm riêng thì nhanh; ghép với backend, auth, routing, analytics và hệ thống design mới là chỗ tốn thời gian.
+- **Các trạng thái ở rìa.** Loading, rỗng, lỗi, dữ liệu quá dài, không có quyền — thiết kế thường chỉ có một màn hình "đẹp", còn code phải xử lý tất cả.
+- **Thay đổi thiết kế.** Nhìn bản build thật, mọi người mới nhận ra luồng có chỗ chưa hợp lý. Đó là điều tốt, nhưng nó tốn thời gian.
+- **Review và QA.** Ước lượng thường dừng ở lúc "code xong trên máy mình". Còn review, sửa theo góp ý, QA tìm ra bug, sửa lại, deploy — thường bằng một phần đáng kể so với thời gian code.
+
+Nhận ra những nguồn này không giúp bạn đoán đúng tuyệt đối, nhưng giúp bạn không quên chúng — và đó đã là một nửa vấn đề.
+
+## Chia nhỏ công việc: nhìn thấy phần chìm của tảng băng
+
+Cách hiệu quả nhất mình biết để ước lượng tốt hơn là chia nhỏ. Một việc ước lượng "3 ngày" gần như chắc chắn chứa những thứ chưa được nghĩ tới; một việc chia thành mười mục, mỗi mục nửa ngày, thì bạn buộc phải nghĩ tới từng mục.
+
+Với frontend, mình chia theo các chiều sau, không chỉ theo component:
+
+| Chiều | Câu hỏi cần trả lời | Thường bị quên |
+| --- | --- | --- |
+| **Trạng thái dữ liệu** | Loading, rỗng, lỗi, một phần, phân trang trông thế nào? | Rất thường xuyên |
+| **Tương tác** | Validate form, xác nhận trước khi xoá, optimistic update, huỷ thao tác? | Thường xuyên |
+| **Accessibility** | Bàn phím, focus, nhãn cho screen reader, độ tương phản? | Rất thường xuyên |
+| **Responsive** | Mobile, tablet, màn hình rất rộng; bảng trên mobile hiển thị ra sao? | Thường xuyên |
+| **i18n** | Chuỗi dịch, văn bản dài hơn khi dịch, định dạng ngày, số, tiền tệ? | Tuỳ dự án |
+| **Tích hợp** | API đã có chưa, hợp đồng dữ liệu đã chốt chưa, cần mock không? | Thường xuyên |
+| **Quyền và phân vai** | Người dùng không có quyền thấy gì? | Thỉnh thoảng |
+| **Chất lượng** | Test, analytics, feature flag, tài liệu? | Rất thường xuyên |
+| **Review và QA** | Bao nhiêu vòng review, QA test trên những thiết bị nào? | Gần như luôn luôn |
+
+Không phải việc nào cũng cần mọi dòng. Bảng này là một checklist để *hỏi*, không phải để cộng dồn thời gian một cách máy móc.
+
+<Callout>
+  **Mẹo của mình:** nếu một mục nhỏ nhất trong bản chia nhỏ vẫn lớn hơn một ngày, nghĩa là mình chưa hiểu nó đủ rõ. Chia tiếp, hoặc đánh dấu nó là "chưa rõ" và xử lý bằng spike.
+</Callout>
+
+## Ước lượng bằng khoảng và độ tự tin
+
+Một con số duy nhất như "3 ngày" truyền đạt sai một điều quan trọng: nó nghe như chắc chắn. Thực tế, mọi ước lượng là một phân phối xác suất, và phân phối đó lệch về bên phải — việc có thể nhanh hơn dự kiến một chút, nhưng có thể chậm hơn rất nhiều.
+
+Vì vậy mình ước lượng bằng **khoảng kèm độ tự tin**:
+
+- "2 đến 4 ngày, khá tự tin — mình đã làm màn hình tương tự."
+- "3 đến 8 ngày, độ tự tin thấp — chưa rõ API thanh toán xử lý lỗi thế nào."
+
+Độ rộng của khoảng *chính là* thông tin. Khoảng hẹp nghĩa là việc quen thuộc; khoảng rộng là tín hiệu cho PM rằng có rủi ro, và thường dẫn tới câu hỏi đúng: "Làm sao để khoảng này hẹp lại?". Câu trả lời thường là một spike, hoặc tách phần không chắc chắn ra thành một mục riêng.
+
+Một cách đơn giản mình hay dùng cho mỗi mục: ước lượng ba con số — lạc quan, khả năng cao nhất, bi quan — rồi báo khoảng từ "khả năng cao nhất" đến "bi quan". Báo con số lạc quan là cách nhanh nhất để mất lòng tin.
+
+## Spike cho những thứ chưa biết
+
+Khi một phần công việc có quá nhiều ẩn số để ước lượng, đừng cố đoán. Hãy đề xuất một **spike**: một khoảng thời gian cố định (thường nửa ngày đến hai ngày) chỉ để tìm hiểu, với mục tiêu là *trả lời câu hỏi*, không phải giao sản phẩm.
+
+Spike tốt có ba đặc điểm:
+
+- **Câu hỏi rõ ràng:** "Thư viện chart này có hỗ trợ zoom trên trục thời gian với 50 nghìn điểm dữ liệu không, và mượt đến đâu trên điện thoại tầm trung?"
+- **Giới hạn thời gian cứng:** hết thời gian thì dừng và báo cáo những gì đã biết, kể cả khi chưa có câu trả lời trọn vẹn.
+- **Kết quả là một ước lượng tốt hơn**, kèm code thử nghiệm có thể bỏ đi.
+
+<Callout>
+  Code viết trong spike nên được coi là để vứt đi. Nếu không, nó có xu hướng "lọt" vào production mà không có test, không xử lý lỗi — và bạn vừa đổi một ẩn số lấy một món nợ kỹ thuật.
+</Callout>
+
+## Nói chuyện với PM
+
+Ước lượng không phải là một con số bạn đưa ra rồi bị giữ chặt; nó là một cuộc trò chuyện. Vài điều mình học được:
+
+- **Nói rõ ước lượng bao gồm những gì.** "4 ngày, gồm cả trạng thái lỗi, mobile và một vòng review — chưa gồm i18n." Như vậy khi phạm vi thay đổi, mọi người biết ước lượng cần đổi theo.
+- **Đưa ra lựa chọn, không chỉ con số.** "Bản đầy đủ là 5 đến 7 ngày. Nếu bỏ chỉnh sửa ngay trên bảng và làm form riêng thì còn 3 ngày." PM có thể đánh đổi phạm vi để lấy thời gian — đó là quyết định của họ, nhưng họ cần thông tin để quyết.
+- **Đừng để bị "mặc cả".** Nếu ước lượng là 5 ngày và câu trả lời là "3 ngày được không?", thì thứ có thể thay đổi là phạm vi hoặc chất lượng, không phải độ khó của công việc. Nói thẳng điều đó, một cách lịch sự.
+- **Báo sớm khi lệch.** Ngày thứ hai đã thấy sẽ trễ thì báo ngay ngày thứ hai, kèm lý do và ước lượng mới. Báo vào ngày cuối là tệ nhất cho tất cả mọi người.
+
+## Theo dõi ước lượng và thực tế để hiệu chỉnh
+
+Cách duy nhất mình biết để giỏi lên một cách bền vững là **ghi lại**. Không cần công cụ phức tạp — một ghi chú đơn giản cho mỗi task là đủ:
+
+```md
+## Task: Trang lịch sử đơn hàng
+
+Ước lượng: 3–5 ngày (độ tự tin: trung bình)
+Thực tế: 7 ngày
+
+Chia nhỏ ban đầu:
+- [x] Bảng danh sách + phân trang — ước 1 ngày, thực tế 1 ngày
+- [x] Bộ lọc theo ngày và trạng thái — ước 1 ngày, thực tế 2 ngày
+- [x] Loading / rỗng / lỗi — ước 0,5 ngày, thực tế 0,5 ngày
+- [x] Mobile — ước 0,5 ngày, thực tế 1,5 ngày
+- [ ] (không có trong ước lượng) Xuất CSV — PM thêm vào ngày 3, 1 ngày
+- [x] Review + QA — ước 0,5 ngày, thực tế 1 ngày
+
+Bài học:
+- Bộ lọc ngày: múi giờ giữa API và UI không khớp, mất 1 ngày.
+- Bảng trên mobile luôn tốn hơn mình nghĩ → lần sau nhân đôi.
+- Phạm vi thay đổi giữa chừng: lẽ ra phải cập nhật ước lượng ngay hôm đó.
+```
+
+Sau vài tháng, các mẫu sẽ lộ ra rất rõ. Có thể bạn luôn đánh giá thấp phần responsive, hoặc review ở team bạn luôn mất một ngày. Đó là những "hệ số" cá nhân giúp ước lượng sau chính xác hơn — dựa trên dữ liệu của chính bạn, không phải cảm giác.
+
+Một lưu ý: mục đích là để *học*, không phải để tự trách hay để quản lý dùng làm thước đo năng suất. Nếu ghi chép bị dùng để phán xét, mọi người sẽ bắt đầu "độn" ước lượng và dữ liệu mất hết giá trị.
+
+## Tóm tắt
+
+<Checklist>
+
+- Ước lượng sai vì những thứ không biết trước, tích hợp, các trạng thái ở rìa, thay đổi thiết kế và thời gian review/QA — hãy tính đến chúng.
+- Chia nhỏ theo nhiều chiều: trạng thái dữ liệu, accessibility, responsive, i18n, tích hợp, chất lượng.
+- Mục nào lớn hơn một ngày là mục chưa hiểu đủ — chia tiếp hoặc làm spike.
+- Báo khoảng kèm độ tự tin, không báo một con số lạc quan.
+- Dùng spike có giới hạn thời gian cho những ẩn số lớn.
+- Nói rõ phạm vi, đưa ra lựa chọn, và báo sớm khi lệch.
+- Ghi lại ước lượng và thực tế để hiệu chỉnh bằng dữ liệu của chính mình.
+
+</Checklist>

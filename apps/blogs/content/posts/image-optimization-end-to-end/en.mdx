@@ -1,0 +1,226 @@
+---
+title: "Image Optimization End to End: Formats, srcset, Lazy Loading and next/image"
+excerpt: "Which format to pick, how srcset and sizes let the browser choose, when to lazy-load and when not to, reserving space to avoid CLS, image CDNs, art direction with picture, and using next/image in Next.js 16."
+---
+
+<Lead>On almost every site I've audited, images were the heaviest part of the page load and the most common LCP element. The good news is that image optimization has one of the best effort-to-impact ratios in performance work: no architectural refactor, just getting a chain of small decisions right. This post walks through that chain in the order an image travels from server to screen — format, size, when it loads, how space is reserved — and ends with `next/image`.</Lead>
+
+## Choosing a format: there is no single "best"
+
+The first question is always: what kind of image is this? A photo, flat artwork, an icon, a screenshot with text? Each suits a different format.
+
+| Format | Good for | Strengths | Watch out for |
+| --- | --- | --- | --- |
+| **AVIF** | Photos, hero images, product shots | Usually the smallest at the same perceived quality, supports transparency and HDR | Slow, CPU-heavy encoding — encode ahead of time or cache the result |
+| **WebP** | Photos and graphics that need transparency | Noticeably smaller than JPEG/PNG, faster to encode than AVIF, widely supported | Usually a bit larger than AVIF for photos |
+| **JPEG** | Photos, fallback | Works everywhere, very fast encoding | No transparency; heavy compression shows blocky artifacts |
+| **PNG** | Screenshots, pixel-exact graphics | Lossless, transparency | Very heavy when used for photos |
+| **SVG** | Logos, icons, vector illustrations | Sharp at any size, often tiny, styleable with CSS | Wrong for photos; SVGs from outside sources need sanitizing because they can contain scripts |
+
+In practice I serve AVIF to browsers that support it, WebP or JPEG as the fallback, and keep SVG for everything vector. Format selection should be automated (by an image CDN or the framework), not done by hand per image.
+
+<Callout>
+  Format is only half the story; **compression quality** is the other half. An image exported straight from a design tool at maximum quality can be several times heavier than it needs to be. I set a moderate default quality, then compare by eye on real screens instead of trusting a single number for every image.
+</Callout>
+
+## Responsive images: srcset and sizes
+
+Sending a 2400px-wide image to a phone that displays it at 390px is waste. Sending a 400px image to a wide Retina screen makes it blurry. `srcset` and `sizes` solve this by giving the browser a list of candidates and enough information to choose.
+
+```html
+<img
+  src="/photos/team-800.jpg"
+  srcset="
+    /photos/team-400.jpg   400w,
+    /photos/team-800.jpg   800w,
+    /photos/team-1200.jpg 1200w,
+    /photos/team-1600.jpg 1600w
+  "
+  sizes="(min-width: 1024px) 50vw, 100vw"
+  width="1600"
+  height="1067"
+  alt="The whole team at the offsite"
+/>
+```
+
+### How the browser picks a candidate
+
+The key thing to understand: the browser decides which image to download **before** CSS is applied and layout is computed. It doesn't know how wide the image will be displayed — which is why `sizes` exists. `sizes` is your promise to the browser: "under this viewport condition, the image will be roughly this wide".
+
+Roughly, the process is:
+
+1. Walk `sizes` left to right and take the first entry whose media condition matches. With a 1280px viewport in the example above, the image is `50vw` = 640 CSS pixels wide.
+2. Multiply by the **device pixel ratio (DPR)**. A DPR 2 screen needs about 1280 real pixels.
+3. Pick the `srcset` candidate that fits that number — here `team-1200.jpg` or `team-1600.jpg`.
+
+The browser is allowed to adjust its choice: it may use a larger image already in the cache, or pick a smaller one when the user has a data-saving mode on. So you're *hinting*, not commanding.
+
+Mistakes I see often:
+
+- **Missing `sizes`** with `w` descriptors: the browser assumes the image is `100vw` wide, and a small desktop thumbnail downloads the largest file.
+- **`sizes` that doesn't match the real CSS**: after a layout changes from two columns to three, nobody updates `sizes`. Check in DevTools: the Network tab shows which file was fetched; compare it with the rendered size.
+- **Too few or too many candidates**: three to five widths is usually enough. Every extra width is another variant to generate and cache.
+
+For images with a fixed display size (a 48px avatar, a logo), `x` descriptors are simpler: `srcset="/avatar-48.png 1x, /avatar-96.png 2x"`.
+
+## Lazy or eager: decide by position
+
+`loading="lazy"` tells the browser to defer an image until it's about to enter the viewport. On a long page with dozens of images, that saves a lot of bandwidth and reduces competition with the important resources at the top.
+
+But lazy loading has a cost: the browser has to wait for layout to know where the image is, so lazy images always start loading later. For an image in the first viewport, that's pure delay.
+
+| Image position | `loading` | `fetchpriority` | Notes |
+| --- | --- | --- | --- |
+| LCP image (hero, main product shot) | `eager` (default) | `high` | Must be in the initial HTML, not injected by JavaScript |
+| Other above-the-fold images | `eager` | default | Logo, small avatars — no need to prioritize |
+| Below-the-fold images | `lazy` | default | Most article images, product grids |
+| Carousel slides after the first | `lazy` | `low` if needed | Users may never get to them |
+
+<Callout>
+  The classic mistake: adding `loading="lazy"` to *every* image via a shared component, hero included. I keep the image component lazy by default but require an explicit prop for priority images — and review each page to make sure the LCP image uses it.
+</Callout>
+
+### The `decoding` hint
+
+After downloading, an image still has to be decoded into pixels. `decoding="async"` hints that the browser may decode it without holding up the rest of the page's rendering. It's only a hint, and modern browsers already do most decoding off the main thread, so I treat it as a minor tweak for large non-critical images rather than a major lever. On the LCP image I leave it off, to avoid the risk of the image appearing a frame later than the surrounding text.
+
+## Reserve space to avoid CLS
+
+When the browser doesn't know an image's size, it reserves 0px of height, then pushes everything below down once the image loads — a textbook layout shift. The fix is surprisingly simple: **always set `width` and `height`** on the `img` tag.
+
+Modern browsers use those two attributes to compute an `aspect-ratio` before the image loads, so even when CSS makes the image fluid, the reserved space has the right proportions:
+
+```css
+img {
+  max-width: 100%;
+  height: auto; /* keep the ratio from the width/height attributes while scaling */
+}
+
+/* Image filling a fixed-ratio frame, cropping the excess */
+.card__thumb {
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  object-fit: cover;
+}
+```
+
+`width` and `height` in HTML don't force the image to render at that size — they only provide the *ratio*. CSS still decides the displayed size. CSS background images and third-party embeds don't have these attributes, so they need `aspect-ratio` or `min-height` on the container.
+
+## Art direction with `<picture>`
+
+`srcset` solves "same image, many sizes". But sometimes you need a **genuinely different image** per screen: a wide landscape hero turns the subject into a dot on a phone, so mobile needs a tighter portrait crop. That's art direction, and the tool is the `<picture>` element.
+
+```html
+<picture>
+  <!-- Mobile: portrait crop, subject centered -->
+  <source
+    media="(max-width: 767px)"
+    type="image/avif"
+    srcset="/hero-portrait-600.avif 600w, /hero-portrait-900.avif 900w"
+    sizes="100vw"
+  />
+  <source
+    media="(max-width: 767px)"
+    srcset="/hero-portrait-600.jpg 600w, /hero-portrait-900.jpg 900w"
+    sizes="100vw"
+  />
+  <!-- Desktop: landscape -->
+  <source
+    type="image/avif"
+    srcset="/hero-wide-1200.avif 1200w, /hero-wide-2000.avif 2000w"
+    sizes="100vw"
+  />
+  <img
+    src="/hero-wide-1200.jpg"
+    srcset="/hero-wide-1200.jpg 1200w, /hero-wide-2000.jpg 2000w"
+    sizes="100vw"
+    width="2000"
+    height="900"
+    alt="The team's workspace"
+    fetchpriority="high"
+  />
+</picture>
+```
+
+The browser walks the `<source>` elements top to bottom and uses the first one matching both `media` and `type`. The final `img` is required: it's the fallback, and it's also the element that actually renders — `alt`, `width`, `height`, `loading` and `fetchpriority` all go on the `img`. Each `source` can also declare its own `width` and `height` when the mobile crop has a different ratio.
+
+If you only need format selection (AVIF, then JPEG) without changing composition, you can use `<picture>` with just `type` — or let an image CDN handle it.
+
+## Image CDNs and on-the-fly transforms
+
+Hand-producing every size and format for every image doesn't scale. An **image CDN** (a dedicated service, or your hosting platform's image optimization feature) lets you store one high-quality original and request variants through the URL — width, quality, crop. A variant is generated on the first request and then cached at the edge.
+
+What I care about when using one:
+
+- **Automatic format selection**: the CDN reads the request's `Accept` header to decide between AVIF and WebP. Responses must be cached per format (usually via `Vary: Accept` or a separate cache key), otherwise an older browser might receive AVIF by mistake.
+- **Limit the variants**: only allow a fixed list of widths. If the URL accepts arbitrary widths, anyone can generate endless variants, filling your cache and your bill.
+- **Allow trusted sources only**: don't turn your CDN into a public image proxy for every domain.
+- **Long-lived caching** for versioned or hashed URLs, so repeat visits don't re-download.
+
+## `next/image` in Next.js 16
+
+In Next.js, the `next/image` component wraps most of the above: it generates `srcset`, serves modern formats through the image optimizer, lazy-loads by default, and makes you declare dimensions to avoid CLS.
+
+```tsx
+import Image from "next/image";
+import hero from "./hero.jpg"; // static import: Next.js knows width and height
+
+export function ProductPage({ product }: { product: { name: string; imageUrl: string } }) {
+  return (
+    <>
+      {/* LCP image: not lazy, preloaded */}
+      <Image src={hero} alt="Winter collection" sizes="100vw" preload placeholder="blur" />
+
+      {/* Image filling a fixed-ratio container */}
+      <div style={{ position: "relative", aspectRatio: "4 / 3" }}>
+        <Image
+          src={product.imageUrl}
+          alt={product.name}
+          fill
+          sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
+          style={{ objectFit: "cover" }}
+        />
+      </div>
+    </>
+  );
+}
+```
+
+Things to remember:
+
+- **`preload` replaces `priority`**: as of Next.js 16, `priority` is deprecated and `preload` is the prop for the LCP image — it inserts a preload tag into the head so the image is discovered early. Use it for one or two images per page; preloading everything means prioritizing nothing. For an image that's already in the HTML, `fetchPriority="high"` is a reasonable alternative.
+- **Always pass `sizes` with `fill`** or whenever the image is fluid. With `fill` and no `sizes`, Next.js assumes the image is as wide as the viewport, so a small thumbnail still downloads a large file. With a fixed `width` and no `sizes`, Next.js only generates a `1x`/`2x` `srcset` — fine for avatars and logos, not for fluid images.
+- **Images from external domains** must be declared in `images.remotePatterns` in `next.config`, in the same "trusted sources only" spirit as above.
+- Output formats are configured via `images.formats`; to enable AVIF, add it to the list and accept that the first optimization of each variant is slower.
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const config: NextConfig = {
+  images: {
+    formats: ["image/avif", "image/webp"],
+    remotePatterns: [{ protocol: "https", hostname: "cdn.example.com", pathname: "/products/**" }],
+  },
+};
+
+export default config;
+```
+
+<Callout>
+  The Next.js image optimizer spends CPU the first time it creates each variant. On serverless platforms, each variant may be billed as separate work. For image-heavy sites I check the cost early and consider a custom `loader` that hands transforms off to a dedicated image CDN.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Pick the format by image type: AVIF or WebP for photos, SVG for vectors, PNG when pixels must be exact — and automate the choice.
+- Use `srcset` with a `sizes` that matches the real CSS; the browser picks before layout, based on `sizes` times DPR.
+- Lazy-load below-the-fold images; the LCP image must be eager, present in the initial HTML, and prioritized.
+- Always set `width` and `height` (or `aspect-ratio`) so the browser reserves space and avoids CLS.
+- Use `<picture>` for art direction when mobile needs a different crop, not just a different size.
+- With an image CDN: limit variants, allow only trusted sources, and cache per format.
+- In Next.js 16, use `preload` instead of `priority` for the LCP image, and always pass `sizes` for fluid images.
+
+</Checklist>

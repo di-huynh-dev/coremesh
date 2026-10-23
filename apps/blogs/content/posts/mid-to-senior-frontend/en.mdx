@@ -1,0 +1,159 @@
+---
+title: "From Mid-Level to Senior Frontend: What Actually Changes"
+excerpt: "Becoming senior isn't about coding faster or knowing more frameworks. It's the shift from finishing tasks to owning outcomes. This post covers concrete behaviors, a self-assessment table, and the traps I fell into myself."
+---
+
+<Lead>When I was mid-level, I thought the path to senior was simple: write better code, faster, and learn a few "hard" things like performance and architecture. I did exactly that for almost two years and didn't get promoted. It took a lead telling me bluntly, "You solve tasks really well, but I haven't seen you solve problems," for me to understand where the gap actually was. This post is what I've learned — first as the person trying to grow, and later as the person doing the evaluating.</Lead>
+
+## The core difference: from tasks to outcomes
+
+A good mid-level engineer takes a clearly described ticket and delivers it on time with solid quality. A senior engineer takes a **problem** — often vaguely described — and owns the **outcome**: is the problem actually solved, and what happens after it ships?
+
+A concrete example. The ticket: "Add a skeleton loader to the orders list page."
+
+- The mid-level approach: add the skeleton, get it reviewed, merge. Done.
+- The senior approach: ask *why* we need a skeleton. Turns out users complain the page is slow. Measuring shows the API takes 3 seconds because it returns the entire order history without pagination. The skeleton is a band-aid. The senior engineer may still add it — but also starts a conversation with the backend team about pagination, and measures again after the fix.
+
+You shouldn't always dig that deep. Knowing when to ask "why" and when to just do the ticket is itself a senior skill. But your default should be understanding the problem before solving it.
+
+| Dimension | Mid-level | Senior |
+| --- | --- | --- |
+| Scope | A task, a feature | A problem, a product area or system |
+| Input | Clear requirements | Ambiguous requirements, clarified by you |
+| Typical question | "How do I build this?" | "Should we build this? What exactly? At what cost?" |
+| Definition of done | PR merged | Problem solved, with data to show it |
+| Influence | Their own code | How the whole team works |
+| During incidents | Fixes it when assigned | Steps up, coordinates, writes the postmortem |
+
+## Working with ambiguity
+
+The higher you go, the vaguer the requests. "Checkout needs to be faster." "The design system is a mess." "We need to support multiple languages." Nobody hands you a task list — your job is to turn that sentence into one.
+
+How I approach it:
+
+1. **Clarify the goal with questions:** faster by which metric, measured where, how much is enough? Who is affected?
+2. **Find the constraints:** deadline, people available, what must not change.
+3. **Propose a few options**, each with the price it carries.
+4. **Commit to one direction and split it into small, shippable steps**, each valuable on its own.
+
+Step 4 matters a lot. A plan that "shows results in three months" almost always fails. Slice it so that something runs in production every few weeks — it lowers risk and builds trust.
+
+## Design docs and trade-off thinking
+
+Seniors don't need to write long documents, but they do need to **write down their thinking before coding** for changes with wide impact. A good design doc isn't there to prove you're smart; it's there so others can spot holes early — while fixing them is still cheap.
+
+Here's the outline I use, usually one or two pages:
+
+```md
+# Move the checkout form to Server Actions
+
+## Context
+Why now. Current numbers (submit error rate, response time).
+
+## Goals / Non-goals
+- Goal: reduce submit failures caused by flaky connections.
+- Non-goal: redesigning the checkout UI.
+
+## Proposal
+The main approach, in enough detail for others to review.
+
+## Alternatives considered
+- Keep as is + client-side retries: cheap, but doesn't fix the root cause.
+- Adopt a new form library: migration cost, unclear benefit.
+
+## Risks and mitigations
+Roll out behind a feature flag, watch error rates, have a rollback plan.
+
+## Rollout steps
+1. ...
+2. ...
+
+## Open questions
+```
+
+"Alternatives considered" is the section I read most carefully when reviewing. It shows whether the author thought about trade-offs or just picked what they liked. No solution is free: caching means dealing with invalidation, splitting into micro-frontends trades for operational complexity, adopting a library trades for a dependency to maintain. Being able to say "I chose A and accept downside X, because in this context Y matters more" is one of the clearest signs of senior thinking.
+
+<Callout>
+  Not every change needs a design doc. My rule: if it affects several teams, is hard to roll back, or I'm unsure about the direction — I write one. Tweaking a component? No.
+</Callout>
+
+## Multiplying your impact: mentoring and communication
+
+A senior working alone, however good, is still one person. Most of a senior's value comes from making other people better.
+
+### Mentoring isn't answering questions
+
+When a junior asks something, the fastest path is giving the answer. The better path — when it isn't urgent — is asking back: "What have you tried? Where do you think the problem is?" A few concrete behaviors:
+
+- **Review code to teach, not to catch.** Explain *why*, and separate "must fix" from "suggestion" clearly. Call out what was done well — it sounds cheesy, but it tells people what to repeat.
+- **Hand out work that's slightly beyond someone's current level**, then support from behind.
+- **Pair program** on the hard parts instead of doing them yourself.
+
+### Communicating across team boundaries
+
+Frontend sits at the intersection of product, design, backend and QA. A senior frontend engineer translates between them: explaining to a PM why a "simple" feature takes two weeks, negotiating API shapes with backend, telling a designer that an animation will hurt INP on mid-range phones — and proposing an alternative.
+
+A small habit that works: **write updates down**. After an important meeting, send a summary of decisions and action items. On a long project, send a short weekly update: what's done, what's in progress, what's blocked. People will trust you more simply because they don't have to guess.
+
+## Owning production
+
+Code that works on your machine isn't done. Seniors care about what happens after the merge:
+
+- **A way to know when it breaks:** error tracking, logs, Web Vitals, dashboards for critical flows.
+- **A way to turn it off when it breaks:** feature flags, a rollback plan.
+- **When there's an incident, step up:** you don't need to have caused the bug to take it on. Coordinate, communicate with stakeholders, mitigate first, then fix the root cause.
+- **Blameless postmortems:** focus on the system that allowed the failure, and what changes so it doesn't repeat.
+
+I've seen technically excellent engineers who "disappear" whenever production has a problem. However clean their code, it's hard to trust them with important things.
+
+## A self-assessment table
+
+Rate yourself from 1 (rarely) to 3 (consistently) on each row. There's no passing score — the point is to find your two or three weakest areas to focus on for the next few months.
+
+| Behavior | Question to ask yourself |
+| --- | --- |
+| Understand before solving | Do I usually ask "why" before starting a big task? |
+| Handle ambiguity | When a request is unclear, do I clarify it and propose a plan? |
+| Write things down | Did my last big change have a doc others could review? |
+| Talk about trade-offs | Can I explain why I didn't choose the alternatives? |
+| Slice to ship | Does my work reach production regularly, in small pieces? |
+| Make others better | Who did I clearly help grow last quarter? |
+| Cross-team communication | Do PMs, designers and backend engineers come to me for input? |
+| Own production | Do I know how my features behave after they ship? |
+
+## Common traps
+
+**Just coding more, and harder.** This was my own trap. Taking more tickets, working longer hours, writing "clever" abstractions. Output went up, but the scope of my impact didn't change. Overly clever abstractions can even slow the team down.
+
+**Becoming a gatekeeper.** With knowledge comes the temptation of "everything goes through me." Blocking PRs over personal-taste nitpicks, keeping knowledge in your head instead of writing it down. It feels important, but you're actually making the team depend on you — and becoming the bottleneck.
+
+**Chasing new tech.** Knowing the latest framework doesn't make you more senior. Knowing *when not* to use it does.
+
+**Waiting to be given senior work.** Most people get promoted because they've already been working at the next level for a while, not the other way around. You don't need a title to write a design doc, onboard a new teammate, or take on an incident.
+
+<Callout>
+  Senior behavior doesn't mean taking on everything. Overcommitting and burning out is a trap too. Saying "no" — with a reason and an alternative — is an equally important senior skill.
+</Callout>
+
+## Making your impact visible
+
+Good work nobody knows about is hard to recognize — especially "invisible" work like preventing incidents, mentoring or cleaning up tech debt. I'm not talking about bragging, but about making the work easy to see:
+
+- **Keep a brag document:** a few lines each week — what you did, what it changed, with numbers if possible. When review season comes, you won't have to reconstruct six months from memory.
+- **Write about outcomes, not activity:** "cut product page LCP from 4.1s to 2.3s" is far stronger than "optimized images."
+- **Share knowledge openly:** an internal tech talk, a docs page, a blog post. It helps the team and shows how deeply you understand the problem.
+- **Talk directly with your manager:** ask plainly, "What am I missing to reach senior?", then agree on a few concrete goals. Don't let your review be the first time you hear feedback.
+
+## Key takeaways
+
+<Checklist>
+
+- Seniors own outcomes, not just tasks — understand the "why" before building.
+- Turn ambiguous requests into a plan, and slice it so you ship regularly.
+- Write down your thinking for big changes, and state the trade-offs of each option.
+- Multiply your impact through mentoring, teaching-oriented reviews and clear cross-team communication.
+- Own production: monitor it, be able to turn things off, and step up during incidents.
+- Avoid the traps: just coding more, gatekeeping, chasing tech, waiting to be handed senior work.
+- Record outcomes with numbers, and talk openly with your manager about your growth path.
+
+</Checklist>

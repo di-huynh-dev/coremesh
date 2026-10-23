@@ -1,0 +1,222 @@
+---
+title: "A Mental Model for CSS Layout: From Normal Flow to Flexbox and Grid"
+excerpt: "Normal flow, block vs inline, flexbox (one dimension, content-out) vs grid (two dimensions, layout-in), intrinsic sizing, and why min-width: 0 rescues overflowing flex items — so you write layout from understanding instead of trying properties until it works."
+---
+
+<Lead>Early in my career I wrote CSS layout by trial and error: add `display: flex`, if that didn't work add `width: 100%`, if that still didn't work add `overflow: hidden`. The layout worked, but I couldn't explain why, and the next time the same problem came up I had to start guessing again. What changed how I work wasn't a new property — it was a **mental model** of how the browser decides each element's size and position. This post is that model, written for beginners, though I hope people already comfortable with CSS find a few "oh, so that's why" moments too.</Lead>
+
+## Everything starts with normal flow
+
+Before flexbox or grid ever enter the picture, every element already has a default place called **normal flow**. If you write no layout CSS at all, the page is still arranged — and understanding that arrangement is the foundation for everything else.
+
+Normal flow has two main kinds of elements:
+
+- **Block** (`div`, `p`, `h1`, `section`...): stacked top to bottom, each taking the **full available width** of its parent, with a height equal to its content.
+- **Inline** (`span`, `a`, `strong`, plain text...): sit on the same line like words in a paragraph and wrap when they run out of room. `width` and `height` have no effect, and vertical margins and padding don't push other lines away.
+
+`inline-block` is the hybrid: it sits on a line like inline content but accepts `width`, `height` and padding like a block.
+
+One key observation: **width flows down, height flows up**. A block takes its width from its parent, while its height is computed from its children. That's why `height: 100%` so often doesn't do what you expect: if the parent has no definite height, the percentage has nothing to resolve against.
+
+<Callout>
+  **Margin collapsing** only happens in normal flow between blocks: the bottom margin of one element and the top margin of the next (when both are positive) don't add up — you get the larger of the two. Inside flex and grid containers, item margins never collapse. If you've ever seen spacing mysteriously "disappear", this is usually the culprit.
+</Callout>
+
+## Formatting contexts: each container sets the rules
+
+When you put `display: flex` or `display: grid` on an element, you don't change how *that element* sits in the page (it still behaves like a block to the outside world). You change **the rules for laying out its direct children**. Each such rule set is called a formatting context.
+
+Practical consequences:
+
+- Only **direct children** become flex items or grid items. Grandchildren still follow normal flow inside their own parent.
+- Some properties only mean something in a particular context: `justify-self` works in grid but is ignored on flex items; `float` is ignored on flex and grid items.
+- `display: flow-root` creates a new block formatting context — the modern way to contain floats and stop margins collapsing through, replacing the old clearfix hacks.
+
+## Flexbox vs grid: two different ways of thinking
+
+The quickest way I distinguish them: **flexbox is content-out**, **grid is layout-in**.
+
+With flexbox, you hand over a row (or column) of items and let their own sizes decide how much room they take. Extra space is shared out by `flex-grow`; missing space is taken back by `flex-shrink`. Flexbox works in **one dimension**: even when `flex-wrap` spreads items over several lines, each line is computed independently, so columns don't line up across lines.
+
+With grid, you draw a frame of tracks (rows and columns) first, then place items into cells. Sizes come from the track definitions; items live inside them. Grid controls **two dimensions at once**, so cells in the same column always line up.
+
+| | Flexbox | Grid |
+| --- | --- | --- |
+| Dimensions | One (row or column) | Two (rows and columns together) |
+| Sizes come from | The items' content, then distributing extra/missing space | The container's track definitions |
+| Good for | Nav bars, button groups, centering, small components | Page shells, card lists, multi-column forms, anything that must align |
+| Wrapping | Each line on its own, columns don't align | Items always land in grid cells |
+| Sign you picked wrong | Computing `calc` percentages per item to make columns line up | Setting per-item content-sized columns everywhere |
+
+In practice I nest them: grid for the big frame, flexbox for the components inside each cell.
+
+### What `flex: 1` actually means
+
+`flex` is shorthand for three values: `flex-grow`, `flex-shrink` and `flex-basis`. The common gotcha:
+
+```css
+.item {
+  flex: 1;
+  /* = flex-grow: 1; flex-shrink: 1; flex-basis: 0%;
+     Items share space equally, regardless of how much content they have */
+}
+
+.item-auto {
+  flex: auto;
+  /* = flex: 1 1 auto;
+     Each item starts from its content size, then the leftover is shared.
+     An item with more text ends up wider */
+}
+
+.item-fixed {
+  flex: none;
+  /* = flex: 0 0 auto; never grows, never shrinks — good for icons and avatars */
+}
+```
+
+For three equal columns, use `flex: 1`; for tabs with natural widths that still fill the row, use `flex: auto`.
+
+## Intrinsic sizing: let the content speak
+
+Two keywords helped me understand both flexbox and grid: **min-content** and **max-content** — the intrinsic sizes of content:
+
+- **`max-content`**: as wide as the content would be if it never wrapped. A long sentence sits on a single line.
+- **`min-content`**: as narrow as possible without overflowing — usually the longest word (or the widest image).
+- **`fit-content`**: `max-content` if there's room, otherwise shrink, but never below `min-content`. This is exactly how a `float` or an `inline-block` works out its width.
+
+In grid, these combine with `minmax()` to describe flexible tracks:
+
+```css
+.layout {
+  display: grid;
+  /* Sidebar flexes between 200px and 280px, content takes the rest;
+     minmax(0, 1fr) lets that column shrink below min-content so it can't overflow (see below) */
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  gap: 24px;
+}
+
+.cards {
+  display: grid;
+  /* As many columns as fit, each at least 240px wide */
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+```
+
+### `auto-fill` vs `auto-fit`
+
+Both create as many columns as fit at the given minimum size. The difference only appears when **there are fewer items than columns that fit**:
+
+- **`auto-fill`** keeps the empty columns. Three cards on a screen that fits five columns take three columns and leave two empty — cards stay the size they'd be in a full list.
+- **`auto-fit`** collapses empty columns to zero, so the `1fr` of the occupied columns stretches to fill the row — the three cards grow to span the full width.
+
+I use `auto-fill` for product grids (cards shouldn't balloon when a search returns two results) and `auto-fit` when I want a few items to spread across the row.
+
+## Why `min-width: 0` fixes overflowing flex items
+
+This is the layout bug I hit most often, and also where the mental model pays off most clearly. The setup: a flex row with an avatar and a text block; the text block has `flex: 1` and a long title with `text-overflow: ellipsis`. You expect the title to be truncated with "...", but instead the whole row overflows its container.
+
+The reason: flex items default to `min-width: auto`, and for a flex item `auto` means **don't shrink below the content's min-content size**. The title has `white-space: nowrap`, so its min-content width is *the full length of the title*. `flex-shrink` wants to shrink the item, but the `min-width: auto` floor won't let it.
+
+```css
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.row__avatar {
+  flex: none;
+}
+
+.row__body {
+  flex: 1;
+  min-width: 0; /* remove the min-content floor → the item may shrink */
+}
+
+.row__title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+```
+
+`min-width: 0` (or `overflow: hidden` on the item, which also brings the automatic minimum down to 0) lets the item shrink, and only then does the child get a chance to truncate. In a column flex container (`flex-direction: column`) the same thing happens vertically, and the fix is `min-height: 0`.
+
+<Callout>
+  Grid has the same root cause: a `1fr` track has a minimum of `auto`, so a long code block or a wide table can push the column wider. That's why I write `minmax(0, 1fr)` instead of `1fr` for the main content column — especially in blog layouts with code blocks.
+</Callout>
+
+## `gap` instead of margins between items
+
+Spacing between items used to be done with margins, plus tricks like `:last-child` to remove the final margin, or negative margins on the container to compensate. Now `gap` is supported for both flexbox and grid in modern browsers, and I use it by default.
+
+Why I prefer `gap`:
+
+- **Spacing is the container's responsibility**, not each item's. A child component doesn't need to know who its neighbors are.
+- No extra space at the start or end, even when items wrap onto several lines.
+- No margin-collapsing surprises.
+
+Margins still have their place: pushing an item to one side in flex (`margin-left: auto` to push "Sign out" to the end of a nav bar), or spacing between content blocks in an article.
+
+## Recipes I use all the time
+
+```css
+/* 1. Center an element both ways */
+.center {
+  display: grid;
+  place-items: center;
+}
+
+/* 2. Footer stays at the bottom even with short content */
+.page {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr auto; /* header, main, footer */
+}
+
+/* 3. Nav bar: logo on the left, actions on the right */
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.nav__actions {
+  margin-left: auto;
+}
+
+/* 4. Readable, centered content with a max width */
+.prose {
+  max-width: 68ch;
+  margin-inline: auto;
+  padding-inline: 16px;
+}
+
+/* 5. Media object: fixed image, flexible text */
+.media {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+```
+
+Each recipe can be explained with the sections above: `place-items` aligns the item inside its grid cell; `1fr` soaks up the leftover space for `main`; `margin-left: auto` eats all remaining space in the flex row; `ch` is measured in character widths to keep lines readable; `minmax(0, 1fr)` prevents overflow.
+
+<Callout>
+  When a layout looks wrong, I open DevTools before touching the CSS. Both Chrome and Firefox have flex and grid overlays that show tracks, gaps and the size of each item. Just seeing how wide a track actually is usually tells me whether the problem is the content, the track definition, or the `min-width` floor.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Normal flow is the foundation: blocks stack vertically and take width from their parent, inline content flows like text; height comes from content.
+- `display: flex` and `display: grid` change the rules for direct children, not how the container sits on the page.
+- Flexbox is content-out and one-dimensional; grid is layout-in and two-dimensional. Combining them is normal.
+- `min-content`, `max-content`, `fit-content` and `minmax()` are the vocabulary for flexible sizing.
+- `auto-fill` keeps empty columns; `auto-fit` collapses them so items stretch.
+- A flex item overflowing? Add `min-width: 0`. A grid column overflowing? Use `minmax(0, 1fr)`.
+- Use `gap` for spacing between items; keep margins for pushing items around and spacing content blocks.
+
+</Checklist>

@@ -1,0 +1,205 @@
+---
+title: "Code Review Is a Skill: How to Give It and How to Take It"
+excerpt: "What reviewers should look at first, how to write comments people learn from instead of bristle at, keeping PRs small, handling disagreement — and letting tools handle formatting so humans can focus on what matters."
+---
+
+<Lead>When I started my career, I thought code review meant "finding mistakes": the more problems I spotted, the smarter I looked. It took me a few years to understand that a good review isn't measured by the number of comments, but by whether the merged code is more correct, easier to maintain, and whether both people learned something. Reviewing is a skill — you can practice it, you can do it badly, and it directly affects how fast the whole team moves. This post is what I've learned from a lot of PRs, on both sides of the table.</Lead>
+
+## What is code review for?
+
+Before talking about how to review, it's worth agreeing on why. As I see it, code review serves four purposes, in decreasing order of importance:
+
+1. **Catch bugs before production** — wrong logic, missed edge cases, security holes.
+2. **Keep the codebase easy to change** — sensible design, no duplication, no accidental tech debt.
+3. **Share knowledge** — at least two people understand every part of the code, and newcomers learn how the team works.
+4. **Keep things consistent** — naming, folder structure, shared patterns.
+
+Notice that "make the formatting pretty" isn't on the list. Not because it doesn't matter, but because it's a job for tools, not people (more on that at the end).
+
+<Callout>
+  **Review doesn't replace tests.** A reviewer reads code; they can't run every branch in their head. If a PR changes important logic without tests, the first question should be "how do we know this works?" — not starting to read line by line.
+</Callout>
+
+## What reviewers should look at first
+
+The most common mistake I see is reading a PR top to bottom and commenting on the first thing that catches the eye — usually a variable name or a semicolon. By the time the real problem shows up in the fifth file, there are already twenty small comments and the author can't tell which one actually matters.
+
+I read in the opposite order: from the big picture down to details.
+
+### 1. Understand the context
+
+Read the PR description and the linked ticket. What problem does this PR solve? If I can't answer that after two minutes, that's already the first piece of feedback: the description needs to be clearer.
+
+### 2. Correctness
+
+- Does the code do what it claims to do?
+- Edge cases: empty lists, `null` values, network failures, double clicks, timezones.
+- Any race conditions — for example two requests resolving out of order?
+- Security: is user data escaped, are permissions checked on the server?
+
+### 3. Design
+
+- Does the logic live in the right place, or is one component doing the work of three?
+- Is this introducing an abstraction with exactly one caller?
+- If the requirement changes slightly next month, how many files need to change?
+
+### 4. Tests
+
+- Do the tests check *behavior* or just implementation details?
+- If I deliberately broke the main logic, would any test fail?
+
+### 5. Only then, the details
+
+Naming, code comments, a terser way of writing something. These have value, but they should be clearly marked as non-blocking.
+
+| Severity | Example | Blocks merge? |
+| --- | --- | --- |
+| **Must fix** | Wrong logic, security hole, data loss | Yes |
+| **Should fix** | Hard-to-extend design, missing tests for an important branch | Usually, negotiable |
+| **Suggestion** | Alternative approach, clearer name | No |
+| **Nit** | Personal preference, tiny details | No |
+
+## Writing comments that teach
+
+The same point, phrased differently, decides whether the author fixes it thinking "oh, nice" or "here we go again".
+
+### Ask instead of command
+
+A question leaves room for you to be wrong — and you often are, because the author usually has context you don't.
+
+```text
+❌ This is wrong, you need useEffect here.
+
+✅ My understanding is this value only needs to change when `userId`
+   changes — if so, would computing it directly during render be
+   enough, or is there a reason it needs an effect that I'm missing?
+```
+
+### Explain the "why"
+
+A comment that only says "change this" fixes one spot. A comment that explains the reason stops the author from repeating the mistake in ten other places.
+
+```text
+❌ Don't use the index as key.
+
+✅ This list can be reordered, so using the index as key will make
+   React attach the old item's state to the new item (an input
+   keeping the wrong value, for example). `item.id` is safer.
+```
+
+### Label severity with prefixes
+
+My team uses a few simple prefixes at the start of each comment. That alone tells the author which comments to deal with first:
+
+```text
+blocking: This handler doesn't check permissions on the server — any
+          user could edit someone else's order by changing the id.
+
+suggestion: We could extract the date formatting into a shared
+            helper, since the Invoice page does exactly the same.
+
+nit: `data2` is a bit hard to guess — maybe `filteredOrders`?
+
+question: Why polling every 5 seconds instead of revalidating on
+          focus? Just asking to understand, not a request.
+```
+
+### Suggest, don't just criticize
+
+If you see a better way, write the code. GitHub and GitLab both have a "suggestion" feature the author can apply with one click — that saves a whole round trip.
+
+### Don't forget to praise
+
+Not polite filler. When you see a clever solution or a carefully written test, say so. It tells the author what to keep doing — and that's feedback too.
+
+<Callout>
+  **My rule:** if a comment thread goes past three back-and-forths without resolution, stop typing and get on a five-minute call. Text strips out tone, and a short conversation often settles what ten comments can't. Afterwards, write the conclusion in the PR so others can follow it.
+</Callout>
+
+## Keeping PRs small is the author's job
+
+Good reviews start with PRs that are easy to review. A 1,500-line PR almost always gets an "LGTM" after ten minutes — not because it's good, but because nobody has the energy to read it carefully. A 200-line PR gets real feedback.
+
+A few ways I keep PRs small:
+
+- **Separate refactors from behavior changes.** The first PR renames things and moves files without touching logic. The next one adds the feature. The reviewer gets through the first one quickly because they know nothing behavioral changed.
+- **Use feature flags** to merge a large feature in pieces without turning it on for users.
+- **Write a proper PR description:** the problem, the approach, what you deliberately *didn't* do, how to test manually, and screenshots if the UI changed.
+- **Review yourself first.** Open your own diff in the review UI and read it like a stranger. I always find at least one thing I forgot to remove — a `console.log`, a TODO, an unrelated file.
+
+## Receiving feedback without ego
+
+The receiving side is harder than people think, especially after you've spent a week on that code.
+
+- **You are not your code.** A comment points at a problem in the code, not at your ability. It sounds like a cliché, but I have to remind myself of it fairly often.
+- **Assume good intent.** A curt comment usually means the reviewer was in a hurry, not that they're annoyed with you.
+- **Acknowledge and reply to every comment.** If you fixed it, say "fixed in commit abc". If you disagree, explain why. Don't silently ignore it.
+- **Ask when you don't understand.** "Could you expand on that?" beats guessing and fixing in the wrong direction.
+- **Track what repeats.** If three PRs in a row get the same comment, that's something to learn properly — or something to turn into a lint rule.
+
+## When you disagree
+
+Disagreement in review is normal and healthy. It only becomes a problem when it drags on or turns personal. I work through it in this order:
+
+1. **Separate facts from preferences.** "This breaks when the list is empty" is a fact you can verify. "I'd write it differently" is a preference — and the author gets to decide preferences.
+2. **Find data.** Write a small test, measure performance, check the official docs. Plenty of debates end the moment there's a number on the table.
+3. **Lean on team conventions.** If the team has one, follow it. If not, this is the moment to add it.
+4. **Know when to let go.** If the change is harmless and easy to fix later, merge it and open a ticket. Blocking a PR for three days over a small difference costs far more than the difference itself.
+5. **Bring in a third person** when it's genuinely stuck — the tech lead, or whoever knows that code best.
+
+## Let machines do what machines do better
+
+Every comment about whitespace, quote style or import order is a comment that shouldn't need to exist. Push all of it into tooling so humans only review what needs a human:
+
+```bash
+# Formatting and linting run automatically before commit
+bunx prettier --check .
+bunx eslint . --max-warnings 0
+bunx tsc --noEmit
+```
+
+```js
+// lint-staged.config.mjs — only runs on staged files, so it stays fast
+const config = {
+  "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
+  "*.{css,md,json}": ["prettier --write"],
+};
+
+export default config;
+```
+
+On top of that, CI runs type checks, tests and the build for every PR. When CI is green, the reviewer knows the mechanical parts are fine and can spend their full attention on logic and design.
+
+A few other things worth automating:
+
+- **A PR description template** with required sections: context, changes, how to test.
+- **CODEOWNERS** to automatically assign the right reviewers for each area of the code.
+- **Preview deployments** for every PR, so reviewers can click through the UI instead of guessing from the diff.
+
+## The checklist I actually use
+
+This is the list I skim for every PR — not to tick every box, but so I don't forget the important things:
+
+| Question | Notes |
+| --- | --- |
+| What problem does this solve, and does it match the ticket? | If unclear, ask before reading the code |
+| Is the main logic correct across edge cases? | Empty, network errors, repeated clicks, permissions |
+| Are important behaviors tested? | Would a test fail if the logic broke? |
+| Will the design be easy to change later? | Avoid premature abstraction and big duplication |
+| Is the UI accessible? | Labels, focus, keyboard control |
+| Any obvious performance risk? | API calls in a loop, rendering huge lists |
+| Have I labeled the severity of my comments? | `blocking`, `suggestion`, `nit`, `question` |
+
+## Key takeaways
+
+<Checklist>
+
+- Code review is for catching bugs, keeping code changeable and sharing knowledge — not for policing formatting.
+- Read from big picture to details: context, correctness, design, tests, and only then nits.
+- Phrase comments as questions, explain why, label severity with prefixes, and suggest concrete fixes.
+- Authors own keeping PRs small, describing them well, and reviewing themselves first.
+- Receive feedback assuming good intent; reply to every comment; ask when unclear.
+- In disagreements, separate facts from preferences, find data, and know when to let go.
+- Automate formatting, linting and type checks so humans only review what needs a human.
+
+</Checklist>

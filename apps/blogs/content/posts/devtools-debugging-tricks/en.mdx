@@ -1,0 +1,153 @@
+---
+title: "Debugging Like a Senior with Chrome DevTools"
+excerpt: "Conditional breakpoints, logpoints, DOM breakpoints, XHR/fetch breakpoints, console utilities like debug(), monitorEvents(), $0 and copy(), the Network tab, the Performance panel and local overrides — plus the four-step process I use to find causes instead of guessing."
+---
+
+<Lead>The biggest difference I see between junior and experienced debuggers isn't knowing more tools — it's guessing less. Juniors sprinkle `console.log` everywhere, reload, read, and sprinkle some more. Experienced engineers set one breakpoint in the right place and let the browser stop exactly when the problem happens. This post covers the DevTools features I use every week and, more importantly, the process that tells me which one to reach for.</Lead>
+
+## Beyond `console.log`: smarter breakpoints
+
+`console.log` isn't wrong — it's quick and familiar. The problem is that every new log means editing code, waiting for a build, reloading and reproducing the bug again. When a bug only shows up on the 500th iteration or after a long sequence of actions, that loop gets expensive. A breakpoint lets you stop and *see everything* — scope, call stack, variable values — without changing a line of code.
+
+### Conditional breakpoints
+
+In the Sources panel, right-click a line number and add a conditional breakpoint. You type an expression, and the debugger only pauses when it's true:
+
+```js
+// Pause only on the item that breaks, instead of clicking "Resume" 500 times
+item.id === "order-1042" && item.total < 0
+```
+
+This is the tool I use most for bugs inside loops, in handlers that fire constantly (scroll, mousemove), or in components that render hundreds of times.
+
+### Logpoints
+
+From the same context menu, a logpoint prints a value to the console every time that line runs — **without pausing** and **without editing the source**. It's `console.log` with no rebuild, no risk of accidentally committing a log line, and it works on production code too (with source maps). When you need to watch a value change over time and pausing would break the behavior (animations, drag and drop), a logpoint is the right choice.
+
+### Related features worth knowing
+
+- **Pause on exceptions:** stop right at the line that throws, including errors swallowed by a `catch` — very useful when a promise is rejected silently.
+- **Ignore list:** mark framework and library scripts so that stepping through code skips them and only stops in your own code.
+- **Watch expressions and Live expressions:** track an expression while paused, or continuously right in the console.
+- The `debugger;` statement is still handy for pausing in a branch that's awkward to breakpoint — just don't forget to remove it before committing.
+
+## Breakpoints that don't need a line number
+
+Often you *don't know* which code causes the problem. You only see a symptom: an element disappears on its own, a strange request goes out, a click does something unexpected. DevTools has breakpoints tied to *events* instead of lines.
+
+| Breakpoint type | Pauses when | I use it when |
+| --- | --- | --- |
+| **DOM breakpoint — subtree modifications** | A node's children are added, removed or replaced | "Something" inserts or removes elements in a container |
+| **DOM breakpoint — attribute modifications** | A node's attributes change | A class or style changes unexpectedly |
+| **DOM breakpoint — node removal** | The node itself is removed from the DOM | An element vanishes on its own |
+| **XHR/fetch breakpoint** | A request whose URL contains your string is sent | I don't know which code calls an API |
+| **Event listener breakpoint** | A type of event is handled (click, keydown, …) | I don't know which handler runs on click |
+
+DOM breakpoints are set from the context menu on an element in the Elements panel. When the debugger pauses, the call stack shows exactly which code modified the DOM — often the fastest way to find the culprit in an unfamiliar codebase or when a third-party script is messing with the page.
+
+XHR/fetch breakpoints and event listener breakpoints live in the Sources panel sidebar. With event listener breakpoints in a React app, you'll usually pause inside React's event delegation code first; add the library to the ignore list to step straight to your own handler.
+
+<Callout>
+  When the debugger pauses inside async code, look at the call stack: DevTools stitches async segments together, so you can often see which code created the promise or `setTimeout` that led here. That's frequently a better clue than the line you're paused on.
+</Callout>
+
+## Console utilities few people use
+
+The DevTools console comes with utility functions that only exist when you type in the console (they're not available to the page's own code):
+
+```js
+// $0: the element currently selected in the Elements panel ($1 is the previous one, ...)
+$0.getBoundingClientRect();
+
+// $ and $$: shorthands for querySelector and querySelectorAll ($$ returns a real array)
+$$("img").filter((img) => !img.alt);
+
+// copy(): copy a value to the clipboard — handy for grabbing JSON from state or responses
+copy(JSON.stringify(window.__APP_STATE__, null, 2));
+
+// debug(fn): pause the debugger whenever the function is called; undebug(fn) to stop
+debug(formatPrice);
+
+// monitorEvents: log every event of the given types on an element
+monitorEvents($0, ["focus", "blur"]);
+unmonitorEvents($0);
+
+// getEventListeners: see which listeners an element has
+getEventListeners($0);
+
+// $_: the result of the last evaluated expression
+```
+
+The two I find most valuable: `debug(fn)` when I know a function's name but can't be bothered to find its file to set a breakpoint, and `monitorEvents` when debugging focus — for instance, figuring out why focus jumps out of an input. Pair it with `document.activeElement` as a Live expression and you can see where focus is in real time.
+
+## The Network tab: more than a request list
+
+### Throttling
+
+Timing bugs (race conditions, spinners that never stop, an old response arriving after a new one) often only appear on slow networks. The Network tab has presets for simulating slow connections and lets you create custom profiles. When chasing a race condition, I use a very slow profile to stretch the gap between requests, which makes the wrong ordering easy to see.
+
+### Blocking requests
+
+Right-click a request and block it by URL or by domain. I use this to:
+
+- Check how the page behaves when a third-party script (analytics, a chat widget) fails to load.
+- Check the UI's error states when a specific API fails, without touching the backend.
+- Measure how much a script affects performance by comparing with and without it.
+
+### Initiator and other options
+
+The **Initiator** column and tab tell you *what* caused a request: a tag in the HTML, a CSS file, or some JavaScript — with a call stack. It's the fastest way to answer "why is this API called twice?".
+
+A few options I toggle often: **Preserve log** to keep requests across navigations and redirects; **Disable cache** during development (but turn it off when checking cache behavior); and copying a request as `fetch` or cURL to replay it outside the browser.
+
+## The Performance panel and local overrides
+
+### Performance: read just enough
+
+The Performance panel looks intimidating, but to debug "why does clicking this button stutter?" you only need a few things:
+
+1. Enable CPU throttling (developer machines are usually much faster than users' devices), hit record, interact, stop.
+2. Look at the **Main** track: long tasks are clearly marked. Zoom into the longest one.
+3. Read the flame chart top-down: wide bars are what take time. Where do your function names show up?
+4. Switch to summary views like **Bottom-Up** to see which functions spend the most self time.
+
+I always profile a production build — React's development build runs many extra checks and is noticeably slower, so its numbers don't reflect reality.
+
+### Local overrides
+
+Local overrides let you edit a file (or a response's headers) that the page loads, save the edit to a folder on your machine, and have DevTools serve your version instead of the server's on later loads. You enable it from the Sources panel (pick a folder and grant access), or choose to override content directly from a request in the Network tab.
+
+Practical uses: try a CSS or JS fix **directly on production** without deploying, fake an API response with extreme data (very long names, empty arrays), or add a header like `Cache-Control` or a CSP to see how the page reacts.
+
+<Callout>
+  **Remember to turn overrides off when you're done.** I once spent half an hour on a bug that "couldn't be reproduced" on a colleague's machine, only because I was still overriding a file from the week before. DevTools marks overridden files, but it's easy to miss.
+</Callout>
+
+## A systematic debugging process
+
+Tools are only half of it. The other half is process, and these are the four steps I try to stick to even when I'm in a hurry:
+
+1. **Reproduce.** Find the smallest sequence of steps that triggers the bug *every time*. If you can't reproduce it, you can't fix it yet — the job then is gathering more data (logs, environment, browser, account), not trying fixes.
+2. **Isolate.** Shrink the search space: is it frontend or backend (check the response in Network)? Which component? Does it still happen with third-party scripts blocked? For bugs that appeared after a release, `git bisect` narrows down the commit remarkably fast.
+3. **Hypothesize.** State it as a concrete sentence: "The list has duplicates because the page 2 request resolves before page 1." A good hypothesis is testable and tells you where to put the breakpoint.
+4. **Verify.** Use the tools above to prove or disprove the hypothesis *before* fixing anything. After the fix, rerun the exact reproduction steps and, if you can, write a test that catches the bug.
+
+The biggest trap is jumping from step 1 straight to "fix": add a `setTimeout`, an `?.`, a new `key` — the symptom disappears but the cause is still there, and it comes back in a different shape.
+
+<Callout>
+  When I'm stuck for more than 30 minutes, I write down what I *know for sure* and what I'm *assuming*. Very often the bug is hiding in an assumption I never checked — "this function definitely runs only once", "the API definitely returns an array".
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Use conditional breakpoints and logpoints instead of the add-log, rebuild, reload loop.
+- Don't know which code is responsible? Use DOM, XHR/fetch and event listener breakpoints, then read the call stack.
+- Learn a few console utilities: `$0`, `$$`, `copy()`, `debug()`, `monitorEvents()`, `getEventListeners()`.
+- Network tab: throttle to expose race conditions, block requests to test failures, use Initiator to see who called.
+- Profile production builds with CPU throttling; read the Main track and find the longest task.
+- Use local overrides to try fixes on production — and turn them off afterwards.
+- Reproduce, isolate, hypothesize, verify — don't fix before you understand.
+
+</Checklist>
