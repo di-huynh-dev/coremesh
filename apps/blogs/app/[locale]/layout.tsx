@@ -6,23 +6,31 @@ import { isBlogLocale } from "@/lib/content/text";
 import type { Metadata } from "next";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages, getTranslations, setRequestLocale } from "next-intl/server";
-import { Be_Vietnam_Pro, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { ViewTransition } from "react";
 import "../globals.css";
 import { Providers } from "../providers";
 
-const beVietnam = Be_Vietnam_Pro({
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "500", "600", "700"],
+// Keep fonts local: Google Fonts can return URLs Turbopack cannot parse.
+const beVietnam = localFont({
+  src: [
+    { path: "../fonts/BeVietnamPro-Regular.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/BeVietnamPro-Medium.woff2", weight: "500", style: "normal" },
+    { path: "../fonts/BeVietnamPro-SemiBold.woff2", weight: "600", style: "normal" },
+    { path: "../fonts/BeVietnamPro-Bold.woff2", weight: "700", style: "normal" },
+  ],
   variable: "--font-be-vietnam",
   display: "swap",
 });
 
-const jetBrainsMono = JetBrains_Mono({
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "500"],
+const jetBrainsMono = localFont({
+  src: "../fonts/JetBrainsMono.woff2",
+  weight: "400 500",
+  style: "normal",
   variable: "--font-jetbrains-mono",
   display: "swap",
+  fallback: ["monospace"],
+  adjustFontFallback: false,
 });
 
 const siteTitle = "DiCodeWeb | Engineering Notes & Systems Thinking";
