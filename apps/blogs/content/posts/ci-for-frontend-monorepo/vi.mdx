@@ -1,0 +1,225 @@
+---
+title: "CI cho frontend monorepo với GitHub Actions: nhanh, rẻ và đáng tin"
+excerpt: "Thiết kế pipeline CI cho monorepo frontend dùng Bun và Turborepo: các bước cần có, cache dependency và kết quả build, chỉ chạy package bị ảnh hưởng, preview cho từng PR, required checks và giữ secrets an toàn."
+---
+
+<Lead>CI chậm là một loại thuế mà cả team trả mỗi ngày. Khi mỗi pull request phải chờ 25 phút mới có dấu xanh, mọi người bắt đầu gộp nhiều thay đổi vào một PR, bỏ qua review kỹ, hoặc tệ hơn là tìm cách "bypass" check. Bài này là cách mình dựng CI cho một monorepo frontend dùng Bun và Turborepo trên GitHub Actions — các bước nên có, cache thế nào cho đúng, chỉ chạy phần bị ảnh hưởng, và những quy tắc giữ pipeline vừa nhanh vừa đáng tin.</Lead>
+
+## CI để làm gì — và vì sao monorepo khó hơn
+
+Mục tiêu của CI rất đơn giản: mỗi thay đổi trước khi vào nhánh chính phải được kiểm tra **tự động, giống nhau cho mọi người, và đủ nhanh để không ai muốn né nó**. Ba vế đó quan trọng ngang nhau. Một pipeline kiểm tra rất kỹ nhưng chạy 40 phút sẽ bị lách; một pipeline nhanh nhưng hay fail ngẫu nhiên (flaky) sẽ bị mọi người bấm "re-run" theo phản xạ cho đến khi không ai tin vào nó nữa.
+
+Với một repo đơn lẻ, cách làm thường là "chạy hết mọi thứ mỗi lần". Monorepo thì khác: một repo có thể chứa vài app Next.js, một thư viện UI, package config dùng chung, và vài package tiện ích. Chạy hết mọi thứ cho một PR chỉ sửa README của một app là lãng phí — và lãng phí đó nhân lên theo số PR mỗi ngày. Hai ý tưởng giúp monorepo CI sống được là:
+
+- **Cache:** không làm lại việc đã làm với cùng đầu vào.
+- **Affected:** chỉ chạy task cho những package thật sự bị thay đổi, cùng các package phụ thuộc vào chúng.
+
+Turborepo giải quyết cả hai khá gọn, nên phần lớn bài này xoay quanh việc nối Turborepo vào GitHub Actions cho đúng.
+
+## Các bước của một pipeline
+
+Mình chia pipeline thành các bước theo thứ tự từ rẻ đến đắt, để lỗi đơn giản bị bắt sớm:
+
+| Bước | Lệnh ví dụ | Bắt được gì | Thời gian mục tiêu |
+| --- | --- | --- | --- |
+| **Install** | `bun install --frozen-lockfile` | Lockfile lệch với `package.json` | dưới 30 giây khi có cache |
+| **Lint** | `turbo run lint` | Lỗi style, rule React hooks, import sai | 1–2 phút |
+| **Type-check** | `turbo run typecheck` | Lỗi kiểu, API thay đổi giữa các package | 1–3 phút |
+| **Test** | `turbo run test` | Logic sai, regression | 2–5 phút |
+| **Build** | `turbo run build` | Lỗi chỉ xuất hiện khi build production | 2–5 phút |
+
+Vài điểm mình rút ra sau nhiều lần làm:
+
+- **`--frozen-lockfile` là bắt buộc.** Không có nó, CI có thể âm thầm cập nhật lockfile và cài một bộ dependency khác với máy dev. Thà fail sớm còn hơn "chạy được trên CI nhưng không ai tái hiện được".
+- **Tách type-check khỏi build.** Nhiều bundler (kể cả khi build Next.js với cấu hình bỏ qua lỗi type) không chặn lỗi kiểu một cách nhất quán. Một task `typecheck` chạy `tsc --noEmit` riêng cho từng package rõ ràng hơn.
+- **Build vẫn cần chạy trên CI**, kể cả khi đã có preview deployment. Lỗi build phát hiện trong CI rẻ hơn nhiều so với phát hiện lúc deploy.
+
+## Cache: dependency và kết quả build
+
+Có hai lớp cache khác nhau, và nhầm lẫn giữa chúng là nguyên nhân của rất nhiều pipeline chậm.
+
+### Cache dependency, khoá theo lockfile
+
+Lớp đầu tiên là cache thư mục package của Bun, để `bun install` không phải tải lại mọi thứ từ registry. Key của cache phải gắn với **hash của lockfile**: lockfile đổi thì key đổi, cache mới được tạo. `restore-keys` cho phép dùng lại cache gần nhất khi key không khớp chính xác, nên dù lockfile vừa đổi một dòng thì phần lớn package vẫn có sẵn.
+
+Lưu ý mình cache **thư mục cache toàn cục của Bun**, không cache `node_modules`. Cache `node_modules` nghe hấp dẫn nhưng dễ gặp lỗi khó hiểu khi phiên bản Bun hoặc hệ điều hành của runner thay đổi, trong khi `bun install` từ cache toàn cục đã rất nhanh.
+
+### Cache kết quả task với Turborepo
+
+Lớp thứ hai mới là thứ tạo ra khác biệt lớn. Turborepo tính một hash cho mỗi task dựa trên các file đầu vào của package, dependency nội bộ, biến môi trường được khai báo và cấu hình task. Nếu hash đã từng được chạy, Turborepo **phát lại** log và khôi phục `outputs` thay vì chạy lại. Một PR chỉ sửa `apps/web` sẽ thấy `packages/ui` báo "cache hit" và mất gần như không giây nào.
+
+Cache này có thể nằm ở:
+
+- **Local cache** trong thư mục của runner — trên CI thì runner bị xoá sau mỗi job, nên phải tự lưu nó bằng `actions/cache`.
+- **Remote cache** (Vercel Remote Cache hoặc một server tự host tương thích) — cache được chia sẻ giữa CI và cả máy dev. Chỉ cần đặt `TURBO_TOKEN` và `TURBO_TEAM`.
+
+Remote cache gọn hơn nhiều nếu dùng được. Nếu chưa, `actions/cache` là phương án thay thế ổn.
+
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env.production"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"],
+      "env": ["NEXT_PUBLIC_API_URL"]
+    },
+    "lint": {},
+    "typecheck": { "dependsOn": ["^build"] },
+    "test": { "outputs": ["coverage/**"] }
+  }
+}
+```
+
+<Callout>
+  **Khai báo `env` cho đúng.** Nếu build của bạn đọc `NEXT_PUBLIC_API_URL` mà không khai báo trong `turbo.json`, Turborepo không đưa biến đó vào hash — và bạn có thể nhận lại một bản build cũ được cache với URL của môi trường khác. Cache sai còn tệ hơn không có cache.
+</Callout>
+
+## Chỉ chạy những package bị ảnh hưởng
+
+Turborepo cho phép lọc task theo thay đổi git. Cú pháp `--filter=...[origin/main]` nghĩa là: lấy các package có file thay đổi so với `origin/main`, **cộng thêm mọi package phụ thuộc vào chúng** (dấu `...` ở phía trước). Phần "phụ thuộc vào chúng" rất quan trọng: sửa một component trong `packages/ui` thì mọi app dùng `ui` đều phải được lint, test và build lại. Các bản Turborepo mới cũng có cờ `--affected` làm việc tương tự với ít cấu hình hơn — xem tài liệu của phiên bản bạn đang dùng.
+
+Hai cái bẫy thường gặp:
+
+- **Thiếu lịch sử git.** `actions/checkout` mặc định chỉ lấy một commit (`fetch-depth: 1`), nên không có `origin/main` để so sánh. Cần `fetch-depth: 0` hoặc fetch thêm nhánh base.
+- **Trên nhánh main thì so với cái gì?** Sau khi merge, HEAD chính là `origin/main`, nên filter theo thay đổi sẽ ra rỗng. Mình chỉ dùng filter cho pull request; trên `main` thì chạy toàn bộ và dựa vào cache để vẫn nhanh.
+
+Còn một chỗ mà filter theo git không thấy: thay đổi ở file gốc của repo như `bun.lock`, `turbo.json` hay `tsconfig.base.json`. Turborepo xử lý một phần qua `globalDependencies`; mình khai báo các file cấu hình dùng chung ở đó để thay đổi chúng làm mất hiệu lực cache của mọi task.
+
+## Workflow hoàn chỉnh
+
+Đây là workflow mình dùng làm điểm xuất phát. Mỗi bước kiểm tra là một job trong matrix, chạy song song:
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Huỷ run cũ khi có commit mới vào cùng PR/nhánh
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Quyền tối thiểu cho GITHUB_TOKEN
+permissions:
+  contents: read
+
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+  # PR: chỉ chạy package bị ảnh hưởng. main: chạy hết, dựa vào cache.
+  TURBO_FILTER: ${{ github.event_name == 'pull_request' && format('--filter=...[origin/{0}]', github.base_ref) || '' }}
+
+jobs:
+  check:
+    name: ${{ matrix.task }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [lint, typecheck, test, build]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest # nên pin đúng phiên bản team dùng ở local
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      # Chỉ cần khi không dùng remote cache
+      - name: Cache Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-${{ matrix.task }}-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ matrix.task }}-${{ runner.os }}-
+
+      - name: Run ${{ matrix.task }}
+        run: bunx turbo run ${{ matrix.task }} $TURBO_FILTER --cache-dir=.turbo/cache
+```
+
+Vài lựa chọn đáng giải thích:
+
+- **`concurrency` với `cancel-in-progress`:** push ba commit liên tiếp thì chỉ run cuối cùng chạy đến cùng. Tiết kiệm phút CI và giảm hàng chờ.
+- **`fail-fast: false`:** khi lint fail, mình vẫn muốn biết test có pass không, để sửa một lần thay vì đẩy lên hai lần.
+- **`timeout-minutes`:** mặc định một job có thể chạy rất lâu nếu bị treo. Đặt giới hạn rõ ràng để job treo fail nhanh.
+- **Key cache Turborepo có `github.sha`:** mỗi commit lưu một bản cache mới, còn `restore-keys` lấy bản gần nhất. Đây là cách phổ biến để cache "trượt theo" lịch sử.
+
+<Callout>
+  Phiên bản action trong ví dụ (`@v4`, `@v2`) chỉ mang tính minh hoạ. Hãy kiểm tra và pin theo phiên bản hiện tại của từng action — với repo cần bảo mật cao, pin theo commit SHA thay vì tag, vì tag có thể bị di chuyển.
+</Callout>
+
+### Matrix hay một job duy nhất?
+
+Matrix chạy song song nên tổng thời gian chờ ngắn hơn, nhưng mỗi job đều phải checkout và `bun install` lại, nên tốn tổng số phút hơn. Với repo nhỏ, một job chạy `turbo run lint typecheck test build` có khi nhanh hơn vì Turborepo đã tự chạy song song các task trong cùng máy. Mình thường bắt đầu bằng một job, rồi tách ra matrix khi tổng thời gian vượt khoảng 8–10 phút. Matrix cũng có lợi thế khác: mỗi bước là một status check riêng, đọc trên PR dễ hơn.
+
+## Preview deployment cho từng PR
+
+Review UI qua diff code là chưa đủ. Mỗi PR nên có một URL preview để reviewer, designer và QA bấm thử. Nếu deploy lên Vercel hoặc Netlify với Git integration, preview được tạo tự động cho mỗi PR và link được gắn vào PR — mình khuyên dùng cách này trước khi tự viết workflow deploy.
+
+Với monorepo, có hai điều cần cấu hình:
+
+- **Bỏ qua build khi app không đổi.** Vercel có tuỳ chọn "Ignored Build Step"; kết hợp với `turbo-ignore` để chỉ build preview cho app thật sự bị ảnh hưởng. Không có bước này, mỗi PR sẽ build preview cho mọi app.
+- **Biến môi trường riêng cho preview.** Preview không nên trỏ vào database production. Hãy tách rõ biến cho môi trường Preview và Production.
+
+## Giữ CI nhanh và đáng tin
+
+Mục tiêu mình đặt cho team: **dưới 10 phút** cho một PR thông thường, và **dưới 5 phút** khi phần lớn task cache hit. Khi vượt ngưỡng, mình kiểm tra theo thứ tự: cache có hit không (xem log "cache hit" của Turborepo), filter có đang chạy quá nhiều package không, test nào chậm nhất.
+
+Một vài thói quen giữ pipeline khoẻ:
+
+- **Sửa test flaky ngay**, hoặc cách ly nó tạm thời kèm ticket. Một test fail ngẫu nhiên 5% số lần đủ để cả team mất niềm tin vào màu đỏ.
+- **Đừng chạy E2E nặng cho mọi PR** nếu không cần. Có thể chạy E2E đầy đủ trên `main` hoặc theo lịch, và chỉ chạy bộ smoke test cho PR.
+- **Theo dõi thời gian CI theo tuần.** Pipeline chậm dần từng chút một; không ai để ý cho đến khi nó đã gấp đôi.
+
+## Required checks, branch protection và secrets
+
+### Branch protection
+
+CI chỉ có ý nghĩa khi nó **chặn được** merge. Trong cài đặt branch protection (hoặc rulesets) cho `main`, mình bật:
+
+- Bắt buộc qua pull request, có ít nhất một approval.
+- Required status checks: `lint`, `typecheck`, `test`, `build`.
+- Yêu cầu nhánh được cập nhật với `main` trước khi merge, hoặc dùng merge queue nếu team đông.
+
+Có một cái bẫy với filter "affected": nếu bạn bỏ qua cả một job khi không có package nào bị ảnh hưởng (ví dụ dùng `paths` trong `on:`), check đó sẽ không bao giờ báo kết quả và PR bị kẹt ở trạng thái "Expected — waiting". Đó là lý do mình để job luôn chạy và để Turborepo quyết định chạy task nào: job vẫn báo xanh, chỉ là không có việc gì làm.
+
+### Secrets
+
+- **Quyền tối thiểu:** đặt `permissions: contents: read` ở cấp workflow và chỉ mở thêm cho job thật sự cần.
+- **PR từ fork không nhận secrets** với sự kiện `pull_request` — đây là tính năng, không phải lỗi. Đừng "sửa" bằng cách chuyển sang `pull_request_target` rồi checkout code của PR: làm vậy là cho code lạ chạy với secrets của bạn.
+- **Ưu tiên OIDC** khi deploy lên cloud thay vì lưu access key dài hạn trong secrets.
+- **Không echo secrets ra log**, kể cả để debug. GitHub che giá trị secret đã đăng ký, nhưng không che được giá trị đã bị biến đổi (base64, cắt chuỗi).
+
+<Callout>
+  Biến `NEXT_PUBLIC_*` được nhúng thẳng vào bundle phía client. Đừng bao giờ để secret thật trong biến có tiền tố này — CI build ra rồi thì ai mở DevTools cũng đọc được.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Sắp xếp các bước từ rẻ đến đắt: install, lint, type-check, test, build — và luôn dùng `--frozen-lockfile`.
+- Cache hai lớp: thư mục package của Bun khoá theo hash lockfile, và cache task của Turborepo (ưu tiên remote cache).
+- Khai báo đúng `inputs`, `outputs`, `env` trong `turbo.json` — cache sai còn tệ hơn không cache.
+- Với PR, chỉ chạy package bị ảnh hưởng và các package phụ thuộc; nhớ `fetch-depth: 0`.
+- Dùng `concurrency` để huỷ run cũ, `timeout-minutes` để chặn job treo, và đặt mục tiêu dưới 10 phút.
+- Bật required checks và giữ job luôn báo kết quả để PR không bị kẹt.
+- Quyền tối thiểu, không dùng `pull_request_target` với code lạ, pin phiên bản action.
+
+</Checklist>

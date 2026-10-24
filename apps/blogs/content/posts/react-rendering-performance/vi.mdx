@@ -1,0 +1,321 @@
+---
+title: "Hiệu năng render trong React: đo trước, tối ưu sau, và biết khi nào nên dừng"
+excerpt: "Điều gì khiến component render lại, vì sao re-render không đồng nghĩa với cập nhật DOM, cách đo bằng React DevTools Profiler, chi phí thật của memo/useMemo/useCallback, tách context, đặt state đúng chỗ, key trong danh sách, và React Compiler thay đổi bức tranh thế nào."
+---
+
+<Lead>Mình từng review một PR mà gần như mọi hàm đều được bọc `useCallback`, mọi giá trị đều qua `useMemo`, mọi component đều là `React.memo`. Tác giả giải thích: "cho chắc, tránh re-render". Khi mở Profiler ra đo, trang không nhanh hơn chút nào — vài chỗ còn chậm hơn vì chi phí so sánh dependency, và code thì khó đọc gấp đôi. Tối ưu render trong React không phải là rắc memo khắp nơi, mà là hiểu cơ chế, đo để tìm đúng chỗ chậm, rồi sửa đúng chỗ đó. Bài này đi theo đúng thứ tự ấy.</Lead>
+
+## Điều gì khiến một component render lại?
+
+"Render" trong React nghĩa là React gọi hàm component của bạn để lấy ra cây element mới. Có ba lý do chính khiến điều đó xảy ra:
+
+1. **State của chính component thay đổi** — qua `useState`, `useReducer`, hoặc một store bên ngoài đăng ký qua `useSyncExternalStore`.
+2. **Component cha render lại.** Mặc định, khi cha render, *mọi* component con được render lại theo — bất kể props có đổi hay không.
+3. **Context mà component đang dùng thay đổi giá trị.**
+
+Điểm thứ hai là chỗ nhiều người hiểu nhầm nhất. Câu "component render lại khi props thay đổi" chỉ đúng một nửa: props đổi *vì* cha render, và cha render thì con render, kể cả khi props giữ nguyên. Chỉ khi component được bọc `React.memo`, React mới so sánh props để quyết định có bỏ qua hay không.
+
+Một chi tiết nhỏ nữa: nếu bạn gọi `setState` với giá trị giống hệt giá trị hiện tại (so bằng `Object.is`), React thường bỏ qua việc render. Đó là lý do mutate object rồi `setState` cùng object đó sẽ không làm giao diện cập nhật.
+
+### Re-render không đồng nghĩa với cập nhật DOM
+
+Đây là điều giúp mình bớt lo lắng nhất khi mới học. Sau khi render, React so sánh cây element mới với cây cũ (reconciliation), và chỉ thay đổi những node DOM thật sự khác. Một component render lại mà kết quả giống hệt lần trước thì DOM không bị đụng tới.
+
+Vậy re-render tốn gì? Tốn thời gian chạy hàm component và so sánh cây. Với component nhỏ, việc đó mất rất ít thời gian. Re-render chỉ trở thành vấn đề khi:
+
+- Component **đắt**: tính toán nặng trong render, cây con rất lớn.
+- Re-render xảy ra **rất thường xuyên**: mỗi lần gõ phím, mỗi lần cuộn, mỗi frame animation.
+- Re-render **lan rộng**: một thay đổi nhỏ ở gốc làm hàng trăm component render theo.
+
+| Giai đoạn | React làm gì | Chi phí đến từ |
+| --- | --- | --- |
+| **Render** | Gọi hàm component, tạo cây element mới | Logic trong component, kích thước cây con |
+| **Reconcile** | So sánh cây mới với cây cũ | Số lượng node, key không ổn định |
+| **Commit** | Áp thay đổi lên DOM, chạy effect | Số node DOM thay đổi, layout effect |
+| **Trình duyệt** | Tính style, layout, paint | CSS phức tạp, DOM lớn |
+
+## Đo trước đã: React DevTools Profiler
+
+Quy tắc số một: **không tối ưu thứ chưa đo**. Trực giác về chỗ chậm thường sai.
+
+Quy trình mình dùng:
+
+1. Mở React DevTools, tab **Profiler**. Trong phần cài đặt, bật **"Record why each component rendered while profiling"** — DevTools sẽ cho biết lý do mỗi lần render: state đổi, props nào đổi, hay vì cha render.
+2. Bấm ghi, thực hiện đúng thao tác bị chậm (gõ vào ô tìm kiếm, mở dropdown), rồi dừng.
+3. Xem **flamegraph** của từng commit: thanh càng rộng, component càng tốn thời gian. Màu xám nghĩa là component không render trong commit đó.
+4. Chuyển sang chế độ **ranked** để thấy ngay component nào tốn nhiều nhất.
+
+Bật thêm tuỳ chọn **"Highlight updates when components render"** để thấy trực quan vùng nào nhấp nháy mỗi khi gõ một phím — rất hữu ích để phát hiện re-render lan rộng.
+
+<Callout>
+  **Đo trên production build.** Bản development của React chạy thêm rất nhiều kiểm tra và cảnh báo, chậm hơn đáng kể so với production. Con số tuyệt đối ở chế độ dev có thể làm bạn hoảng không cần thiết. Dùng dev build để tìm *chỗ nào* render nhiều, nhưng xác nhận bằng production build (kèm CPU throttling trong Chrome DevTools) trước khi kết luận có vấn đề.
+</Callout>
+
+Nếu muốn đo bằng code, ví dụ để gửi số liệu về hệ thống giám sát, React có component `Profiler`:
+
+```tsx
+import { Profiler, type ProfilerOnRenderCallback, type ReactElement } from "react";
+
+const onRender: ProfilerOnRenderCallback = (id, phase, actualDuration) => {
+  if (actualDuration > 16) {
+    console.warn(`[${id}] ${phase} mất ${actualDuration.toFixed(1)}ms`);
+  }
+};
+
+export function App() {
+  return (
+    <Profiler id="ProductList" onRender={onRender}>
+      <ProductList />
+    </Profiler>
+  );
+}
+
+declare function ProductList(): ReactElement;
+```
+
+## Sửa từ cấu trúc trước khi nghĩ đến memo
+
+Phần lớn vấn đề re-render mình gặp được giải quyết bằng cách sắp xếp lại component, không cần một dòng memo nào.
+
+### Đặt state gần nơi dùng nó (state colocation)
+
+Nếu state chỉ một phần nhỏ của giao diện cần, đừng để nó ở component cha lớn. Ví dụ kinh điển: ô tìm kiếm có state ở cấp trang, nên mỗi phím gõ làm cả trang render lại.
+
+```tsx
+import { useState, type ReactElement } from "react";
+
+// ❌ Mỗi phím gõ làm ExpensiveChart và Sidebar render lại
+function DashboardBefore() {
+  const [query, setQuery] = useState("");
+  return (
+    <>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} />
+      <ExpensiveChart />
+      <Sidebar />
+    </>
+  );
+}
+
+// ✅ State nằm trong component cần nó; phần còn lại đứng yên
+function SearchBox() {
+  const [query, setQuery] = useState("");
+  return <input value={query} onChange={(e) => setQuery(e.target.value)} />;
+}
+
+function DashboardAfter() {
+  return (
+    <>
+      <SearchBox />
+      <ExpensiveChart />
+      <Sidebar />
+    </>
+  );
+}
+
+declare function ExpensiveChart(): ReactElement;
+declare function Sidebar(): ReactElement;
+```
+
+### Truyền phần nặng qua `children`
+
+Khi một component cần state nhưng lại bọc quanh phần nặng, hãy để phần nặng được tạo ở cha và truyền vào qua `children`. Element trong `children` được tạo bởi cha, nên khi component bọc ngoài render lại vì state của nó, React thấy `children` vẫn là cùng một element và không cần render lại phần đó.
+
+```tsx
+import { useState, type ReactElement, type ReactNode } from "react";
+
+function ScrollTracker({ children }: { children: ReactNode }) {
+  const [scrollY, setScrollY] = useState(0);
+  return (
+    <div onScroll={(e) => setScrollY(e.currentTarget.scrollTop)}>
+      <ProgressBar value={scrollY} />
+      {children}
+    </div>
+  );
+}
+
+// ExpensiveContent được tạo ở đây, không render lại khi scrollY đổi
+function Page() {
+  return (
+    <ScrollTracker>
+      <ExpensiveContent />
+    </ScrollTracker>
+  );
+}
+
+declare function ProgressBar(props: { value: number }): ReactElement;
+declare function ExpensiveContent(): ReactElement;
+```
+
+## `React.memo`, `useMemo`, `useCallback` — và cái giá của chúng
+
+Khi cấu trúc đã hợp lý mà Profiler vẫn chỉ ra một component đắt render thừa, lúc đó mới đến lượt memo.
+
+- **`React.memo(Component)`**: bỏ qua render nếu props mới bằng props cũ theo so sánh nông (`Object.is` từng prop).
+- **`useMemo(fn, deps)`**: giữ lại kết quả tính toán giữa các lần render cho đến khi dependency đổi.
+- **`useCallback(fn, deps)`**: giữ lại cùng một tham chiếu hàm — thực chất là `useMemo` cho hàm.
+
+### Tính ổn định tham chiếu
+
+`React.memo` chỉ hiệu quả khi props *thật sự* giống nhau. Object, mảng và hàm được tạo mới mỗi lần render, nên dù nội dung không đổi, tham chiếu vẫn khác:
+
+```tsx
+import { memo, useCallback, useMemo, useState } from "react";
+
+interface Item {
+  id: string;
+  name: string;
+  price: number;
+}
+
+const ItemList = memo(function ItemList(props: {
+  items: Item[];
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <ul>
+      {props.items.map((item) => (
+        <li key={item.id} onClick={() => props.onSelect(item.id)}>
+          {item.name}
+        </li>
+      ))}
+    </ul>
+  );
+});
+
+function Shop({ items }: { items: Item[] }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [maxPrice, setMaxPrice] = useState(100);
+
+  // Không có useMemo: mảng mới mỗi render → memo của ItemList vô dụng
+  const visible = useMemo(
+    () => items.filter((item) => item.price <= maxPrice),
+    [items, maxPrice],
+  );
+
+  // setSelected vốn đã ổn định, nên deps rỗng là đủ
+  const handleSelect = useCallback((id: string) => setSelected(id), []);
+
+  return (
+    <>
+      <input
+        type="range"
+        value={maxPrice}
+        onChange={(e) => setMaxPrice(Number(e.target.value))}
+      />
+      <p>Đang chọn: {selected ?? "chưa có"}</p>
+      <ItemList items={visible} onSelect={handleSelect} />
+    </>
+  );
+}
+```
+
+Ở ví dụ này, chọn một item làm `Shop` render lại, nhưng `ItemList` được bỏ qua vì `visible` và `handleSelect` giữ nguyên tham chiếu. Thiếu một trong hai, memo mất tác dụng.
+
+### Memo không miễn phí
+
+- Mỗi `useMemo`/`useCallback` tốn bộ nhớ và một lần so sánh dependency ở *mọi* lần render.
+- Nếu dependency đổi gần như mỗi lần render, bạn trả chi phí mà không được gì.
+- Một prop không ổn định (ví dụ `style` viết inline) là đủ phá `React.memo`, và lỗi kiểu này rất khó phát hiện khi đọc code.
+- Code nhiều memo khó đọc và dễ sai dependency hơn.
+
+<Callout>
+  **`useMemo` không phải là đảm bảo.** Tài liệu React mô tả nó là một tối ưu hiệu năng, không phải cơ chế ngữ nghĩa: code của bạn phải vẫn chạy đúng nếu React quyết định tính lại giá trị. Đừng dựa vào `useMemo` để giữ một instance chỉ được tạo đúng một lần — dùng `useRef` hoặc `useState` với hàm khởi tạo cho việc đó.
+</Callout>
+
+## Context: tiện lợi nhưng dễ làm render lan rộng
+
+Khi giá trị của một context đổi, **mọi** component dùng context đó đều render lại — và `React.memo` không chặn được việc này. Lỗi phổ biến nhất là tạo object mới làm value mỗi lần provider render:
+
+```tsx
+import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from "react";
+
+interface CartState {
+  items: string[];
+}
+type CartAction = { type: "add"; id: string } | { type: "clear" };
+
+function cartReducer(state: CartState, action: CartAction): CartState {
+  switch (action.type) {
+    case "add":
+      return { items: [...state.items, action.id] };
+    case "clear":
+      return { items: [] };
+  }
+}
+
+// Tách state và dispatch thành hai context riêng
+const CartStateContext = createContext<CartState | null>(null);
+const CartDispatchContext = createContext<Dispatch<CartAction> | null>(null);
+
+export function CartProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(cartReducer, { items: [] });
+  return (
+    <CartDispatchContext.Provider value={dispatch}>
+      <CartStateContext.Provider value={state}>{children}</CartStateContext.Provider>
+    </CartDispatchContext.Provider>
+  );
+}
+
+// Nút "Thêm vào giỏ" chỉ cần dispatch → không render lại khi giỏ hàng đổi
+export function useCartDispatch() {
+  const dispatch = useContext(CartDispatchContext);
+  if (!dispatch) throw new Error("useCartDispatch must be used inside CartProvider");
+  return dispatch;
+}
+
+export function useCartCount() {
+  const state = useContext(CartStateContext);
+  if (!state) throw new Error("useCartCount must be used inside CartProvider");
+  return state.items.length;
+}
+```
+
+`dispatch` từ `useReducer` có tham chiếu ổn định, nên context chứa nó gần như không bao giờ đổi. Hàng trăm nút "Thêm vào giỏ" trên trang không phải render lại mỗi khi giỏ hàng thay đổi.
+
+Nguyên tắc chung: chia context theo **tần suất thay đổi**. Theme và thông tin người dùng hiếm khi đổi — để chung được. Dữ liệu đổi liên tục (vị trí chuột, giá trị form) không nên nằm trong context dùng rộng; cân nhắc một store có cơ chế chọn lát cắt dữ liệu (selector) để component chỉ render khi phần nó dùng thay đổi.
+
+## Key và reconciliation trong danh sách
+
+Key cho React biết item nào ở lần render mới tương ứng với item nào ở lần trước.
+
+- **Key ổn định và duy nhất** (thường là `id` từ dữ liệu): React giữ lại DOM và state của từng item khi danh sách sắp xếp lại, thêm hoặc xoá.
+- **Index làm key**: ổn nếu danh sách không bao giờ đổi thứ tự hay bị chèn ở giữa. Nếu không, thêm một item vào đầu danh sách khiến *mọi* item bị coi là đã đổi, và state nội bộ (như giá trị ô input) gắn nhầm sang item khác.
+- **Key ngẫu nhiên** sinh mỗi render (như `Math.random()`): tệ nhất — React huỷ và tạo lại toàn bộ item mỗi lần.
+
+Key cũng là công cụ có chủ đích: đổi `key` của một component buộc React tạo lại nó từ đầu, rất tiện để reset toàn bộ state của một form khi chuyển sang bản ghi khác.
+
+Với danh sách hàng nghìn item, vấn đề thường không còn là re-render mà là số node DOM — lúc đó cần đến virtualization, chủ đề của một bài riêng.
+
+## React Compiler: memo tự động
+
+React Compiler là công cụ chạy lúc build, phân tích component và hook rồi tự chèn memoization ở những chỗ cần thiết — về cơ bản là làm thay bạn phần lớn công việc của `useMemo`, `useCallback` và `React.memo`. Ý tưởng quan trọng là nó dựa vào việc code tuân theo **Rules of React**: component thuần, không mutate props hay state, gọi hook đúng quy tắc. Code vi phạm những quy tắc đó có thể bị compiler bỏ qua thay vì tối ưu.
+
+Nếu dự án của bạn đã bật compiler, phần lớn memo thủ công trở nên không cần thiết, và trọng tâm chuyển sang: viết component thuần, đặt state đúng chỗ, và vẫn đo bằng Profiler. Compiler không sửa được thiết kế dữ liệu tồi hay một danh sách mười nghìn dòng.
+
+## Khi nào *không* nên tối ưu
+
+| Tình huống | Nên làm gì |
+| --- | --- |
+| Profiler cho thấy commit dưới vài ms | Để nguyên |
+| Component nhỏ render nhiều nhưng không ai cảm nhận được | Để nguyên |
+| Một component đắt render thừa khi gõ phím | Tách state, dùng `children`, rồi mới đến memo |
+| Context làm cả cây render lại | Tách context theo tần suất thay đổi |
+| Danh sách rất dài chậm khi cuộn | Virtualization, không phải memo |
+| Cập nhật nặng làm chậm phản hồi khi gõ | `useDeferredValue` hoặc `useTransition` |
+
+Một frame ở 60fps có khoảng 16ms. Nếu Profiler cho thấy toàn bộ commit chỉ mất 2ms, không có gì để tối ưu cả — dù component có render mười lần. Thời gian đó nên dành cho tính năng hoặc cho vấn đề hiệu năng thật, như bundle JavaScript quá lớn hay request nối đuôi nhau.
+
+## Tóm tắt
+
+<Checklist>
+
+- Component render lại khi state của nó đổi, khi cha render, hoặc khi context nó dùng đổi giá trị.
+- Re-render không đồng nghĩa với cập nhật DOM — chỉ đáng lo khi component đắt, render thường xuyên hoặc lan rộng.
+- Luôn đo bằng React DevTools Profiler trước khi tối ưu, và xác nhận trên production build.
+- Ưu tiên sửa cấu trúc: đặt state gần nơi dùng, truyền phần nặng qua `children`.
+- `React.memo` chỉ hiệu quả khi props ổn định tham chiếu; memo luôn có chi phí.
+- Tách context theo tần suất thay đổi; tách state và dispatch.
+- Dùng key ổn định từ dữ liệu, và dùng key có chủ đích để reset state.
+- React Compiler tự động memo cho code tuân theo Rules of React — nhưng không thay thế việc đo và thiết kế tốt.
+
+</Checklist>

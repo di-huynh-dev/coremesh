@@ -1,0 +1,120 @@
+---
+title: "Estimating Frontend Work Honestly"
+excerpt: "Why estimates are almost always wrong, how to break work down by states, accessibility, responsiveness and i18n, why ranges with confidence beat single numbers, when to use a spike, how to talk to PMs, and how tracking estimates against actuals makes you better over time."
+---
+
+<Lead>"This screen should take about two days." I've said that more times than I can count, and almost every time it turned into five. Not because I was lazy or slow, but because the "screen" I pictured while estimating was only its best-case state — complete data, a fast network, a desktop monitor. This post is how I learned to estimate more honestly: not by guessing more precisely, but by seeing more of what will actually take time, and by stating uncertainty out loud instead of hiding it.</Lead>
+
+## Why estimates are almost always wrong
+
+Before trying to do better, it helps to understand where the time actually goes. In my experience, most of the gap comes from a few recurring sources:
+
+- **Unknown unknowns.** The API returns something different from the docs, a library has a bug in exactly the case you need, a browser behavior you've never run into. You can't list these in advance, but you can leave room for them.
+- **Integration.** Each piece is quick on its own; wiring it into the backend, auth, routing, analytics and the design system is where the time goes.
+- **Edge states.** Loading, empty, error, overly long data, no permission — the design usually shows one "happy" screen, but the code has to handle all of them.
+- **Design changes.** Only when people see the real build do they notice the flow has rough spots. That's a good thing, but it costs time.
+- **Review and QA.** Estimates tend to stop at "code works on my machine". Review, addressing feedback, QA finding bugs, fixing them, deploying — together often a significant fraction of the coding time.
+
+Recognizing these sources won't make you perfectly accurate, but it keeps you from forgetting them — and that's already half the battle.
+
+## Breaking work down: seeing the submerged part of the iceberg
+
+The most effective way I know to estimate better is to break things down. A task estimated as "3 days" almost certainly contains things nobody has thought about yet; a task split into ten half-day items forces you to think about each one.
+
+For frontend work, I split along these dimensions, not just by component:
+
+| Dimension | Questions to answer | How often it's forgotten |
+| --- | --- | --- |
+| **Data states** | What do loading, empty, error, partial and paginated look like? | Very often |
+| **Interaction** | Form validation, confirm before delete, optimistic updates, undo? | Often |
+| **Accessibility** | Keyboard, focus, screen reader labels, contrast? | Very often |
+| **Responsive** | Mobile, tablet, very wide screens; how does a table look on mobile? | Often |
+| **i18n** | Translated strings, longer text after translation, date, number and currency formats? | Depends on the project |
+| **Integration** | Does the API exist yet, is the data contract agreed, do we need mocks? | Often |
+| **Permissions and roles** | What does a user without access see? | Sometimes |
+| **Quality** | Tests, analytics, feature flags, docs? | Very often |
+| **Review and QA** | How many review rounds, which devices does QA test on? | Almost always |
+
+Not every task needs every row. The table is a checklist for *asking questions*, not for mechanically adding up time.
+
+<Callout>
+  **My rule of thumb:** if the smallest item in my breakdown is still bigger than a day, I don't understand it well enough yet. Break it down further, or mark it as "unclear" and handle it with a spike.
+</Callout>
+
+## Ranges and confidence instead of single numbers
+
+A single number like "3 days" communicates something false: it sounds certain. In reality every estimate is a probability distribution, and it's skewed to the right — a task can finish a little earlier than expected, but it can finish much, much later.
+
+So I estimate with **a range plus a confidence level**:
+
+- "2 to 4 days, fairly confident — I've built a similar screen before."
+- "3 to 8 days, low confidence — it's unclear how the payments API handles errors."
+
+The width of the range *is* the information. A narrow range means familiar work; a wide range signals risk to the PM, and usually leads to the right question: "What would it take to narrow this?" The answer is often a spike, or splitting the uncertain part out as its own item.
+
+A simple technique I use per item: estimate three numbers — optimistic, most likely, pessimistic — and report the range from "most likely" to "pessimistic". Reporting the optimistic number is the fastest way to lose trust.
+
+## Spikes for the unknowns
+
+When part of the work has too many unknowns to estimate, don't force a guess. Propose a **spike**: a fixed block of time (usually half a day to two days) purely for investigation, where the goal is to *answer a question*, not to ship a feature.
+
+A good spike has three properties:
+
+- **A clear question:** "Does this charting library support zooming on a time axis with 50,000 data points, and how smooth is it on a mid-range phone?"
+- **A hard timebox:** when time is up, stop and report what you've learned, even if the answer is incomplete.
+- **A better estimate as the output**, plus throwaway prototype code.
+
+<Callout>
+  Treat spike code as disposable. Otherwise it tends to "leak" into production with no tests and no error handling — and you've just traded an unknown for technical debt.
+</Callout>
+
+## Talking to PMs
+
+An estimate isn't a number you hand over and then get held to; it's a conversation. A few things I've learned:
+
+- **Say what the estimate includes.** "4 days, including error states, mobile and one review round — not including i18n." That way, when scope changes, everyone knows the estimate has to change too.
+- **Offer options, not just numbers.** "The full version is 5 to 7 days. If we drop inline editing in the table and use a separate form, it's 3." PMs can trade scope for time — that's their call, but they need the information to make it.
+- **Don't get haggled down.** If the estimate is 5 days and the reply is "can you do it in 3?", what can change is scope or quality, not how hard the work is. Say that clearly and politely.
+- **Flag slippage early.** If you can see on day two that it'll be late, say so on day two, with the reason and a new estimate. Announcing it on the last day is the worst outcome for everyone.
+
+## Tracking estimates against actuals to calibrate
+
+The only way I know to get better sustainably is to **write it down**. No fancy tooling needed — a simple note per task is enough:
+
+```md
+## Task: Order history page
+
+Estimate: 3–5 days (confidence: medium)
+Actual: 7 days
+
+Original breakdown:
+- [x] List table + pagination — est. 1 day, actual 1 day
+- [x] Date and status filters — est. 1 day, actual 2 days
+- [x] Loading / empty / error — est. 0.5 day, actual 0.5 day
+- [x] Mobile — est. 0.5 day, actual 1.5 days
+- [ ] (not in estimate) CSV export — added by PM on day 3, 1 day
+- [x] Review + QA — est. 0.5 day, actual 1 day
+
+Lessons:
+- Date filter: time zones didn't match between API and UI, cost a day.
+- Tables on mobile always take longer than I think → double it next time.
+- Scope changed mid-task: I should have updated the estimate that same day.
+```
+
+After a few months, patterns become obvious. Maybe you always underestimate responsive work, or review on your team always takes a day. Those are personal "multipliers" that make future estimates more accurate — based on your own data, not gut feeling.
+
+One caveat: the point is to *learn*, not to beat yourself up or to give managers a productivity metric. If these notes get used to judge people, everyone starts padding their estimates and the data loses all its value.
+
+## Key takeaways
+
+<Checklist>
+
+- Estimates go wrong because of unknowns, integration, edge states, design changes and review/QA time — account for them.
+- Break work down along several dimensions: data states, accessibility, responsiveness, i18n, integration, quality.
+- Any item bigger than a day isn't understood well enough — split it further or spike it.
+- Report a range with a confidence level, never a single optimistic number.
+- Use timeboxed spikes for big unknowns.
+- Be explicit about scope, offer options, and flag slippage early.
+- Record estimates and actuals so you can calibrate on your own data.
+
+</Checklist>

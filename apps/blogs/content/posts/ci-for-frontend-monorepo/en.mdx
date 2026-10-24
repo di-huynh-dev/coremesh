@@ -1,0 +1,225 @@
+---
+title: "CI for a Frontend Monorepo with GitHub Actions: Fast, Cheap and Trustworthy"
+excerpt: "Designing a CI pipeline for a Bun + Turborepo frontend monorepo: the stages you need, caching dependencies and build outputs, running only affected packages, per-PR previews, required checks and keeping secrets safe."
+---
+
+<Lead>Slow CI is a tax the whole team pays every day. When every pull request waits 25 minutes for a green check, people start bundling unrelated changes into one PR, skimming reviews, or worse, looking for ways to bypass checks. This post is how I set up CI for a frontend monorepo on Bun and Turborepo with GitHub Actions — which stages to run, how to cache correctly, how to run only what changed, and the rules that keep a pipeline both fast and trustworthy.</Lead>
+
+## What CI is for — and why monorepos make it harder
+
+The goal of CI is simple: every change is checked before it lands on the main branch, **automatically, the same way for everyone, and fast enough that nobody wants to dodge it**. All three parts matter equally. A pipeline that checks everything but takes 40 minutes gets bypassed; a fast pipeline that fails randomly (flaky) gets "re-run" by reflex until nobody believes it anymore.
+
+In a single-package repo, the usual approach is "run everything every time". A monorepo is different: one repo might hold a few Next.js apps, a UI library, shared config packages and some utilities. Running everything for a PR that only touches one app's README is waste — and that waste multiplies by the number of PRs per day. Two ideas make monorepo CI livable:
+
+- **Caching:** never redo work whose inputs haven't changed.
+- **Affected:** only run tasks for the packages that actually changed, plus the packages that depend on them.
+
+Turborepo handles both quite neatly, so most of this post is about wiring Turborepo into GitHub Actions properly.
+
+## The stages of a pipeline
+
+I order the stages from cheapest to most expensive, so simple mistakes are caught early:
+
+| Stage | Example command | What it catches | Target time |
+| --- | --- | --- | --- |
+| **Install** | `bun install --frozen-lockfile` | Lockfile out of sync with `package.json` | under 30 seconds with cache |
+| **Lint** | `turbo run lint` | Style issues, React hooks rules, bad imports | 1–2 minutes |
+| **Type-check** | `turbo run typecheck` | Type errors, API changes across packages | 1–3 minutes |
+| **Test** | `turbo run test` | Broken logic, regressions | 2–5 minutes |
+| **Build** | `turbo run build` | Errors that only appear in a production build | 2–5 minutes |
+
+A few things I've learned the hard way:
+
+- **`--frozen-lockfile` is mandatory.** Without it, CI can silently update the lockfile and install a different dependency set than developers have. Failing early beats "works on CI, nobody can reproduce it".
+- **Keep type-checking separate from build.** Bundlers don't block on type errors consistently (and Next.js builds can be configured to ignore them). A dedicated `typecheck` task running `tsc --noEmit` per package is much clearer.
+- **Still build in CI**, even if you have preview deployments. A build error found in CI is far cheaper than one found during deploy.
+
+## Caching: dependencies and build outputs
+
+There are two different layers of cache, and confusing them is behind a lot of slow pipelines.
+
+### Dependency cache, keyed on the lockfile
+
+The first layer caches Bun's package directory so `bun install` doesn't re-download everything from the registry. The cache key must be tied to **the lockfile hash**: when the lockfile changes, the key changes and a new cache is saved. `restore-keys` lets the job fall back to the most recent cache when there's no exact match, so even if the lockfile changed by one line, most packages are already there.
+
+Note that I cache **Bun's global cache directory**, not `node_modules`. Caching `node_modules` sounds tempting, but it tends to produce confusing failures when the Bun version or runner OS changes, while `bun install` from a warm global cache is already very fast.
+
+### Task output cache with Turborepo
+
+The second layer is the one that makes the big difference. Turborepo computes a hash for each task from the package's input files, its internal dependencies, declared environment variables and the task config. If that hash has been seen before, Turborepo **replays** the logs and restores the `outputs` instead of running the task. A PR that only touches `apps/web` will see `packages/ui` report a cache hit and take practically no time.
+
+That cache can live in:
+
+- **A local cache** in the runner's directory — CI runners are wiped after each job, so you have to persist it yourself with `actions/cache`.
+- **A remote cache** (Vercel Remote Cache or a compatible self-hosted server) — shared between CI and developer machines. You just set `TURBO_TOKEN` and `TURBO_TEAM`.
+
+Remote cache is much simpler if you can use it. If not, `actions/cache` is a reasonable substitute.
+
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env.production"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"],
+      "env": ["NEXT_PUBLIC_API_URL"]
+    },
+    "lint": {},
+    "typecheck": { "dependsOn": ["^build"] },
+    "test": { "outputs": ["coverage/**"] }
+  }
+}
+```
+
+<Callout>
+  **Declare `env` correctly.** If your build reads `NEXT_PUBLIC_API_URL` but you don't list it in `turbo.json`, Turborepo leaves it out of the hash — and you can get back a cached build baked with another environment's URL. A wrong cache is worse than no cache.
+</Callout>
+
+## Running only affected packages
+
+Turborepo can filter tasks by git changes. The syntax `--filter=...[origin/main]` means: take the packages with files changed compared to `origin/main`, **plus every package that depends on them** (the leading `...`). That second part is crucial: change a component in `packages/ui` and every app that uses `ui` must be linted, tested and built again. Newer Turborepo versions also have an `--affected` flag that does something similar with less setup — check the docs for the version you're on.
+
+Two common traps:
+
+- **Missing git history.** `actions/checkout` fetches a single commit by default (`fetch-depth: 1`), so there's no `origin/main` to compare against. You need `fetch-depth: 0` or an explicit fetch of the base branch.
+- **What do you compare against on main?** After a merge, HEAD *is* `origin/main`, so a change-based filter comes out empty. I only use the filter for pull requests; on `main` I run everything and rely on the cache to stay fast.
+
+There's also one thing a git filter can't see: changes to root-level files like `bun.lock`, `turbo.json` or `tsconfig.base.json`. Turborepo covers part of this with `globalDependencies`; I list shared config files there so changing them invalidates every task's cache.
+
+## The complete workflow
+
+This is the workflow I use as a starting point. Each check is a job in a matrix, running in parallel:
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel older runs when new commits land on the same PR/branch
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege for GITHUB_TOKEN
+permissions:
+  contents: read
+
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+  # PRs: only affected packages. main: everything, backed by the cache.
+  TURBO_FILTER: ${{ github.event_name == 'pull_request' && format('--filter=...[origin/{0}]', github.base_ref) || '' }}
+
+jobs:
+  check:
+    name: ${{ matrix.task }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [lint, typecheck, test, build]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest # pin to the version your team uses locally
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      # Only needed when you don't use a remote cache
+      - name: Cache Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-${{ matrix.task }}-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ matrix.task }}-${{ runner.os }}-
+
+      - name: Run ${{ matrix.task }}
+        run: bunx turbo run ${{ matrix.task }} $TURBO_FILTER --cache-dir=.turbo/cache
+```
+
+A few choices worth explaining:
+
+- **`concurrency` with `cancel-in-progress`:** push three commits in a row and only the last run goes to completion. It saves CI minutes and shortens the queue.
+- **`fail-fast: false`:** when lint fails, I still want to know whether tests pass, so I fix everything in one push instead of two.
+- **`timeout-minutes`:** by default a hung job can run for a very long time. An explicit limit makes it fail fast.
+- **The Turborepo cache key includes `github.sha`:** every commit saves a fresh cache, and `restore-keys` picks up the most recent one. It's the usual way to make a cache "slide forward" with history.
+
+<Callout>
+  The action versions in this example (`@v4`, `@v2`) are illustrative. Check and pin each action to its current version — and for security-sensitive repos, pin to a commit SHA rather than a tag, because tags can be moved.
+</Callout>
+
+### Matrix or a single job?
+
+A matrix runs in parallel so wall-clock time is shorter, but each job checks out and runs `bun install` again, so it costs more total minutes. In a small repo, one job running `turbo run lint typecheck test build` can actually be faster, since Turborepo already parallelises tasks on one machine. I usually start with a single job and split into a matrix once total time goes past about 8–10 minutes. A matrix has another upside: each stage becomes its own status check, which reads better on the PR.
+
+## Preview deployments per PR
+
+Reviewing UI through a code diff isn't enough. Every PR should have a preview URL for reviewers, designers and QA to click through. If you deploy to Vercel or Netlify with their Git integration, previews are created automatically per PR and linked on it — I'd use that before writing a deploy workflow yourself.
+
+In a monorepo there are two things to configure:
+
+- **Skip builds for apps that didn't change.** Vercel has an "Ignored Build Step" setting; combined with `turbo-ignore`, only apps that are actually affected get a preview build. Without it, every PR builds a preview for every app.
+- **Separate environment variables for previews.** Previews should never point at the production database. Keep Preview and Production variables clearly apart.
+
+## Keeping CI fast and trustworthy
+
+The target I set for teams: **under 10 minutes** for a typical PR, and **under 5 minutes** when most tasks hit the cache. When we go over, I check in order: is the cache hitting (look for Turborepo's "cache hit" lines), is the filter running too many packages, and which tests are slowest.
+
+A few habits that keep a pipeline healthy:
+
+- **Fix flaky tests immediately**, or quarantine them with a ticket. A test that fails randomly 5% of the time is enough for a whole team to stop trusting red.
+- **Don't run heavy E2E on every PR** unless you need to. Run the full E2E suite on `main` or on a schedule, and only a smoke suite on PRs.
+- **Track CI duration weekly.** Pipelines get slower bit by bit; nobody notices until it has doubled.
+
+## Required checks, branch protection and secrets
+
+### Branch protection
+
+CI only means something if it **blocks** merges. In the branch protection settings (or rulesets) for `main`, I enable:
+
+- Require a pull request with at least one approval.
+- Required status checks: `lint`, `typecheck`, `test`, `build`.
+- Require the branch to be up to date with `main` before merging, or use a merge queue for larger teams.
+
+There's a trap with "affected" filtering: if you skip a whole job when nothing relevant changed (for example with `paths` under `on:`), that check never reports and the PR gets stuck on "Expected — waiting for status". That's why I keep the job always running and let Turborepo decide which tasks to execute: the job still reports green, it just has nothing to do.
+
+### Secrets
+
+- **Least privilege:** set `permissions: contents: read` at the workflow level and only grant more to jobs that need it.
+- **PRs from forks don't receive secrets** on the `pull_request` event — that's a feature, not a bug. Don't "fix" it by switching to `pull_request_target` and checking out the PR's code: that runs untrusted code with your secrets.
+- **Prefer OIDC** for deploying to cloud providers instead of storing long-lived access keys as secrets.
+- **Never echo secrets to logs**, not even for debugging. GitHub masks registered secret values, but not transformed values (base64-encoded, substrings).
+
+<Callout>
+  `NEXT_PUBLIC_*` variables are inlined into the client bundle. Never put a real secret in a variable with that prefix — once CI builds it, anyone with DevTools can read it.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Order stages from cheap to expensive: install, lint, type-check, test, build — and always use `--frozen-lockfile`.
+- Cache two layers: Bun's package directory keyed on the lockfile hash, and Turborepo's task cache (prefer remote cache).
+- Declare `inputs`, `outputs` and `env` correctly in `turbo.json` — a wrong cache is worse than none.
+- On PRs, run only affected packages and their dependents; remember `fetch-depth: 0`.
+- Use `concurrency` to cancel stale runs, `timeout-minutes` to stop hung jobs, and aim for under 10 minutes.
+- Turn on required checks and keep jobs always reporting so PRs never get stuck.
+- Least privilege, no `pull_request_target` with untrusted code, and pin action versions.
+
+</Checklist>

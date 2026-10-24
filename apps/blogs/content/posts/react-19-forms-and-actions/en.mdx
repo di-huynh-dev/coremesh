@@ -1,0 +1,296 @@
+---
+title: "Forms in React 19: action, useActionState, useFormStatus and Server Actions"
+excerpt: "React 19 brings forms closer to plain HTML: the action prop, pending state, optimistic updates and Server Actions. This post walks through how I build a complete signup form — validated on both sides, with per-field errors, accessible, and working even before JavaScript loads."
+---
+
+<Lead>For years, writing a form in React meant `onSubmit`, `event.preventDefault()`, a pile of `useState` calls for values, errors and loading — and then calling `fetch` yourself. React 19 changes a lot of that: a form takes a function through its `action` prop, React manages the pending state, and with Server Actions in Next.js a form can submit even before JavaScript has finished loading. This post is how I use the new APIs in a real form, plus the places where it's easy to get wrong.</Lead>
+
+## What was wrong with "old-style" forms?
+
+Nothing was technically wrong, but three issues show up again and again in most codebases I've worked in:
+
+- **Too much manual state:** `isSubmitting`, `error`, `fieldErrors`, the value of every input. Every form rewrites the same logic, and it's easy to forget to reset `isSubmitting` when a request fails.
+- **Total dependence on JavaScript:** if the bundle hasn't loaded yet (slow network, weak device) and the user hits submit, the browser submits the form the default way — usually a page reload with a query string, losing everything they typed.
+- **Race conditions:** the user clicks twice, two requests run in parallel, and responses arrive out of order.
+
+React 19 doesn't invent anything radically new. It brings forms back to the HTML model — a form sends data to an "action" — and adds what modern apps need on top: pending state, return values and optimistic updates.
+
+## The `action` prop and `useActionState`
+
+In React 19, `<form>` accepts a **function** through its `action` prop. On submit, React calls it with the `FormData`, wraps it in a transition, and once the action finishes it **resets uncontrolled fields** back to their default values.
+
+Most of the time I don't pass the function directly but go through `useActionState`. The hook takes an action shaped like `(previousState, formData) => newState` plus an initial state, and returns three things:
+
+- `state` — the result of the most recent action run (for example, a list of errors);
+- `formAction` — the function you pass to the form's `action`;
+- `isPending` — whether the action is currently running.
+
+| API | Imported from | Used in | What it gives me |
+| --- | --- | --- | --- |
+| `useActionState` | `react` | The component that owns the form | State returned by the action, a wrapped action, a pending flag |
+| `useFormStatus` | `react-dom` | A child component **inside** the form | Pending status and data of the current submission |
+| `useOptimistic` | `react` | Anywhere you want to show a result early | A temporary state that reverts when the action settles |
+
+What I like about `useActionState` is that submissions are queued: each action receives as `previousState` the result of the one before. Double-clicking no longer produces two competing streams of state.
+
+## Server Actions and progressive enhancement
+
+In the Next.js App Router, an `async` function marked with `"use server"` is a **Server Action**: the code runs on the server, but the client can call it like a regular function. Next.js generates the endpoint and handles serialization.
+
+When you pass a Server Action (directly or through `useActionState`) to a form's `action` on a server-rendered page, the HTML that arrives is already a working form. If the user submits before hydration finishes, the browser still sends a normal POST, the server runs the action and returns the page with the result. That's **progressive enhancement**: the page works at a basic level, and JavaScript only makes the experience better (no reload, pending state, focus on errors).
+
+<Callout>
+  You only get progressive enhancement when the action is a **Server Action**. If you pass a function defined on the client (say, one that calls `fetch`), the form does nothing until JavaScript runs. That's not a bug — you just need to know which trade-off you're making.
+</Callout>
+
+## Building a complete signup form
+
+Let's build a signup form with email and password. Requirements: validate on the server, return errors per field, keep the email the user typed, and redirect on success.
+
+### Server side: never trust the client
+
+Client-side validation is for **experience**; server-side validation is for **correctness**. Anyone can POST directly to a Server Action endpoint and skip every check in the browser, so the server must re-check everything — including the user's permissions.
+
+```ts
+// app/signup/actions.ts
+"use server";
+
+import { redirect } from "next/navigation";
+import { z } from "zod";
+import { createUser, isEmailTaken } from "@/lib/users";
+
+const SignupSchema = z.object({
+  email: z.string().trim().email("Please enter a valid email"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+type Field = "email" | "password";
+
+export type SignupState = {
+  fieldErrors: Partial<Record<Field, string>>;
+  formError?: string;
+  values: { email: string };
+};
+
+export async function signup(
+  _previous: SignupState,
+  formData: FormData,
+): Promise<SignupState> {
+  const raw = {
+    email: String(formData.get("email") ?? ""),
+    password: String(formData.get("password") ?? ""),
+  };
+  // Never send the password back to the client.
+  const values = { email: raw.email };
+
+  const result = SignupSchema.safeParse(raw);
+  if (!result.success) {
+    const fieldErrors: SignupState["fieldErrors"] = {};
+    for (const issue of result.error.issues) {
+      const key = issue.path[0];
+      if ((key === "email" || key === "password") && !fieldErrors[key]) {
+        fieldErrors[key] = issue.message;
+      }
+    }
+    return { fieldErrors, values };
+  }
+
+  if (await isEmailTaken(result.data.email)) {
+    return { fieldErrors: { email: "This email is already registered" }, values };
+  }
+
+  try {
+    await createUser(result.data);
+  } catch {
+    return { fieldErrors: {}, formError: "Something went wrong, please try again.", values };
+  }
+
+  redirect("/welcome");
+}
+```
+
+A few deliberate choices here:
+
+- The action **returns errors as data** rather than throwing. Validation errors are a normal part of a form, not exceptions. I keep `throw` for genuinely unexpected failures and let an error boundary handle them.
+- `redirect` sits **outside** the `try/catch`. In Next.js, `redirect` works by throwing a special error; wrapping it in a `catch` swallows the navigation.
+- The returned state includes `values.email` so the form can be refilled. The next section explains why.
+
+### Client side: form, submit button and errors
+
+```tsx
+// app/signup/signup-form.tsx
+"use client";
+
+import { useActionState, useEffect, useRef } from "react";
+import { useFormStatus } from "react-dom";
+import { signup, type SignupState } from "./actions";
+
+const initialState: SignupState = { fieldErrors: {}, values: { email: "" } };
+
+function SubmitButton() {
+  // Must live in a child component of the form to read its status.
+  const { pending } = useFormStatus();
+  return (
+    <button type="submit" disabled={pending}>
+      {pending ? "Creating account..." : "Sign up"}
+    </button>
+  );
+}
+
+export function SignupForm() {
+  const [state, formAction] = useActionState(signup, initialState);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // After each failed submission, move focus to the first invalid field.
+  useEffect(() => {
+    formRef.current
+      ?.querySelector<HTMLElement>('[aria-invalid="true"]')
+      ?.focus();
+  }, [state]);
+
+  const emailError = state.fieldErrors.email;
+  const passwordError = state.fieldErrors.password;
+
+  return (
+    <form ref={formRef} action={formAction}>
+      {state.formError && <p role="alert">{state.formError}</p>}
+
+      <label htmlFor="email">Email</label>
+      <input
+        id="email"
+        name="email"
+        type="email"
+        autoComplete="email"
+        required
+        defaultValue={state.values.email}
+        aria-invalid={emailError ? true : undefined}
+        aria-describedby={emailError ? "email-error" : undefined}
+      />
+      {emailError && <p id="email-error">{emailError}</p>}
+
+      <label htmlFor="password">Password</label>
+      <input
+        id="password"
+        name="password"
+        type="password"
+        autoComplete="new-password"
+        required
+        minLength={8}
+        aria-invalid={passwordError ? true : undefined}
+        aria-describedby={passwordError ? "password-error" : "password-hint"}
+      />
+      <p id="password-hint">At least 8 characters.</p>
+      {passwordError && <p id="password-error">{passwordError}</p>}
+
+      <SubmitButton />
+    </form>
+  );
+}
+```
+
+Two points worth stressing.
+
+**First, the form resets itself.** Because React resets uncontrolled inputs after the action finishes, doing nothing means a user who submits with an error sees an empty email field. Returning `values` from the server and feeding them into `defaultValue` is how I keep their input. The password is intentionally left empty — I don't send passwords back to the client.
+
+**Second, `useFormStatus` only reads its parent form.** Calling it in the same component that renders the `<form>` always gives you `pending: false`. Pulling the submit button into its own component is the intended usage, and that button becomes reusable across every form.
+
+<Callout>
+  `required`, `type="email"` and `minLength` are a free validation layer from the browser — they work even without JavaScript. I keep them, but I always treat them as hints for the user; the final decision belongs to the server.
+</Callout>
+
+## Accessible error messages
+
+A form that "shows red text under the input" can still be useless for a screen reader user. What I always do:
+
+- **`aria-invalid="true"`** on the invalid input, so assistive technology announces it as invalid.
+- **`aria-describedby`** pointing at the paragraph with the error (and any format hint), so the error is read together with the label when the input gets focus.
+- **Move focus to the first invalid field** after submitting. Keyboard users don't have to hunt for the problem, and screen readers read the error straight away thanks to `aria-describedby`.
+- **Form-level errors** (network down, server error) go in a `role="alert"` region so they're announced immediately.
+- **Don't rely on red alone** — always include text that says what's wrong and how to fix it: "Password must be at least 8 characters" beats "Invalid".
+
+For long forms I also add an error summary at the top, each error linking to its input. For a form with a handful of fields, focusing the first error is enough.
+
+## Optimistic updates with `useOptimistic`
+
+Some actions almost always succeed — liking, adding a comment, marking as read. Making the user wait a few hundred milliseconds for a round-trip is wasteful. `useOptimistic` lets you show the expected result while the action runs; when the action settles and real data arrives, React drops the temporary version and uses the real state.
+
+```tsx
+"use client";
+
+import { useOptimistic } from "react";
+import { addComment } from "./actions";
+
+type Comment = { id: string; text: string; sending?: boolean };
+
+export function CommentThread({ comments }: { comments: Comment[] }) {
+  const [optimisticComments, addOptimisticComment] = useOptimistic(
+    comments,
+    (current: Comment[], text: string): Comment[] => [
+      ...current,
+      { id: `temp-${current.length}`, text, sending: true },
+    ],
+  );
+
+  async function submit(formData: FormData) {
+    const text = String(formData.get("text") ?? "").trim();
+    if (!text) return;
+    addOptimisticComment(text);
+    // The Server Action saves the comment and revalidates the page,
+    // so the `comments` prop updates with real data.
+    await addComment(text);
+  }
+
+  return (
+    <>
+      <ul>
+        {optimisticComments.map((comment) => (
+          <li key={comment.id} aria-busy={comment.sending || undefined}>
+            {comment.text}
+            {comment.sending && " (sending...)"}
+          </li>
+        ))}
+      </ul>
+      <form action={submit}>
+        <label htmlFor="comment">Comment</label>
+        <input id="comment" name="text" required />
+        <button type="submit">Send</button>
+      </form>
+    </>
+  );
+}
+```
+
+Note that `submit` here is defined on the client, so this form **needs JavaScript** to work. For comments I accept that. And if the action fails, the optimistic item disappears when the action settles — you should still tell the user clearly instead of letting their comment silently vanish.
+
+## When does react-hook-form still make sense?
+
+The new APIs don't make form libraries obsolete. Roughly how I split it:
+
+| Situation | My choice |
+| --- | --- |
+| Simple to medium forms: signup, contact, settings | `useActionState` + Server Action |
+| Must work before JavaScript loads | `useActionState` + Server Action |
+| Validate on every keystroke or on blur, instant feedback | react-hook-form (usually with a shared schema) |
+| Dynamic field arrays, multi-step wizards, interdependent fields | react-hook-form |
+| Very large forms where re-rendering everything on each keystroke hurts | react-hook-form |
+
+The two aren't mutually exclusive. A pattern I use often: react-hook-form handles the client experience, a valid submit calls the Server Action, and the server **still re-validates** with the same schema. What you lose is progressive enhancement, since submission now depends on JavaScript — in exchange for a richer experience on complex forms.
+
+<Callout>
+  Sharing one schema (Zod, for example) between client and server keeps error messages consistent. Just make sure the schema file doesn't accidentally import server-only code, or it'll get pulled into the client bundle.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Pass a function to the form's `action` prop; use `useActionState` for the returned state and pending status.
+- `useFormStatus` only works in a child component of the form — give the submit button its own component.
+- Server Actions plus server rendering give you progressive enhancement: the form submits before hydration.
+- Validate on the client for experience and on the server for correctness — always re-check everything on the server.
+- Return validation errors as data, keep values with `defaultValue`, and put `redirect` outside `try/catch`.
+- Make errors accessible: `aria-invalid`, `aria-describedby`, focus the first error, specific messages.
+- Use `useOptimistic` for actions that almost always succeed, and still handle failure.
+- react-hook-form is still worth it for large, dynamic forms that need instant validation.
+
+</Checklist>

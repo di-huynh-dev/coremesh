@@ -1,0 +1,1038 @@
+---
+title: "Designing a Production-Grade Autocomplete: From Race Conditions to Accessibility"
+excerpt: "A search-suggestion box looks simple, yet it packs nearly every hard frontend problem into one component: race conditions, debounce, caching, flicker-free states, the WAI-ARIA combobox pattern, IME typing and testing. This post builds it piece by piece in React + TypeScript."
+---
+
+<Lead>Autocomplete is the machine-coding question I run into most in frontend interviews, and the component I most often see built wrong in real code. The ten-line demo works perfectly on localhost; in production, stale results overwrite fresh ones, the list flickers on every keystroke, screen readers stay silent, and a Vietnamese user typing with Telex fires six requests for the single word "việt". This post goes from requirements and API design, through each problem and its fix, and ends with a `useAutocomplete` hook and a complete component.</Lead>
+
+## The problem: a "simple" search box
+
+The user types into an input, a list of suggestions from the server appears below, and they pick one with the mouse or keyboard. It sounds like one `useEffect` calling `fetch`. A few questions are enough to show how deep it goes:
+
+- The user types 6 characters in one second. How many requests go out?
+- The second request comes back before the first. Which results do you show?
+- They type "ha", delete it, type "ha" again. Do you need to hit the server again?
+- How does someone using only a keyboard, or a screen reader, choose a suggestion?
+- When typing "Hà Nội" with a Vietnamese input method, do intermediate strings like "Haf" get sent? Does typing "ha noi" without diacritics find "Hà Nội"?
+
+That's why I like this problem: it's small enough to build in an afternoon, but it touches almost every frontend system-design topic — networking, state, performance, accessibility, i18n and testing.
+
+## Requirements and API design
+
+### Functional and non-functional requirements
+
+Before writing any code, I always pin down requirements. In an interview, this is where you show you think like someone building a system, not just someone typing code.
+
+**Functional:**
+
+- Suggest results based on what's typed; the data source is asynchronous (an API) and swappable.
+- Selectable with mouse, touch and keyboard.
+- Only search once the query is long enough (e.g. ≥ 2 characters).
+- Loading, empty and error states, with a retry button on error.
+- Highlight the part of each suggestion that matches the query.
+
+**Non-functional:**
+
+- **Correct:** always show results for the *latest* query, never an older one.
+- **Frugal:** don't spam the server; reuse results for queries already seen.
+- **Smooth:** no flicker, no jank with long lists.
+- **Accessible:** follows the WAI-ARIA combobox pattern, fully keyboard operable, understandable with a screen reader.
+- **International:** works correctly with IMEs (Vietnamese, Japanese, Chinese...) and matches regardless of diacritics.
+
+### Splitting responsibilities
+
+I split it into two layers:
+
+- **The `useAutocomplete` hook** owns all the logic: input value, debounce, fetching, cancellation, cache, status, keyboard handling and ARIA attributes. It renders nothing.
+- **The `Autocomplete` component** only handles presentation: the input, the popup, each option, the messages. Anyone who needs a different UI can use the hook directly.
+
+The hook returns *prop getters* — `getInputProps()`, `getListboxProps()`, `getOptionProps(index)` — so the component just spreads them onto the right elements. This pattern keeps ARIA attributes and event handlers together, which makes it hard to forget one of them.
+
+### The hook's API
+
+```ts
+export interface UseAutocompleteOptions<T> {
+  /** Async data source. Should honor `signal` whenever possible. */
+  fetchSuggestions: (query: string, signal: AbortSignal) => Promise<T[]>;
+  /** Display text for an item — written into the input on selection. */
+  getOptionLabel: (item: T) => string;
+  onSelect?: (item: T) => void;
+
+  /** Controlled: pass `value` + `onInputChange`. Uncontrolled: just `defaultValue`. */
+  value?: string;
+  defaultValue?: string;
+  onInputChange?: (value: string) => void;
+
+  debounceMs?: number; // default 250
+  minQueryLength?: number; // default 2
+  cacheSize?: number; // default 50 queries
+  staleTimeMs?: number; // default 60 seconds
+}
+```
+
+A few decisions worth explaining:
+
+- **A generic `T`** instead of forcing items to be `string` or `{ label, value }`. In practice items are API objects (cities, products, users), so I only ask for a `getOptionLabel` function.
+- **`fetchSuggestions` receives an `AbortSignal`.** This is the most important contract in the API: the hook will cancel stale requests, and the data source should pass the signal down to `fetch`.
+- **No URL prop.** Taking a function makes it easy to test (pass a fake), easy to swap sources (REST, GraphQL, local data), and keeps the component ignorant of HTTP.
+
+### Controlled or uncontrolled
+
+The input value should support both modes, just like a native `<input>`:
+
+- **Uncontrolled** (`defaultValue`): the hook owns the state. Good for 90% of cases.
+- **Controlled** (`value` + `onInputChange`): the parent owns the state, for example to sync the query with URL search params or reset the box from outside.
+
+The convention matches React's: if `value !== undefined`, it's controlled. A component shouldn't switch modes during its lifetime — in real code I usually add a dev-only warning for that.
+
+## Architecture and data flow
+
+Every keystroke flows through a fixed pipeline:
+
+1. **Input change** → update the displayed value immediately (never debounce the input itself).
+2. **Minimum length check** → too short: close the popup and cancel anything pending.
+3. **IME check** → mid-composition: don't search yet.
+4. **Debounce** → wait for the user to pause.
+5. **Cache** → fresh result: use it. Stale result: show it, then revalidate in the background.
+6. **Fetch** → abort the previous request and tag the new one with a request id.
+7. **Commit** → only write results to state if the request id is still the latest.
+
+Keep that order in mind and every section below is just implementing one step.
+
+## Race conditions: when responses arrive out of order
+
+### The classic bug
+
+This is the version I see most often:
+
+```tsx
+useEffect(() => {
+  fetch(`/api/search?q=${query}`)
+    .then((res) => res.json())
+    .then(setResults);
+}, [query]);
+```
+
+The user types "re", then "react". Two requests go out. Nothing guarantees they come back in the order they were sent: "re" matches more records so the server takes longer, or it travels over a slower connection. So "react" arrives first, then "re" arrives later and **overwrites** it. The input says "react" but the list shows results for "re". This bug is almost impossible to reproduce on localhost because latency is too uniform, which is exactly why it slips into production.
+
+(As a bonus, that snippet is also missing `encodeURIComponent` — type "c&a" and the URL breaks.)
+
+### Fixing it with AbortController and a request id
+
+There are two mechanisms, and I use both because they solve different problems:
+
+- **`AbortController`** cancels the old request on the client: `fetch` rejects with an `AbortError` and the browser stops reading the response, saving bandwidth. But it only works when the data source actually uses the `signal`. A `fetchSuggestions` written by someone else may forget to pass it along.
+- **A request id ("latest wins")**: increment a counter on every search; when a result arrives, compare its id with the current one. If they differ, drop it. This doesn't depend on the data source cooperating — it's the final safety net.
+
+Here's the core of the hook (the full version is further down):
+
+```ts
+const cancelPending = useCallback(() => {
+  clearTimeout(timerRef.current);
+  abortRef.current?.abort();
+  abortRef.current = null;
+  // Any response landing after this point is considered stale
+  requestIdRef.current += 1;
+}, []);
+
+const runSearch = useCallback(
+  async (raw: string) => {
+    cancelPending();
+    const id = requestIdRef.current;
+    // ... length check, cache lookup ...
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const result = await fetchRef.current(raw.trim(), controller.signal);
+      if (id !== requestIdRef.current) return; // a newer search has started
+      setItems(result);
+      setStatus("success");
+    } catch {
+      // Cancelled on purpose: not an error, show nothing
+      if (id !== requestIdRef.current || controller.signal.aborted) return;
+      setStatus("error");
+    }
+  },
+  [cancelPending],
+);
+```
+
+Note that `requestIdRef` is bumped on **every** search, including ones served from cache or blocked because the query is too short. If you only bumped it when hitting the network, an old request (from a source that ignores the signal) could still land after a cached render and overwrite it.
+
+<Callout>
+  **Aborting doesn't stop the server.** Once a request is sent, `abort()` only makes the client ignore the response; the server may still be running the query. That's why debounce and caching remain necessary — they reduce the number of requests *sent*, while aborting only reduces the number of responses *processed*.
+</Callout>
+
+If you use React Query or SWR, most of this is handled for you: the query key is the search string, results are stored under their own key so they can't overwrite each other, and the library passes a `signal` into your fetch function. I still write it by hand here because understanding the mechanism is how you know what the library is doing for you — and in an interview, this is exactly what they want to see.
+
+## Debounce vs throttle, and choosing the delay
+
+These two get mixed up a lot:
+
+| | Debounce | Throttle |
+| --- | --- | --- |
+| **How it runs** | Only after events stop for `delay` | At most once per `delay` |
+| **While typing continuously** | Sends nothing until the user pauses | Sends at a steady rate while typing |
+| **Request count** | Lowest | Higher, but capped |
+| **Good for** | Server suggestions — only the final query matters | Cheap sources where results should "follow" the fingers |
+
+For server-backed autocomplete I almost always pick **debounce**: intermediate queries ("rea", "reac") rarely have value, and each request costs money. Throttle fits better when the source is cheap and you want a long-typing user to still see suggestions update — but then the data is usually already on the client, and there's a better approach (see the performance section).
+
+**What delay?** I start around 200–300ms and tune with real data:
+
+- The gap between keystrokes for a fast typist is usually shorter than that, so the debounce collapses a burst of keys into one request. On mobile people type slower, so the delay may need to be longer to group keystrokes.
+- Delay plus API latency is what the user actually waits. If your API takes 400ms, don't add a 500ms debounce on top.
+- Expensive APIs (a search engine billed per request) push the delay up; cheap, fast sources pull it down.
+
+One small optimization I really like: **if the query is in the cache and still fresh, skip the debounce**. Debounce exists to protect the server; when there's no server call, there's no reason to make the user wait.
+
+## Caching, minimum query length and stale-while-revalidate
+
+### Normalizing the key
+
+A cache only works if queries that are "the same" share a key. "Hà Nội", "  hà nội " and "ha noi" should all point to the same entry. My normalization helpers:
+
+```ts
+// normalize.ts
+const COMBINING_MARKS = /[̀-ͯ]/g;
+
+/** Strip diacritics, lowercase, đ → d. */
+export function fold(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(COMBINING_MARKS, "")
+    .toLowerCase()
+    .replace(/đ/g, "d");
+}
+
+/** Key used for caching and matching: fold + collapse whitespace. */
+export function normalizeQuery(text: string): string {
+  return fold(text).trim().replace(/\s+/g, " ");
+}
+```
+
+Using a diacritic-free cache key carries an assumption: **the server also searches diacritic-insensitively**, so "ha noi" and "hà nội" return the same results. If your server is diacritic-sensitive, use a key that's only trimmed and lowercased.
+
+The minimum length (`minQueryLength`) is checked against the normalized key. The reason for the limit: a one-character query matches nearly everything, so it's the most expensive for the server and the least useful for the user. For Vietnamese or English, 2 characters is reasonable; for Chinese or Japanese, a single character already carries a lot of meaning, so 1 may be right.
+
+### An LRU cache with Map
+
+An unbounded `Map` grows forever in a long session. JavaScript's `Map` preserves insertion order, so an LRU (least recently used) cache is only a few lines: on every read, delete and re-insert the key to move it to the end; when over capacity, delete the first key — the one used longest ago.
+
+```ts
+// lru-cache.ts
+export class LRUCache<K, V> {
+  readonly #max: number;
+  readonly #map = new Map<K, V>();
+
+  constructor(max: number) {
+    this.#max = max;
+  }
+
+  get(key: K): V | undefined {
+    const value = this.#map.get(key);
+    if (value === undefined) return undefined;
+    // Move to the end = "just used"
+    this.#map.delete(key);
+    this.#map.set(key, value);
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    this.#map.delete(key);
+    this.#map.set(key, value);
+    if (this.#map.size > this.#max) {
+      const oldest = this.#map.keys().next();
+      if (!oldest.done) this.#map.delete(oldest.value);
+    }
+  }
+}
+```
+
+In this post the cache lives per hook instance. If a page has several search boxes hitting the same source, move the cache to module scope so they share it. And don't forget the HTTP layer: a `Cache-Control` header on your suggestion API can help both the CDN and the browser.
+
+### Stale-while-revalidate
+
+Each entry stores when it was fetched (`fetchedAt`). A cache lookup has three outcomes:
+
+- **Miss:** show the loading state, call the API.
+- **Hit and fresh** (younger than `staleTimeMs`): show it immediately, no API call.
+- **Hit but stale:** show the old result immediately *and* call the API to refresh it. When the new result arrives, swap it in quietly.
+
+That's the stale-while-revalidate idea: the user always sees something instantly, and accuracy catches up afterward. For search suggestions — where data a few minutes old is almost always harmless — it's a very good trade. One detail: when revalidating in the background, don't reset the keyboard position, or a user pressing the arrow keys gets yanked back to the top of the list.
+
+## Loading, empty and error states without flicker
+
+The hook has four statuses: `idle`, `loading`, `success`, `error`. Having four states isn't the hard part; moving between them without the UI jumping around is.
+
+| Situation | What I show | Why |
+| --- | --- | --- |
+| Loading, nothing shown yet | "Searching…" immediately | The popup is open; showing nothing looks broken |
+| Loading, previous query's results on screen | Keep the old list; only show "Searching…" after 300ms | Avoids the list vanishing and reappearing on every key |
+| Success, 0 results | "No matching results" | Clearly distinct from loading |
+| Error | Short message + "Retry" button | Network errors are usually transient |
+| Query too short | Close the popup | Nothing to show |
+
+The general rule: **don't replace content with a spinner**. Most suggestion requests return within a few hundred milliseconds; if the list turns into a spinner and back on every keystroke, the user's eye sees constant flicker. I use a small hook that only raises a "slow" flag after a delay:
+
+```ts
+function useDelayedFlag(flag: boolean, delayMs: number): boolean {
+  const [elapsed, setElapsed] = useState(false);
+  useEffect(() => {
+    if (!flag) return;
+    const timer = setTimeout(() => setElapsed(true), delayMs);
+    return () => {
+      clearTimeout(timer);
+      setElapsed(false);
+    };
+  }, [flag, delayMs]);
+  return flag && elapsed;
+}
+```
+
+To go further, once the spinner is visible you can keep it up for a minimum of a few hundred milliseconds so it never blinks for a single frame. I skip that here to keep the code compact.
+
+<Callout>
+  **Errors during background revalidation:** if I'm showing stale results from the cache and the refresh fails, I keep the stale results and show no error. For the user, a slightly old list beats an error message replacing a list that still works.
+</Callout>
+
+## Accessibility: the WAI-ARIA combobox pattern
+
+This is what separates a component that "works" from a production one. The WAI-ARIA Authoring Practices describe autocomplete as the **combobox** pattern: an input paired with a popup (here, a listbox).
+
+### Roles and attributes
+
+On the `<input>`:
+
+- `role="combobox"` — in ARIA 1.2, this role goes directly on the input.
+- `aria-expanded` — `true` when the popup is shown, `false` when hidden. It must match what's visible.
+- `aria-controls` — the listbox id.
+- `aria-autocomplete="list"` — signals that suggestions appear as a list (rather than being completed inline in the input).
+- `aria-activedescendant` — the id of the option currently active via keyboard; remove it when no option is active.
+- `autoComplete="off"` — turns off the browser's own suggestions so they don't stack on top of yours.
+
+In the popup: an element with `role="listbox"` that has a name (I use `aria-labelledby` pointing to the input's label), containing elements with `role="option"`. The active option has `aria-selected="true"`, the others `false`.
+
+A listbox should only contain options. The "Searching…", "No results" messages and the "Retry" button go *next to* the listbox inside the same popup, not inside it.
+
+### Focus stays on the input
+
+There are two ways to "move" through options: move real focus to each option (roving focus), or keep focus on the input and use `aria-activedescendant` to tell assistive technology which option is active. For an editable combobox, the second is effectively mandatory: a user pressing the down arrow can keep typing, and the caret is never lost.
+
+That leads to two easy-to-forget details:
+
+- **Options need an `onMouseDown` that calls `preventDefault()`.** Otherwise clicking an option blurs the input first, `blur` closes the popup, and the `click` never reaches the option. Same for the "Retry" button.
+- **Scroll the active option into view yourself.** Focus doesn't move, so the browser won't scroll; I call `scrollIntoView({ block: "nearest" })` whenever `activeIndex` changes.
+
+### Keyboard support
+
+| Key | Behavior |
+| --- | --- |
+| `ArrowDown` | Popup closed: open it. Popup open: move to the next option, wrapping from last to first |
+| `ArrowUp` | Move to the previous option, wrapping from first to last |
+| `Enter` | With an active option: select it and close. Without: default behavior (submit the form) |
+| `Escape` | Popup open: close it, keep the text. Popup already closed: clear the input |
+| `Home` / `End` | Move the caret to the start/end of the input as usual, and clear the active option |
+| `Tab` | Close the popup; focus moves on as usual |
+
+`Home`/`End` deserve a note. Some libraries use them to jump to the first/last option. But in an *editable* combobox, `Home`/`End` are what people use to edit text in the input, and the APG also describes them as moving the caret within the input. I chose to respect editing behavior: let the browser move the caret, and only clear the active option so "visual focus" returns to the input. It's a deliberate choice — what matters is being consistent and having a reason.
+
+Wrap-around is optional in the APG, not required. I enable it because suggestion lists are usually short.
+
+### Screen reader announcements
+
+`aria-activedescendant` lets a screen reader read the active option, but nothing tells the user that *results just arrived*. I add a visually hidden `role="status"` region (implicitly `aria-live="polite"`) with content like "5 suggestions for “ha noi”" or "No results".
+
+Two practical notes:
+
+- **The live region must be in the DOM from the start**; only its content changes. A live region mounted at the same moment as its content often isn't announced.
+- **The content has to change to be announced.** If the new query also returns 5 results, an identical "5 suggestions" message gets skipped. Including the query in the message fixes that.
+
+And because the message only changes when results arrive (after the debounce), the screen reader isn't spammed on every keystroke.
+
+<Callout>
+  **Test with a real screen reader.** Spec-correct ARIA doesn't guarantee correct output: VoiceOver, NVDA and JAWS each handle comboboxes a bit differently. I always try at least VoiceOver on Safari and NVDA on Chrome or Firefox before calling the component done.
+</Callout>
+
+## Typing Vietnamese: IME composition and diacritic-insensitive matching
+
+### compositionstart and compositionend
+
+This is the part most English-language guides skip, but for Vietnamese users it's very real. When typing through an IME (Input Method Editor), some input methods put the text into a *composition* state: the text being composed is usually underlined, and the browser fires `compositionstart`, then intermediate `input` events, then `compositionend` once the text is committed.
+
+If every `input` event schedules a search, intermediate strings like "vie", "viê", "việ" can all be sent. For Japanese or Chinese it's worse: the composing string is a phonetic reading, not the final text at all.
+
+My approach:
+
+- `compositionstart`: set a `composingRef` flag.
+- `onChange` during composition: still update the input value (users must see what they type), but **don't** schedule a search.
+- `compositionend`: clear the flag and schedule a search with `e.currentTarget.value`.
+
+The order of `compositionend` and the final `input` event isn't the same across browsers, so I schedule from both places. The debounce merges them into one search.
+
+`Enter` needs care too: while composing, `Enter` confirms the text in the IME; it must not select an option. In `onKeyDown`, I bail out if `e.nativeEvent.isComposing` is `true`, or if `keyCode` is `229` — the value browsers assign to keys handled by an IME. The `229` check guards the case where `compositionend` fires *before* the `keydown` of the `Enter` key (Safari is where this usually shows up), when `isComposing` is already `false`.
+
+<Callout>
+  **Not every Vietnamese input method uses composition.** Some use composition (underlined text while composing); others edit text by sending backspaces followed by new characters, and the browser only sees ordinary `input` events. So handling composition is necessary but not sufficient — the debounce is the protection that covers every typing method. Test with the input methods your users actually use.
+</Callout>
+
+### Diacritic-insensitive matching
+
+Vietnamese users very often type without diacritics to go faster: "ha noi", "da nang". The `fold` function above handles that:
+
+1. `normalize("NFD")` decomposes accented characters into a base letter plus combining marks. "ệ" becomes "e" + circumflex + dot below.
+2. Remove everything in the `U+0300`–`U+036F` range (combining diacritical marks). All Vietnamese tone marks, plus the circumflex, horn and breve, live in that range.
+3. `toLowerCase()`.
+4. Replace "đ" with "d" **by hand**. This is the classic trap: "đ" is a separate letter in Unicode, not "d" plus a mark, so NFD doesn't decompose it. Forget this step and "da nang" will never match "Đà Nẵng".
+
+There's another reason to normalize: the same "ệ" can be encoded as one code point (NFC, precomposed) or several (NFD, decomposed), depending on where it came from — text pasted from elsewhere, file names on some systems, or the input method itself. The two strings look identical, yet `===` returns `false`. Normalizing before comparing removes that whole class of bugs.
+
+Ideally the server also matches without diacritics (for example, by storing an extra folded column and indexing it). On the client, `fold` is used for the cache key and for highlighting below.
+
+## Highlighting the match safely
+
+The "quick" way is to wrap the matched text in `<mark>` and assign it to `innerHTML` (or `dangerouslySetInnerHTML`). Don't: labels come from the server, and a single record whose name contains malicious HTML gives you an XSS hole. On top of that, putting the query into a regex without escaping means typing "c++" breaks the regex.
+
+The safe way is to slice the string into three parts — before, match, after — and render them as text nodes. React escapes all text, so there's nothing to inject.
+
+The tricky part is making highlighting work with diacritic-insensitive matching: the query "ha noi" must highlight "Hà Nội" in the original string. Positions in the folded string don't line up with positions in the original, so I fold character by character and keep a map from folded positions back to original positions:
+
+```tsx
+// highlight.tsx
+import { fold, normalizeQuery } from "./normalize";
+
+/** Returns [start, end) in the original string, or null if there's no match. */
+function findMatch(text: string, query: string): [number, number] | null {
+  const needle = normalizeQuery(query);
+  if (!needle) return null;
+
+  let folded = "";
+  const starts: number[] = []; // folded position → start of the original char
+  const ends: number[] = []; // → end of the original char
+  let offset = 0;
+  for (const char of text) {
+    const f = fold(char);
+    for (let k = 0; k < f.length; k++) {
+      starts.push(offset);
+      ends.push(offset + char.length);
+    }
+    folded += f;
+    offset += char.length;
+  }
+
+  const index = folded.indexOf(needle);
+  if (index === -1) return null;
+  const start = starts[index];
+  const end = ends[index + needle.length - 1];
+  return start === undefined || end === undefined ? null : [start, end];
+}
+
+export function Highlight({ text, query }: { text: string; query: string }) {
+  // NFC so each accented letter is one character and never split from its marks
+  const value = text.normalize("NFC");
+  const match = findMatch(value, query);
+  if (!match) return <>{value}</>;
+  const [start, end] = match;
+  return (
+    <>
+      {value.slice(0, start)}
+      <mark>{value.slice(start, end)}</mark>
+      {value.slice(end)}
+    </>
+  );
+}
+```
+
+A few points:
+
+- `for...of` over a string iterates by code point, so emoji and other non-BMP characters aren't split in half. `offset` advances by `char.length` (UTF-16 code units) to match what `slice` expects.
+- The original string is converted to NFC first. In NFD form, marks are separate characters and can be cut off from their base letter at the `<mark>` boundary, which renders incorrectly.
+- I only highlight the first match. Highlighting every match, or matching per word, is an easy extension on the same foundation.
+
+## Putting it together: the useAutocomplete hook
+
+Here's the full version. I'll go through it block by block right after.
+
+```ts
+// use-autocomplete.ts
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { ChangeEvent, ComponentProps, CompositionEvent, KeyboardEvent } from "react";
+import { LRUCache } from "./lru-cache";
+import { normalizeQuery } from "./normalize";
+
+export type SearchStatus = "idle" | "loading" | "success" | "error";
+
+export interface UseAutocompleteOptions<T> {
+  fetchSuggestions: (query: string, signal: AbortSignal) => Promise<T[]>;
+  getOptionLabel: (item: T) => string;
+  onSelect?: (item: T) => void;
+  value?: string;
+  defaultValue?: string;
+  onInputChange?: (value: string) => void;
+  debounceMs?: number;
+  minQueryLength?: number;
+  cacheSize?: number;
+  staleTimeMs?: number;
+}
+
+type CacheEntry<T> = { items: T[]; fetchedAt: number };
+
+export function useAutocomplete<T>(options: UseAutocompleteOptions<T>) {
+  const {
+    getOptionLabel,
+    onSelect,
+    value,
+    defaultValue = "",
+    onInputChange,
+    debounceMs = 250,
+    minQueryLength = 2,
+    cacheSize = 50,
+    staleTimeMs = 60_000,
+  } = options;
+
+  // --- ids for ARIA ---
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (index: number) => `${baseId}-option-${index}`;
+
+  // --- controlled / uncontrolled ---
+  const [innerValue, setInnerValue] = useState(defaultValue);
+  const isControlled = value !== undefined;
+  const inputValue = isControlled ? value : innerValue;
+  const setValue = (next: string) => {
+    if (!isControlled) setInnerValue(next);
+    onInputChange?.(next);
+  };
+
+  // --- render state ---
+  const [items, setItems] = useState<T[]>([]);
+  const [status, setStatus] = useState<SearchStatus>("idle");
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [cache] = useState(() => new LRUCache<string, CacheEntry<T>>(cacheSize));
+
+  // --- refs: changing these must not re-render ---
+  const fetchRef = useRef(options.fetchSuggestions);
+  useLayoutEffect(() => {
+    fetchRef.current = options.fetchSuggestions;
+  });
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const abortRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const composingRef = useRef(false);
+
+  const cancelPending = useCallback(() => {
+    clearTimeout(timerRef.current);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    requestIdRef.current += 1;
+  }, []);
+
+  // Cancel everything on unmount
+  useEffect(() => cancelPending, [cancelPending]);
+
+  const runSearch = useCallback(
+    async (raw: string) => {
+      cancelPending();
+      const id = requestIdRef.current;
+      const key = normalizeQuery(raw);
+      if (key.length < minQueryLength) {
+        setItems([]);
+        setStatus("idle");
+        return;
+      }
+
+      const cached = cache.get(key);
+      if (cached) {
+        setItems(cached.items);
+        setStatus("success");
+        setActiveIndex(-1);
+        if (Date.now() - cached.fetchedAt < staleTimeMs) return; // still fresh
+      } else {
+        setStatus("loading"); // keep the previous items while waiting
+      }
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+      try {
+        const result = await fetchRef.current(raw.trim(), controller.signal);
+        if (id !== requestIdRef.current) return;
+        cache.set(key, { items: result, fetchedAt: Date.now() });
+        setItems(result);
+        setStatus("success");
+        // Background refresh: keep the keyboard position if still valid
+        setActiveIndex((i) => (cached && i < result.length ? i : -1));
+      } catch {
+        if (id !== requestIdRef.current || controller.signal.aborted) return;
+        if (!cached) setStatus("error"); // stale data on screen: keep it, no error
+      }
+    },
+    [cache, cancelPending, minQueryLength, staleTimeMs],
+  );
+
+  const scheduleSearch = useCallback(
+    (raw: string) => {
+      clearTimeout(timerRef.current);
+      const hit = cache.get(normalizeQuery(raw));
+      // Fresh cache hit: nothing to protect the server from, so don't wait
+      const delay = hit && Date.now() - hit.fetchedAt < staleTimeMs ? 0 : debounceMs;
+      timerRef.current = setTimeout(() => void runSearch(raw), delay);
+    },
+    [cache, debounceMs, runSearch, staleTimeMs],
+  );
+
+  const isExpanded = isOpen && status !== "idle";
+
+  // Focus never leaves the input, so scroll the active option into view manually
+  useEffect(() => {
+    if (!isExpanded || activeIndex < 0) return;
+    document
+      .getElementById(`${baseId}-option-${activeIndex}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [baseId, isExpanded, activeIndex]);
+
+  const close = () => {
+    setIsOpen(false);
+    setActiveIndex(-1);
+  };
+
+  const selectItem = (item: T) => {
+    cancelPending(); // stop a pending debounce from reopening the popup
+    setValue(getOptionLabel(item));
+    onSelect?.(item);
+    setStatus((s) => (s === "loading" ? "idle" : s)); // that request was just cancelled
+    close();
+  };
+
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const next = e.target.value;
+    setValue(next);
+    setActiveIndex(-1);
+    if (normalizeQuery(next).length < minQueryLength) {
+      cancelPending();
+      setItems([]);
+      setStatus("idle");
+      setIsOpen(false);
+      return;
+    }
+    setIsOpen(true);
+    if (composingRef.current) return; // wait for compositionend
+    scheduleSearch(next);
+  };
+
+  const handleCompositionStart = () => {
+    composingRef.current = true;
+  };
+
+  const handleCompositionEnd = (e: CompositionEvent<HTMLInputElement>) => {
+    composingRef.current = false;
+    scheduleSearch(e.currentTarget.value);
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    // Keys handled by the IME (e.g. Enter to commit text) are not ours
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const count = items.length;
+
+    switch (e.key) {
+      case "ArrowDown": {
+        e.preventDefault(); // keep the caret from jumping to the end
+        if (!isExpanded) {
+          setIsOpen(true);
+          if (status === "idle") void runSearch(inputValue);
+          return;
+        }
+        if (count > 0) setActiveIndex((i) => (i + 1) % count);
+        return;
+      }
+      case "ArrowUp": {
+        if (!isExpanded || count === 0) return;
+        e.preventDefault();
+        setActiveIndex((i) => (i <= 0 ? count - 1 : i - 1));
+        return;
+      }
+      case "Enter": {
+        const item = isExpanded && activeIndex >= 0 ? items[activeIndex] : undefined;
+        if (item === undefined) return; // let the form submit normally
+        e.preventDefault();
+        selectItem(item);
+        return;
+      }
+      case "Escape": {
+        if (isExpanded) {
+          e.preventDefault();
+          close();
+        } else if (inputValue) {
+          e.preventDefault();
+          cancelPending();
+          setValue("");
+          setItems([]);
+          setStatus("idle");
+        }
+        return;
+      }
+      case "Home":
+      case "End":
+        setActiveIndex(-1); // the caret moves as usual
+        return;
+      case "Tab":
+        close();
+        return;
+    }
+  };
+
+  const getInputProps = (): ComponentProps<"input"> => ({
+    type: "text",
+    role: "combobox",
+    value: inputValue,
+    autoComplete: "off",
+    "aria-autocomplete": "list",
+    "aria-expanded": isExpanded,
+    "aria-controls": listboxId,
+    "aria-activedescendant":
+      isExpanded && activeIndex >= 0 ? optionId(activeIndex) : undefined,
+    onChange: handleChange,
+    onKeyDown: handleKeyDown,
+    onBlur: close,
+    onCompositionStart: handleCompositionStart,
+    onCompositionEnd: handleCompositionEnd,
+  });
+
+  const getListboxProps = (): ComponentProps<"ul"> => ({
+    id: listboxId,
+    role: "listbox",
+  });
+
+  const getOptionProps = (index: number): ComponentProps<"li"> => ({
+    id: optionId(index),
+    role: "option",
+    "aria-selected": index === activeIndex,
+    // Keep focus on the input, otherwise blur closes the popup before the click lands
+    onMouseDown: (e) => e.preventDefault(),
+    onMouseMove: () => {
+      if (index !== activeIndex) setActiveIndex(index);
+    },
+    onClick: () => {
+      const item = items[index];
+      if (item !== undefined) selectItem(item);
+    },
+  });
+
+  return {
+    inputValue,
+    items,
+    status,
+    isExpanded,
+    activeIndex,
+    retry: () => void runSearch(inputValue),
+    getInputProps,
+    getListboxProps,
+    getOptionProps,
+  };
+}
+```
+
+Block by block:
+
+**Ids and ARIA.** `useId` gives ids that are stable between server and client and don't collide when a page has several autocompletes. Option ids are derived from the index, so `aria-activedescendant` is computed straight from `activeIndex`.
+
+**Refs instead of state.** The timer, the `AbortController`, the request id and the composition flag don't affect the UI, so they're refs — changing them doesn't re-render. `fetchRef` follows the "latest ref" pattern: hook consumers often pass a new inline function every render, and I don't want `runSearch` recreated (or forced into dependency arrays) just because of that.
+
+**Cache in a lazy `useState`.** `useState(() => new LRUCache(...))` creates the cache exactly once per instance with a reference that never changes. Note that this means `cacheSize` is only read on the first render.
+
+**`isExpanded` is derived.** `isOpen` is the user's intent (typing, hasn't pressed Escape), while `isExpanded` is what's actually shown. The popup only appears when there's something to show (`status` isn't `idle`), and `aria-expanded` uses exactly this value so it matches what's on screen.
+
+**Cancelling on select.** `selectItem` calls `cancelPending()` so a still-pending debounce can't reopen the popup with results for the half-typed query. Because that may abort an in-flight request, it also moves a `loading` status back to `idle`; otherwise reopening the popup later would show "Searching…" for a request that no longer exists.
+
+**`onMouseMove` instead of `onMouseEnter`.** When arrow keys scroll the list, a stationary mouse pointer can "enter" a different option. With `onMouseEnter`, the option under the pointer would steal the active state from the keyboard. `onMouseMove` only reacts when the mouse really moves.
+
+**`Enter` with no active option isn't intercepted.** Search boxes often live in a `<form>`; pressing Enter after typing means "run a full search", not "pick a suggestion".
+
+## The Autocomplete component
+
+The presentation layer is now thin:
+
+```tsx
+// autocomplete.tsx
+"use client";
+
+import { useEffect, useId, useState } from "react";
+import { Highlight } from "./highlight";
+import { useAutocomplete, type UseAutocompleteOptions } from "./use-autocomplete";
+
+function useDelayedFlag(flag: boolean, delayMs: number): boolean {
+  const [elapsed, setElapsed] = useState(false);
+  useEffect(() => {
+    if (!flag) return;
+    const timer = setTimeout(() => setElapsed(true), delayMs);
+    return () => {
+      clearTimeout(timer);
+      setElapsed(false);
+    };
+  }, [flag, delayMs]);
+  return flag && elapsed;
+}
+
+export interface AutocompleteProps<T> extends UseAutocompleteOptions<T> {
+  label: string;
+  getOptionKey: (item: T) => string;
+  placeholder?: string;
+}
+
+export function Autocomplete<T>({
+  label,
+  getOptionKey,
+  placeholder,
+  ...options
+}: AutocompleteProps<T>) {
+  const inputId = useId();
+  const labelId = useId();
+  const ac = useAutocomplete(options);
+  const { items, status, activeIndex, inputValue, isExpanded } = ac;
+
+  const slow = useDelayedFlag(status === "loading", 300);
+  // Nothing on screen yet: say we're searching now. Old results visible: only when slow.
+  const showLoading = status === "loading" && (items.length === 0 || slow);
+  const showEmpty = status === "success" && items.length === 0;
+
+  const query = inputValue.trim();
+  let announcement = "";
+  if (isExpanded && status === "success") {
+    announcement =
+      items.length > 0
+        ? `${items.length} suggestions for “${query}”`
+        : `No results for “${query}”`;
+  } else if (isExpanded && status === "error") {
+    announcement = "Couldn't load suggestions";
+  }
+
+  return (
+    <div className="autocomplete">
+      <label id={labelId} htmlFor={inputId}>
+        {label}
+      </label>
+      <input id={inputId} placeholder={placeholder} {...ac.getInputProps()} />
+
+      <div className="autocomplete-popup" hidden={!isExpanded}>
+        <ul {...ac.getListboxProps()} aria-labelledby={labelId}>
+          {items.map((item, index) => (
+            <li
+              key={getOptionKey(item)}
+              {...ac.getOptionProps(index)}
+              data-active={index === activeIndex ? "" : undefined}
+            >
+              <Highlight text={options.getOptionLabel(item)} query={inputValue} />
+            </li>
+          ))}
+        </ul>
+        {showLoading && <p className="autocomplete-hint">Searching…</p>}
+        {showEmpty && <p className="autocomplete-hint">No matching results</p>}
+        {status === "error" && (
+          <p className="autocomplete-hint">
+            Couldn't load suggestions.{" "}
+            <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={ac.retry}>
+              Retry
+            </button>
+          </p>
+        )}
+      </div>
+
+      {/* Always in the DOM; only the content changes so screen readers announce it */}
+      <div role="status" className="sr-only">
+        {announcement}
+      </div>
+    </div>
+  );
+}
+```
+
+And usage, with a data source that honors `signal`:
+
+```tsx
+import { Autocomplete } from "./autocomplete";
+
+type City = { id: string; name: string; province: string };
+
+async function searchCities(query: string, signal: AbortSignal): Promise<City[]> {
+  const res = await fetch(`/api/cities?q=${encodeURIComponent(query)}`, { signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as City[];
+}
+
+export function CityPicker() {
+  return (
+    <Autocomplete
+      label="City"
+      placeholder="e.g. Da Nang"
+      fetchSuggestions={searchCities}
+      getOptionLabel={(city) => city.name}
+      getOptionKey={(city) => city.id}
+      onSelect={(city) => console.log("Selected", city.id)}
+    />
+  );
+}
+```
+
+Style the active option via `data-active` (or `[aria-selected="true"]` in CSS), not just `:hover`, so keyboard users can clearly see where they are. The `sr-only` class is the familiar "visually hidden but still read by screen readers" utility — don't use `display: none` for a live region, because that hides it from screen readers too.
+
+## Performance
+
+With 10–20 suggestions, the component above is already fast enough. But a few things are worth knowing as scale grows.
+
+**Limit results on the server.** This is the best performance optimization there is. Users rarely read past 10 suggestions; returning 500 rows and then figuring out how to render them quickly is solving the wrong problem.
+
+**Avoid unnecessary re-renders.** Every arrow key press changes `activeIndex` and the whole list re-renders. With a few dozen options that's negligible. If each option is heavy (images, multiple lines), extract an `OptionRow` component wrapped in `memo` and pass only primitive props like `label` and `isActive`; then only two rows (old and new active) re-render. Be aware that the handlers `getOptionProps` creates on each render will defeat `memo` if you pass them straight through — use event delegation or stable callbacks. If the project has React Compiler enabled, most of this memoization is done for you.
+
+**Keep state local.** The input value belongs in the hook, not in a global store that half the page subscribes to. Each keystroke should only re-render the autocomplete.
+
+**Data already on the client doesn't need debounce.** If the source is a few thousand in-memory items (provinces, countries), there's no request to save. Filter synchronously, pre-fold each item's search string once inside `useMemo`, and use `useDeferredValue` for the query so React prioritizes updating the input over filtering the list.
+
+**Virtualize when the list is genuinely long.** If you truly must show hundreds of options (say, a combobox over a large catalog), render only the visible rows with a library like `@tanstack/react-virtual`. Virtualization comes with two accessibility requirements:
+
+```tsx
+const virtualizer = useVirtualizer({
+  count: items.length,
+  getScrollElement: () => listRef.current,
+  estimateSize: () => 36,
+});
+
+// The active option must always be rendered, or aria-activedescendant points at nothing
+useEffect(() => {
+  if (activeIndex >= 0) virtualizer.scrollToIndex(activeIndex, { align: "auto" });
+}, [activeIndex, virtualizer]);
+
+// When rendering each virtual row, declare its real position in the full set
+<li
+  {...getOptionProps(row.index)}
+  aria-setsize={items.length}
+  aria-posinset={row.index + 1}
+/>;
+```
+
+- The option referenced by `aria-activedescendant` **must exist in the DOM**, so scroll the virtualizer to it whenever `activeIndex` changes (instead of the hook's `scrollIntoView`).
+- Since the DOM only holds part of the list, add `aria-setsize` and `aria-posinset` so screen readers can say things like "item 37 of 500".
+
+## Testing strategy
+
+Autocomplete has three things that are hard to test: time (debounce), asynchrony (when responses arrive) and keyboard interaction. I use Vitest, Testing Library and `user-event`, and handle each one:
+
+- **Time:** fake timers, and tell `user-event` about them so it advances the fake clock while typing.
+- **Asynchrony:** a fake fetch where the *test* decides when, and in what order, each request resolves. It's the only way to reproduce a race condition deterministically.
+- **Interaction:** query by role and accessible name (`getByRole("combobox", ...)`). Tests written this way verify the ARIA wiring at the same time — if a test can't find the element by role, neither can a screen reader.
+
+```tsx
+// autocomplete.test.tsx
+import { act } from "react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { Autocomplete } from "./autocomplete";
+
+function createControllableFetch() {
+  const pending = new Map<string, (items: string[]) => void>();
+  const fetchSuggestions = vi.fn(
+    (query: string, signal: AbortSignal) =>
+      new Promise<string[]>((resolve, reject) => {
+        pending.set(query, resolve);
+        signal.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      }),
+  );
+  const resolve = (query: string, items: string[]) => pending.get(query)?.(items);
+  return { fetchSuggestions, resolve };
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  // jsdom doesn't implement scrollIntoView
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function setup() {
+  const api = createControllableFetch();
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(
+    <Autocomplete
+      label="Framework"
+      fetchSuggestions={api.fetchSuggestions}
+      getOptionLabel={(s: string) => s}
+      getOptionKey={(s: string) => s}
+    />,
+  );
+  const input = screen.getByRole("combobox", { name: "Framework" });
+  return { api, user, input };
+}
+
+test("debounce: continuous typing sends a single request", async () => {
+  const { api, user, input } = setup();
+  await user.type(input, "react");
+  expect(api.fetchSuggestions).not.toHaveBeenCalled();
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(api.fetchSuggestions).toHaveBeenCalledTimes(1);
+  expect(api.fetchSuggestions).toHaveBeenCalledWith("react", expect.any(AbortSignal));
+});
+
+test("a stale response arriving late doesn't overwrite fresh results", async () => {
+  const { api, user, input } = setup();
+  await user.type(input, "re");
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  await user.type(input, "act");
+  await act(() => vi.advanceTimersByTimeAsync(300));
+
+  // Resolve deliberately out of order: "react" first, "re" second
+  await act(async () => {
+    api.resolve("react", ["React", "React Native"]);
+    api.resolve("re", ["Redux", "Remix"]);
+  });
+
+  const labels = screen.getAllByRole("option").map((o) => o.textContent);
+  expect(labels).toEqual(["React", "React Native"]);
+});
+
+test("keyboard: ArrowDown + Enter selects an option and closes the popup", async () => {
+  const { api, user, input } = setup();
+  await user.type(input, "re");
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  await act(async () => api.resolve("re", ["Redux", "Remix"]));
+
+  await user.keyboard("{ArrowDown}");
+  const [first] = screen.getAllByRole("option");
+  expect(input).toHaveAttribute("aria-activedescendant", first?.id);
+  expect(first).toHaveAttribute("aria-selected", "true");
+
+  await user.keyboard("{Enter}");
+  expect(input).toHaveValue("Redux");
+  expect(input).toHaveAttribute("aria-expanded", "false");
+});
+```
+
+A few notes:
+
+- `shouldAdvanceTime: true` lets the fake clock also advance with real time, which keeps `user-event` and Testing Library from hanging on a timer that never fires. `advanceTimers` in `userEvent.setup` is the official way to make the two cooperate.
+- The race-condition test above is actually protected by `AbortController` (the "re" request is already rejected before it resolves). To test the request-id safety net on its own, add a variant of the fake fetch that **ignores** `signal` — exactly the "uncooperative data source" scenario.
+- Also worth testing: queries shorter than `minQueryLength` don't call the API; retyping an earlier query uses the cache (`fetchSuggestions` isn't called again); errors show a "Retry" button; pressing Escape twice; and composition — `fireEvent.compositionStart`, type, then `fireEvent.compositionEnd`, and assert only one request went out.
+
+<Callout>
+  **Test behavior, not implementation.** I never assert on `requestIdRef` or the cache contents. Tests only speak through what users do (type, press keys) and what they get (which options appear, which ARIA attributes are set). That way, if I later swap the hand-written hook for React Query, the test suite stays the same.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Pin down requirements and the API first: a generic `T`, a data source that's a function taking an `AbortSignal`, and support for both controlled and uncontrolled use.
+- Defend against race conditions in two layers: `AbortController` to cancel requests, and a request id so only the latest result is committed to state.
+- Debounce server-backed sources (around 200–300ms), and skip the debounce when a fresh cache entry exists.
+- An LRU cache keyed by the normalized query, stale-while-revalidate so there's always something to show immediately, and a minimum query length.
+- Don't replace existing results with a spinner; only show loading when it's genuinely slow.
+- Follow the WAI-ARIA combobox pattern: `role="combobox"`, `aria-expanded`, `aria-controls`, `aria-activedescendant`, a listbox whose options carry `aria-selected`; focus stays on the input; a live region announces result counts.
+- Respect the IME: don't search mid-composition, don't let the Enter that commits text select an option; match without diacritics via NFD, and remember to handle "đ" separately.
+- Highlight by slicing the string and rendering text nodes — never `innerHTML`.
+- Test with fake timers and a fake fetch whose resolution order you control, and query by role.
+
+</Checklist>

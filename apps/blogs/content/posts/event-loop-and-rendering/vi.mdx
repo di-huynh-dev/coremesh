@@ -1,0 +1,449 @@
+---
+title: "Event loop, microtask và rendering: vì sao giao diện của bạn bị đơ"
+excerpt: "Hiểu đúng mô hình event loop của trình duyệt — task, microtask, khung hình — qua các bài đoán thứ tự output, rồi dùng nó để giải thích vì sao UI bị đơ và cách chia nhỏ, nhường main thread, đẩy việc sang Web Worker."
+---
+
+<Lead>Hầu hết các lần "trang bị đơ" mình từng debug đều không do thiếu RAM hay mạng chậm, mà do một điều rất đơn giản: JavaScript chiếm main thread lâu đến mức trình duyệt không có cơ hội vẽ lại màn hình hay xử lý cú click. Muốn sửa tận gốc, bạn cần một mô hình đúng trong đầu về event loop — task chạy khi nào, microtask chen vào ở đâu, và khung hình được vẽ vào lúc nào. Bài này xây dựng mô hình đó, kiểm tra nó bằng các bài "đoán output", rồi áp dụng vào những kỹ thuật cụ thể để giữ giao diện mượt.</Lead>
+
+## Một main thread, nhiều việc phải làm
+
+Trong một tab trình duyệt, phần lớn công việc liên quan đến trang đều chạy trên **main thread**: chạy JavaScript của bạn, xử lý sự kiện, tính style, layout, và chuẩn bị dữ liệu để vẽ. Main thread chỉ làm được một việc tại một thời điểm. Khi một hàm JavaScript đang chạy, không có gì khác trên thread đó được chen vào — không render, không xử lý input, không gì cả.
+
+Event loop là cơ chế quyết định *việc gì chạy tiếp theo*. Hiểu nó không phải để trả lời câu hỏi phỏng vấn, mà vì gần như mọi vấn đề về độ phản hồi (INP kém, animation giật, input gõ bị trễ) đều quy về câu hỏi: *main thread đang bận làm gì, và nó có nhường chỗ cho việc render hay không?*
+
+<Callout>
+  **Một lưu ý về độ chính xác:** mô hình dưới đây bám theo đặc tả HTML (phần "event loop processing model"), nhưng được đơn giản hoá. Trình duyệt thật có nhiều task queue với độ ưu tiên khác nhau, và được phép tự chọn queue nào chạy trước. Vì vậy có những thứ tự được đặc tả đảm bảo, và có những thứ tự **phụ thuộc trình duyệt** — mình sẽ chỉ rõ khi gặp.
+</Callout>
+
+## Mô hình event loop của trình duyệt
+
+### Ba loại việc: task, microtask, rendering
+
+Hãy hình dung mỗi vòng lặp của event loop gồm ba bước:
+
+1. **Chọn và chạy một task.** Task (đặc tả gọi là task, nhiều nơi gọi là macrotask) là một đơn vị công việc độc lập: chạy một script, xử lý một sự kiện click, chạy callback của `setTimeout`, nhận một `postMessage`. Mỗi vòng chỉ chạy **một** task.
+2. **Microtask checkpoint.** Sau khi task kết thúc và call stack rỗng, trình duyệt chạy **toàn bộ** microtask queue cho đến khi nó rỗng — kể cả những microtask được thêm vào trong lúc đang chạy. Microtask đến từ `Promise.then/catch/finally`, phần tiếp theo sau `await`, `queueMicrotask` và `MutationObserver`.
+3. **Cơ hội render (rendering opportunity).** Nếu đến lúc cập nhật khung hình, trình duyệt chạy các bước "update the rendering": callback của `requestAnimationFrame`, rồi tính style, layout, rồi paint (và composite).
+
+Sau đó vòng lặp quay lại bước 1.
+
+| Loại | Ví dụ nguồn | Chạy khi nào | Bao nhiêu mỗi lượt |
+| --- | --- | --- | --- |
+| **Task** | script, sự kiện người dùng, `setTimeout`, `setInterval`, `MessageChannel`, I/O | Event loop chọn từ một trong các task queue | Một task |
+| **Microtask** | `Promise.then`, `await`, `queueMicrotask`, `MutationObserver` | Ngay khi call stack rỗng, sau mỗi callback và sau mỗi task | Tất cả, đến khi queue rỗng |
+| **Animation frame callback** | `requestAnimationFrame` | Trong bước render, trước style và layout | Tất cả callback đã đăng ký *trước* khung hình này |
+
+### Không phải vòng nào cũng render
+
+Một điểm hay bị hiểu sai: trình duyệt **không** render sau mỗi task. Bước render chỉ xảy ra khi có "cơ hội render" — thường gắn với tần số làm tươi của màn hình (khoảng 16,7ms với màn 60Hz, 8,3ms với 120Hz). Nếu trong 16ms có mười task setTimeout chạy, chúng có thể chạy hết rồi mới tới một lần render. Trình duyệt cũng được phép bỏ qua render khi không có gì thay đổi, hoặc khi tab bị ẩn (lúc đó `requestAnimationFrame` gần như dừng hẳn, và timer bị giới hạn tần suất).
+
+Thứ tự bên trong bước render, rút gọn:
+
+1. Xử lý các sự kiện gắn với khung hình (resize, scroll, media query thay đổi…).
+2. Chạy các callback `requestAnimationFrame`.
+3. Tính style và layout (kèm `ResizeObserver` nếu có).
+4. Cập nhật `IntersectionObserver`.
+5. Paint, rồi composite lên màn hình.
+
+### Microtask chạy ở "mọi khe hở"
+
+Microtask checkpoint không chỉ chạy sau mỗi task. Theo đặc tả, nó chạy mỗi khi một callback kết thúc và **call stack JavaScript rỗng** — tức là sau mỗi event listener được trình duyệt gọi, sau mỗi callback `requestAnimationFrame`. Chi tiết này nghe có vẻ hàn lâm, nhưng nó giải thích một bài đoán output ở phần sau.
+
+## Đoán output: kiểm tra mô hình
+
+Cách tốt nhất để chắc mình hiểu là đoán trước rồi mới chạy. Các ví dụ 1–5 mình đã chạy thật bằng Node và Bun (với các API có ở cả hai môi trường, thứ tự khớp với trình duyệt). Ví dụ 6 và 7 phụ thuộc trình duyệt và mình giải thích riêng.
+
+### Ví dụ 1: cơ bản
+
+```js
+console.log("1");
+setTimeout(() => console.log("2"), 0);
+Promise.resolve().then(() => console.log("3"));
+queueMicrotask(() => console.log("4"));
+console.log("5");
+```
+
+**Output:** `1 5 3 4 2`
+
+Từng bước:
+
+1. Cả đoạn script là **một task**. `1` in ra ngay.
+2. `setTimeout` đăng ký một task cho tương lai (sau ít nhất 0ms) — chưa chạy.
+3. `Promise.resolve().then(...)` thêm một microtask. `queueMicrotask` thêm microtask thứ hai.
+4. `5` in ra. Script kết thúc, stack rỗng → microtask checkpoint: `3` rồi `4`, đúng thứ tự được thêm vào.
+5. Vòng lặp tiếp theo chọn task timer: `2`.
+
+`setTimeout(fn, 0)` không có nghĩa là "chạy ngay", mà là "xếp một task, sớm nhất là sau 0ms". Nó luôn đứng sau toàn bộ microtask của task hiện tại.
+
+### Ví dụ 2: task và microtask lồng nhau
+
+```js
+setTimeout(() => {
+  console.log("A");
+  Promise.resolve().then(() => console.log("B"));
+}, 0);
+
+setTimeout(() => console.log("C"), 0);
+
+Promise.resolve().then(() => {
+  console.log("D");
+  setTimeout(() => console.log("E"), 0);
+});
+```
+
+**Output:** `D A B C E`
+
+1. Script chính đăng ký timer A, timer C, và một microtask D.
+2. Script xong → checkpoint: in `D`, đồng thời đăng ký timer E (xếp sau A và C).
+3. Task timer A: in `A`, thêm microtask B. Task kết thúc → checkpoint: in `B` **trước khi** sang task C.
+4. Task C, rồi task E.
+
+Điểm mấu chốt: microtask sinh ra trong một task được xử lý hết trước task kế tiếp. Đây là lý do `B` chen được vào giữa `A` và `C`.
+
+### Ví dụ 3: async/await
+
+```js
+async function a() {
+  console.log("a1");
+  await b();
+  console.log("a2");
+}
+
+async function b() {
+  console.log("b");
+}
+
+console.log("start");
+a();
+Promise.resolve().then(() => console.log("p"));
+console.log("end");
+```
+
+**Output:** `start a1 b end a2 p`
+
+1. `start`.
+2. Gọi `a()`: phần trước `await` chạy **đồng bộ** → `a1`. Gọi `b()` cũng đồng bộ → `b`, trả về một promise đã resolve.
+3. `await` tạm dừng `a` và xếp phần còn lại (`a2`) thành một microtask khi promise kia resolve. Vì nó đã resolve sẵn, microtask được xếp ngay.
+4. Quay lại script: `.then` xếp microtask `p` — **sau** `a2`.
+5. `end`, rồi checkpoint: `a2`, `p`.
+
+Hai điều cần nhớ: thân hàm `async` chạy đồng bộ cho đến `await` đầu tiên, và mọi thứ sau `await` là microtask — không phải task.
+
+### Ví dụ 4: return một promise từ hàm async
+
+```js
+async function f() {
+  return Promise.resolve(1);
+}
+
+f().then(() => console.log("f"));
+
+Promise.resolve()
+  .then(() => console.log("t1"))
+  .then(() => console.log("t2"))
+  .then(() => console.log("t3"));
+```
+
+**Output:** `t1 t2 f t3`
+
+Trả về một *promise* (thay vì một giá trị thường) từ hàm `async` khiến promise kết quả phải "đi theo" promise kia — quá trình này tốn thêm vài lượt microtask. Vì vậy `f` bị `t1` và `t2` vượt qua. Thứ tự này đúng theo đặc tả ECMAScript hiện tại và mình đã xác nhận bằng cả Node lẫn Bun.
+
+<Callout>
+  Biết ví dụ 4 để hiểu, **không** để dựa vào. Nếu code của bạn đúng hay sai phụ thuộc vào việc hai chuỗi promise độc lập chạy xen kẽ theo số "tick", đó là một race condition đang chờ nổ. Hãy ràng buộc thứ tự một cách tường minh bằng `await` hoặc nối chuỗi `.then`.
+</Callout>
+
+### Ví dụ 5: click thật và `element.click()`
+
+```js
+const button = document.querySelector("button");
+
+button.addEventListener("click", () => {
+  console.log("L1");
+  queueMicrotask(() => console.log("M1"));
+});
+
+button.addEventListener("click", () => {
+  console.log("L2");
+  queueMicrotask(() => console.log("M2"));
+});
+```
+
+- Người dùng **bấm thật**: `L1 M1 L2 M2`
+- Gọi `button.click()` từ script: `L1 L2 M1 M2`
+
+Khác nhau vì "microtask chạy khi stack rỗng". Với click thật, trình duyệt tự gọi từng listener; sau L1 stack rỗng nên M1 chạy luôn. Với `button.click()`, các listener được gọi *bên trong* script của bạn — stack chưa bao giờ rỗng giữa L1 và L2, nên microtask phải đợi đến khi script gọi `click()` chạy xong. Mình đã kiểm tra trường hợp gọi từ script bằng `EventTarget` trong Node (ra `L1 L2 M1 M2`); trường hợp click thật cần trình duyệt nhưng là hành vi theo đặc tả. Chuyện này có ý nghĩa thực tế: test dùng `.click()` có thể thấy thứ tự khác với người dùng thật.
+
+### Ví dụ 6: setTimeout và requestAnimationFrame
+
+```js
+setTimeout(() => console.log("timeout"), 0);
+requestAnimationFrame(() => console.log("raf"));
+Promise.resolve().then(() => console.log("micro"));
+```
+
+**Chắc chắn:** `micro` in đầu tiên.
+
+**Không chắc chắn:** `timeout` và `raf` cái nào trước. Nó phụ thuộc vào thời điểm script chạy so với khung hình kế tiếp và cách mỗi trình duyệt lập lịch. Nếu khung hình sắp tới rất gần, `raf` có thể chạy trước; thông thường bạn sẽ hay thấy `timeout` trước, nhưng chạy vài lần, trên vài trình duyệt, bạn sẽ thấy cả hai. Đặc tả không đảm bảo thứ tự giữa một task timer và bước render. Bất kỳ ai nói "rAF luôn chạy sau setTimeout" (hoặc ngược lại) đều đang khái quát hoá từ một lần thử.
+
+### Ví dụ 7: rAF, microtask và layout
+
+```js
+requestAnimationFrame(() => {
+  console.log("raf 1");
+  Promise.resolve().then(() => console.log("micro trong raf 1"));
+});
+
+requestAnimationFrame(() => console.log("raf 2"));
+```
+
+**Output:** `raf 1`, `micro trong raf 1`, `raf 2`
+
+Hai callback cùng thuộc một khung hình, nhưng mỗi callback là một lần gọi riêng từ trình duyệt — stack rỗng giữa chúng, nên microtask chạy xen giữa. Còn nếu bên trong callback rAF bạn gọi `requestAnimationFrame` lần nữa, callback mới sẽ chạy ở **khung hình sau**, không phải khung này.
+
+## Microtask starvation: vòng lặp promise làm treo trang
+
+Vì microtask checkpoint chạy *đến khi queue rỗng*, một microtask cứ tự xếp lại chính nó sẽ không bao giờ để checkpoint kết thúc:
+
+```js
+// ❌ Treo tab: queue microtask không bao giờ rỗng
+function spin() {
+  Promise.resolve().then(spin);
+}
+spin();
+```
+
+Không có lần render nào, không click nào được xử lý, không timer nào chạy. Về mặt người dùng, nó y hệt một vòng `while (true)` — dù code trông "bất đồng bộ". Mình đã thử phiên bản có giới hạn 1 triệu lượt: một `setTimeout(0)` đăng ký từ trước chỉ chạy được **sau khi** cả 1 triệu microtask kết thúc.
+
+So sánh với đệ quy bằng `setTimeout`:
+
+```js
+// ✅ Không treo: mỗi lượt là một task mới
+function tick() {
+  doALittleWork();
+  setTimeout(tick, 0);
+}
+tick();
+```
+
+Mỗi lượt là một task riêng. Giữa hai task, event loop có cơ hội chọn task khác (input, timer khác) và render khi đến khung hình. Trong thử nghiệm của mình, một timer khác chen vào ngay sau lượt đầu tiên. Cái giá: trình duyệt áp mức chờ tối thiểu khoảng 4ms khi timer lồng nhau quá 5 cấp, nên cách này chậm hơn nếu dùng để chia nhỏ việc.
+
+| | Chuỗi microtask tự lặp | `setTimeout` đệ quy |
+| --- | --- | --- |
+| **Mỗi lượt là** | Một microtask trong cùng checkpoint | Một task mới |
+| **Có render giữa các lượt?** | Không | Có, khi đến khung hình |
+| **Input có được xử lý?** | Không | Có |
+| **Độ trễ mỗi lượt** | Gần như bằng 0 | Tối thiểu khoảng 4ms sau 5 cấp lồng |
+
+<Callout>
+  Starvation trong thực tế hiếm khi trông rõ ràng như `spin()`. Nó thường là một thư viện store gửi thông báo qua microtask, listener lại cập nhật store, lại gửi thông báo… Nếu tab đơ hẳn mà Performance panel cho thấy một khối "Run microtasks" dài bất thường, hãy nghĩ đến kịch bản này.
+</Callout>
+
+## Vì sao một task đồng bộ dài làm đơ UI
+
+Giả sử người dùng bấm nút, và handler của bạn lọc 200.000 dòng dữ liệu mất 400ms:
+
+```js
+button.addEventListener("click", () => {
+  spinner.hidden = false; // muốn hiện spinner...
+  const rows = filterHugeDataset(query); // ...nhưng 400ms đồng bộ ở đây
+  renderTable(rows);
+  spinner.hidden = true;
+});
+```
+
+Spinner **không bao giờ hiện ra**. Việc gán `hidden = false` chỉ thay đổi DOM; nó chỉ hiện lên màn hình ở bước render, mà bước render phải đợi task này kết thúc — lúc đó spinner đã bị ẩn lại. Trong suốt 400ms, mọi cú click, phím gõ đều chỉ được xếp hàng; animation CSS chạy trên main thread cũng đứng yên.
+
+Đó là định nghĩa thực tế của **long task**: một task chạy lâu hơn 50ms. Ngưỡng 50ms xuất phát từ ý tưởng nếu mỗi task đều dưới 50ms thì trang luôn có thể phản hồi input trong khoảng 100ms. Đây cũng là gốc rễ của INP kém.
+
+## requestAnimationFrame và setTimeout cho animation
+
+Nếu bạn còn phải animate bằng JavaScript (thay vì CSS transition hay Web Animations API), hãy dùng `requestAnimationFrame`:
+
+```js
+function animate(element, duration) {
+  const start = performance.now();
+
+  function frame(now) {
+    const progress = Math.min((now - start) / duration, 1);
+    element.style.transform = `translateX(${progress * 300}px)`;
+    if (progress < 1) requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+}
+```
+
+| | `requestAnimationFrame` | `setTimeout(fn, 16)` |
+| --- | --- | --- |
+| **Thời điểm chạy** | Ngay trước style và layout của khung hình | Một task bất kỳ lúc nào, không gắn với khung hình |
+| **Tần số** | Theo màn hình (60Hz, 120Hz…) | Cố định theo con số bạn đoán |
+| **Tab ẩn** | Tạm dừng | Vẫn chạy (bị giới hạn tần suất) |
+| **Rủi ro** | Ít | Cập nhật hai lần trong một khung, hoặc bỏ lỡ khung → giật |
+
+Hai lưu ý: luôn tính vị trí theo **thời gian** (`now - start`) chứ đừng cộng một lượng cố định mỗi khung, vì màn 120Hz sẽ chạy nhanh gấp đôi. Và rAF chỉ quyết định *khi nào* code chạy — nếu callback của bạn mất 30ms thì vẫn trễ khung như thường.
+
+## `await` chia nhỏ code, nhưng không nhường cho render
+
+Đây là hiểu nhầm mình gặp nhiều nhất trong code review:
+
+```js
+// ❌ Trông như đã "chia nhỏ", nhưng UI vẫn đơ
+async function processAll(items) {
+  for (const item of items) {
+    await null; // hoặc await một hàm async không thật sự chờ I/O
+    process(item);
+  }
+}
+```
+
+Mỗi `await` đúng là cắt hàm thành nhiều mảnh. Nhưng mỗi mảnh tiếp theo là một **microtask**, và tất cả đều chạy trong cùng một microtask checkpoint. Trình duyệt không render, không xử lý input giữa các mảnh. Bạn có thể thấy điều này trong ví dụ mình đã chạy: một vòng lặp `await null` chạy hết mọi lượt rồi mới đến lượt một `setTimeout(0)` đã đăng ký trước đó.
+
+`await` chỉ thật sự "nhả" main thread khi promise được chờ hoàn thành qua một **task** — ví dụ `fetch` chờ mạng, hoặc một promise do `setTimeout` resolve. Muốn nhường cho render, bạn phải cố ý tạo ra ranh giới task.
+
+## Nhường main thread trong thực tế
+
+### `scheduler.yield()` với phương án dự phòng
+
+```ts
+function yieldToMain(): Promise<void> {
+  const s = (globalThis as any).scheduler;
+  if (s && typeof s.yield === "function") {
+    return s.yield();
+  }
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+```
+
+`scheduler.yield()` trả về một promise được resolve trong một task mới, nên giữa hai lượt, trình duyệt có cơ hội xử lý input và render. Ưu điểm so với `setTimeout`: phần tiếp theo được ưu tiên hơn các task cùng mức ưu tiên đang chờ, nên công việc của bạn không bị "xếp cuối hàng" sau mọi script khác trên trang. API này chưa có ở mọi trình duyệt (Chromium hỗ trợ trước), vì vậy luôn kèm phương án dự phòng.
+
+### Chia nhỏ theo ngân sách thời gian
+
+Nhường sau *mỗi* phần tử thì tốn chi phí. Cách mình hay dùng là chạy theo ngân sách thời gian, khoảng một nửa khung hình, rồi mới nhường:
+
+```ts
+async function processInChunks<T>(items: T[], work: (item: T) => void) {
+  const BUDGET_MS = 8;
+  let deadline = performance.now() + BUDGET_MS;
+
+  for (const item of items) {
+    work(item);
+    if (performance.now() >= deadline) {
+      await yieldToMain();
+      deadline = performance.now() + BUDGET_MS;
+    }
+  }
+}
+```
+
+Quay lại ví dụ spinner: hiện spinner, `await yieldToMain()` để trình duyệt vẽ nó ra, rồi lọc dữ liệu bằng `processInChunks`. Người dùng thấy phản hồi ngay, và vẫn bấm được nút "Huỷ" trong lúc chờ.
+
+### Mẹo MessageChannel
+
+Trước khi có `scheduler.yield()`, một mẹo phổ biến là dùng `MessageChannel`: gửi một message qua một cổng và tiếp tục công việc trong handler `onmessage` của cổng kia. Việc nhận message là một **task**, nên nó tạo ranh giới task giống `setTimeout`, nhưng không bị mức chờ tối thiểu 4ms khi lồng nhiều cấp. Đây là lý do một số scheduler (trong đó có package `scheduler` mà React dùng) dựa vào `MessageChannel` trong trình duyệt. Bạn hiếm khi cần tự viết; chỉ cần hiểu ý tưởng: *muốn nhường, phải tạo task mới, và MessageChannel là cách tạo task mới mà không bị clamp.*
+
+<Callout>
+  `requestIdleCallback` không phải công cụ để chia nhỏ việc người dùng đang chờ — nó chỉ chạy khi trình duyệt rảnh, có thể rất lâu sau. Dùng nó cho việc thật sự không gấp như gửi analytics, prefetch, dọn cache.
+</Callout>
+
+## Đẩy việc nặng sang Web Worker
+
+Chia nhỏ giữ được UI phản hồi, nhưng tổng thời gian vẫn chạy trên main thread. Với việc thật sự nặng — parse file lớn, tính toán, nén ảnh — chỗ đúng là **Web Worker**: một thread riêng, có event loop riêng, không truy cập được DOM.
+
+```ts
+// filter.worker.ts
+self.onmessage = (event: MessageEvent<{ rows: string[]; query: string }>) => {
+  const { rows, query } = event.data;
+  const q = query.toLowerCase();
+  const result = rows.filter((row) => row.toLowerCase().includes(q));
+  self.postMessage(result);
+};
+```
+
+```ts
+// main.ts
+const worker = new Worker(new URL("./filter.worker.ts", import.meta.url), {
+  type: "module",
+});
+
+export function filterInWorker(rows: string[], query: string): Promise<string[]> {
+  return new Promise((resolve) => {
+    worker.onmessage = (event: MessageEvent<string[]>) => resolve(event.data);
+    worker.postMessage({ rows, query });
+  });
+}
+```
+
+Ví dụ này cố ý đơn giản (chỉ xử lý một request tại một thời điểm). Vài điều cần biết khi dùng thật:
+
+- Dữ liệu gửi qua `postMessage` được **structured clone** — sao chép mảng 200.000 phần tử cũng tốn thời gian trên main thread. Với dữ liệu nhị phân, dùng *transferable* (ví dụ `ArrayBuffer`) để chuyển quyền sở hữu thay vì sao chép.
+- Worker hợp nhất khi gửi dữ liệu một lần và giữ lại trong worker, sau đó chỉ gửi query qua lại.
+- Cú pháp `new URL(..., import.meta.url)` được các bundler hiện đại như Webpack 5, Vite và Turbopack nhận diện để đóng gói file worker.
+
+## React 18+ nằm ở đâu trong bức tranh này
+
+React không thay đổi event loop — nó chạy *trên* event loop như mọi đoạn JavaScript khác. Nhưng có ba tính năng đáng hiểu.
+
+**Automatic batching.** Từ React 18 (với `createRoot`), nhiều lần `setState` trong cùng một sự kiện, một timeout, hay sau một `await` đều được gộp thành một lần render. Trước đó, chỉ cập nhật trong event handler của React mới được gộp. Kết quả: ít lần render thừa hơn, và bạn ít khi cần nghĩ đến chuyện này. Khi thật sự cần render ngay (ví dụ đo DOM ngay sau cập nhật), có `flushSync`.
+
+**startTransition và useDeferredValue.** Mặc định, một lần render là đồng bộ: React đã bắt đầu thì làm đến khi xong, giống một long task. Khi bạn đánh dấu cập nhật là *transition*, React được phép render nó theo kiểu có thể gián đoạn: làm từng phần, nhường main thread giữa chừng, và nếu có cập nhật khẩn cấp hơn (như người dùng gõ tiếp) thì bỏ dở bản render cũ để ưu tiên cập nhật mới.
+
+```tsx
+import { useState, useTransition } from "react";
+
+type Product = { id: string; name: string; price: number };
+
+export function ProductSearch({ products }: { products: Product[] }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("");
+  const [isPending, startTransition] = useTransition();
+
+  return (
+    <>
+      <input
+        value={query}
+        onChange={(event) => {
+          setQuery(event.target.value); // khẩn cấp: ô input phải cập nhật ngay
+          startTransition(() => setFilter(event.target.value)); // có thể gián đoạn
+        }}
+      />
+      {isPending && <span>Đang lọc…</span>}
+      <ProductGrid products={products} filter={filter} />
+    </>
+  );
+}
+```
+
+`useDeferredValue` là cùng ý tưởng nhưng ở phía *nhận* giá trị: bạn có một giá trị thay đổi liên tục và muốn phần UI nặng đi theo một bản "trễ một chút" của nó.
+
+Giới hạn quan trọng: transition giúp React nhường **giữa các component**, không phải *bên trong* một component. Nếu một lần render `ProductGrid` tự nó mất 300ms vì một vòng lặp nặng, vẫn là 300ms đơ. Lúc đó bạn cần `useMemo`, virtualization, hoặc đẩy tính toán sang worker.
+
+## Debug bằng Performance panel
+
+Khi người dùng báo "bấm vào bị khựng", mình làm thế này trong Chrome DevTools:
+
+1. Mở **Performance**, bật CPU throttling (4x hoặc 6x) để giống máy tầm trung.
+2. Bấm Record, thực hiện đúng thao tác gây đơ, rồi dừng.
+3. Nhìn track **Main**: task nào có tam giác đỏ ở góc là **long task** (trên 50ms), phần vượt ngưỡng được tô sọc đỏ.
+4. Phóng to vào task đó và đọc **flame chart** từ trên xuống: thanh trên cùng là sự kiện gốc (ví dụ "Event: click"), các thanh bên dưới là call stack. Thanh *rộng* nhất ở tầng thấp nhất thường là thủ phạm.
+5. Chuyển sang tab **Bottom-Up** để xem hàm nào tốn nhiều *self time* nhất trong vùng đang chọn.
+6. Chú ý các khối tím (Recalculate Style, Layout) xen kẽ với JavaScript nhiều lần — dấu hiệu của layout thrashing. Một khối "Run microtasks" dài bất thường thì nghĩ đến chuỗi promise.
+
+Track **Interactions** cho biết mỗi tương tác mất bao lâu, chia thành input delay, processing và presentation delay — khớp với ba thành phần của INP. Với dữ liệu người dùng thật, API Long Animation Frames (LoAF) cho biết script nào làm khung hình bị chậm.
+
+## Node.js thì sao?
+
+Node cũng có event loop, nhưng được tổ chức thành các *phase* (timers, poll, check…) và không có bước render. Hai khác biệt hay gặp: `process.nextTick` có queue riêng, chạy **trước** các promise microtask; và `setImmediate` chạy ở phase check. Thứ tự giữa `setTimeout(fn, 0)` và `setImmediate` khi gọi từ module chính là không xác định. Từ Node 11, microtask được chạy sau mỗi callback timer, nên các ví dụ 1–4 ở trên cho kết quả giống trình duyệt.
+
+## Tóm tắt
+
+<Checklist>
+
+- Mỗi vòng event loop: chạy một task, chạy hết microtask, rồi *có thể* render — không phải task nào cũng được theo sau bởi một khung hình.
+- Microtask (`then`, `await`, `queueMicrotask`) luôn chạy trước task kế tiếp và trước render; một chuỗi microtask tự lặp sẽ làm treo trang.
+- Thứ tự giữa `setTimeout(0)` và `requestAnimationFrame` phụ thuộc trình duyệt — đừng viết code dựa vào nó.
+- `await` không nhường cho render; muốn nhường, phải tạo ranh giới task bằng `scheduler.yield()` hoặc `setTimeout`.
+- Chia việc theo ngân sách thời gian, dùng rAF cho animation, và đẩy tính toán nặng sang Web Worker.
+- Trong React, dùng transition và `useDeferredValue` cho cập nhật không gấp — nhưng chúng không cứu được một component tự nó render chậm.
+- Bắt đầu debug bằng Performance panel: tìm long task, đọc flame chart, rồi mới sửa.
+
+</Checklist>

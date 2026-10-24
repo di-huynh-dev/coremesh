@@ -1,0 +1,153 @@
+---
+title: "Debug như senior với Chrome DevTools"
+excerpt: "Conditional breakpoint, logpoint, DOM breakpoint, XHR/fetch breakpoint, các tiện ích console như debug(), monitorEvents(), $0, copy(), tab Network, Performance và local overrides — cùng quy trình bốn bước mình dùng để tìm ra nguyên nhân thay vì đoán."
+---
+
+<Lead>Khác biệt lớn nhất mình thấy giữa người mới và người debug giỏi không phải là biết nhiều công cụ hơn, mà là ít đoán hơn. Người mới rải `console.log` khắp nơi, reload, đọc, rồi rải tiếp. Người có kinh nghiệm đặt đúng một breakpoint ở đúng chỗ và để trình duyệt dừng lại đúng lúc vấn đề xảy ra. Bài này là những tính năng DevTools mình dùng hằng tuần, và quan trọng hơn, quy trình giúp mình biết nên dùng cái nào.</Lead>
+
+## Vượt qua `console.log`: breakpoint thông minh
+
+`console.log` không sai — nó nhanh và quen thuộc. Vấn đề là mỗi lần thêm log, bạn phải sửa code, chờ build, reload và tái hiện lại lỗi. Với lỗi chỉ xảy ra ở lần lặp thứ 500 hay sau một chuỗi thao tác dài, vòng lặp đó rất đắt. Breakpoint cho phép bạn dừng lại và *xem mọi thứ* — scope, call stack, giá trị biến — mà không đổi một dòng code nào.
+
+### Conditional breakpoint
+
+Trong tab Sources, bấm chuột phải vào số dòng và chọn thêm conditional breakpoint. Bạn nhập một biểu thức; debugger chỉ dừng khi biểu thức đó đúng:
+
+```js
+// Chỉ dừng khi gặp đúng item gây lỗi, thay vì bấm "Resume" 500 lần
+item.id === "order-1042" && item.total < 0
+```
+
+Đây là công cụ mình dùng nhiều nhất cho lỗi trong vòng lặp, trong handler chạy liên tục (scroll, mousemove), hoặc trong component render hàng trăm lần.
+
+### Logpoint
+
+Cũng từ menu chuột phải đó, logpoint in một giá trị ra console mỗi khi dòng code chạy qua — mà **không dừng** và **không sửa source**. Nó như `console.log` nhưng không cần build lại, không có nguy cơ vô tình commit dòng log, và có thể dùng trên code production (kết hợp source map). Khi cần theo dõi giá trị thay đổi theo thời gian mà dừng lại sẽ làm hỏng hành vi (ví dụ animation hay drag), logpoint là lựa chọn đúng.
+
+### Vài tính năng đi kèm nên biết
+
+- **Pause on exceptions:** dừng ngay tại dòng ném lỗi, kể cả lỗi bị `catch` nuốt mất — rất hữu ích khi một promise bị reject âm thầm.
+- **Ignore list:** đánh dấu script của framework hay thư viện để khi bước qua code, debugger bỏ qua chúng và chỉ dừng trong code của bạn.
+- **Watch expressions và Live expressions:** theo dõi một biểu thức khi đang dừng, hoặc liên tục ngay trên console.
+- Câu lệnh `debugger;` trong code vẫn hữu ích khi bạn muốn dừng ở một nhánh khó đặt breakpoint, miễn là đừng quên xoá trước khi commit.
+
+## Breakpoint không cần biết dòng code nào
+
+Thường thì bạn *không biết* code nào gây ra vấn đề. Bạn chỉ thấy triệu chứng: một phần tử tự biến mất, một request lạ được gửi đi, một click làm điều gì đó không mong đợi. DevTools có những breakpoint gắn với *sự kiện* thay vì dòng code.
+
+| Loại breakpoint | Dừng khi | Mình dùng khi |
+| --- | --- | --- |
+| **DOM breakpoint — subtree modifications** | Con của một node bị thêm, xoá hoặc thay | "Ai đó" chèn hay xoá phần tử trong một container |
+| **DOM breakpoint — attribute modifications** | Thuộc tính của node bị đổi | Class hay style bị đổi bất ngờ |
+| **DOM breakpoint — node removal** | Chính node bị xoá khỏi DOM | Một phần tử tự biến mất |
+| **XHR/fetch breakpoint** | Một request có URL chứa chuỗi bạn nhập được gửi đi | Không biết code nào gọi một API |
+| **Event listener breakpoint** | Một loại sự kiện được xử lý (click, keydown, …) | Không biết handler nào chạy khi bấm |
+
+DOM breakpoint được đặt từ menu chuột phải trên một phần tử trong tab Elements. Khi debugger dừng, xem call stack là thấy ngay đoạn code nào đã sửa DOM — thường là cách nhanh nhất để tìm thủ phạm trong một codebase lạ hoặc khi script bên thứ ba can thiệp vào trang.
+
+XHR/fetch breakpoint và event listener breakpoint nằm ở thanh bên của tab Sources. Với event listener breakpoint, lưu ý trong app React bạn thường sẽ dừng trong code event delegation của React trước; bật ignore list cho thư viện để bước thẳng tới handler của bạn.
+
+<Callout>
+  Khi debugger dừng trong code async, hãy nhìn call stack: DevTools nối các đoạn async lại với nhau, nên bạn thường thấy được đoạn code nào đã khởi tạo promise hay `setTimeout` dẫn tới chỗ này. Đó thường là manh mối quan trọng hơn chính dòng code đang dừng.
+</Callout>
+
+## Tiện ích console mà ít người dùng
+
+Console của DevTools có sẵn một nhóm hàm tiện ích chỉ tồn tại khi gõ trong console (không dùng được trong code của trang):
+
+```js
+// $0: phần tử đang chọn trong tab Elements ($1 là phần tử chọn trước đó, ...)
+$0.getBoundingClientRect();
+
+// $ và $$: rút gọn cho querySelector và querySelectorAll ($$ trả về mảng thật)
+$$("img").filter((img) => !img.alt);
+
+// copy(): copy giá trị vào clipboard — tiện để lấy JSON từ state hay response
+copy(JSON.stringify(window.__APP_STATE__, null, 2));
+
+// debug(fn): tự dừng debugger khi hàm được gọi; undebug(fn) để huỷ
+debug(formatPrice);
+
+// monitorEvents: log mọi sự kiện thuộc loại được chọn trên một phần tử
+monitorEvents($0, ["focus", "blur"]);
+unmonitorEvents($0);
+
+// getEventListeners: xem phần tử đang có những listener nào
+getEventListeners($0);
+
+// $_: kết quả của biểu thức vừa chạy
+```
+
+Hai cái mình thấy đáng giá nhất: `debug(fn)` khi biết tên hàm nhưng lười tìm file để đặt breakpoint, và `monitorEvents` khi debug focus — ví dụ tìm xem tại sao focus nhảy khỏi một ô nhập. Kết hợp với `document.activeElement` trong Live expression, bạn thấy focus đang ở đâu theo thời gian thực.
+
+## Tab Network: hơn cả danh sách request
+
+### Throttling
+
+Bug liên quan đến thời gian (race condition, spinner không tắt, request cũ trả về sau request mới) thường chỉ lộ ra khi mạng chậm. Tab Network có các preset giả lập mạng chậm và cho phép tạo profile riêng. Khi debug race condition, mình thường dùng mạng rất chậm để kéo dài khoảng thời gian giữa các request, làm cho thứ tự sai trở nên dễ thấy.
+
+### Chặn request
+
+Bấm chuột phải lên một request và chọn chặn theo URL hoặc theo domain. Mình dùng tính năng này để:
+
+- Kiểm tra trang hoạt động ra sao khi một script bên thứ ba (analytics, chat widget) không tải được.
+- Kiểm tra trạng thái lỗi của UI khi một API cụ thể thất bại, mà không cần sửa backend.
+- Đo xem một script ảnh hưởng tới hiệu năng bao nhiêu bằng cách so sánh khi có và không có nó.
+
+### Initiator và các tuỳ chọn khác
+
+Cột và tab **Initiator** cho biết *ai* gây ra request: một thẻ trong HTML, một file CSS, hay một đoạn JavaScript — kèm call stack. Đây là cách nhanh nhất trả lời câu hỏi "sao API này bị gọi hai lần?".
+
+Vài tuỳ chọn mình bật thường xuyên: **Preserve log** để giữ request qua các lần chuyển trang hay redirect; **Disable cache** khi phát triển (nhưng nhớ tắt khi kiểm tra hành vi cache); và copy request dưới dạng `fetch` hoặc cURL để tái hiện lại ngoài trình duyệt.
+
+## Performance panel và local overrides
+
+### Performance: đọc vừa đủ
+
+Performance panel trông đáng sợ, nhưng để debug "sao bấm nút này bị giật?" thì chỉ cần vài thứ:
+
+1. Bật CPU throttling (máy developer thường mạnh hơn máy người dùng rất nhiều), bấm ghi, thao tác, dừng.
+2. Nhìn track **Main**: các task dài được đánh dấu rõ. Phóng to vào task dài nhất.
+3. Đọc flame chart từ trên xuống: thanh rộng là thứ tốn thời gian. Tên hàm của bạn nằm ở đâu trong đó?
+4. Chuyển sang các tab tổng hợp như **Bottom-Up** để xem hàm nào tốn nhiều thời gian tự thân nhất.
+
+Mình luôn ghi profile trên bản production build — bản development của React chạy thêm nhiều kiểm tra và chậm hơn đáng kể, nên con số không phản ánh thực tế.
+
+### Local overrides
+
+Local overrides cho phép bạn sửa một file (hoặc header của response) mà trang tải về, lưu bản sửa vào một thư mục trên máy, và DevTools sẽ dùng bản đó thay cho bản từ server ở những lần tải sau. Bạn bật nó từ tab Sources (chọn thư mục lưu và cấp quyền), hoặc chọn override nội dung trực tiếp từ một request trong tab Network.
+
+Công dụng thực tế: thử một bản sửa CSS hay JS **ngay trên production** mà không cần deploy, giả lập một response API có dữ liệu cực đoan (tên rất dài, mảng rỗng), hay thử thêm một header như `Cache-Control` hoặc CSP để xem trang phản ứng thế nào.
+
+<Callout>
+  **Nhớ tắt overrides sau khi xong.** Mình từng mất nửa tiếng debug một lỗi "không thể tái hiện" trên máy đồng nghiệp, chỉ vì trên máy mình vẫn đang override một file từ tuần trước. DevTools có đánh dấu file bị override, nhưng rất dễ bỏ qua.
+</Callout>
+
+## Quy trình debug có hệ thống
+
+Công cụ chỉ là một nửa. Nửa còn lại là quy trình, và đây là bốn bước mình cố giữ kể cả khi đang vội:
+
+1. **Tái hiện (reproduce).** Tìm chuỗi bước nhỏ nhất làm lỗi xảy ra *mỗi lần*. Lỗi không tái hiện được thì chưa sửa được — lúc đó việc cần làm là thu thập thêm dữ liệu (log, môi trường, trình duyệt, tài khoản), chứ không phải sửa thử.
+2. **Khoanh vùng (isolate).** Thu hẹp không gian tìm kiếm: lỗi ở frontend hay backend (xem response trong Network)? Ở component nào? Có xảy ra khi chặn script bên thứ ba không? Với lỗi xuất hiện sau một bản release, `git bisect` khoanh vùng commit cực nhanh.
+3. **Đặt giả thuyết (hypothesize).** Phát biểu thành câu cụ thể: "Danh sách bị trùng vì request trang 2 trả về trước request trang 1". Giả thuyết tốt thì kiểm chứng được và chỉ ra breakpoint cần đặt.
+4. **Kiểm chứng (verify).** Dùng công cụ ở trên để chứng minh hoặc bác bỏ giả thuyết *trước khi* sửa. Sửa xong, chạy lại đúng các bước tái hiện, và nếu được thì viết một test bắt lỗi đó.
+
+Bẫy lớn nhất là nhảy từ bước 1 thẳng tới "sửa": thêm một `setTimeout`, một dấu `?.`, một `key` mới — triệu chứng biến mất nhưng nguyên nhân vẫn còn đó và quay lại dưới một hình dạng khác.
+
+<Callout>
+  Khi bị kẹt quá 30 phút, mình viết ra những gì *đã biết chắc* và những gì *đang giả định*. Rất thường xuyên, lỗi nằm ở một giả định mình chưa từng kiểm tra — "chắc chắn hàm này chỉ chạy một lần", "chắc chắn API trả về mảng".
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Dùng conditional breakpoint và logpoint thay cho vòng lặp thêm log, build, reload.
+- Không biết code nào gây lỗi? Dùng DOM, XHR/fetch và event listener breakpoint rồi đọc call stack.
+- Thuộc vài tiện ích console: `$0`, `$$`, `copy()`, `debug()`, `monitorEvents()`, `getEventListeners()`.
+- Tab Network: throttling để lộ race condition, chặn request để test lỗi, Initiator để biết ai gọi.
+- Profile trên production build với CPU throttling; đọc track Main và tìm task dài nhất.
+- Local overrides để thử sửa trên production — và nhớ tắt sau khi xong.
+- Tái hiện, khoanh vùng, giả thuyết, kiểm chứng — đừng sửa trước khi hiểu.
+
+</Checklist>

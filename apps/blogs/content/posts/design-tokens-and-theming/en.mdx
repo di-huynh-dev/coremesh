@@ -1,0 +1,278 @@
+---
+title: "Design Tokens and Theming with CSS Custom Properties: From Raw Colors to Dark Mode"
+excerpt: "Splitting tokens into three tiers, naming by purpose, building light/dark themes with prefers-color-scheme plus a user override without a flash, color-scheme, mapping tokens into Tailwind v4's @theme, contrast checks and common mistakes."
+---
+
+<Lead>Almost every codebase I've joined has the same symptom: the color `#2563eb` appears in 140 places, a few of them as `#2563EB`, and a couple as `#2564eb` because someone mistyped it. Then dark mode day arrives and the whole team goes file by file. Design tokens solve exactly that — not by adding abstraction for its own sake, but by separating *values* from *meaning*. This post is how I organise tokens with CSS custom properties, build light and dark themes without a flash, and wire it all into Tailwind v4.</Lead>
+
+## What design tokens are, and why tiers matter
+
+Design tokens are named design decisions: colors, spacing, radii, font sizes, shadows, animation durations. Instead of writing `#2563eb`, you write `var(--color-accent)`. That sounds trivial, but the real value is in **splitting tokens into tiers**:
+
+| Tier | Examples | Answers the question | Used directly by |
+| --- | --- | --- | --- |
+| **Primitive** | `--blue-600`, `--gray-50`, `--space-4` | What's in our palette and scales? | Only the semantic tier |
+| **Semantic** | `--color-bg`, `--color-text-muted`, `--color-accent` | What is this value *for*? | Most components and layouts |
+| **Component** | `--button-bg`, `--card-radius` | What can be customised on this component? | That component |
+
+The most important rule: **components don't use primitives directly**. A button uses `--color-accent`, not `--blue-600`. For dark mode, you only repoint `--color-accent` at a different primitive — the component never needs to know.
+
+The component tier is optional. I only add it when a component genuinely needs to be customised from outside (a UI library shared across several products, say). For most apps, primitives plus semantics are enough — adding a third tier too early just produces hundreds of variables nobody can remember.
+
+## Naming tokens
+
+A good token name describes **purpose**, not **value**. `--color-blue` is a bad name for the primary color, because the day the brand moves to purple you'll have `--color-blue: purple` — or a rename across the whole codebase.
+
+I use a `--category-property-variant` structure, going from general to specific:
+
+- `--color-bg`, `--color-bg-subtle`, `--color-bg-inverse`
+- `--color-text`, `--color-text-muted`, `--color-text-on-accent`
+- `--color-border`, `--color-border-strong`
+- `--color-accent`, `--color-accent-hover`
+- `--color-danger`, `--color-success`
+
+A few small rules that save a lot of arguments later:
+
+- **Background and text come in pairs.** If there's `--color-accent`, there's `--color-text-on-accent`, so nobody has to guess what color text goes on an accent background.
+- **Primitive scales use numbers**, like `--gray-50` to `--gray-950`. Bigger means darker; gaps between steps leave room to insert more later.
+- **Don't name by theme.** There's no `--color-dark-bg`. There's only `--color-bg`, and its value changes with the theme.
+
+```css
+:root {
+  /* Primitives — just a palette, no meaning */
+  --gray-0: #ffffff;
+  --gray-50: #f7f7f8;
+  --gray-200: #e4e4e7;
+  --gray-400: #a1a1aa;
+  --gray-500: #71717a;
+  --gray-800: #27272a;
+  --gray-900: #18181b;
+  --gray-950: #0c0c0e;
+  --blue-400: #60a5fa;
+  --blue-600: #2563eb;
+  --blue-700: #1d4ed8;
+
+  /* Semantic — light theme */
+  --color-bg: var(--gray-0);
+  --color-bg-subtle: var(--gray-50);
+  --color-text: var(--gray-900);
+  --color-text-muted: var(--gray-500);
+  --color-border: var(--gray-200);
+  --color-accent: var(--blue-600);
+  --color-accent-hover: var(--blue-700);
+  --color-text-on-accent: var(--gray-0);
+}
+```
+
+## Light and dark themes with `prefers-color-scheme` and a user override
+
+A decent theme system needs three options: **follow the system**, **always light**, **always dark**. The default follows the system through the `prefers-color-scheme` media query. The user's explicit choice is expressed as an attribute on the `html` element, such as `data-theme="dark"`.
+
+```css
+/* System is dark, and the user hasn't forced light */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: var(--gray-950);
+    --color-bg-subtle: var(--gray-900);
+    --color-text: var(--gray-50);
+    --color-text-muted: var(--gray-400);
+    --color-border: var(--gray-800);
+    --color-accent: var(--blue-400);
+    --color-accent-hover: var(--blue-600);
+    --color-text-on-accent: var(--gray-950);
+  }
+}
+
+/* User chose dark, regardless of the system */
+:root[data-theme="dark"] {
+  --color-bg: var(--gray-950);
+  --color-bg-subtle: var(--gray-900);
+  --color-text: var(--gray-50);
+  --color-text-muted: var(--gray-400);
+  --color-border: var(--gray-800);
+  --color-accent: var(--blue-400);
+  --color-accent-hover: var(--blue-600);
+  --color-text-on-accent: var(--gray-950);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+```
+
+The duplication between the two blocks is the price of plain CSS. You can generate it with a build step or preprocessor, or use the `light-dark()` function that modern browsers now support: declare `--color-bg: light-dark(var(--gray-0), var(--gray-950))` once, then just switch `color-scheme` per theme. If you have to support older browsers, check support before relying on it.
+
+Notice that dark mode **is not color inversion**. The accent in a dark theme usually needs to be lighter (`--blue-400` instead of `--blue-600`) to keep enough contrast on a dark background, and the text on the accent changes with it. A dark background also shouldn't be pure black — a very dark gray is easier on the eyes and leaves room for elevated surfaces to stand out.
+
+### `color-scheme`: don't forget the browser's part
+
+Your tokens change backgrounds and text, but the browser paints some things itself: scrollbars, inputs, checkboxes, the `select` dropdown, and the page's default background before your CSS applies. The `color-scheme` property tells the browser which themes the page supports, so it can render those parts to match.
+
+```css
+:root {
+  color-scheme: light dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+```
+
+Adding `<meta name="color-scheme" content="light dark">` to the `head` lets the browser know this before the CSS loads, which reduces the white flash on the page background.
+
+## Avoiding a flash of the wrong theme with an inline script
+
+This is the bug I see most on sites with a theme toggle. A user picks dark, and the choice is saved in `localStorage`. Next visit: the HTML renders with the default theme, the page flashes light for a moment, then JavaScript runs, reads `localStorage` and switches to dark. That flash is jarring, especially at night.
+
+The cause is that the `data-theme` attribute is set **after** the first paint. The fix is to set it **before** — with a tiny, synchronous script in the `head` that runs before the body is painted:
+
+```html
+<script>
+  (function () {
+    try {
+      var theme = localStorage.getItem("theme");
+      if (theme === "light" || theme === "dark") {
+        document.documentElement.setAttribute("data-theme", theme);
+      }
+    } catch (e) {
+      /* localStorage may be blocked — just follow the system theme */
+    }
+  })();
+</script>
+```
+
+The script is deliberately tiny and dependency-free: no imports, no framework, it reads one value and sets one attribute. If the user chose "system", no attribute is set and the media query in the CSS handles the rest.
+
+The toggle itself is simple:
+
+```ts
+type ThemeChoice = "light" | "dark" | "system";
+
+export function applyTheme(choice: ThemeChoice): void {
+  const root = document.documentElement;
+  if (choice === "system") {
+    root.removeAttribute("data-theme");
+  } else {
+    root.setAttribute("data-theme", choice);
+  }
+  try {
+    if (choice === "system") localStorage.removeItem("theme");
+    else localStorage.setItem("theme", choice);
+  } catch {
+    // If we can't persist it, the theme still applies for this session
+  }
+}
+```
+
+<Callout>
+  In the Next.js App Router, put this script in the root layout and add `suppressHydrationWarning` to the `html` element, because the `data-theme` attribute set by the script won't match the server-rendered HTML. Libraries like `next-themes` do exactly this if you'd rather not write it yourself.
+</Callout>
+
+## Mapping tokens into Tailwind v4 with `@theme`
+
+Tailwind v4 is configured in CSS: variables declared in `@theme` generate matching utilities. For example, a `--color-accent` in `@theme` gives you `bg-accent`, `text-accent` and `border-accent`.
+
+For tokens that change per theme, I use `@theme inline` so the utilities reference my runtime variables directly:
+
+```css
+@import "tailwindcss";
+
+@theme inline {
+  --color-canvas: var(--color-bg);
+  --color-surface: var(--color-bg-subtle);
+  --color-fg: var(--color-text);
+  --color-muted: var(--color-text-muted);
+  --color-line: var(--color-border);
+  --color-brand: var(--color-accent);
+  --color-on-brand: var(--color-text-on-accent);
+}
+
+/* Lets the dark: variant follow the attribute, if you really need it */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+```
+
+I give the utilities short names (`bg-canvas`, `bg-surface`, `text-muted`, `bg-brand`) while keeping the original semantic variables intact, so CSS that doesn't use Tailwind reads the same tokens. The names inside `@theme` are deliberately different from the source variables: writing `--color-bg: var(--color-bg)` would create a variable that references itself. With `inline`, Tailwind puts the `var(...)` value straight into the utility, so when the theme changes the underlying variables, the utilities follow.
+
+Once your semantic tokens switch with the theme, you barely **need the `dark:` variant** anymore. `bg-surface text-fg` is correct in both themes on its own. `dark:` is left for genuine exceptions, like swapping an illustration. If a component is full of `dark:bg-... dark:text-...`, that's a sign of missing semantic tokens.
+
+## Contrast and accessibility
+
+Every background/text token pair is a promise about readability, and it has to hold in **both themes**. The WCAG 2 AA thresholds:
+
+- **4.5:1** for normal text.
+- **3:1** for large text (roughly 24px and up, or about 18.7px and up if bold).
+- **3:1** for UI components and meaningful graphics, like input borders or icons that carry meaning.
+
+Because tokens are named in pairs, you can check them automatically in CI instead of by eye:
+
+```ts
+type Rgb = [number, number, number];
+
+function hexToRgb(hex: string): Rgb {
+  const value = hex.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(value.slice(i, i + 2), 16)) as Rgb;
+}
+
+function luminance([r, g, b]: Rgb): number {
+  const [lr, lg, lb] = [r, g, b].map((channel) => {
+    const c = channel / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  }) as Rgb;
+  return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+}
+
+export function contrastRatio(foreground: string, background: string): number {
+  const a = luminance(hexToRgb(foreground));
+  const b = luminance(hexToRgb(background));
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+// Muted text (gray-500) on white: about 4.83 — passes AA
+console.log(contrastRatio("#71717a", "#ffffff").toFixed(2));
+// The same gray on the dark background (gray-950): about 4.04 — fails
+console.log(contrastRatio("#71717a", "#0c0c0e").toFixed(2));
+```
+
+This function only handles six-digit hex codes. If your tokens use `oklch()` or transparency, convert them with a color library first. The example also shows why my dark theme uses `--gray-400` for `--color-text-muted`: the same gray that passes on white fails on a dark background. `--color-text-muted` is always the first pair I check.
+
+<Callout>
+  Avoid making secondary text with `opacity` on the main text color. The real contrast then depends on whatever is underneath, so a color that "passes" on white can fail on `--color-bg-subtle`. Use a concrete color token and check it.
+</Callout>
+
+## Keeping tokens in sync with design tools
+
+Tokens only pay off when designers and developers speak the same language. At a high level, the workflow I've found effective:
+
+- **One source of truth**, usually a JSON file in the repo or Variables in Figma — pick one, don't let both be the master.
+- **A standard format**: the W3C Design Tokens Community Group format (with `$value` and `$type` keys) is supported by a growing number of tools and helps avoid lock-in.
+- **An automated transform step**: tools like Style Dictionary read token files and emit CSS custom properties, TypeScript types or mobile formats.
+- **Review token changes like code**: changing one semantic token can affect hundreds of screens, so it deserves its own PR with before/after screenshots.
+
+Don't invest in a sync pipeline too early. For a small team, a carefully reviewed CSS token file and a hand-updated Figma page are good enough for a long time.
+
+## Common mistakes
+
+- **Components using primitives directly** — `bg-blue-600` everywhere turns dark mode into a scavenger hunt.
+- **Naming by value** — `--color-blue` for the primary color, `--spacing-16px`.
+- **Dark mode by inversion** — forgetting that shadows, borders, images and status colors all need redesigning for dark backgrounds.
+- **Too many tokens too soon** — 400 variables nobody remembers are worse than 40 everyone understands.
+- **Forgetting `color-scheme`** — a dark page with white scrollbars and inputs.
+- **Theme flash** — setting `data-theme` after the page has painted.
+
+## Key takeaways
+
+<Checklist>
+
+- Split tokens into primitive, semantic and (when needed) component tiers; components only use semantic tokens.
+- Name by purpose, not value; create tokens in background/text pairs.
+- Follow `prefers-color-scheme` by default, with the user's choice as `data-theme` on the `html` element.
+- Declare `color-scheme` so the browser paints scrollbars and form controls in the right theme.
+- Use a tiny inline script in the `head` to set the theme before first paint and avoid the flash.
+- Map tokens into Tailwind v4 with `@theme inline`; lots of `dark:` means missing semantic tokens.
+- Check contrast for every token pair in both themes, ideally automatically.
+- Keep one source of truth for tokens and review token changes like code.
+
+</Checklist>

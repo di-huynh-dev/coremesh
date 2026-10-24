@@ -4,7 +4,7 @@ export default getRequestConfig(async ({ requestLocale }) => {
   let resolvedLocale = await requestLocale;
   
   if (!resolvedLocale || !["en", "vi"].includes(resolvedLocale)) {
-    resolvedLocale = "en";
+    resolvedLocale = "vi";
   }
 
   try {
@@ -19,10 +19,10 @@ export default getRequestConfig(async ({ requestLocale }) => {
       `Failed to load messages for locale: ${resolvedLocale}`,
       error,
     );
-    // Fallback to English
-    const messages = (await import(`../messages/en.json`)).default;
+    // Fallback to the default locale (Vietnamese)
+    const messages = (await import(`../messages/vi.json`)).default;
     return {
-      locale: "en",
+      locale: "vi",
       messages,
     };
   }

@@ -1,0 +1,223 @@
+---
+title: "TypeScript Patterns That Actually Pay Off in Real Codebases"
+excerpt: "Discriminated unions, exhaustive switches with never, satisfies, branded types, as const and validation at the boundary — the patterns I use every day because they catch real bugs, plus when to stop typing."
+---
+
+<Lead>TypeScript can be the cheapest bug detector in your project, or a pile of unreadable generics nobody dares to touch. The difference is whether you use types to describe *what can actually happen* in your domain, or just to keep the compiler quiet. This post collects the patterns that have paid me back the most after a few years of working on medium-to-large React and Node codebases — and the places where I learned *not* to over-type.</Lead>
+
+## Discriminated unions: model states, not boolean flags
+
+The pattern I reach for most is the **discriminated union**. Instead of one object with lots of optional fields, you list every valid *shape*, and each shape shares a common field (usually `kind`, `type` or `status`) carrying a different literal value.
+
+Compare two ways to describe a payment result:
+
+```ts
+// ❌ Everything is optional — the compiler has no idea which fields go together
+type PaymentResultLoose = {
+  ok: boolean;
+  transactionId?: string;
+  errorCode?: string;
+  redirectUrl?: string;
+};
+
+// ✅ Every case is its own shape
+type PaymentResult =
+  | { kind: "success"; transactionId: string }
+  | { kind: "failed"; errorCode: string; retryable: boolean }
+  | { kind: "requires_action"; redirectUrl: string };
+```
+
+With the first version, `ok: true` alongside an `errorCode` is perfectly valid as far as the types go. Readers have to guess the convention. With the second, once you check `result.kind === "failed"`, TypeScript **narrows** the type and knows for sure that `errorCode` and `retryable` exist, while `transactionId` does not.
+
+### Exhaustive switches with `never`
+
+The real value of discriminated unions shows up when the domain changes. Say six months later the team adds a `"pending_review"` status. I want the compiler to point at *every* place that doesn't handle the new case yet, not wait for a bug in production.
+
+```ts
+function assertNever(value: never): never {
+  throw new Error(`Unhandled case: ${JSON.stringify(value)}`);
+}
+
+function describePayment(result: PaymentResult): string {
+  switch (result.kind) {
+    case "success":
+      return `Payment succeeded (${result.transactionId})`;
+    case "failed":
+      return result.retryable ? "Failed, can retry" : "Failed";
+    case "requires_action":
+      return "Additional verification required";
+    default:
+      // Add a new kind and forget the case, and this line fails to compile:
+      // Argument of type '{ kind: "pending_review"; ... }' is not assignable to parameter of type 'never'.
+      return assertNever(result);
+  }
+}
+```
+
+In the `default` branch, after every case has been ruled out, the type of `result` is `never`. Add a new member to the union without a matching case and `result` is no longer `never` — the build goes red. This is the check I want in every reducer, every render-by-status function, every place that maps an enum to UI.
+
+<Callout>
+  `assertNever` checks at compile time *and* throws at runtime. The runtime part matters because API data can contain values your types don't know about yet — for example when the backend ships a new status before the frontend does. Failing loudly (or logging and falling back) beats silently rendering the wrong thing.
+</Callout>
+
+## `as const` and types derived from data
+
+A common source of bugs is **the same list declared twice**: once as an array of values to render, once as a union type to check against. Sooner or later they drift. What I do instead is declare the data once with `as const` and *derive* the type from it.
+
+```ts
+export const ROLES = ["owner", "admin", "editor", "viewer"] as const;
+export type Role = (typeof ROLES)[number]; // "owner" | "admin" | "editor" | "viewer"
+
+export const PLAN_LIMITS = {
+  free: { seats: 1, projects: 3 },
+  team: { seats: 10, projects: 50 },
+  enterprise: { seats: Infinity, projects: Infinity },
+} as const;
+export type Plan = keyof typeof PLAN_LIMITS; // "free" | "team" | "enterprise"
+
+function isRole(value: string): value is Role {
+  return (ROLES as readonly string[]).includes(value);
+}
+```
+
+`as const` does two things: it keeps literal values (instead of widening them to `string`) and marks everything `readonly`. Add a role to the array and the union updates itself, the dropdown gets a new option, and every `switch` using `assertNever` tells you what to fix.
+
+`isRole` is a **type guard**: it lets you go from a `string` (say, read from a query string) to a `Role` with an actual check, instead of casting with `as Role`.
+
+## `satisfies`: check without losing information
+
+The `satisfies` operator (since TypeScript 4.9) solves a very specific problem: you want to check that an object *conforms* to a type, but keep the more detailed type TypeScript inferred.
+
+```ts
+type RouteConfig = Record<string, { path: string; auth: boolean }>;
+
+// Annotation: checked, but the keys widen to string
+const routesAnnotated: RouteConfig = {
+  home: { path: "/", auth: false },
+  settings: { path: "/settings", auth: true },
+};
+routesAnnotated.setings; // no error — any key is valid
+
+// satisfies: shape is still checked, but the declared keys are kept
+const routes = {
+  home: { path: "/", auth: false },
+  settings: { path: "/settings", auth: true },
+} satisfies RouteConfig;
+routes.setings; // ❌ error: Property 'setings' does not exist
+type RouteName = keyof typeof routes; // "home" | "settings"
+```
+
+My rule of thumb: use an **annotation** (`const x: T = ...`) when the variable should *be* a `T` and the details don't matter; use **`satisfies`** for configs, lookup tables and theme tokens — places where the specifics are useful to the code that consumes them. `as const satisfies T` is also valid when you need literals and a check.
+
+| Syntax | Checked against the type | Resulting variable type | When to use |
+| --- | --- | --- | --- |
+| `const x: T = ...` | Yes | `T` (details lost) | Variable will be reassigned, or only the contract matters |
+| `const x = ... satisfies T` | Yes | Inferred (details kept) | Configs, lookup tables, fixed key maps |
+| `const x = ... as T` | Barely | `T` | Rarely — only when you truly know more than the compiler |
+| `const x = ... as const` | No | Literal, readonly | Source data to derive types from |
+
+## Branded types: keep `userId` out of `orderId`'s seat
+
+TypeScript is **structurally** typed: two types with the same structure are interchangeable. For `string`, that means `UserId` and `OrderId` — if they're just aliases of `string` — can be mixed up freely. I once debugged an issue where a function taking `(orgId, userId)` was called with the arguments swapped, and the type checker said nothing.
+
+A **branded type** (also called an opaque type) adds a "tag" that only exists at the type level:
+
+```ts
+declare const brand: unique symbol;
+type Brand<T, B extends string> = T & { readonly [brand]: B };
+
+type UserId = Brand<string, "UserId">;
+type OrgId = Brand<string, "OrgId">;
+
+// Only the place that validates the format gets to "stamp" the brand
+function toUserId(raw: string): UserId {
+  if (!/^usr_[a-z0-9]+$/.test(raw)) throw new Error(`Invalid user id: ${raw}`);
+  return raw as UserId;
+}
+
+declare function removeMember(orgId: OrgId, userId: UserId): Promise<void>;
+
+const userId = toUserId("usr_42");
+declare const orgId: OrgId;
+
+removeMember(orgId, userId); // ✅
+// removeMember(userId, orgId); // ❌ compile error: 'UserId' is not assignable to 'OrgId'
+```
+
+At runtime, a `UserId` is still a plain `string` — zero cost. The only place allowed to write `as UserId` is the constructor function, where the data is actually checked. Beyond IDs, I use brands for money amounts in minor units, sanitized HTML strings and absolute paths.
+
+<Callout>
+  Don't brand everything. Brands pay off when **several values share the same underlying type and travel together** (multiple kinds of IDs, multiple units) or when a value must **pass a validation step** before use. Branding a `title: string` just adds friction.
+</Callout>
+
+## Types at the boundary need runtime checks
+
+This is where I see many "type-safe" codebases that aren't actually safe: `const data = (await res.json()) as User`. That `as` is a promise nobody verifies. If the API renames a field, turns `null` into an empty string, or returns an HTML error page, TypeScript still believes `data` is a `User` — and the failure surfaces in a component three layers away.
+
+The principle: **all data coming from outside** (API responses, `localStorage`, query strings, forms, `postMessage` messages, environment variables) is `unknown` until it has been checked. The cleanest approach is to declare a **schema** that runs at runtime and infer the type from it, the way libraries like Zod or Valibot work. Here's an example with a Zod-style API:
+
+```ts
+import { z } from "zod";
+
+const UserSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  role: z.enum(["owner", "admin", "editor", "viewer"]),
+  lastSeenAt: z.string().datetime().nullable(),
+});
+export type User = z.infer<typeof UserSchema>;
+
+export async function fetchUser(id: string): Promise<User> {
+  const res = await fetch(`/api/users/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`GET /api/users/${id} failed: ${res.status}`);
+  const json: unknown = await res.json();
+  const parsed = UserSchema.safeParse(json);
+  if (!parsed.success) {
+    // Log enough context to see what the backend changed
+    console.error("User payload mismatch", parsed.error.issues);
+    throw new Error("Unexpected user payload");
+  }
+  return parsed.data;
+}
+```
+
+The schema and the type are now *one* source of truth. Contract drift shows up right at the boundary, with a message naming the field that's wrong, instead of `Cannot read properties of undefined` somewhere deep in the UI.
+
+### How much validation is enough?
+
+Validation has a cost: extra bundle size (if it runs on the client) and parse time for large payloads. This is roughly how I split it:
+
+- **Always validate** data from systems you don't control: third-party APIs, webhooks, user input, `localStorage` (which may hold data from an older app version).
+- **Validate on the server** for internal APIs, then share the types with the client (through a shared package or code generation from OpenAPI). The client doesn't need to re-parse every response if both are deployed together.
+- For very large lists, consider validating only the structurally important parts rather than everything.
+
+## When *not* to type any further
+
+This section matters as much as the rest. TypeScript's type system is powerful enough to express almost anything, and that's exactly what leads to types only their author understands.
+
+Signs I use to tell I've gone too far:
+
+- **Unreadable error messages.** If a compile error for one function spans two screens and a teammate needs you to explain it, the type is hurting more than helping.
+- **The type is more complex than the logic it describes.** A recursive conditional type that infers every path into a five-level object can be clever, but if it's used in two places, a hand-written union is clearer.
+- **A generic with no second caller.** Making a function generic when only one type ever uses it is premature abstraction. Write it concretely first; generalize when the second case shows up.
+- **Noticeably slower compiles.** Very complex types make the editor lag and CI slower — a real cost the whole team pays every day.
+
+<Callout>
+  I prioritize types at the **boundaries** (parameters and return values of public functions, component props, API contracts) and let TypeScript infer everything inside. A function with a clear signature and an un-annotated body is usually easier to read than one where every variable is annotated.
+</Callout>
+
+Don't be afraid to use `unknown` honestly, and use `as` deliberately — but every `as` should come with a reason (a comment, or a checking function wrapped around it). Turn on `strict` from day one; in an older codebase, enabling it folder by folder is better than never enabling it.
+
+## Key takeaways
+
+<Checklist>
+
+- Use discriminated unions to describe each valid state, instead of one object full of optional fields.
+- End every status-based `switch` with `assertNever` so the compiler points at what you forgot when the domain changes.
+- Declare data once with `as const` and derive types from it; don't maintain two parallel lists.
+- Use `satisfies` for configs and lookup tables to get both the check and the detailed type.
+- Brand IDs and other easily confused values of the same base type; only allow creating a brand through a validating function.
+- Treat all external data as `unknown` and validate it with a schema at the boundary.
+- Type the boundaries carefully, let TypeScript infer the inside, and stop when a type is harder to understand than the logic it describes.
+
+</Checklist>

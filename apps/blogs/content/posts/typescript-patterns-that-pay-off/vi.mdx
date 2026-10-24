@@ -1,0 +1,223 @@
+---
+title: "Những pattern TypeScript thật sự đáng tiền trong codebase thực tế"
+excerpt: "Discriminated union, exhaustive switch với never, satisfies, branded type, as const và validate ở biên hệ thống — những pattern mình dùng hằng ngày vì chúng bắt được bug thật, kèm cả lúc nên dừng lại không type thêm nữa."
+---
+
+<Lead>TypeScript có thể là công cụ bắt bug rẻ nhất trong dự án, hoặc là một đống generic khó đọc mà không ai dám sửa. Khác biệt nằm ở chỗ bạn dùng type để mô tả *điều gì có thể xảy ra* trong domain, hay chỉ để làm vừa lòng compiler. Bài này là những pattern mình thấy trả lại nhiều giá trị nhất sau vài năm làm codebase React và Node cỡ vừa và lớn — và cả những chỗ mình đã học được cách *không* type quá tay.</Lead>
+
+## Discriminated union: mô hình hoá trạng thái thay vì cờ boolean
+
+Pattern mình dùng nhiều nhất là **discriminated union** (union có trường phân biệt). Ý tưởng: thay vì một object có nhiều trường optional, mình liệt kê từng *hình dạng* hợp lệ, mỗi hình dạng có một trường chung (thường là `kind`, `type` hoặc `status`) mang giá trị literal khác nhau.
+
+So sánh hai cách mô tả kết quả thanh toán:
+
+```ts
+// ❌ Mọi thứ đều optional — compiler không biết trường nào đi với trường nào
+type PaymentResultLoose = {
+  ok: boolean;
+  transactionId?: string;
+  errorCode?: string;
+  redirectUrl?: string;
+};
+
+// ✅ Mỗi trường hợp là một hình dạng riêng
+type PaymentResult =
+  | { kind: "success"; transactionId: string }
+  | { kind: "failed"; errorCode: string; retryable: boolean }
+  | { kind: "requires_action"; redirectUrl: string };
+```
+
+Với bản đầu tiên, `ok: true` mà vẫn có `errorCode` là hợp lệ về mặt type. Người đọc code phải tự đoán quy ước. Với bản thứ hai, khi bạn kiểm tra `result.kind === "failed"`, TypeScript **thu hẹp** (narrow) kiểu và biết chắc có `errorCode` và `retryable`, còn `transactionId` thì không tồn tại.
+
+### Exhaustive switch với `never`
+
+Giá trị thật của discriminated union lộ ra khi domain thay đổi. Giả sử sáu tháng sau, team thêm trạng thái `"pending_review"`. Mình muốn compiler chỉ ra *mọi* chỗ chưa xử lý trường hợp mới, chứ không phải đợi bug lên production.
+
+```ts
+function assertNever(value: never): never {
+  throw new Error(`Unhandled case: ${JSON.stringify(value)}`);
+}
+
+function describePayment(result: PaymentResult): string {
+  switch (result.kind) {
+    case "success":
+      return `Thanh toán thành công (${result.transactionId})`;
+    case "failed":
+      return result.retryable ? "Thất bại, thử lại được" : "Thất bại";
+    case "requires_action":
+      return "Cần xác thực thêm";
+    default:
+      // Nếu thêm một kind mới mà quên case, dòng này báo lỗi lúc compile:
+      // Argument of type '{ kind: "pending_review"; ... }' is not assignable to parameter of type 'never'.
+      return assertNever(result);
+  }
+}
+```
+
+Trong nhánh `default`, sau khi mọi case đã bị loại trừ, kiểu của `result` là `never`. Thêm một thành viên mới vào union mà không thêm case thì `result` không còn là `never` nữa — và build đỏ. Đây là loại kiểm tra mình muốn có ở mọi reducer, mọi hàm render theo trạng thái, mọi chỗ map từ enum sang UI.
+
+<Callout>
+  `assertNever` vừa kiểm tra lúc compile vừa ném lỗi lúc runtime. Phần runtime quan trọng vì dữ liệu từ API có thể chứa giá trị mà type của bạn chưa biết — ví dụ backend deploy trạng thái mới trước frontend. Ném lỗi rõ ràng (hoặc log rồi fallback) vẫn tốt hơn là âm thầm render sai.
+</Callout>
+
+## `as const` và type suy ra từ dữ liệu
+
+Một nguồn bug phổ biến là **cùng một danh sách được khai báo hai lần**: một lần là mảng giá trị để render, một lần là union type để kiểm tra. Hai thứ này sớm muộn sẽ lệch nhau. Cách mình làm là khai báo dữ liệu một lần với `as const`, rồi *suy ra* type từ đó.
+
+```ts
+export const ROLES = ["owner", "admin", "editor", "viewer"] as const;
+export type Role = (typeof ROLES)[number]; // "owner" | "admin" | "editor" | "viewer"
+
+export const PLAN_LIMITS = {
+  free: { seats: 1, projects: 3 },
+  team: { seats: 10, projects: 50 },
+  enterprise: { seats: Infinity, projects: Infinity },
+} as const;
+export type Plan = keyof typeof PLAN_LIMITS; // "free" | "team" | "enterprise"
+
+function isRole(value: string): value is Role {
+  return (ROLES as readonly string[]).includes(value);
+}
+```
+
+`as const` làm hai việc: giữ nguyên giá trị literal (thay vì nới thành `string`) và đánh dấu mọi thứ là `readonly`. Thêm một role mới vào mảng là union tự cập nhật, dropdown tự có thêm lựa chọn, và mọi `switch` dùng `assertNever` tự báo chỗ cần sửa.
+
+Hàm `isRole` là một **type guard**: nó cho phép đi từ `string` (ví dụ đọc từ query string) sang `Role` một cách có kiểm tra, thay vì ép kiểu bằng `as Role`.
+
+## `satisfies`: kiểm tra mà không làm mất thông tin
+
+Toán tử `satisfies` (có từ TypeScript 4.9) giải một vấn đề rất cụ thể: mình muốn kiểm tra một object *khớp* với một type, nhưng vẫn giữ lại kiểu chi tiết mà TypeScript suy ra.
+
+```ts
+type RouteConfig = Record<string, { path: string; auth: boolean }>;
+
+// Annotation: kiểm tra được, nhưng key bị nới thành string
+const routesAnnotated: RouteConfig = {
+  home: { path: "/", auth: false },
+  settings: { path: "/settings", auth: true },
+};
+routesAnnotated.setings; // không lỗi — key nào cũng hợp lệ
+
+// satisfies: vẫn kiểm tra shape, nhưng giữ đúng các key đã khai báo
+const routes = {
+  home: { path: "/", auth: false },
+  settings: { path: "/settings", auth: true },
+} satisfies RouteConfig;
+routes.setings; // ❌ lỗi: Property 'setings' does not exist
+type RouteName = keyof typeof routes; // "home" | "settings"
+```
+
+Quy tắc mình dùng: **annotation** (`const x: T = ...`) khi muốn biến *là* kiểu `T` và không quan tâm chi tiết; **`satisfies`** khi object là cấu hình, bảng tra, theme token — tức là nơi chi tiết cụ thể có ích cho phần code dùng nó. Kết hợp `as const satisfies T` cũng hợp lệ khi bạn cần cả literal lẫn kiểm tra.
+
+| Cách viết | Kiểm tra với type | Kiểu của biến | Khi nào dùng |
+| --- | --- | --- | --- |
+| `const x: T = ...` | Có | `T` (mất chi tiết) | Biến sẽ được gán lại, hoặc chỉ cần đúng contract |
+| `const x = ... satisfies T` | Có | Kiểu suy ra (giữ chi tiết) | Config, bảng tra, map key cố định |
+| `const x = ... as T` | Gần như không | `T` | Hầu như không nên — chỉ khi bạn biết hơn compiler |
+| `const x = ... as const` | Không | Literal, readonly | Dữ liệu nguồn để suy ra type |
+
+## Branded type: đừng để `userId` lọt vào chỗ của `orderId`
+
+Trong TypeScript, kiểu là **structural**: hai type có cùng cấu trúc thì thay thế cho nhau được. Với `string` thì điều này nghĩa là `UserId` và `OrderId` — nếu chỉ là alias của `string` — hoàn toàn lẫn lộn được. Mình đã từng debug một bug mà hàm nhận `(orgId, userId)` bị gọi với thứ tự ngược, và type checker không nói gì.
+
+**Branded type** (còn gọi là opaque type) thêm một "nhãn" chỉ tồn tại ở tầng type:
+
+```ts
+declare const brand: unique symbol;
+type Brand<T, B extends string> = T & { readonly [brand]: B };
+
+type UserId = Brand<string, "UserId">;
+type OrgId = Brand<string, "OrgId">;
+
+// Chỉ nơi kiểm tra định dạng mới được "đóng dấu"
+function toUserId(raw: string): UserId {
+  if (!/^usr_[a-z0-9]+$/.test(raw)) throw new Error(`Invalid user id: ${raw}`);
+  return raw as UserId;
+}
+
+declare function removeMember(orgId: OrgId, userId: UserId): Promise<void>;
+
+const userId = toUserId("usr_42");
+declare const orgId: OrgId;
+
+removeMember(orgId, userId); // ✅
+// removeMember(userId, orgId); // ❌ lỗi compile: 'UserId' is not assignable to 'OrgId'
+```
+
+Lúc runtime, `UserId` vẫn chỉ là một `string` bình thường — không có chi phí gì. Chỗ duy nhất được dùng `as UserId` là hàm tạo (constructor), nơi thật sự kiểm tra dữ liệu. Ngoài ID, mình còn dùng brand cho tiền tệ đã quy về đơn vị nhỏ nhất, chuỗi HTML đã sanitize, hay đường dẫn tuyệt đối.
+
+<Callout>
+  Đừng brand mọi thứ. Brand đáng giá khi có **nhiều giá trị cùng kiểu nền đi cạnh nhau** (nhiều loại ID, nhiều đơn vị đo) hoặc khi giá trị cần **đi qua một bước kiểm tra** trước khi dùng. Brand một `title: string` chỉ thêm ma sát.
+</Callout>
+
+## Type ở biên hệ thống phải đi kèm kiểm tra runtime
+
+Đây là chỗ mình thấy nhiều codebase "type-safe" nhưng thật ra không an toàn: `const data = (await res.json()) as User`. Dòng `as` đó là một lời hứa mà không ai kiểm tra. Nếu API đổi field, đổi `null` thành chuỗi rỗng, hoặc trả về trang lỗi HTML, TypeScript vẫn tin `data` là `User` — và lỗi nổ ra ở một component cách đó ba tầng.
+
+Nguyên tắc: **mọi dữ liệu đi vào từ bên ngoài** (response API, `localStorage`, query string, form, message từ `postMessage`, biến môi trường) đều là `unknown` cho đến khi được kiểm tra. Cách gọn nhất là khai báo một **schema** chạy được lúc runtime và suy type từ schema, theo kiểu các thư viện như Zod hay Valibot. Dưới đây là ví dụ với API kiểu Zod:
+
+```ts
+import { z } from "zod";
+
+const UserSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  role: z.enum(["owner", "admin", "editor", "viewer"]),
+  lastSeenAt: z.string().datetime().nullable(),
+});
+export type User = z.infer<typeof UserSchema>;
+
+export async function fetchUser(id: string): Promise<User> {
+  const res = await fetch(`/api/users/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`GET /api/users/${id} failed: ${res.status}`);
+  const json: unknown = await res.json();
+  const parsed = UserSchema.safeParse(json);
+  if (!parsed.success) {
+    // Log đủ ngữ cảnh để biết backend đã đổi gì
+    console.error("User payload mismatch", parsed.error.issues);
+    throw new Error("Unexpected user payload");
+  }
+  return parsed.data;
+}
+```
+
+Schema và type giờ là *một* nguồn sự thật. Lỗi lệch contract hiện ra ngay tại biên, với thông báo chỉ rõ field nào sai, thay vì `Cannot read properties of undefined` ở đâu đó sâu trong UI.
+
+### Kiểm tra bao nhiêu là đủ?
+
+Validate có chi phí: thêm bundle size (nếu chạy trên client) và thời gian parse với payload lớn. Mình thường làm thế này:
+
+- **Luôn validate** dữ liệu từ hệ thống mình không kiểm soát: API bên thứ ba, webhook, input người dùng, `localStorage` (có thể là dữ liệu từ phiên bản app cũ).
+- **Validate ở server** cho API nội bộ, rồi chia sẻ type cho client (qua package dùng chung hoặc code generation từ OpenAPI). Client không cần parse lại từng response nếu cả hai được deploy cùng nhau.
+- Với list rất lớn, cân nhắc chỉ validate phần cấu trúc quan trọng thay vì toàn bộ.
+
+## Khi nào *không* nên type thêm nữa
+
+Phần này quan trọng không kém những phần trên. Type system của TypeScript đủ mạnh để viết gần như mọi thứ, và chính điều đó dễ dẫn đến những type mà chỉ người viết hiểu.
+
+Vài dấu hiệu mình dùng để biết đã đi quá đà:
+
+- **Thông báo lỗi không đọc được.** Nếu lỗi compile của một hàm dài hai màn hình và đồng nghiệp phải nhờ bạn giải thích, type đó đang làm hại nhiều hơn giúp.
+- **Type phức tạp hơn logic nó mô tả.** Một conditional type đệ quy để suy ra đường dẫn của object lồng năm tầng có thể hay, nhưng nếu chỉ dùng ở hai chỗ, một union viết tay rõ ràng hơn.
+- **Generic không có người gọi thứ hai.** Generic hoá một hàm khi chỉ có một kiểu dùng nó là trừu tượng hoá sớm. Viết cụ thể trước, generic hoá khi có trường hợp thứ hai.
+- **Compile chậm hẳn.** Type quá phức tạp làm editor lag và CI chậm — một chi phí thật mà cả team trả mỗi ngày.
+
+<Callout>
+  Mình ưu tiên type ở **ranh giới** (tham số và giá trị trả về của hàm public, props của component, contract API) và để TypeScript tự suy ra bên trong. Một hàm có chữ ký rõ ràng với phần thân không cần annotation nào thường dễ đọc hơn một hàm annotate từng biến.
+</Callout>
+
+Cũng đừng ngại dùng `unknown` một cách trung thực, và chọn `as` có ý thức — nhưng mỗi `as` nên đi kèm một lý do (comment hoặc một hàm kiểm tra bao quanh). Bật `strict` ngay từ đầu dự án; với codebase cũ, bật dần theo từng thư mục còn hơn không bật.
+
+## Tóm tắt
+
+<Checklist>
+
+- Dùng discriminated union để mô tả từng trạng thái hợp lệ, thay vì một object nhiều trường optional.
+- Kết thúc mọi `switch` theo trạng thái bằng `assertNever` để compiler chỉ ra chỗ quên xử lý khi domain thay đổi.
+- Khai báo dữ liệu một lần với `as const` và suy type từ đó, đừng duy trì hai danh sách song song.
+- Dùng `satisfies` cho config và bảng tra để vừa được kiểm tra vừa giữ kiểu chi tiết.
+- Brand các ID và giá trị cùng kiểu nền dễ nhầm lẫn; chỉ cho phép tạo brand qua hàm có kiểm tra.
+- Coi mọi dữ liệu từ bên ngoài là `unknown` và validate bằng schema tại biên.
+- Type kỹ ở ranh giới, để TypeScript suy ra bên trong, và dừng lại khi type khó hiểu hơn logic nó mô tả.
+
+</Checklist>

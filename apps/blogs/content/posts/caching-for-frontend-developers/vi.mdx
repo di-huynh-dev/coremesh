@@ -1,0 +1,192 @@
+---
+title: "Caching cho frontend developer: từ HTTP cache đến CDN và data cache"
+excerpt: "Cache-Control, ETag, tên file có hash, s-maxage và stale-while-revalidate ở CDN, service worker, staleTime trong TanStack Query — mỗi lớp cache làm gì, nên đặt header thế nào cho từng loại tài nguyên, và những lỗi khiến người dùng thấy dữ liệu cũ."
+---
+
+<Lead>Phần lớn bug "sao user vẫn thấy bản cũ?" mà mình từng xử lý không nằm ở code React, mà nằm ở một header bị đặt sai. Cache là thứ giúp trang nhanh gấp nhiều lần với chi phí gần như bằng không — nhưng cũng là thứ khiến bản deploy mới "không lên", hoặc tệ hơn, khiến người dùng A thấy dữ liệu của người dùng B. Bài này đi qua các lớp cache mà một frontend developer chạm tới hằng ngày, theo thứ tự request đi qua chúng, và cách mình đặt header cho từng loại tài nguyên.</Lead>
+
+## Bức tranh tổng thể: request đi qua những lớp cache nào
+
+Khi người dùng mở trang, một request có thể được trả lời ở nhiều tầng trước khi chạm tới server của bạn:
+
+1. **Data cache phía client** (TanStack Query, SWR, store của bạn) — dữ liệu đã có trong bộ nhớ JavaScript, không cần request nào.
+2. **Service worker** — nếu có, nó chặn request và có thể trả lời từ Cache Storage.
+3. **HTTP cache của trình duyệt** — lưu response theo header `Cache-Control`.
+4. **CDN / shared cache** — cache dùng chung cho nhiều người dùng, nằm gần họ về mặt địa lý.
+5. **Origin** — server của bạn, nơi có thể còn cache riêng (Redis, cache của framework).
+
+Mỗi tầng có quy tắc riêng về "còn tươi không" và "xoá thế nào". Phần lớn sự rối rắm đến từ việc nghĩ về cache như một khối duy nhất. Mình luôn hỏi: *response này đang được cache ở tầng nào, bao lâu, và ai được thấy nó?*
+
+## HTTP cache của trình duyệt
+
+### Cache-Control: các directive cần thuộc
+
+| Directive | Ý nghĩa |
+| --- | --- |
+| `max-age=N` | Response được coi là "tươi" trong N giây; trong thời gian đó trình duyệt dùng luôn, không hỏi server |
+| `no-cache` | **Được lưu**, nhưng mỗi lần dùng phải hỏi lại server (revalidate) |
+| `no-store` | Không được lưu ở đâu cả |
+| `private` | Chỉ trình duyệt được lưu; CDN và proxy dùng chung thì không |
+| `public` | Cache dùng chung được phép lưu, kể cả khi bình thường nó sẽ không lưu |
+| `s-maxage=N` | Giống `max-age` nhưng chỉ cho cache dùng chung (CDN), ghi đè `max-age` ở đó |
+| `immutable` | Trong thời gian còn tươi, nội dung không bao giờ đổi — đừng revalidate kể cả khi người dùng reload |
+| `stale-while-revalidate=N` | Hết hạn rồi vẫn được trả bản cũ trong N giây, đồng thời làm mới ở nền |
+| `must-revalidate` | Hết hạn thì bắt buộc phải hỏi lại server, không được dùng bản cũ |
+
+Cặp hay bị nhầm nhất là `no-cache` và `no-store`. Cái tên `no-cache` gây hiểu lầm: nó *có* cache, chỉ là luôn kiểm tra lại. Với HTML, đó thường chính là điều bạn muốn — rẻ vì phần lớn lần kiểm tra trả về 304, nhưng vẫn luôn đúng.
+
+### ETag và 304 Not Modified
+
+Revalidate rẻ được là nhờ **conditional request**. Lần đầu server trả về một `ETag` (dấu vân tay của nội dung) hoặc `Last-Modified`. Lần sau, trình duyệt gửi kèm giá trị đó; nếu nội dung không đổi, server trả `304` không có body:
+
+```http
+GET /index.html HTTP/1.1
+If-None-Match: "a1b2c3"
+
+HTTP/1.1 304 Not Modified
+ETag: "a1b2c3"
+Cache-Control: no-cache
+```
+
+Một vòng request vẫn tốn latency, nhưng không phải tải lại toàn bộ nội dung. Lưu ý: nếu bạn chạy nhiều server sau load balancer, hãy chắc ETag được sinh giống nhau trên mọi máy — ETag lệch nhau thì revalidate không bao giờ ra 304.
+
+## Tên file có hash: chìa khoá để cache "vĩnh viễn"
+
+Câu hỏi khó nhất của caching là invalidation: làm sao báo cho hàng triệu trình duyệt rằng file đã đổi? Câu trả lời của frontend hiện đại là **đừng đổi file — đổi tên file**.
+
+Bundler (Vite, webpack, Turbopack) sinh ra tên như `app.3f9a1c.js`, trong đó hash được tính từ nội dung. Nội dung đổi thì tên đổi, và HTML trỏ tới tên mới. Vì một URL có hash không bao giờ đổi nội dung, ta cache nó gần như mãi mãi:
+
+```http
+Cache-Control: public, max-age=31536000, immutable
+```
+
+Toàn bộ chiến lược dựa trên một quy tắc: **HTML ngắn hạn, asset có hash dài hạn**. HTML là "bản đồ" trỏ tới các asset; chỉ cần bản đồ luôn mới, mọi thứ còn lại được cache thoải mái. Next.js áp dụng sẵn quy tắc này cho `/_next/static/`.
+
+<Callout>
+  **Đừng xoá asset cũ ngay khi deploy.** Người dùng đang mở tab từ hôm qua vẫn có HTML cũ trỏ tới chunk cũ. Khi họ chuyển trang và app lazy-load một chunk, nếu file đó đã bị xoá thì bạn nhận lỗi tải chunk. Giữ lại asset của vài bản deploy trước — dung lượng rẻ hơn nhiều so với một app bị trắng màn hình.
+</Callout>
+
+## CDN caching: s-maxage và stale-while-revalidate
+
+CDN là cache **dùng chung**: một response được cache sẽ phục vụ cho mọi người dùng request cùng URL (và cùng các header trong `Vary`). Điều này cực mạnh cho trang công khai, và cực nguy hiểm cho trang cá nhân hoá.
+
+Với HTML công khai (trang blog, landing page), mình thường muốn trình duyệt luôn hỏi lại, nhưng CDN giữ một bản và tự làm mới:
+
+```http
+Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=600
+```
+
+Đọc header này như sau: trình duyệt không giữ bản tươi (`max-age=0`), nên lần nào cũng hỏi CDN. CDN coi bản cache là tươi trong 60 giây. Sau 60 giây, trong 10 phút tiếp theo CDN vẫn trả ngay bản cũ cho người dùng và gọi origin ở nền để lấy bản mới. Kết quả: người dùng gần như luôn nhận response từ CDN, còn nội dung chỉ chậm tối đa khoảng một phút so với origin trong điều kiện bình thường.
+
+Mỗi CDN hỗ trợ các directive này hơi khác nhau, và nhiều nhà cung cấp có header riêng (dạng `CDN-Cache-Control` hoặc header theo tên nhà cung cấp) để tách hành vi CDN khỏi trình duyệt. Hãy đọc tài liệu CDN bạn đang dùng thay vì giả định.
+
+### Next.js và header
+
+Với Next.js, phần lớn header được framework đặt dựa trên cách route được render (tĩnh, ISR, hay động). Khi cần tự đặt cho file trong `public/` hay một nhóm đường dẫn, dùng `headers()` trong config:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const config: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: "/fonts/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
+      },
+    ];
+  },
+};
+
+export default config;
+```
+
+Chỉ đặt `immutable` cho file trong `public/` nếu bạn chắc chắn tên file thay đổi mỗi khi nội dung đổi — file trong `public/` không tự có hash như asset của bundler.
+
+## Service worker và data cache phía client
+
+### Service worker — nói ngắn
+
+Service worker cho bạn toàn quyền: chặn mọi request và tự quyết trả từ Cache Storage hay đi mạng, với các chiến lược quen thuộc là cache-first, network-first và stale-while-revalidate. Quyền lực đó đi kèm rủi ro lớn nhất: một service worker cache app shell theo kiểu cache-first mà không có cơ chế cập nhật đúng có thể khiến người dùng kẹt ở bản cũ rất lâu. Nếu không thật sự cần offline, mình không thêm service worker chỉ để "cache cho nhanh" — HTTP cache đã làm tốt việc đó.
+
+### TanStack Query, SWR: staleTime khác với thời gian lưu
+
+Các thư viện data fetching có cache riêng trong bộ nhớ, với hai khái niệm hay bị lẫn:
+
+- **Độ tươi** — `staleTime` trong TanStack Query: dữ liệu được coi là mới trong bao lâu. Trong thời gian đó, component mount lại sẽ dùng luôn, không fetch.
+- **Thời gian lưu** — `gcTime` (tên cũ là `cacheTime`): dữ liệu không còn component nào dùng được giữ trong bộ nhớ bao lâu trước khi bị dọn.
+
+`staleTime` mặc định là `0`, nghĩa là dữ liệu cũ ngay lập tức: bạn thấy dữ liệu từ cache ngay (không có loading), nhưng thư viện vẫn fetch lại ở nền khi mount, khi focus lại cửa sổ, hoặc khi kết nối lại. Đó chính là stale-while-revalidate ở tầng ứng dụng. SWR hoạt động theo tinh thần tương tự.
+
+```tsx
+import { useQuery } from "@tanstack/react-query";
+
+type Product = { id: string; name: string; price: number };
+
+async function fetchProducts(): Promise<Product[]> {
+  const res = await fetch("/api/products");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<Product[]>;
+}
+
+export function useProducts() {
+  return useQuery({
+    queryKey: ["products"],
+    queryFn: fetchProducts,
+    staleTime: 60_000, // trong 1 phút: dùng cache, không refetch khi mount
+    gcTime: 10 * 60_000, // không ai dùng thì giữ 10 phút rồi dọn
+  });
+}
+```
+
+Chọn `staleTime` theo câu hỏi: *dữ liệu này cũ bao lâu thì người dùng bắt đầu bị ảnh hưởng?* Danh mục sản phẩm có thể vài phút; số dư tài khoản thì gần như bằng không.
+
+## Chiến lược invalidation
+
+"Có hai thứ khó trong khoa học máy tính", và invalidation là một. Các cách mình dùng, từ dễ đến khó:
+
+- **Đổi URL** (hash trong tên file, version trong path): không cần xoá gì cả — cách đáng tin nhất.
+- **TTL ngắn + stale-while-revalidate:** chấp nhận dữ liệu chậm vài chục giây để đổi lấy hệ thống đơn giản.
+- **Purge chủ động ở CDN** khi nội dung đổi (sau khi publish bài, cập nhật giá). Cần tích hợp với API của CDN; nhiều CDN hỗ trợ purge theo tag.
+- **Revalidate theo tag/path trong framework:** Next.js có `revalidatePath` và `revalidateTag` để làm mới dữ liệu đã cache phía server sau một mutation.
+- **Invalidate ở client:** sau khi mutation thành công, gọi `queryClient.invalidateQueries` để TanStack Query fetch lại các query liên quan.
+
+Nguyên tắc: invalidation phải xảy ra ở **mọi tầng** dữ liệu đi qua. Purge CDN mà quên data cache phía client thì người dùng đang mở trang vẫn thấy bản cũ.
+
+## Bảng header mình hay dùng và những lỗi thường gặp
+
+| Loại tài nguyên | Cache-Control đề xuất | Ghi chú |
+| --- | --- | --- |
+| JS/CSS/font có hash trong tên | `public, max-age=31536000, immutable` | Giữ lại bản cũ vài lần deploy |
+| HTML công khai | `public, max-age=0, s-maxage=60, stale-while-revalidate=600` | Hoặc `no-cache` nếu không có CDN |
+| HTML/API cá nhân hoá | `private, no-cache` hoặc `private, no-store` | Không bao giờ để CDN lưu |
+| Ảnh qua CDN ảnh có URL version | `public, max-age=31536000, immutable` | Đổi ảnh thì đổi URL |
+| Ảnh không version (ví dụ avatar) | `public, max-age=3600` kèm ETag | Chấp nhận chậm cập nhật một chút |
+| Dữ liệu nhạy cảm (thanh toán, token) | `no-store` | Cân nhắc vì `no-store` có thể ảnh hưởng back/forward cache |
+
+<Callout>
+  **Lỗi nguy hiểm nhất: cache response cá nhân hoá ở CDN.** Một trang "Tài khoản của tôi" được trả về với `public, s-maxage=...` sẽ phục vụ thông tin của người dùng đầu tiên cho mọi người sau. Hãy để mặc định của mọi response có cookie phiên là `private`, và chỉ mở `public` cho route bạn đã chắc chắn là giống nhau với mọi người.
+</Callout>
+
+Những lỗi khác mình hay gặp:
+
+- **Cache HTML quá lâu.** Đặt `max-age=86400` cho HTML thì sau deploy, người dùng giữ HTML cũ cả ngày — và nếu asset cũ đã bị xoá, trang hỏng.
+- **Đặt `immutable` cho file không có hash.** `logo.png` được sửa nhưng giữ nguyên tên sẽ không bao giờ cập nhật với người đã tải.
+- **Quên `Vary`.** Response khác nhau theo `Accept-Language` hoặc `Accept-Encoding` mà không khai báo `Vary` thì cache có thể trả nhầm phiên bản. Ngược lại, `Vary: Cookie` ở CDN thường làm tỉ lệ cache hit gần như bằng không.
+- **Cache response lỗi.** Một lần origin trả 500 với header cache dài sẽ phát tán lỗi tới mọi người dùng.
+- **Debug với DevTools mở "Disable cache".** Rất tiện khi phát triển, nhưng bạn sẽ không thấy hành vi cache thật. Khi kiểm tra header, hãy tắt nó và xem cột Size hiển thị "memory cache", "disk cache" hay kích thước thật.
+
+## Tóm tắt
+
+<Checklist>
+
+- Nghĩ theo tầng: client data cache, service worker, trình duyệt, CDN, origin — mỗi tầng có độ tươi và cách invalidate riêng.
+- `no-cache` vẫn lưu nhưng luôn revalidate; `no-store` mới là không lưu.
+- HTML ngắn hạn, asset có hash dài hạn với `immutable` — và giữ lại asset cũ sau deploy.
+- Dùng `s-maxage` và `stale-while-revalidate` để CDN gánh tải cho trang công khai.
+- `staleTime` quyết định khi nào refetch, `gcTime` quyết định khi nào dọn khỏi bộ nhớ.
+- Ưu tiên invalidation bằng cách đổi URL; khi phải purge, purge ở mọi tầng.
+- Response cá nhân hoá luôn là `private` — không có ngoại lệ.
+
+</Checklist>

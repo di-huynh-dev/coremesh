@@ -1,0 +1,255 @@
+---
+title: "Feature Flags in the Frontend: Types, Evaluation, Rollout and Cleanup"
+excerpt: "Feature flags decouple deploy from release, but used carelessly they turn into tech debt and flickering UIs. This post covers the four kinds of flags, evaluating on the server vs the client, typed flag definitions in TypeScript, gradual rollout, A/B testing and a cleanup process."
+---
+
+<Lead>The first time my team took feature flags seriously was after a Friday-evening release we had to roll back at midnight. From then on, every big feature sat behind a flag: we could deploy any time, and who saw it and when became a separate decision. But two years later the codebase had over a hundred flags, half of which nobody was sure were still used, and a few pages flickered on every load. This post is what I've learned about using flags without letting them use you.</Lead>
+
+## Not all flags are the same
+
+We call them all "feature flags," but there are at least four kinds, with very different lifecycles and owners. Mixing them up causes most of the trouble.
+
+| Kind | Purpose | Lifetime | Who toggles it |
+| --- | --- | --- | --- |
+| **Release flag** | Hide unfinished work, roll out gradually | Days to weeks | The development team |
+| **Experiment flag** | A/B tests, comparing variants | The length of the experiment | Product, data |
+| **Ops flag** | Kill switches, turning off heavy features under load | Long-lived, on purpose | On-call, SRE |
+| **Permission flag** | Enable features per plan, per customer, for betas | Long-lived | Product, sales |
+
+Two lessons from this table:
+
+- **Release and experiment flags must die.** They're temporary by definition. A release flag that's six months old is a sign something's wrong.
+- **Permission flags are really business logic.** If "Pro customers see advanced reports" is a permanent rule, it belongs in your authorization system, not your feature flag tool. More importantly: hiding a button in the frontend is **not** security — the API behind it must still check permissions.
+
+## Typed flag definitions in TypeScript
+
+The classic bug: code calls `isEnabled("new-chekout")` — typo included — and the flag is `false` forever without anyone noticing. I always start with a central, strictly typed definitions file:
+
+```ts
+// src/flags/definitions.ts
+export type FlagKind = "release" | "experiment" | "ops" | "permission";
+
+export type FlagValues = {
+  newCheckout: boolean;
+  checkoutCopy: "control" | "short" | "benefit-led";
+  disableRecommendations: boolean;
+};
+
+export type FlagKey = keyof FlagValues;
+
+type FlagDefinition<T> = {
+  kind: FlagKind;
+  defaultValue: T;
+  owner: string;
+  description: string;
+  /** Required for release and experiment flags, formatted YYYY-MM-DD. */
+  expiresAt?: string;
+};
+
+export const flagDefinitions: { [K in FlagKey]: FlagDefinition<FlagValues[K]> } = {
+  newCheckout: {
+    kind: "release",
+    defaultValue: false,
+    owner: "team-checkout",
+    description: "New single-page checkout flow",
+    expiresAt: "2026-07-01",
+  },
+  checkoutCopy: {
+    kind: "experiment",
+    defaultValue: "control",
+    owner: "team-growth",
+    description: "Experiment on the pay button copy",
+    expiresAt: "2026-06-15",
+  },
+  disableRecommendations: {
+    kind: "ops",
+    defaultValue: false,
+    owner: "team-platform",
+    description: "Kill switch: turn off product recommendations when the API is overloaded",
+  },
+};
+```
+
+What you get immediately:
+
+- A misspelled flag name is a compile error. `checkoutCopy` is a union type, so a `switch` that misses a variant gets flagged by TypeScript too (if you use an exhaustiveness check).
+- **Defaults live in code.** If the flag service is down or slow, the app still runs with safe values. For release flags the default is almost always "off."
+- Every flag has an **owner and an expiry date** — the foundation for the cleanup process at the end of this post.
+
+## Where to evaluate: server or client?
+
+This is the most important architectural decision, because it directly affects what users see.
+
+**Evaluating on the client** (an SDK in the browser fetches flags after the page loads): easy to integrate, but there's a big problem — while waiting for flags, the UI has to render *something*. Rendering the default variant and then switching when flags arrive is exactly what **flicker** is: users see the old UI for a moment, then it jumps to the new one. It causes layout shift, hurts CLS and — for A/B tests — skews the results.
+
+**Evaluating on the server** (in a Server Component, middleware, or whatever renders the HTML): the HTML arrives with the right variant from the start, no flicker. The cost is that the page now depends on the user, which makes full-page CDN caching harder.
+
+What I usually do in the Next.js App Router: evaluate all flags once on the server, then **bootstrap** the values to the client through a provider, so Client Components can read them on the very first render — no second request.
+
+```tsx
+// app/layout.tsx
+import type { ReactNode } from "react";
+import { cookies } from "next/headers";
+import { evaluateFlags } from "@/flags/server";
+import { FlagsProvider } from "@/flags/client";
+
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const cookieStore = await cookies();
+  const userId = cookieStore.get("uid")?.value ?? "anonymous";
+  const flags = await evaluateFlags({ userId });
+
+  return (
+    <html lang="en">
+      <body>
+        <FlagsProvider value={flags}>{children}</FlagsProvider>
+      </body>
+    </html>
+  );
+}
+```
+
+```tsx
+// src/flags/client.tsx
+"use client";
+
+import { createContext, useContext, type ReactNode } from "react";
+import type { FlagKey, FlagValues } from "./definitions";
+
+const FlagsContext = createContext<FlagValues | null>(null);
+
+export function FlagsProvider({ value, children }: { value: FlagValues; children: ReactNode }) {
+  return <FlagsContext.Provider value={value}>{children}</FlagsContext.Provider>;
+}
+
+export function useFlag<K extends FlagKey>(key: K): FlagValues[K] {
+  const flags = useContext(FlagsContext);
+  if (!flags) throw new Error("useFlag must be used inside FlagsProvider");
+  return flags[key];
+}
+```
+
+Because the server and the client use the same set of values, the server-rendered HTML matches the client's first render — no hydration mismatch, no flicker.
+
+<Callout>
+  Reading cookies in a layout makes the route render dynamically per request. If a page needs to be statically cached, you have two options: evaluate flags only on the routes that truly need them, or use middleware to bucket users into a small number of variants and cache each variant. Don't let one small flag quietly turn your whole site dynamic.
+</Callout>
+
+When you must evaluate on the client (a fully static page, for example), reduce flicker by reserving fixed-size space for the flagged area, showing a skeleton instead of the default variant, and keeping flags to below-the-fold content where possible. Avoid "hide the whole page until flags load" at all costs — it's the fastest way to wreck LCP.
+
+## Gradual rollout and kill switches
+
+The biggest value of a release flag is not turning something on for everyone at once. A typical rollout: internal → 1% → 10% → 50% → 100%, watching error rates, Web Vitals and business metrics at each step before moving on.
+
+One key requirement: **bucketing must be stable**. A user who has seen the new UI must keep seeing it on the next visit — not flip back and forth on every page load. The common approach is to hash the user ID into a number from 0 to 99:
+
+```ts
+// 32-bit FNV-1a hash: fast and evenly distributed enough for bucketing (not for security).
+function bucketOf(input: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) % 100;
+}
+
+export function isInRollout(flagKey: string, userId: string, percentage: number): boolean {
+  // Mixing in the flag key gives each flag a different split,
+  // so the same 1% of users aren't the guinea pigs for every feature.
+  return bucketOf(`${flagKey}:${userId}`) < percentage;
+}
+```
+
+Going from 10% to 50% keeps everyone in the original 10%, since their bucket doesn't change. For logged-out users you need a stable anonymous ID (usually stored in a cookie).
+
+A **kill switch** is an ops flag that lets you turn a feature off in seconds without a deploy. It only helps if changes take effect quickly (flags aren't cached for too long), the code handles the "off" state gracefully, and on-call knows the switch exists. I've seen kill switches nobody dared to flip because they'd never been tested — flip yours at least once on staging.
+
+## A/B testing: traps to know about
+
+Experiment flags look like release flags, but the conclusions you draw from them need a lot more care:
+
+- **Log exposure at the right moment:** count someone in the experiment only when they actually *see* the variant, not when they're assigned. If you assign on page load but the variant lives at the last checkout step, most "participants" never saw it.
+- **Check the split ratio:** a 50/50 split that comes out 47/53 on a large sample is usually a technical bug (bots, events failing to send in one variant), not chance.
+- **Don't keep peeking and stop early** when the numbers look good — it's the easiest way to reach a wrong conclusion. Decide the sample size and duration up front.
+- **Flicker skews results:** a flickering variant delivers a worse experience for reasons unrelated to the change you want to measure.
+- **Overlapping experiments** on the same page can interfere with each other.
+
+<Callout>
+  I'm not a statistician, and neither are most frontend engineers. My job is to make sure the data is clean: stable assignment, accurate exposure, no flicker. The analysis is best left to people with the expertise or an established experimentation tool.
+</Callout>
+
+## Flag debt and a cleanup process
+
+Every flag is an `if` branch the code has to carry. Two boolean flags give four combinations; ten give over a thousand, all theoretically possible. Flags that never get removed are tech debt with compound interest.
+
+The process I use:
+
+1. **Expiry dates are mandatory** for release and experiment flags at creation time.
+2. **CI fails when a flag is past its expiry.** A small script is enough:
+
+```ts
+// scripts/check-expired-flags.ts
+import { flagDefinitions } from "../src/flags/definitions";
+
+const today = new Date().toISOString().slice(0, 10);
+
+const expired = Object.entries(flagDefinitions).filter(
+  ([, definition]) => definition.expiresAt !== undefined && definition.expiresAt < today,
+);
+
+if (expired.length > 0) {
+  for (const [key, definition] of expired) {
+    console.error(`Flag "${key}" expired on ${definition.expiresAt} (owner: ${definition.owner})`);
+  }
+  process.exit(1);
+}
+```
+
+3. **A lint rule for release flags without an expiry:** you can write a custom ESLint rule, or more simply a test that asserts every flag of kind release or experiment has an `expiresAt`.
+4. **Removing the flag is part of "done":** once a rollout reaches 100% and has been stable for a while, the cleanup ticket is created right away — remove the old branch, the definition, and the configuration in the flag service.
+
+Thanks to the central, typed definitions, deleting a flag from `FlagValues` makes TypeScript point at every remaining usage. That's the biggest payoff of investing up front.
+
+## Test both branches
+
+Code behind a flag has two paths, and both may run in production. I test both, with a render helper that lets me override flags:
+
+```tsx
+import type { ReactElement } from "react";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { FlagsProvider } from "@/flags/client";
+import { flagDefinitions, type FlagValues } from "@/flags/definitions";
+import { CheckoutPage } from "./checkout-page";
+
+const defaults = Object.fromEntries(
+  Object.entries(flagDefinitions).map(([key, definition]) => [key, definition.defaultValue]),
+) as FlagValues;
+
+function renderWithFlags(ui: ReactElement, overrides: Partial<FlagValues> = {}) {
+  return render(<FlagsProvider value={{ ...defaults, ...overrides }}>{ui}</FlagsProvider>);
+}
+
+describe.each([true, false])("CheckoutPage with newCheckout=%s", (enabled) => {
+  it("always shows the pay button", () => {
+    renderWithFlags(<CheckoutPage />, { newCheckout: enabled });
+    expect(screen.getByRole("button", { name: /pay/i })).toBeTruthy();
+  });
+});
+```
+
+For e2e, I run the most critical flows with the flag both on and off — especially during rollout, when both groups of users really exist.
+
+## Key takeaways
+
+<Checklist>
+
+- Distinguish four kinds of flags: release, experiment, ops, permission — each with its own lifecycle and owner.
+- Hiding UI behind a flag isn't security; access must be checked on the server.
+- Define flags centrally, typed, with safe defaults, an owner and an expiry date.
+- Prefer evaluating on the server and bootstrapping to the client to avoid flicker and layout shift.
+- Roll out gradually with stable bucketing; test your kill switch before you need it.
+- For A/B tests: accurate exposure, check the split ratio, don't stop early.
+- Cleanup is part of "done": expiry dates, CI checks, and tests for both branches.
+
+</Checklist>

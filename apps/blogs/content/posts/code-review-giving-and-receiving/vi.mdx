@@ -1,0 +1,205 @@
+---
+title: "Code review là một kỹ năng: cách review và cách nhận review"
+excerpt: "Review nên nhìn gì trước, viết comment sao cho người nhận học được thay vì tự ái, giữ PR nhỏ, xử lý bất đồng — và để máy lo phần format để con người tập trung vào thứ quan trọng."
+---
+
+<Lead>Hồi mới đi làm, mình nghĩ code review là "soi lỗi": tìm càng nhiều chỗ sai càng chứng tỏ mình giỏi. Vài năm sau mới hiểu, một buổi review tốt không đo bằng số comment, mà bằng việc code được merge có đúng hơn, dễ bảo trì hơn, và cả hai người có học thêm được gì không. Review là một kỹ năng — có thể luyện, có thể làm tệ, và ảnh hưởng trực tiếp đến tốc độ của cả team. Bài này là những gì mình rút ra sau rất nhiều PR, ở cả hai vai.</Lead>
+
+## Code review để làm gì?
+
+Trước khi bàn cách review, cần thống nhất mục đích. Theo mình, code review phục vụ bốn việc, theo thứ tự quan trọng giảm dần:
+
+1. **Bắt lỗi trước khi lên production** — logic sai, trường hợp biên bị bỏ sót, lỗ hổng bảo mật.
+2. **Giữ codebase dễ thay đổi** — thiết kế hợp lý, không trùng lặp, không tạo nợ kỹ thuật vô tình.
+3. **Chia sẻ kiến thức** — ít nhất hai người hiểu mỗi phần code, và người mới học được cách team làm việc.
+4. **Giữ sự nhất quán** — đặt tên, cấu trúc thư mục, pattern chung.
+
+Điều đáng chú ý là "format code cho đẹp" không nằm trong danh sách. Không phải vì nó không quan trọng, mà vì đó là việc của công cụ, không phải của con người (phần cuối bài sẽ nói kỹ).
+
+<Callout>
+  **Review không thay thế test.** Người review đọc code, không chạy code trong đầu được hết mọi nhánh. Nếu một PR thay đổi logic quan trọng mà không có test, câu hỏi đầu tiên nên là "làm sao mình biết nó đúng?" chứ không phải bắt đầu đọc từng dòng.
+</Callout>
+
+## Người review nên nhìn gì trước
+
+Sai lầm phổ biến nhất mình thấy là đọc PR từ trên xuống dưới và comment ngay cái đầu tiên đập vào mắt — thường là tên biến hay dấu chấm phẩy. Đến khi gặp vấn đề thật ở file thứ năm thì đã có hai mươi comment vụn vặt, và người viết không biết cái nào mới là quan trọng.
+
+Mình đọc theo thứ tự ngược lại: từ tổng thể đến chi tiết.
+
+### 1. Hiểu bối cảnh
+
+Đọc mô tả PR, ticket liên quan. PR này giải quyết vấn đề gì? Nếu không trả lời được câu này sau hai phút, đó đã là feedback đầu tiên: mô tả PR cần rõ hơn.
+
+### 2. Tính đúng đắn
+
+- Code có làm đúng điều nó nói không?
+- Trường hợp biên: danh sách rỗng, giá trị `null`, mạng lỗi, người dùng bấm hai lần, timezone.
+- Có race condition không — ví dụ hai request trả về sai thứ tự?
+- Bảo mật: dữ liệu người dùng có được escape, quyền truy cập có được kiểm tra ở server không?
+
+### 3. Thiết kế
+
+- Logic có nằm đúng chỗ không, hay một component đang làm việc của ba?
+- Có đang tạo ra một abstraction mà chỉ có một nơi dùng không?
+- Nếu yêu cầu thay đổi nhẹ vào tháng sau, phải sửa bao nhiêu file?
+
+### 4. Test
+
+- Test có kiểm tra *hành vi* hay chỉ kiểm tra chi tiết cài đặt?
+- Nếu mình cố tình làm hỏng logic chính, có test nào fail không?
+
+### 5. Cuối cùng mới đến chi tiết
+
+Đặt tên, comment trong code, cách viết gọn hơn. Những thứ này có giá trị, nhưng phải được đánh dấu rõ là không chặn merge.
+
+| Mức độ | Ví dụ | Có chặn merge? |
+| --- | --- | --- |
+| **Phải sửa** | Logic sai, lỗ hổng bảo mật, mất dữ liệu | Có |
+| **Nên sửa** | Thiết kế khó mở rộng, thiếu test cho nhánh quan trọng | Thường có, có thể thoả thuận |
+| **Gợi ý** | Cách viết khác, tên rõ hơn | Không |
+| **Nit** | Sở thích cá nhân, chi tiết rất nhỏ | Không |
+
+## Viết comment để người nhận học được
+
+Cùng một ý, cách viết quyết định người nhận sẽ sửa với tâm thế "à hay đấy" hay "lại bị soi".
+
+### Hỏi thay vì ra lệnh
+
+Câu hỏi mở ra khả năng mình sai — và thật sự mình hay sai, vì người viết thường biết bối cảnh mà mình không biết.
+
+```text
+❌ Sai rồi, phải dùng useEffect ở đây.
+
+✅ Mình đang hiểu là giá trị này chỉ cần tính lại khi `userId` đổi —
+   nếu vậy thì tính trực tiếp trong render có đủ không, hay có lý do
+   cần đưa vào effect mà mình chưa thấy?
+```
+
+### Giải thích "vì sao"
+
+Một comment chỉ nói "đổi cái này" giúp sửa một chỗ. Comment giải thích lý do giúp người viết không lặp lại lỗi ở mười chỗ khác.
+
+```text
+❌ Đừng dùng index làm key.
+
+✅ Danh sách này có thể sắp xếp lại, nên dùng index làm key sẽ khiến
+   React gắn state của item cũ vào item mới (ví dụ ô input giữ nhầm
+   giá trị). Dùng `item.id` thì an toàn hơn.
+```
+
+### Đánh dấu mức độ bằng tiền tố
+
+Team mình dùng vài tiền tố đơn giản ở đầu comment. Chỉ cần vậy là người nhận biết ngay comment nào cần xử lý trước:
+
+```text
+blocking: Hàm này không kiểm tra quyền ở server, user khác có thể
+          sửa đơn hàng bằng cách đổi id trong request.
+
+suggestion: Có thể tách phần format ngày ra helper dùng chung, vì
+            trang Invoice cũng đang làm y hệt.
+
+nit: `data2` hơi khó đoán, `filteredOrders` chẳng hạn?
+
+question: Sao mình chọn polling 5 giây thay vì revalidate khi focus?
+          Hỏi để hiểu thôi, không phải góp ý.
+```
+
+### Đề xuất, đừng chỉ chê
+
+Nếu thấy cách tốt hơn, viết luôn đoạn code gợi ý. GitHub và GitLab đều có tính năng "suggestion" cho phép người viết bấm áp dụng ngay — tiết kiệm một vòng qua lại.
+
+### Đừng quên khen
+
+Không phải khen xã giao. Khi thấy một cách xử lý hay, một test viết kỹ, hãy nói ra. Nó cho người viết biết điều gì nên tiếp tục làm — đó cũng là feedback.
+
+<Callout>
+  **Quy tắc của mình:** nếu một comment cần hơn ba lượt qua lại mà chưa xong, dừng gõ và gọi nhau năm phút. Văn bản làm mất giọng điệu, và một cuộc trò chuyện ngắn thường giải quyết thứ mà mười comment không làm được. Sau đó ghi lại kết luận vào PR để người khác đọc được.
+</Callout>
+
+## Giữ PR nhỏ — trách nhiệm của người viết
+
+Review tốt bắt đầu từ PR dễ review. Một PR 1.500 dòng gần như chắc chắn sẽ nhận được "LGTM" sau mười phút — không phải vì nó tốt, mà vì không ai đủ sức đọc kỹ. PR 200 dòng nhận được feedback thật.
+
+Vài cách mình dùng để giữ PR nhỏ:
+
+- **Tách refactor khỏi thay đổi hành vi.** PR đầu đổi tên, di chuyển file, không đổi logic. PR sau mới thêm tính năng. Người review đọc PR đầu rất nhanh vì biết chắc không có gì thay đổi về hành vi.
+- **Dùng feature flag** để merge từng phần của một tính năng lớn mà chưa bật cho người dùng.
+- **Viết mô tả PR tử tế:** vấn đề là gì, cách giải quyết, những gì cố tình *không* làm, cách test thủ công, ảnh chụp màn hình nếu đổi UI.
+- **Tự review trước.** Mở diff của chính mình trên giao diện review và đọc như người lạ. Mình luôn tìm ra ít nhất một thứ quên xoá — `console.log`, comment TODO, file không liên quan.
+
+## Nhận feedback mà không để cái tôi chen vào
+
+Phía nhận review khó hơn nhiều người nghĩ, nhất là khi mình đã dành cả tuần cho đoạn code đó.
+
+- **Code không phải là bạn.** Comment chỉ ra vấn đề trong code, không phải đánh giá năng lực của bạn. Câu này nghe sáo, nhưng mình phải tự nhắc mình khá thường xuyên.
+- **Giả định thiện chí.** Một comment cụt lủn thường là do người review đang vội, không phải đang khó chịu với bạn.
+- **Cảm ơn và trả lời mọi comment.** Sửa rồi thì nói "đã sửa ở commit abc". Không đồng ý thì giải thích. Đừng âm thầm bỏ qua.
+- **Hỏi lại khi chưa hiểu.** "Bạn có thể nói rõ hơn được không?" tốt hơn nhiều so với đoán ý rồi sửa sai hướng.
+- **Ghi lại những gì lặp lại.** Nếu ba PR liên tiếp bị nhắc cùng một vấn đề, đó là thứ nên học hẳn — hoặc là thứ nên đưa vào lint rule.
+
+## Khi hai bên không đồng ý
+
+Bất đồng trong review là bình thường và lành mạnh. Vấn đề chỉ đến khi nó kéo dài hoặc trở thành chuyện cá nhân. Mình đi theo thứ tự:
+
+1. **Tách sự thật khỏi sở thích.** "Cách này gây lỗi khi danh sách rỗng" là sự thật, kiểm chứng được. "Mình thích viết kiểu khác" là sở thích — và sở thích thì người viết code có quyền quyết.
+2. **Tìm dữ liệu.** Viết một test nhỏ, đo hiệu năng, tìm trong tài liệu chính thức. Nhiều cuộc tranh luận kết thúc ngay khi có con số.
+3. **Dựa vào quy ước của team.** Nếu team đã có quy ước, làm theo. Nếu chưa có, đây là dịp để thêm vào.
+4. **Biết khi nào nên nhường.** Nếu thay đổi không gây hại và có thể sửa sau dễ dàng, hãy merge rồi mở ticket. Chặn PR ba ngày vì một khác biệt nhỏ tốn kém hơn nhiều so với bản thân khác biệt đó.
+5. **Nhờ người thứ ba** khi thật sự bế tắc — tech lead hoặc người hiểu phần code đó nhất.
+
+## Để máy lo phần máy làm tốt hơn
+
+Mỗi comment về khoảng trắng, dấu nháy hay thứ tự import là một comment lẽ ra không cần tồn tại. Đưa hết vào công cụ để con người chỉ còn review thứ cần con người:
+
+```bash
+# Format và lint chạy tự động trước khi commit
+bunx prettier --check .
+bunx eslint . --max-warnings 0
+bunx tsc --noEmit
+```
+
+```js
+// lint-staged.config.mjs — chỉ chạy trên file đang staged để nhanh
+const config = {
+  "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
+  "*.{css,md,json}": ["prettier --write"],
+};
+
+export default config;
+```
+
+Cùng lúc đó, CI chạy type check, test và build cho mỗi PR. Khi CI xanh, người review biết chắc phần cơ học đã ổn và có thể dành toàn bộ sự chú ý cho logic và thiết kế.
+
+Một vài thứ khác cũng nên tự động hoá:
+
+- **Template mô tả PR** với các mục bắt buộc: bối cảnh, thay đổi, cách test.
+- **CODEOWNERS** để tự động gán đúng người review cho từng khu vực code.
+- **Preview deployment** cho mỗi PR, để người review bấm thử UI thay vì đoán từ diff.
+
+## Checklist review mình hay dùng
+
+Đây là danh sách mình lướt qua với mỗi PR — không phải để tick đủ hết, mà để không quên thứ quan trọng:
+
+| Câu hỏi | Ghi chú |
+| --- | --- |
+| PR giải quyết vấn đề gì, có khớp với ticket không? | Không rõ thì hỏi trước khi đọc code |
+| Logic chính có đúng với các trường hợp biên không? | Rỗng, lỗi mạng, bấm nhiều lần, quyền truy cập |
+| Có test cho hành vi quan trọng không? | Làm hỏng logic thì test có fail không? |
+| Thiết kế có dễ thay đổi về sau không? | Tránh abstraction sớm và trùng lặp lớn |
+| UI có ổn về accessibility không? | Label, focus, điều khiển bằng bàn phím |
+| Có rủi ro hiệu năng rõ ràng không? | Gọi API trong vòng lặp, render danh sách lớn |
+| Comment của mình đã đánh dấu mức độ chưa? | `blocking`, `suggestion`, `nit`, `question` |
+
+## Tóm tắt
+
+<Checklist>
+
+- Code review để bắt lỗi, giữ code dễ thay đổi và chia sẻ kiến thức — không phải để soi format.
+- Đọc từ tổng thể đến chi tiết: bối cảnh, tính đúng đắn, thiết kế, test, rồi mới đến nit.
+- Viết comment dạng câu hỏi, giải thích vì sao, đánh dấu mức độ bằng tiền tố, và đề xuất cách sửa cụ thể.
+- Người viết có trách nhiệm giữ PR nhỏ, mô tả rõ, và tự review trước khi nhờ người khác.
+- Nhận feedback với giả định thiện chí; trả lời mọi comment; hỏi lại khi chưa hiểu.
+- Bất đồng thì tách sự thật khỏi sở thích, tìm dữ liệu, và biết khi nào nên nhường.
+- Tự động hoá format, lint, type check để con người chỉ review thứ cần con người.
+
+</Checklist>

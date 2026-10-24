@@ -1,0 +1,296 @@
+---
+title: "Form trong React 19: action, useActionState, useFormStatus và Server Actions"
+excerpt: "React 19 đưa form về gần với HTML hơn: prop action, trạng thái pending, cập nhật optimistic và Server Actions. Bài này đi qua cách mình dựng một form đăng ký đầy đủ — validate hai phía, trả lỗi theo field, accessible, và chạy được cả trước khi JavaScript tải xong."
+---
+
+<Lead>Nhiều năm liền, viết form trong React nghĩa là `onSubmit`, `event.preventDefault()`, một đống `useState` cho giá trị, lỗi, trạng thái loading — rồi tự tay gọi `fetch`. React 19 thay đổi khá nhiều thứ: form nhận một hàm qua prop `action`, React tự quản lý trạng thái pending, và với Server Actions trong Next.js, form có thể submit được ngay cả khi JavaScript chưa tải xong. Bài này là cách mình dùng các API mới trong một form thật, kèm những chỗ dễ sai.</Lead>
+
+## Form "kiểu cũ" có vấn đề gì?
+
+Không có gì sai về mặt kỹ thuật, nhưng có ba điểm mình thấy lặp đi lặp lại ở hầu hết codebase:
+
+- **Quá nhiều state thủ công:** `isSubmitting`, `error`, `fieldErrors`, giá trị từng input. Mỗi form lại viết lại cùng một logic, và rất dễ quên reset `isSubmitting` khi request lỗi.
+- **Phụ thuộc hoàn toàn vào JavaScript:** nếu bundle chưa tải xong (mạng chậm, thiết bị yếu) mà người dùng bấm submit, trình duyệt sẽ submit form theo kiểu mặc định — thường là reload trang với query string, mất sạch dữ liệu.
+- **Race condition:** người dùng bấm hai lần, hai request chạy song song, response về sai thứ tự.
+
+React 19 không phát minh ra cái gì quá mới. Nó đưa form quay về mô hình của HTML — form gửi dữ liệu đến một "action" — rồi thêm vào những gì một ứng dụng hiện đại cần: trạng thái pending, kết quả trả về, và cập nhật optimistic.
+
+## Prop `action` và `useActionState`
+
+Trong React 19, `<form>` nhận một **hàm** qua prop `action`. Khi submit, React gọi hàm đó với `FormData`, tự bọc nó trong một transition, và sau khi action chạy xong thì **reset các field không được kiểm soát** (uncontrolled) về giá trị mặc định.
+
+Phần lớn thời gian, mình không truyền hàm trực tiếp mà dùng qua `useActionState`. Hook này nhận một action dạng `(previousState, formData) => newState` cùng state ban đầu, và trả về ba thứ:
+
+- `state` — kết quả lần chạy action gần nhất (ví dụ danh sách lỗi);
+- `formAction` — hàm để truyền vào `action` của form;
+- `isPending` — action có đang chạy hay không.
+
+| API | Import từ | Dùng ở đâu | Cho mình cái gì |
+| --- | --- | --- | --- |
+| `useActionState` | `react` | Component chứa form | State trả về từ action, hàm action đã bọc, cờ pending |
+| `useFormStatus` | `react-dom` | Component con **bên trong** form | Trạng thái pending và dữ liệu của lần submit hiện tại |
+| `useOptimistic` | `react` | Bất cứ đâu cần hiển thị trước kết quả | Một bản state tạm, tự quay về khi action kết thúc |
+
+Điểm hay của `useActionState` là các lần submit được xếp hàng tuần tự: action sau nhận `previousState` là kết quả của action trước. Bấm hai lần không còn tạo ra hai luồng state đá nhau.
+
+## Server Actions và progressive enhancement
+
+Trong Next.js App Router, một hàm `async` được đánh dấu `"use server"` là một **Server Action**: code chạy trên server, nhưng phía client gọi được như một hàm bình thường. Next.js tự sinh endpoint và lo việc tuần tự hoá dữ liệu.
+
+Khi truyền một Server Action (trực tiếp hoặc qua `useActionState`) vào `action` của form trong một trang được render trên server, HTML gửi về đã là một form submit được. Nếu người dùng bấm trước khi hydrate xong, trình duyệt vẫn gửi form như một POST bình thường, server chạy action và trả về trang kèm kết quả. Đây chính là **progressive enhancement**: trang hoạt động được ở mức cơ bản, và JavaScript chỉ làm trải nghiệm tốt hơn (không reload, có trạng thái pending, focus vào lỗi).
+
+<Callout>
+  Progressive enhancement chỉ có khi action là **Server Action**. Nếu bạn truyền một hàm định nghĩa ở client (ví dụ hàm gọi `fetch`), form sẽ không làm gì cho đến khi JavaScript chạy. Đó không phải lỗi — chỉ là bạn cần biết mình đang đánh đổi cái gì.
+</Callout>
+
+## Dựng một form đăng ký hoàn chỉnh
+
+Mình sẽ dựng form đăng ký với email và mật khẩu. Yêu cầu: validate trên server, trả về lỗi theo từng field, giữ lại email người dùng đã nhập, và chuyển trang khi thành công.
+
+### Phía server: không bao giờ tin client
+
+Validate phía client là để **trải nghiệm**, validate phía server là để **đúng**. Bất kỳ ai cũng có thể gửi POST thẳng đến endpoint của Server Action mà bỏ qua mọi kiểm tra trong trình duyệt, nên server phải tự kiểm tra lại tất cả — kể cả quyền của người dùng.
+
+```ts
+// app/signup/actions.ts
+"use server";
+
+import { redirect } from "next/navigation";
+import { z } from "zod";
+import { createUser, isEmailTaken } from "@/lib/users";
+
+const SignupSchema = z.object({
+  email: z.string().trim().email("Email không hợp lệ"),
+  password: z.string().min(8, "Mật khẩu cần ít nhất 8 ký tự"),
+});
+
+type Field = "email" | "password";
+
+export type SignupState = {
+  fieldErrors: Partial<Record<Field, string>>;
+  formError?: string;
+  values: { email: string };
+};
+
+export async function signup(
+  _previous: SignupState,
+  formData: FormData,
+): Promise<SignupState> {
+  const raw = {
+    email: String(formData.get("email") ?? ""),
+    password: String(formData.get("password") ?? ""),
+  };
+  // Không bao giờ trả lại mật khẩu cho client.
+  const values = { email: raw.email };
+
+  const result = SignupSchema.safeParse(raw);
+  if (!result.success) {
+    const fieldErrors: SignupState["fieldErrors"] = {};
+    for (const issue of result.error.issues) {
+      const key = issue.path[0];
+      if ((key === "email" || key === "password") && !fieldErrors[key]) {
+        fieldErrors[key] = issue.message;
+      }
+    }
+    return { fieldErrors, values };
+  }
+
+  if (await isEmailTaken(result.data.email)) {
+    return { fieldErrors: { email: "Email này đã được đăng ký" }, values };
+  }
+
+  try {
+    await createUser(result.data);
+  } catch {
+    return { fieldErrors: {}, formError: "Có lỗi xảy ra, vui lòng thử lại.", values };
+  }
+
+  redirect("/welcome");
+}
+```
+
+Vài lựa chọn có chủ đích ở đây:
+
+- Action **trả về lỗi như dữ liệu**, không `throw`. Lỗi validate là chuyện bình thường của form, không phải ngoại lệ. Mình chỉ để `throw` cho lỗi thật sự bất ngờ, và để error boundary xử lý.
+- `redirect` nằm **ngoài** `try/catch`. Trong Next.js, `redirect` hoạt động bằng cách ném ra một lỗi đặc biệt; bọc nó trong `catch` sẽ nuốt mất lần chuyển trang.
+- State trả về chứa `values.email` để điền lại form. Lý do nằm ở phần tiếp theo.
+
+### Phía client: form, nút submit và lỗi
+
+```tsx
+// app/signup/signup-form.tsx
+"use client";
+
+import { useActionState, useEffect, useRef } from "react";
+import { useFormStatus } from "react-dom";
+import { signup, type SignupState } from "./actions";
+
+const initialState: SignupState = { fieldErrors: {}, values: { email: "" } };
+
+function SubmitButton() {
+  // Phải nằm trong một component con của form thì mới đọc được trạng thái.
+  const { pending } = useFormStatus();
+  return (
+    <button type="submit" disabled={pending}>
+      {pending ? "Đang tạo tài khoản..." : "Đăng ký"}
+    </button>
+  );
+}
+
+export function SignupForm() {
+  const [state, formAction] = useActionState(signup, initialState);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // Sau mỗi lần submit lỗi, đưa focus đến field lỗi đầu tiên.
+  useEffect(() => {
+    formRef.current
+      ?.querySelector<HTMLElement>('[aria-invalid="true"]')
+      ?.focus();
+  }, [state]);
+
+  const emailError = state.fieldErrors.email;
+  const passwordError = state.fieldErrors.password;
+
+  return (
+    <form ref={formRef} action={formAction}>
+      {state.formError && <p role="alert">{state.formError}</p>}
+
+      <label htmlFor="email">Email</label>
+      <input
+        id="email"
+        name="email"
+        type="email"
+        autoComplete="email"
+        required
+        defaultValue={state.values.email}
+        aria-invalid={emailError ? true : undefined}
+        aria-describedby={emailError ? "email-error" : undefined}
+      />
+      {emailError && <p id="email-error">{emailError}</p>}
+
+      <label htmlFor="password">Mật khẩu</label>
+      <input
+        id="password"
+        name="password"
+        type="password"
+        autoComplete="new-password"
+        required
+        minLength={8}
+        aria-invalid={passwordError ? true : undefined}
+        aria-describedby={passwordError ? "password-error" : "password-hint"}
+      />
+      <p id="password-hint">Ít nhất 8 ký tự.</p>
+      {passwordError && <p id="password-error">{passwordError}</p>}
+
+      <SubmitButton />
+    </form>
+  );
+}
+```
+
+Có hai điểm mình muốn nhấn mạnh.
+
+**Thứ nhất, form tự reset.** Vì React reset các input uncontrolled sau khi action chạy xong, nếu không làm gì thì người dùng submit lỗi sẽ thấy ô email trống trơn. Trả lại `values` từ server và gắn vào `defaultValue` là cách mình giữ lại dữ liệu. Mật khẩu thì cố ý để trống — không gửi lại mật khẩu ra client.
+
+**Thứ hai, `useFormStatus` chỉ đọc được form cha.** Gọi nó trong chính component render ra `<form>` sẽ luôn nhận `pending: false`. Tách nút submit thành component riêng là cách dùng đúng, và nút đó tái sử dụng được cho mọi form.
+
+<Callout>
+  Thuộc tính `required`, `type="email"`, `minLength` là lớp validate miễn phí của trình duyệt — chạy cả khi chưa có JavaScript. Mình vẫn giữ chúng, nhưng luôn coi đó là gợi ý cho người dùng, còn quyết định cuối cùng thuộc về server.
+</Callout>
+
+## Accessibility của thông báo lỗi
+
+Một form "hiện chữ đỏ dưới input" vẫn có thể hoàn toàn vô dụng với người dùng screen reader. Những gì mình luôn làm:
+
+- **`aria-invalid="true"`** trên input lỗi, để công nghệ hỗ trợ thông báo trạng thái "không hợp lệ".
+- **`aria-describedby`** trỏ đến đoạn văn chứa lỗi (và cả gợi ý định dạng nếu có), để khi focus vào input, nội dung lỗi được đọc lên cùng label.
+- **Đưa focus đến field lỗi đầu tiên** sau khi submit. Người dùng bàn phím không phải tự tìm xem lỗi nằm đâu, và screen reader đọc luôn lỗi nhờ `aria-describedby`.
+- **Lỗi chung của form** (mất mạng, lỗi server) đặt trong vùng `role="alert"` để được thông báo ngay.
+- **Không chỉ dựa vào màu đỏ** — luôn có chữ mô tả lỗi cụ thể và cách sửa: "Mật khẩu cần ít nhất 8 ký tự" tốt hơn nhiều so với "Không hợp lệ".
+
+Với form dài, mình còn thêm một bản tóm tắt lỗi ở đầu form, mỗi lỗi là một link nhảy đến input tương ứng. Nhưng với form vài field, focus vào lỗi đầu tiên là đủ.
+
+## Cập nhật optimistic với `useOptimistic`
+
+Có những thao tác gần như luôn thành công — thả tim, thêm bình luận, đánh dấu đã đọc. Bắt người dùng chờ vài trăm mili giây cho round-trip là lãng phí. `useOptimistic` cho phép hiển thị trước kết quả mong đợi trong lúc action đang chạy; khi action kết thúc và dữ liệu thật về, React bỏ bản tạm và dùng state thật.
+
+```tsx
+"use client";
+
+import { useOptimistic } from "react";
+import { addComment } from "./actions";
+
+type Comment = { id: string; text: string; sending?: boolean };
+
+export function CommentThread({ comments }: { comments: Comment[] }) {
+  const [optimisticComments, addOptimisticComment] = useOptimistic(
+    comments,
+    (current: Comment[], text: string): Comment[] => [
+      ...current,
+      { id: `temp-${current.length}`, text, sending: true },
+    ],
+  );
+
+  async function submit(formData: FormData) {
+    const text = String(formData.get("text") ?? "").trim();
+    if (!text) return;
+    addOptimisticComment(text);
+    // Server Action lưu bình luận rồi revalidate trang,
+    // nên prop `comments` sẽ được cập nhật với dữ liệu thật.
+    await addComment(text);
+  }
+
+  return (
+    <>
+      <ul>
+        {optimisticComments.map((comment) => (
+          <li key={comment.id} aria-busy={comment.sending || undefined}>
+            {comment.text}
+            {comment.sending && " (đang gửi...)"}
+          </li>
+        ))}
+      </ul>
+      <form action={submit}>
+        <label htmlFor="comment">Bình luận</label>
+        <input id="comment" name="text" required />
+        <button type="submit">Gửi</button>
+      </form>
+    </>
+  );
+}
+```
+
+Lưu ý: hàm `submit` ở đây định nghĩa trên client, nên form này **cần JavaScript** mới chạy được. Với bình luận thì mình chấp nhận. Còn nếu action thất bại, bản optimistic biến mất khi action kết thúc — bạn vẫn nên báo lỗi rõ ràng cho người dùng thay vì để bình luận "bốc hơi" trong im lặng.
+
+## Khi nào vẫn nên dùng react-hook-form?
+
+Các API mới không làm thư viện form trở nên thừa. Mình phân chia đại khái thế này:
+
+| Tình huống | Mình chọn |
+| --- | --- |
+| Form đơn giản đến vừa: đăng ký, liên hệ, cài đặt | `useActionState` + Server Action |
+| Cần chạy được trước khi JavaScript tải xong | `useActionState` + Server Action |
+| Validate ngay khi gõ hoặc khi rời field, phản hồi tức thì | react-hook-form (thường kèm schema dùng chung) |
+| Mảng field động, form nhiều bước, field phụ thuộc lẫn nhau | react-hook-form |
+| Form rất lớn, cần tránh re-render toàn bộ khi gõ | react-hook-form |
+
+Hai cách không loại trừ nhau. Một mẫu mình hay dùng: react-hook-form lo trải nghiệm phía client, khi submit hợp lệ thì gọi Server Action, và server **vẫn validate lại** bằng cùng schema. Cái mất đi là progressive enhancement, vì logic submit giờ phụ thuộc vào JavaScript — đổi lại là trải nghiệm phong phú hơn cho form phức tạp.
+
+<Callout>
+  Dùng chung một schema (ví dụ Zod) cho cả client và server giúp thông báo lỗi nhất quán. Nhưng hãy đảm bảo file schema không vô tình import code chỉ dành cho server, nếu không nó sẽ bị kéo vào bundle client.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Truyền hàm vào prop `action` của form; dùng `useActionState` để nhận state trả về và trạng thái pending.
+- `useFormStatus` chỉ hoạt động trong component con của form — tách nút submit ra riêng.
+- Server Action + render trên server cho progressive enhancement: form submit được trước khi hydrate.
+- Validate phía client để có trải nghiệm tốt, validate phía server để có kết quả đúng — luôn kiểm tra lại mọi thứ trên server.
+- Trả lỗi validate như dữ liệu, giữ lại giá trị bằng `defaultValue`, và đặt `redirect` ngoài `try/catch`.
+- Lỗi phải accessible: `aria-invalid`, `aria-describedby`, focus vào lỗi đầu tiên, thông điệp cụ thể.
+- `useOptimistic` cho thao tác gần như luôn thành công, nhưng vẫn phải xử lý trường hợp thất bại.
+- react-hook-form vẫn đáng dùng cho form lớn, động, cần validate tức thì.
+
+</Checklist>

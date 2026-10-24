@@ -1,0 +1,315 @@
+---
+title: "A Frontend Error-Handling Strategy: From Error Boundaries to Retries and Reporting"
+excerpt: "Classify errors before handling them, understand what error boundaries do and don't catch, retry properly with backoff and jitter, separate user-facing messages from developer logs, and report errors without leaking personal data."
+---
+
+<Lead>Most frontend codebases I've inherited handle errors the "patch it where it hurts" way: a `try/catch` here that silently swallows everything, an `alert("Something went wrong")` there, and a blank white screen whenever the API returns something unexpected. Not because the team was lazy, but because nobody ever sat down and agreed on a *strategy*. This post is the framework I use: classify the error first, then decide where each kind gets caught, what the user sees, and where developers get told about it.</Lead>
+
+## Classify errors before writing try/catch
+
+The first question isn't "how do I catch this" but "what kind of error is this". I split errors along two axes.
+
+**Axis one: expected or not.**
+
+- **Expected errors:** invalid user input, expired session, missing permissions, data not found, offline. These are part of the business logic, not bugs.
+- **Unexpected errors:** `undefined is not a function`, an API returning a shape that breaks the contract, wrong logic. These are bugs and developers need to hear about them.
+
+**Axis two: recoverable or not.**
+
+- **Recoverable:** retry, log in again, fix the form, go back.
+- **Fatal:** application state is corrupted and the page needs a reload.
+
+| | Recoverable | Not recoverable |
+| --- | --- | --- |
+| **Expected** | Form validation, 401 → log in again, offline → retry | Account locked, feature disabled |
+| **Unexpected** | One widget breaks, the rest of the page keeps working | Error in the root layout, corrupted global state |
+
+The key point: **expected errors shouldn't travel through exceptions**. If "not found" is a valid outcome, return it as a value so TypeScript forces the caller to deal with it:
+
+```ts
+type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
+
+type FetchUserError =
+  | { kind: "not-found" }
+  | { kind: "unauthorized" }
+  | { kind: "network" };
+
+interface User {
+  id: string;
+  name: string;
+}
+
+async function fetchUser(id: string): Promise<Result<User, FetchUserError>> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/users/${id}`);
+  } catch {
+    return { ok: false, error: { kind: "network" } };
+  }
+  if (res.status === 404) return { ok: false, error: { kind: "not-found" } };
+  if (res.status === 401) return { ok: false, error: { kind: "unauthorized" } };
+  // 5xx or any other odd status is unexpected: throw so an outer layer catches and reports it.
+  if (!res.ok) throw new Error(`Unexpected status ${res.status} for /api/users`);
+  return { ok: true, value: (await res.json()) as User };
+}
+```
+
+Let unexpected errors throw — don't `catch` and swallow them. A swallowed error is worse than one that crashes a screen, because nobody knows it exists.
+
+## React error boundaries: what they catch and what they don't
+
+An error boundary is a component that catches errors thrown **during rendering** of its subtree and shows a fallback UI instead of letting React unmount the whole tree. For now it still has to be a class component (or you use a library like `react-error-boundary`):
+
+```tsx
+import { Component, type ErrorInfo, type ReactNode } from "react";
+
+interface Props {
+  fallback: (reset: () => void) => ReactNode;
+  onError?: (error: Error, info: ErrorInfo) => void;
+  children: ReactNode;
+}
+
+interface State {
+  error: Error | null;
+}
+
+export class ErrorBoundary extends Component<Props, State> {
+  state: State = { error: null };
+
+  static getDerivedStateFromError(error: Error): State {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    // info.componentStack tells you which component failed — well worth sending with the report.
+    this.props.onError?.(error, info);
+  }
+
+  reset = () => this.setState({ error: null });
+
+  render() {
+    if (this.state.error) return this.props.fallback(this.reset);
+    return this.props.children;
+  }
+}
+```
+
+Error boundaries catch errors thrown during render, in lifecycle methods and in constructors of child components. They do **not** catch:
+
+- Errors in **event handlers** (`onClick`, `onSubmit`) — those don't run during render.
+- Errors in **async code**: `setTimeout`, promise callbacks, a `fetch` inside `useEffect` after an `await`.
+- Errors during **server-side rendering**.
+- Errors thrown **inside the boundary itself** (they propagate to the next boundary up).
+
+For event handlers, use a regular `try/catch` and decide what to show. If you want an async error to reach the nearest boundary, put it in state and throw it on the next render:
+
+```tsx
+import { useState } from "react";
+
+export function useThrowToBoundary() {
+  const [error, setError] = useState<Error | null>(null);
+  if (error) throw error; // thrown during render → the error boundary catches it
+  return setError;
+}
+```
+
+<Callout>
+  **Place boundaries at several levels, not just one at the root.** A single root boundary means one broken chart widget takes down the whole page. I usually have one at the root (the last safety net), one per route, and extra ones around independent blocks like the sidebar, charts and the comments panel.
+</Callout>
+
+## Next.js: `error.tsx`, `global-error.tsx` and `not-found.tsx`
+
+The App Router packages error boundaries per route segment:
+
+- **`error.tsx`** wraps that segment's content (and its child segments). It must be a client component and receives `error` plus a `reset` function to try rendering again.
+- **`error.tsx` does not catch errors in the `layout.tsx` at the same level**, because that layout sits *outside* the segment's boundary. Layout errors bubble up to the parent segment's `error.tsx`.
+- **`global-error.tsx`** in the `app` directory catches errors in the root layout. Because it replaces the root layout entirely, it must render its own `html` and `body` tags.
+- **`not-found.tsx`** renders when you call `notFound()` from `next/navigation` — the right tool for "not found", which is an *expected* error.
+
+```tsx
+// app/dashboard/error.tsx
+"use client";
+
+import { useEffect } from "react";
+
+export default function DashboardError({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string };
+  reset: () => void;
+}) {
+  useEffect(() => {
+    // In production, Server Component error messages are hidden;
+    // the digest lets you find the matching server-side log.
+    console.error(error);
+  }, [error]);
+
+  return (
+    <div role="alert">
+      <h2>We couldn't load your dashboard</h2>
+      <p>Your data is safe. Please try again in a moment.</p>
+      <button onClick={() => reset()}>Try again</button>
+    </div>
+  );
+}
+```
+
+The `digest` detail is worth remembering: in production, Next.js doesn't send Server Component error messages to the browser (to avoid leaking sensitive details), only a `digest` code. To find out what actually happened, search your server logs for that code.
+
+## Retries: exponential backoff, jitter, and when *not* to retry
+
+Network blips and temporary server errors usually clear up within seconds. Retrying makes sense — but naive retries can turn a small incident into a big one.
+
+- **Exponential backoff:** each attempt waits twice as long as the previous one (say 500ms, 1s, 2s, 4s), with an upper cap.
+- **Jitter:** add randomness to the wait. Without it, when the server recovers, thousands of clients retry *at the same instant* and knock it over again.
+
+```ts
+class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(`HTTP ${status}`);
+    this.name = "HttpError";
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function isRetryable(error: unknown): boolean {
+  if (error instanceof HttpError) {
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  }
+  return error instanceof TypeError; // fetch throws a TypeError on network failure
+}
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  { retries = 3, baseMs = 500, maxMs = 8000 } = {},
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt >= retries || !isRetryable(error)) throw error;
+      const cap = Math.min(maxMs, baseMs * 2 ** attempt);
+      // "Full jitter": wait a random time between 0 and cap.
+      const delay =
+        error instanceof HttpError && error.retryAfterMs !== undefined
+          ? error.retryAfterMs
+          : Math.random() * cap;
+      await sleep(delay);
+    }
+  }
+}
+```
+
+Just as important are the cases where you **shouldn't** retry:
+
+| Situation | Retry? | Why |
+| --- | --- | --- |
+| Network error, timeout | Yes | Usually temporary |
+| 5xx, 503 | Yes, with backoff | Server overloaded or mid-deploy |
+| 429 Too Many Requests | Yes, honoring `Retry-After` if present | The server told you when to come back |
+| 400, 422 (bad input) | No | Sending the same thing fails the same way |
+| 401, 403 | No | Needs re-login, or access is denied |
+| Non-idempotent `POST` (payments, orders) | Only with an idempotency key | Otherwise you may create duplicates |
+
+<Callout>
+  If you use TanStack Query or SWR, retries with backoff are built in. Your job is to configure the function that decides whether to retry — library defaults often retry 4xx responses too, which is rarely what you want.
+</Callout>
+
+## User-facing messages are not developer details
+
+Two audiences with completely different needs:
+
+- **Users** need to know what happened (in plain language), whether their data is fine, and what they can do next.
+- **Developers** need the stack trace, component stack, URL, build version and the steps leading up to the error.
+
+Never show a raw `error.message` to users. It means nothing to them ("Cannot read properties of undefined") and sometimes leaks internal details. I keep a mapping from error kind to message:
+
+- Offline → "You're offline. We'll retry automatically when you're back."
+- 401 → "Your session has expired. Please sign in again." plus a sign-in button.
+- Unexpected → "Something went wrong. The team has been notified." plus a retry button and a short reference code the user can give to support.
+
+That reference code is the bridge between the two worlds: support gets it from the user, developers use it to find the exact error report.
+
+## Global safety nets: `error` and `unhandledrejection`
+
+No matter how careful you are, some errors will slip through every layer. Two global events catch whatever is left:
+
+```ts
+type ReportFn = (error: unknown, context: Record<string, unknown>) => void;
+
+export function installGlobalHandlers(report: ReportFn) {
+  window.addEventListener("error", (event) => {
+    report(event.error ?? event.message, {
+      source: "window.error",
+      file: event.filename,
+      line: event.lineno,
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    report(event.reason, { source: "unhandledrejection" });
+  });
+}
+```
+
+A few practical notes:
+
+- Errors from cross-origin scripts often show up only as `"Script error."` with no details. To get details, the script must be loaded with the `crossorigin` attribute and served with appropriate CORS headers.
+- Browser extensions throw errors into your page too. Filter by file name or schemes like `chrome-extension://` to cut the noise.
+- Since React 19, `createRoot` accepts callbacks such as `onUncaughtError` and `onCaughtError`, so you can report errors React has handled from one central place.
+
+## Report with context — but without personal data
+
+An error report with only a stack trace is often not enough to reproduce the bug. Context I always attach:
+
+- **Build version** (commit SHA) — to know which release it came from and to map source maps.
+- **Route** and **recent actions** (breadcrumbs): which buttons were clicked, which APIs were called.
+- **Environment:** browser, OS, screen size.
+- **An anonymous user ID** (not an email) to see how many people are affected.
+
+And what must **never** be sent: passwords, tokens, card numbers, emails, phone numbers, the contents of forms users typed. The safe approach is to scrub on the client before sending:
+
+```ts
+const SENSITIVE_KEY = /pass(word)?|token|secret|authorization|cookie|card|email|phone/i;
+
+export function scrub(value: unknown, depth = 0): unknown {
+  if (depth > 5) return "[truncated]";
+  if (Array.isArray(value)) return value.map((v) => scrub(v, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, v]) => [
+        key,
+        SENSITIVE_KEY.test(key) ? "[redacted]" : scrub(v, depth + 1),
+      ]),
+    );
+  }
+  return value;
+}
+
+export function stripQuery(url: string): string {
+  // Query strings often carry password-reset tokens, invite codes...
+  const u = new URL(url, location.origin);
+  return u.origin + u.pathname;
+}
+```
+
+And don't forget to upload source maps to your monitoring tool (without exposing them publicly if you'd rather not), or your stack traces will be nothing but minified function names.
+
+## Key takeaways
+
+<Checklist>
+
+- Classify first: expected or not, recoverable or not.
+- Expected errors should be typed return values; unexpected errors should throw, never be silently swallowed.
+- Error boundaries only catch render-time errors — event handlers and async code need their own handling.
+- Use boundaries at several levels; in Next.js lean on `error.tsx`, `global-error.tsx` and `notFound()`.
+- Retry with exponential backoff and jitter, only for transient failures; don't retry 4xx or non-idempotent requests.
+- Users get plain messages with a next step; developers get stacks, context and the build version.
+- Catch stragglers with `error` and `unhandledrejection`, and scrub personal data before reporting.
+
+</Checklist>
