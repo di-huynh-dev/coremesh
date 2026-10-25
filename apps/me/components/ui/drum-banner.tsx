@@ -173,14 +173,13 @@ export function DrumBanner() {
         aria-label={sound ? "Mute drum sound" : "Enable drum sound"}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={() => setSound((on) => !on)}
-        className="absolute bottom-2.5 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-edge bg-background/80 px-2.5 py-1 font-mono text-[10px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground max-sm:hidden"
+        className="absolute bottom-2.5 left-1/2 inline-flex size-8 -translate-x-1/2 items-center justify-center rounded-full border border-edge bg-background/80 text-muted-foreground backdrop-blur transition-colors hover:text-foreground max-sm:hidden"
       >
         {sound ? (
           <Volume2 className="size-3 text-brand" />
         ) : (
           <VolumeX className="size-3" />
         )}
-        chạm vào mặt trống · {sound ? "sound on" : "sound off"}
       </button>
     </div>
   );

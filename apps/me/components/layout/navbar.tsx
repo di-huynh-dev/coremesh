@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Menu, Search, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const navLinks = [
   { href: "#about", label: "Summary" },
@@ -58,6 +58,7 @@ function useActiveSection() {
 export function Navbar() {
   const [affixed, setAffixed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const active = useActiveSection();
 
   useEffect(() => {
@@ -70,10 +71,20 @@ export function Navbar() {
   useEffect(() => {
     if (!mobileOpen) return;
     const handleResize = () => {
-      if (window.innerWidth >= 640) setMobileOpen(false);
+      if (window.innerWidth >= 768) setMobileOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+        menuButtonRef.current?.focus();
+      }
     };
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [mobileOpen]);
 
   return (
@@ -81,11 +92,11 @@ export function Navbar() {
       data-affix={affixed}
       className="fixed inset-x-0 top-0 z-50 max-w-screen overflow-x-hidden border-b border-edge bg-background/92 px-2 pt-2 backdrop-blur-md transition-shadow duration-300 data-[affix=true]:shadow-[0_0_16px_0_rgba(40,20,0,0.10)] dark:data-[affix=true]:shadow-[0_0_16px_0_rgba(0,0,0,0.5)]"
     >
-      <div className="profile-rail rail-box screen-line-after flex h-12 items-center justify-between gap-4 bg-background px-6 max-sm:px-4">
+      <div className="profile-rail rail-box screen-line-after flex h-12 items-center justify-between gap-2 bg-background px-4">
         <Link
           href="/"
           aria-label="Home"
-          className="group inline-flex items-center gap-2.5"
+          className="group inline-flex shrink-0 items-center gap-2.5 whitespace-nowrap"
         >
           <Image
             src="/round-avatar.svg"
@@ -100,8 +111,11 @@ export function Navbar() {
           </span>
         </Link>
 
-        <div className="flex items-center gap-4 max-sm:gap-2">
-          <nav className="hidden items-center gap-1 sm:flex">
+        <div className="flex min-w-0 items-center gap-2 md:gap-3">
+          <nav
+            aria-label="Main navigation"
+            className="hidden shrink-0 items-center md:flex"
+          >
             {navLinks.map((link) => {
               const isActive = active === link.href;
               return (
@@ -109,7 +123,7 @@ export function Navbar() {
                   key={link.href}
                   href={link.href}
                   aria-current={isActive ? "location" : undefined}
-                  className={`relative px-2.5 py-1.5 font-mono text-sm transition-colors duration-300 ${
+                  className={`relative shrink-0 whitespace-nowrap px-2 py-1.5 font-mono text-[13px] transition-colors duration-300 ${
                     isActive
                       ? "text-foreground"
                       : "text-muted-foreground hover:text-foreground"
@@ -120,7 +134,7 @@ export function Navbar() {
                     <motion.span
                       layoutId="nav-active"
                       transition={{ duration: 0.35, ease }}
-                      className="absolute inset-x-2.5 -bottom-[7px] h-[2px] bg-brand"
+                      className="absolute inset-x-2 -bottom-[7px] h-[2px] bg-brand"
                     />
                   ) : null}
                 </Link>
@@ -128,7 +142,7 @@ export function Navbar() {
             })}
           </nav>
 
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <a
               href="https://github.com/di-huynh-dev"
               target="_blank"
@@ -150,12 +164,14 @@ export function Navbar() {
             </button>
             <ModeToggle />
             <motion.button
+              ref={menuButtonRef}
               type="button"
               aria-label="Toggle menu"
+              aria-controls="mobile-navigation"
               aria-expanded={mobileOpen}
               onClick={() => setMobileOpen((open) => !open)}
               whileTap={{ scale: 0.96 }}
-              className="inline-flex size-10 items-center justify-center rounded-full border border-edge bg-background text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted sm:hidden"
+              className="inline-flex size-10 items-center justify-center rounded-full border border-edge bg-background text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted md:hidden"
             >
               <motion.span
                 animate={{ rotate: mobileOpen ? 180 : 0 }}
@@ -180,9 +196,13 @@ export function Navbar() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.22, ease }}
-            className="profile-rail overflow-hidden px-2 pb-2 sm:hidden"
+            className="profile-rail overflow-hidden px-2 pb-2 md:hidden"
           >
-            <nav className="dot-pattern relative overflow-hidden rounded-2xl border border-edge bg-card p-2 shadow-[0_18px_40px_rgba(40,20,0,0.14)]">
+            <nav
+              id="mobile-navigation"
+              aria-label="Mobile navigation"
+              className="dot-pattern relative max-h-[calc(100dvh-4.5rem)] overflow-y-auto overscroll-contain rounded-2xl border border-edge bg-card p-2 shadow-[0_18px_40px_rgba(40,20,0,0.14)]"
+            >
               {navLinks.map((link, i) => (
                 <Link
                   key={link.href}
