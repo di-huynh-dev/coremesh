@@ -1,0 +1,592 @@
+---
+title: "Ưu tiên nền tảng: Popover API, CSS anchor positioning và View Transitions thay được khá nhiều JavaScript UI"
+excerpt: "Năm 2026 trình duyệt đã có sẵn những primitive mà trước đây phải nhờ Floating UI, Radix hay thư viện animation. Bài này đi qua popover, invoker commands, anchor positioning và View Transitions: chúng làm gì, kết hợp ra sao, hỗ trợ tới đâu và chỗ nào vẫn nên dùng thư viện."
+---
+
+<Lead>Mấy năm trước, mỗi lần làm một dropdown menu là mình phải cài Floating UI để tính toạ độ, một thư viện headless để lo click-outside và phím Esc, rồi thêm Framer Motion nếu muốn chuyển trang mượt. Đến tháng 10/2026, phần lớn những việc đó trình duyệt đã tự làm: popover nằm trong top layer và tự đóng khi click ra ngoài, CSS anchor positioning gắn popover vào nút bấm và tự lật khi hết chỗ, View Transitions animate chuyển cảnh giữa hai trạng thái DOM. Bài này đi qua từng primitive: nó làm gì, kết hợp chúng thế nào, mức hỗ trợ thật sự hiện nay, và quan trọng nhất là những chỗ chúng vẫn chưa đủ, nơi thư viện vẫn là lựa chọn đúng.</Lead>
+
+## Bức tranh tháng 10/2026: cái gì đã dùng được
+
+Trước khi vào code, cần nói rõ "dùng được" nghĩa là gì. Mình dựa vào [Baseline](https://web.dev/baseline) (dữ liệu từ dự án web-features và MDN browser-compat-data): *Newly available* là khi tính năng đã có trong bản mới nhất của Chrome, Edge, Firefox và Safari; *Widely available* là 30 tháng sau mốc đó. Các con số dưới đây mình lấy từ [webstatus.dev](https://webstatus.dev) và MDN vào cuối tháng 10/2026:
+
+| Tính năng | Chrome | Firefox | Safari | Trạng thái |
+| --- | --- | --- | --- | --- |
+| `popover` (auto / manual), `popovertarget` | 114 | 125 | 17 | Đủ cả ba engine từ 04/2024; các API lõi thành *Widely available* từ 16/10/2026 |
+| `popover="hint"` | 133 (spec cũ), đầy đủ từ 151 | 149 (spec cũ), đầy đủ từ 153 | Mới ở Technology Preview | Chưa Baseline |
+| Invoker commands (`command`, `commandfor`) | 135 | 144 | 26.2 | Newly available từ 12/2025 |
+| `<dialog closedby>` | 134 | 141 | Mới ở Technology Preview | Chưa Baseline |
+| Anchor positioning lõi (`anchor-name`, `position-area`, `anchor()`, `position-try-fallbacks`) | 125–129 | 147 | 26 | Newly available từ 13/01/2026 |
+| View Transitions cùng document | 111 | 144 | 18 | Newly available từ 14/10/2025 |
+| `view-transition-class`, transition types | 125 | 144 / 147 | 18.2 | Newly available (types từ 01/2026) |
+| View Transitions giữa các document (`@view-transition`) | 126 | Chưa có | 18.2 | Chưa Baseline |
+| Interest invokers (`interestfor`) | 142 | Chưa có | Chưa có | Chỉ Chromium |
+| Thuộc tính `overlay` (giữ phần tử trong top layer khi animate thoát) | 117 | Chưa có | Chưa có | Chỉ Chromium |
+
+Đọc bảng này mình rút ra ba điều. Một: popover và View Transitions cùng document đã đủ chắc để dùng làm đường chính. Hai: anchor positioning mới Baseline từ đầu năm 2026, nên nếu người dùng của bạn còn nhiều Firefox hay Safari bản cũ thì vẫn cần đường fallback (phần sau mình sẽ dựng). Ba: một số mảnh như `hint`, `interestfor`, View Transitions giữa các trang vẫn là progressive enhancement, có thì đẹp hơn, không có thì UI vẫn phải chạy.
+
+<Callout>
+  **Tên thuộc tính đã đổi vài lần.** Chrome 125 ra mắt với `inset-area` và `position-try-options`; sau đó spec đổi thành `position-area` (Chrome 129) và `position-try-fallbacks` (Chrome 128). Giá trị khởi tạo của `position-anchor` cũng đổi qua các phiên bản, và `anchors-visible` đang được đổi tên thành `anchor-visible`. Nếu bạn copy code từ bài viết năm 2024, hãy kiểm tra lại tên trước.
+</Callout>
+
+## Popover API: top layer, light dismiss và invoker
+
+Thuộc tính `popover` biến bất kỳ phần tử nào thành một lớp nổi: ẩn mặc định, khi mở thì được đưa vào **top layer**, một lớp hiển thị nằm trên toàn bộ trang, không phụ thuộc `z-index` hay `overflow: hidden` của tổ tiên. Đây là lý do lớn nhất khiến mình bỏ portal: trước đây phải render menu ra cuối `body` chỉ để thoát khỏi một container có `overflow: hidden` hoặc một stacking context do `transform` tạo ra. Top layer giải quyết đúng vấn đề đó mà phần tử vẫn nằm nguyên chỗ trong DOM.
+
+### Ba giá trị: auto, manual, hint
+
+| | `auto` (mặc định) | `hint` | `manual` |
+| --- | --- | --- | --- |
+| Light dismiss (click ra ngoài, Esc) | Có | Có | Không |
+| Mở ra thì đóng các popover `auto` khác | Có, trừ popover lồng nhau | Không | Không |
+| Đóng các `hint` khác | – | Có, trừ tổ tiên | Không |
+| Dùng cho | Menu, popover chọn lựa | Tooltip, preview khi hover | Toast, panel tự quản lý |
+
+`auto` là thứ bạn cần cho menu: chỉ một popover `auto` mở tại một thời điểm (trừ khi chúng lồng nhau, ví dụ submenu), click ra ngoài hay bấm Esc là đóng. `manual` thì ngược lại, không tự đóng, nhiều cái mở cùng lúc được, hợp với toast. `hint` sinh ra cho tooltip: mở tooltip không làm đóng menu đang mở. Nhưng như bảng ở trên, `hint` chưa Baseline và theo [MDN](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using), trình duyệt không hiểu `hint` sẽ coi nó là `manual`, vì spec HTML quy định giá trị không hợp lệ rơi về trạng thái manual. Nghĩa là trên Safari hiện tại tooltip của bạn sẽ không tự light dismiss, bạn phải tự đóng nó.
+
+### Mở popover không cần JavaScript
+
+```html
+<button popovertarget="project-menu" aria-haspopup="menu">Tuỳ chọn</button>
+
+<div id="project-menu" popover role="menu" aria-label="Tuỳ chọn dự án">
+  <button role="menuitem" type="button">Đổi tên</button>
+  <button role="menuitem" type="button">Nhân bản</button>
+  <button role="menuitem" type="button">Lưu trữ</button>
+</div>
+```
+
+Chỉ vậy là có: bấm nút thì mở, bấm lại thì đóng, click ra ngoài hay Esc thì đóng, và khi đóng bằng Esc thì focus quay về nút. Quan hệ `popovertarget` còn cho thêm ba thứ miễn phí: trình duyệt tự gắn `aria-expanded` và quan hệ `aria-details` giữa nút và popover, đặt popover ngay sau nút trong thứ tự Tab, và tạo một **implicit anchor** để CSS anchor positioning dùng (phần sau).
+
+### Invoker commands: `command` và `commandfor`
+
+`popovertarget` chỉ điều khiển được popover. Invoker commands là phiên bản tổng quát hơn: một `<button>` với `commandfor` trỏ tới id của phần tử đích và `command` nói hành động cần làm. Các giá trị dựng sẵn gồm `show-modal`, `close`, `request-close` cho `<dialog>` và `show-popover`, `hide-popover`, `toggle-popover` cho popover. Giá trị bắt đầu bằng `--` là lệnh tuỳ biến, trình duyệt sẽ bắn một `CommandEvent` lên phần tử đích.
+
+```html
+<button commandfor="archive-dialog" command="show-modal">Lưu trữ dự án</button>
+
+<dialog id="archive-dialog" aria-labelledby="archive-title">
+  <h2 id="archive-title">Lưu trữ dự án này?</h2>
+  <form method="dialog">
+    <button commandfor="archive-dialog" command="request-close">Huỷ</button>
+    <button value="confirm">Lưu trữ</button>
+  </form>
+</dialog>
+
+<button commandfor="gallery" command="--next">Ảnh tiếp</button>
+```
+
+
+Phía JavaScript, lệnh `--next` đến dưới dạng một `CommandEvent` trên `#gallery` với thuộc tính `command` bằng `"--next"`, nên bạn chỉ cần một listener `command` thay vì gắn handler cho từng nút. Điểm mình thích nhất là bỏ được cả đống `onClick={() => dialogRef.current?.showModal()}` chỉ để mở một dialog. `request-close` khác `close` ở chỗ nó bắn sự kiện `cancel` trước, nên bạn có thể `preventDefault()` khi form còn dữ liệu chưa lưu. Invoker commands thành Baseline khi Safari 26.2 ra mắt (12/2025); với trình duyệt cũ hơn có polyfill, hoặc đơn giản là giữ một handler click làm fallback.
+
+### Animate khi mở và đóng
+
+Popover ẩn bằng `display: none`, và trước đây chuyển từ `none` sang `block` là không animate được. Ba mảnh CSS giờ đã giải quyết chuyện này: `@starting-style` khai báo trạng thái bắt đầu khi phần tử vừa hiện ra, `transition-behavior: allow-discrete` cho phép transition các thuộc tính rời rạc như `display`, và `overlay` giữ phần tử trong top layer cho tới khi animation đóng chạy xong.
+
+```css
+[popover] {
+  opacity: 0;
+  translate: 0 -4px;
+  transition:
+    opacity 150ms ease-out,
+    translate 150ms ease-out,
+    display 150ms allow-discrete,
+    overlay 150ms allow-discrete;
+}
+
+[popover]:popover-open {
+  opacity: 1;
+  translate: 0 0;
+}
+
+/* Trạng thái "trước khi mở", để animation vào có điểm xuất phát */
+@starting-style {
+  [popover]:popover-open {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}
+```
+
+`@starting-style` và `allow-discrete` đã Baseline từ 2024, nhưng `overlay` hiện chỉ Chromium hỗ trợ. Trên Firefox và Safari, animation đóng vẫn chạy nhưng phần tử rời top layer ngay lập tức, nên trong 150ms đó nó có thể bị phần tử khác đè lên. Với animation ngắn thì gần như không ai để ý; với animation dài thì đây là chỗ bạn sẽ thấy khác biệt.
+
+Từ JavaScript bạn có `showPopover()`, `hidePopover()`, `togglePopover()` và hai sự kiện `beforetoggle`/`toggle`; `showPopover({ source })` còn tạo implicit anchor và thứ tự focus giống như `popovertarget`.
+
+## `<dialog>` hay popover?
+
+Cả hai đều vào top layer, cả hai đều có `::backdrop`, nên rất dễ nhầm là dùng cái nào cũng được. Khác biệt nằm ở **tính modal**:
+
+| | `dialog.showModal()` | `popover` |
+| --- | --- | --- |
+| Phần còn lại của trang | Bị `inert`: không click, không Tab, screen reader không đọc tới | Vẫn tương tác bình thường |
+| Role ngầm định | `dialog` | Không có, bạn tự gắn |
+| Focus khi mở | Tự chuyển vào trong dialog | Chỉ di chuyển nếu có `autofocus`; nếu không thì phần tử kế tiếp trong thứ tự Tab |
+| Focus khi đóng | Quay về phần tử trước đó | Quay về khi đóng bằng Esc, `hidePopover()` hay invoker; click ra ngoài thì không |
+| Esc | Bắn `cancel` rồi đóng | Đóng (`auto`, `hint`) |
+| Click ra ngoài để đóng | Cần `closedby="any"` (chưa Baseline) hoặc tự xử lý | Có sẵn với `auto` |
+| `::backdrop` chặn tương tác | Có | Không, chỉ là lớp trang trí |
+
+Quy tắc của mình: **nếu người dùng phải xử lý xong nội dung này rồi mới làm việc khác được** (xác nhận xoá, form tạo mới, cảnh báo phiên hết hạn) thì dùng `<dialog>` với `showModal()`. Mọi thứ còn lại, gồm menu, tooltip, date picker nhỏ, panel thông báo, là popover. Popover không bao giờ là modal, kể cả khi bạn tô `::backdrop` thành màu tối: phía sau vẫn click được, vẫn Tab tới được. Mình đã gặp code review mà ai đó làm "modal" bằng popover cộng với backdrop mờ, nhìn thì giống hệt nhưng người dùng bàn phím Tab ra khỏi modal mà không hề biết.
+
+Thuộc tính `closedby` của `<dialog>` cho phép chọn `any` (light dismiss như popover), `closerequest` (chỉ Esc) hoặc `none`. Safari mới có ở bản preview, nên mình chỉ coi nó là bonus và vẫn giữ nút đóng rõ ràng.
+
+## CSS anchor positioning: Floating UI viết bằng CSS
+
+Popover giải quyết chuyện "nổi lên trên", nhưng mặc định nó nằm giữa màn hình. Để gắn nó cạnh nút bấm, trước đây bạn cần JavaScript: đo `getBoundingClientRect()` của nút, tính toạ độ, nghe `scroll` và `resize` để tính lại, kiểm tra tràn viewport để lật. Đó chính xác là việc của Floating UI. [CSS anchor positioning](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_anchor_positioning) chuyển toàn bộ việc đó vào layout engine, chạy cùng lúc với layout nên không có frame nào bị lệch.
+
+### Ba khái niệm cốt lõi
+
+- **`anchor-name`** đặt tên cho phần tử làm mốc, tên là một dashed ident như `--avatar`.
+- **`position-anchor`** trên phần tử được định vị (phải là `position: absolute` hoặc `fixed`; popover đã là `fixed` sẵn) chọn anchor mặc định.
+- **`position-area`** đặt phần tử vào một ô trong lưới 3×3 tưởng tượng quanh anchor. Hàng giữa và cột giữa đúng bằng kích thước anchor, các hàng cột ngoài kéo tới mép containing block.
+
+```css
+.avatar-button {
+  anchor-name: --avatar;
+}
+
+.account-menu {
+  position: fixed;
+  position-anchor: --avatar;
+  /* hàng dưới anchor, bắt đầu từ cột giữa và tràn sang phải */
+  position-area: bottom span-right;
+  margin: 0;
+  margin-block-start: 6px;
+}
+```
+
+<Figure src="/blog/modern-css-platform-ui-position-area.svg" alt="Lưới 3x3 của position-area quanh một anchor: popover đặt ở bottom span-right, khi tràn đáy viewport thì thử lần lượt flip-block, flip-inline và kết hợp cả hai" caption="position-area chia không gian quanh anchor thành 9 ô. Vị trí gốc được thử trước, rồi tới từng fallback theo thứ tự; phương án đầu tiên vừa chỗ sẽ thắng." />
+
+Giá trị một từ khoá như `bottom` tương đương `bottom span-all`, tức trải cả ba cột. `span-right` nghĩa là chiếm cột giữa và cột phải, nên menu căn mép trái theo nút và mở rộng sang phải, đúng kiểu dropdown quen thuộc. Một điểm hay của `position-area` mà ít người để ý: ô được chọn trở thành containing block của phần tử, nên `max-height: 100%` hay `overflow: auto` hoạt động theo không gian còn lại thật sự. Một menu dài sẽ tự cuộn thay vì tràn khỏi màn hình.
+
+### `anchor()` khi cần chính xác hơn
+
+`position-area` đủ cho 90% trường hợp. Khi cần căn từng cạnh, dùng hàm `anchor()` trong các thuộc tính inset, và `anchor-size()` cho kích thước:
+
+```css
+.combobox-listbox {
+  position: fixed;
+  position-anchor: --search-input;
+  top: anchor(bottom);
+  left: anchor(left);
+  /* listbox rộng bằng ô input, không cần JS đo width */
+  width: anchor-size(width);
+  margin: 4px 0 0;
+}
+```
+
+`justify-self: anchor-center` (hoặc `align-self`) căn giữa phần tử theo anchor, rất tiện cho tooltip nằm chính giữa phía trên nút.
+
+### Fallback khi hết chỗ: `position-try-fallbacks`
+
+Đây là phần thay thế middleware `flip()` của Floating UI. Bạn khai báo danh sách phương án dự phòng; nếu vị trí gốc làm phần tử tràn ra ngoài containing block (thường là viewport), trình duyệt thử lần lượt từng phương án và dùng cái đầu tiên vừa:
+
+```css
+.account-menu {
+  position-area: bottom span-right;
+  position-try-fallbacks:
+    flip-block,               /* lật lên trên: top span-right */
+    flip-inline,              /* lật sang trái: bottom span-left */
+    flip-block flip-inline;   /* cả hai: top span-left */
+  /* ưu tiên phương án còn nhiều chiều cao nhất thay vì thứ tự khai báo */
+  position-try-order: most-height;
+}
+
+/* Khi cần đổi nhiều thuộc tính cùng lúc, đặt tên một phương án */
+@position-try --compact-above {
+  position-area: top;
+  max-height: 40vh;
+}
+
+.notifications-panel {
+  position-area: bottom;
+  position-try-fallbacks: --compact-above, flip-inline;
+}
+```
+
+`flip-block` hoán đổi theo trục block (trên/dưới), `flip-inline` theo trục inline (trái/phải), `flip-start` lật qua đường chéo. Vì là logical, chúng tự đúng trong layout RTL. Nếu không phương án nào vừa, phần tử vẫn hiển thị dù bị tràn, trừ khi bạn dùng `position-visibility: no-overflow` để ẩn hẳn.
+
+### `position-visibility`: anchor cuộn mất thì sao?
+
+Khi người dùng cuộn trang khiến nút biến mất sau mép một vùng cuộn, menu không nên lơ lửng một mình. Theo spec hiện tại, giá trị mặc định của `position-visibility` là `anchor-visible`, tức tự ẩn phần tử khi anchor bị cắt khỏi tầm nhìn. Tên giá trị đang trong giai đoạn chuyển: các trình duyệt đã ship dưới tên cũ `anchors-visible`, spec mới đổi sang `anchor-visible`. Vì vậy trong code mình chỉ viết tường minh `no-overflow` hoặc `always`, hai giá trị có cùng tên ở mọi engine, và để mặc định lo phần còn lại.
+
+### Implicit anchor và `anchor-scope`
+
+Với popover mở bằng `popovertarget` (hoặc `commandfor`, hoặc `showPopover({ source })`), nút bấm tự động trở thành **implicit anchor**, không cần đặt tên. Điều này cực kỳ quan trọng với danh sách: một trang có 50 thẻ dự án, mỗi thẻ một nút "⋯", mà dùng `anchor-name: --card-menu` cho tất cả thì mọi menu sẽ bám vào thẻ *cuối cùng* có tên đó, vì tên anchor mặc định có phạm vi toàn document.
+
+Có hai cách sửa. Cách thứ nhất là dùng implicit anchor và ghi rõ `position-anchor: auto`. Mình luôn ghi rõ dòng này, vì giá trị khởi tạo của `position-anchor` đã đổi qua nhiều phiên bản trình duyệt (`implicit`, rồi `auto`, giờ là `normal`), và ghi tường minh thì hành vi giống nhau ở mọi nơi. Cách thứ hai, khi anchor không phải là invoker, là giới hạn phạm vi tên bằng `anchor-scope`:
+
+```css
+.project-card {
+  /* tên --card chỉ nhìn thấy được trong cây con của từng thẻ */
+  anchor-scope: --card;
+}
+
+.project-card .cover {
+  anchor-name: --card;
+}
+
+.project-card .badge {
+  position: absolute;
+  position-anchor: --card;
+  position-area: top right;
+}
+```
+
+## View Transitions: animate giữa hai trạng thái DOM
+
+Bài toán kinh điển: chuyển từ danh sách sang trang chi tiết, ảnh bìa trong thẻ "bay" lên thành ảnh lớn ở đầu trang. Trước đây phải dùng layout animation của Framer Motion (nay là Motion), hoặc tự làm kỹ thuật FLIP: đo vị trí cũ, đổi DOM, đo vị trí mới, rồi animate `transform` giữa hai vị trí. View Transitions làm FLIP ở cấp trình duyệt, và cách nó làm đáng để hiểu kỹ vì mọi pitfall đều xuất phát từ đây.
+
+<Figure src="/blog/modern-css-platform-ui-view-transition-lifecycle.svg" alt="Vòng đời View Transition: chụp trạng thái cũ, chạy callback cập nhật DOM, chụp trạng thái mới, animate cây pseudo-element; kèm các promise updateCallbackDone, ready, finished" caption="Trình duyệt chụp ảnh trạng thái cũ, tạm dừng render trong lúc callback đổi DOM, chụp trạng thái mới, rồi animate trên một cây pseudo-element nằm phủ lên trang." />
+
+```ts
+const transition = document.startViewTransition({
+  update: () => renderDetail(projectId), // đổi DOM ở đây, có thể là async
+  types: ["forward"],
+});
+
+await transition.updateCallbackDone; // DOM mới đã sẵn sàng
+await transition.ready;              // cây pseudo-element đã dựng, animation sắp chạy
+await transition.finished;           // animation xong, pseudo-element đã bị gỡ
+```
+
+Trình tự cụ thể:
+
+1. **Chụp trạng thái cũ.** Mỗi phần tử có `view-transition-name` (và toàn bộ trang, dưới tên `root`) được chụp thành một ảnh tĩnh.
+2. **Chạy callback.** Trang bị "đóng băng" về mặt hiển thị trong lúc callback đổi DOM. Nếu callback trả về promise, trình duyệt chờ nó; quá lâu thì transition bị huỷ với `TimeoutError` (thời gian chờ do trình duyệt quyết định), nên đừng fetch dữ liệu trong callback mà hãy fetch trước.
+3. **Chụp trạng thái mới.** Lần này không phải ảnh tĩnh mà là bản render trực tiếp của phần tử.
+4. **Animate.** Trình duyệt dựng cây pseudo-element và chạy CSS animation trên đó; xong thì gỡ cây, trang thật hiện ra.
+
+Cây pseudo-element (phần dưới của hình trên) có gốc là `::view-transition`, nằm phủ lên toàn trang. Mỗi tên tạo ra một nhánh `::view-transition-group(tên)`, bên trong là `::view-transition-image-pair(tên)` chứa hai con: `::view-transition-old(tên)` là ảnh tĩnh của trạng thái cũ, `::view-transition-new(tên)` là bản render trực tiếp của trạng thái mới.
+
+Mặc định, `group` animate vị trí và kích thước từ chỗ cũ sang chỗ mới, còn `old` và `new` cross-fade. Mọi thứ đều là CSS animation bình thường nên bạn tuỳ biến bằng selector:
+
+```css
+.project-card .cover {
+  view-transition-class: cover;
+}
+
+::view-transition-group(.cover) {
+  animation-duration: 280ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Chỉ áp dụng khi transition được gắn type "back" */
+html:active-view-transition-type(back) {
+  &::view-transition-old(root) { animation-name: slide-out-right; }
+  &::view-transition-new(root) { animation-name: slide-in-left; }
+}
+```
+
+`view-transition-name` phải duy nhất trong mỗi lần chụp, còn `view-transition-class` thì dùng chung được cho nhiều phần tử, nên nó là cách để style 50 thẻ mà không phải viết 50 selector. Transition types (truyền qua `types` khi gọi `startViewTransition`, rồi match bằng `:active-view-transition-type()`) giúp phân biệt "đi tới" với "quay lại" mà không phải thêm bớt class trên `html` như trước. Ngoài ra có giá trị `view-transition-name: match-element` (Chrome 137, Firefox 144, Safari 18.4) để trình duyệt tự sinh tên theo danh tính phần tử, rất tiện khi animate sắp xếp lại một danh sách.
+
+### Giữa các trang: `@view-transition`
+
+Với site nhiều trang (MPA), không có callback nào để gọi cả. Thay vào đó cả trang cũ và trang mới cùng opt-in bằng CSS:
+
+```css
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+}
+
+/* Cùng một tên ở cả hai trang thì trình duyệt ghép cặp chúng.
+   Mỗi thẻ tự đặt --cover-name riêng qua style inline, ví dụ cover-42. */
+.post-card__cover,
+.post-hero__cover {
+  view-transition-name: var(--cover-name);
+}
+```
+
+Điều kiện: hai trang cùng origin, điều hướng là click link, `history.back()` hay tương tự (không tính gõ địa chỉ, bookmark hay reload). Trang mới nhận sự kiện `pagereveal`, trang cũ nhận `pageswap`, kèm `event.viewTransition` để bạn gắn tên động hoặc thêm types theo URL đích. Chrome bỏ transition nếu điều hướng mất hơn bốn giây. Tính năng này có ở Chrome 126 và Safari 18.2 nhưng Firefox chưa ship, và vì trình duyệt không hiểu `@view-transition` chỉ đơn giản bỏ qua nó, đây là kiểu progressive enhancement rủi ro thấp nhất mình biết: thêm vài dòng CSS, ai có thì thấy mượt, ai không có thì điều hướng như cũ.
+
+### React: `<ViewTransition>` đã stable từ React 19.3
+
+Gọi `document.startViewTransition` trực tiếp trong React khá vụng, vì bạn không kiểm soát lúc nào React commit DOM. React 19.3 (phát hành 09/09/2026) đã đưa component [`<ViewTransition>`](https://react.dev/reference/react/ViewTransition) lên stable sau hơn một năm ở kênh canary/experimental. Nó bọc API của trình duyệt và chỉ kích hoạt với cập nhật nằm trong Transition: `startTransition`, một lần reveal của `<Suspense>`, hoặc `useDeferredValue`. `setState` thường sẽ không animate.
+
+```tsx
+import { ViewTransition, addTransitionType, startTransition, useState } from "react";
+
+type Project = { id: string; name: string; cover: string };
+
+export function ProjectsPage({ projects }: { projects: Project[] }) {
+  const [selected, setSelected] = useState<Project | null>(null);
+
+  const open = (project: Project) =>
+    startTransition(() => {
+      addTransitionType("forward");
+      setSelected(project);
+    });
+
+  const back = () =>
+    startTransition(() => {
+      addTransitionType("back");
+      setSelected(null);
+    });
+
+  if (selected) return <ProjectDetail project={selected} onBack={back} />;
+
+  return (
+    <ul className="project-grid">
+      {projects.map((project) => (
+        <li key={project.id}>
+          <button type="button" onClick={() => open(project)}>
+            {/* Cùng name ở danh sách và trang chi tiết: React tạo shared element transition */}
+            <ViewTransition name={`cover-${project.id}`} share="morph">
+              <img src={project.cover} alt="" />
+            </ViewTransition>
+            {project.name}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Trong `ProjectDetail`, ảnh lớn cũng được bọc bằng một `<ViewTransition>` có cùng `name` và `share`. Giá trị `share="morph"` trở thành `view-transition-class`, nên bạn style bằng `::view-transition-group(.morph)` như CSS thường. Ba điều trong [tài liệu](https://react.dev/reference/react/ViewTransition) cần nhớ: mỗi `name` chỉ được mount một lần trong toàn app (trùng là lỗi); `<ViewTransition>` phải nằm trước mọi DOM node để enter/exit hoạt động; và React **không** tự tắt animation khi người dùng bật `prefers-reduced-motion`, việc đó là của bạn.
+
+## Ví dụ thực tế: menu, tooltip và chuyển cảnh danh sách → chi tiết
+
+Đây là màn hình "Dự án" mình làm gần đây: một lưới thẻ, mỗi thẻ có nút "⋯" mở menu thao tác, nút đó có tooltip, và bấm vào thẻ thì ảnh bìa bay lên thành ảnh lớn ở trang chi tiết. Phiên bản cũ dùng Floating UI, một thư viện menu headless và Motion. Phiên bản mới không có dòng JavaScript nào để tính vị trí.
+
+### Bước 1: markup
+
+```html
+<article class="project-card" data-id="42">
+  <a class="project-card__link" href="/projects/42">
+    <img class="project-card__cover" src="/covers/42.webp" alt="" />
+    <h3>Website bán hàng</h3>
+  </a>
+
+  <button class="icon-button" type="button" popovertarget="menu-42" aria-haspopup="menu"
+          aria-label="Tuỳ chọn cho Website bán hàng" aria-describedby="tip-42">⋯</button>
+  <span id="tip-42" class="tooltip" popover="hint" role="tooltip">Đổi tên, nhân bản, lưu trữ</span>
+
+  <div id="menu-42" class="menu" popover role="menu" aria-label="Tuỳ chọn dự án">
+    <button role="menuitem" type="button" data-action="rename">Đổi tên</button>
+    <button role="menuitem" type="button" data-action="duplicate">Nhân bản</button>
+    <button role="menuitem" type="button" data-action="archive">Lưu trữ…</button>
+  </div>
+</article>
+```
+
+Không có `anchor-name` nào cả: menu được mở bằng `popovertarget` nên nút "⋯" là implicit anchor của nó; tooltip sẽ được mở bằng `showPopover({ source })` nên cũng vậy. Năm mươi thẻ trên cùng trang không giẫm chân nhau.
+
+### Bước 2: CSS, fallback trước rồi nâng cấp
+
+```css
+/* Mặc định (không có anchor positioning): menu thành bottom sheet, vẫn dùng tốt trên mobile */
+.menu {
+  inset: auto 0 0 0;
+  width: 100%;
+  margin: 0;
+  border-radius: 16px 16px 0 0;
+}
+
+.tooltip {
+  display: none; /* không định vị được thì thà không hiện; aria-describedby vẫn đọc được */
+}
+
+@supports (position-area: bottom) {
+  .menu {
+    inset: auto;
+    width: max-content;
+    min-width: 12rem;
+    max-height: 100%;          /* = chiều cao của ô position-area còn trống */
+    overflow-y: auto;
+    border-radius: 8px;
+    margin: 4px 0 0;            /* ghi đè margin: auto của UA stylesheet */
+    position-anchor: auto;      /* implicit anchor: nút popovertarget */
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+
+  .tooltip:popover-open {
+    display: block;
+    margin: 0 0 6px;
+    position-anchor: auto;
+    position-area: top;         /* top span-all: căn giữa phía trên nút */
+    position-try-fallbacks: flip-block;
+    pointer-events: none;
+  }
+}
+```
+
+`span-left` vì nút "⋯" nằm ở góc phải thẻ: menu căn mép phải theo nút và mở rộng sang trái. Dòng `margin` không phải trang trí: UA stylesheet cho popover `margin: auto` để căn giữa màn hình, và ở các bản trình duyệt anchor positioning đời đầu, margin auto đó sẽ căn menu vào giữa *ô* `position-area` thay vì sát nút. Các bản mới (Chrome 143, Firefox 148, Safari 26.2) đã tự coi margin auto là 0 khi có `position-area`, nhưng reset tường minh vẫn rẻ hơn debug.
+
+### Bước 3: phần JavaScript còn lại
+
+JavaScript giờ chỉ còn lo hai việc mà nền tảng chưa làm: điều hướng bằng phím mũi tên trong `role="menu"`, và mở tooltip khi hover hoặc focus.
+
+```ts
+// enhance.ts: không có dòng nào tính toạ độ
+const supportsPopover = HTMLElement.prototype.hasOwnProperty("popover");
+
+export function enhanceMenu(menu: HTMLElement): void {
+  const items = () =>
+    Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'));
+
+  // Mở menu thì focus mục đầu tiên (theo ARIA APG cho menu button)
+  menu.addEventListener("toggle", (event) => {
+    if ((event as ToggleEvent).newState === "open") items()[0]?.focus();
+  });
+
+  menu.addEventListener("keydown", (event) => {
+    const list = items();
+    const current = list.indexOf(document.activeElement as HTMLElement);
+    const focusAt = (index: number) => {
+      event.preventDefault();
+      list.at(index % list.length)?.focus(); // at(-1) là mục cuối
+    };
+    if (event.key === "ArrowDown") focusAt(current + 1);
+    else if (event.key === "ArrowUp") focusAt(current - 1);
+    else if (event.key === "Home") focusAt(0);
+    else if (event.key === "End") focusAt(-1);
+    else if (event.key === "Tab") menu.hidePopover(); // Tab rời menu thì đóng menu
+  });
+
+  // Chọn một mục: đóng menu, focus tự quay về nút "⋯"
+  menu.addEventListener("click", (event) => {
+    if ((event.target as Element).closest('[role="menuitem"]')) menu.hidePopover();
+  });
+}
+
+export function enhanceTooltip(trigger: HTMLElement, tip: HTMLElement): void {
+  if (!supportsPopover) return;
+  let timer: number | undefined;
+
+  const show = () => {
+    clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      if (!tip.matches(":popover-open")) tip.showPopover({ source: trigger });
+    }, 300);
+  };
+  const hide = () => {
+    clearTimeout(timer);
+    if (tip.matches(":popover-open")) tip.hidePopover();
+  };
+
+  trigger.addEventListener("pointerenter", show);
+  trigger.addEventListener("pointerleave", hide);
+  trigger.addEventListener("focus", show);
+  trigger.addEventListener("blur", hide);
+  // Nơi chưa hỗ trợ "hint", popover rơi về "manual" và không tự đóng bằng Esc
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hide();
+  });
+}
+```
+
+Chrome từ bản 142 có thêm [interest invokers](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using_interest_invokers): `interestfor="tip-42"` trên nút là trình duyệt tự mở tooltip khi hover hoặc focus, có cả độ trễ cấu hình bằng `interest-delay`. Khi Firefox và Safari theo kịp, hàm `enhanceTooltip` sẽ biến mất. Hiện tại nó chỉ là Chromium, nên mình vẫn giữ hàm trên.
+
+### Bước 4: danh sách → chi tiết bằng View Transitions
+
+App này là SPA viết tay (phiên bản React dùng `<ViewTransition>` như phần trước). Mấu chốt là chỉ gắn `view-transition-name` cho **đúng một** thẻ, thẻ vừa được bấm, ngay trước khi chụp. Ảnh lớn ở trang chi tiết có sẵn `view-transition-name: cover` trong CSS.
+
+```ts
+// navigate.ts
+import { loadDetail, loadList, render, type View } from "./views";
+
+type Direction = "forward" | "back";
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+const coverOf = (projectId: string) =>
+  document.querySelector<HTMLElement>(`.project-card[data-id="${projectId}"] .project-card__cover`);
+
+export async function go(projectId: string, direction: Direction): Promise<void> {
+  // 1. Lấy dữ liệu TRƯỚC: trong callback trang đang bị đóng băng
+  const view: View = direction === "forward" ? await loadDetail(projectId) : await loadList();
+
+  if (!("startViewTransition" in document) || reduceMotion.matches) {
+    render(view); // đường fallback: đổi DOM ngay, không animation
+    return;
+  }
+
+  // 2. Đi tới: thẻ đang có trên màn hình, đặt tên trước khi chụp trạng thái cũ
+  if (direction === "forward") coverOf(projectId)?.style.setProperty("view-transition-name", "cover");
+
+  const transition = document.startViewTransition({
+    update: () => {
+      render(view);
+      // 3. Quay lại: thẻ chỉ tồn tại sau khi render, nên đặt tên ở đây
+      if (direction === "back") coverOf(projectId)?.style.setProperty("view-transition-name", "cover");
+    },
+    types: [direction],
+  });
+
+  // 4. Dọn tên để lần sau không bị trùng
+  transition.finished.finally(() => coverOf(projectId)?.style.removeProperty("view-transition-name"));
+}
+```
+
+Tại sao không viết `view-transition-name: cover` cho mọi thẻ trong CSS? Vì tên phải duy nhất: hai phần tử đang render cùng tên trong một lần chụp thì trình duyệt bỏ qua transition, `ready` bị reject, DOM vẫn đổi nhưng không có animation nào. Đây là lỗi số một mình gặp với View Transitions.
+
+### Đường fallback, tóm lại
+
+Mỗi lớp nâng cấp có một đường lùi riêng, và không đường lùi nào làm hỏng chức năng:
+
+- **Không có anchor positioning** (Firefox trước 147, Safari trước 26): `@supports` không khớp, menu thành bottom sheet, tooltip không hiện nhưng mô tả vẫn đến tai người dùng screen reader qua `aria-describedby`. Nếu buộc phải giữ dropdown đúng vị trí trên trình duyệt cũ, có polyfill `@oddbird/css-anchor-positioning`, hoặc nạp Floating UI có điều kiện khi `CSS.supports("position-area: bottom")` trả về `false`.
+- **Không có `popover="hint"`**: tooltip chạy như `manual`, hàm `enhanceTooltip` tự lo việc đóng.
+- **Không có View Transitions**: `go()` đổi DOM ngay. Người dùng mất animation, không mất gì khác.
+- **Bật giảm chuyển động**: SPA bỏ qua `startViewTransition`, còn `@view-transition` của MPA nằm trong `@media (prefers-reduced-motion: no-preference)`. Popover thì mình giữ fade ngắn và bỏ phần dịch chuyển: giảm chuyển động không có nghĩa là xoá hết, mà là bỏ những chuyển động lớn, kiểu phóng to hay trượt cả trang.
+
+## Accessibility: những gì trình duyệt không làm thay bạn
+
+Popover lo được light dismiss, Esc, top layer, thứ tự Tab và `aria-expanded`. Nó **không** biết nội dung bên trong là gì, nên phần ngữ nghĩa vẫn là việc của bạn:
+
+- **Popover không có role.** Menu cần `role="menu"` và `role="menuitem"`, tooltip cần `role="tooltip"` cùng `aria-describedby` trên nút. Nhưng đừng gắn `role="menu"` cho mọi dropdown: một danh sách link điều hướng nên là disclosure (nút có `aria-expanded` cộng danh sách link bình thường), vì `role="menu"` hứa với screen reader rằng phím mũi tên hoạt động, và bạn phải giữ lời hứa đó bằng code như Bước 3.
+- **Popover không phải modal.** Không có focus trap, không có `inert`. Thứ cần chặn tương tác thì dùng `<dialog>` với `showModal()`.
+- **Focus quay về có điều kiện.** Đóng bằng Esc, invoker hoặc `hidePopover()` thì focus về lại nút nếu nó đang nằm trong popover; light dismiss bằng click ra ngoài thì không (focus đi theo chỗ người dùng click, và như vậy là đúng). Nếu một mục menu mở dialog, hãy tự quyết định focus sẽ về đâu khi dialog đóng, vì phần tử từng có focus đã nằm trong một popover bị ẩn.
+- **Tooltip chỉ để mô tả.** Không đặt link hay nút vào tooltip; nội dung cần tương tác thì dùng popover `auto` mở bằng click. Theo WCAG 1.4.13, nội dung hiện khi hover phải đóng được bằng Esc mà không cần di chuột, đó là lý do có listener `Escape` ở Bước 3.
+- **View Transitions có thể gây chóng mặt.** Ảnh bay khắp màn hình hay trang trượt ngang là loại chuyển động mà người bật `prefers-reduced-motion` muốn tránh. Kiểm tra media query đó ở mọi nơi bạn bắt đầu một transition.
+
+## Native hay thư viện?
+
+Mình không nghĩ thư viện đã hết thời. Câu hỏi đúng là "trường hợp này còn cần thư viện không":
+
+| Nhu cầu | Primitive native | Thư viện | Khi nào thư viện vẫn đúng |
+| --- | --- | --- | --- |
+| Định vị phần tử nổi cạnh trigger, lật khi hết chỗ | Anchor positioning + `position-try-fallbacks` | Floating UI | Cần hỗ trợ trình duyệt trước 2026; cần `shift()` trượt dọc mép thay vì lật; anchor ảo (vị trí con trỏ, vùng bôi đen văn bản); mũi tên đổi hướng theo fallback (anchored container queries mới có ở Chrome 143) |
+| Lớp nổi, click ra ngoài, Esc, top layer | `popover` | Radix Popover, Dropdown Menu | Cần menu hoàn chỉnh: điều hướng phím, typeahead, submenu có vùng đệm cho chuột, `aria-activedescendant`, mọi thứ đã được kiểm thử với screen reader |
+| Hộp thoại modal | `<dialog>` + `showModal()`, `commandfor` | Radix Dialog | Cần khoá cuộn trang, xếp chồng nhiều dialog, hành vi giống nhau ở trình duyệt cũ |
+| Animate vào/ra một phần tử | `@starting-style` + `allow-discrete` | Motion (`AnimatePresence`) | Animation thoát phải ở top layer trên Firefox/Safari (thiếu `overlay`), chuỗi animation phức tạp, stagger |
+| Chuyển cảnh, shared element | View Transitions, React `<ViewTransition>` | Motion layout animations | Cần ngắt giữa chừng và đảo chiều mượt, kéo bằng cử chỉ, spring vật lý, nhiều animation chạy song song (mỗi lúc chỉ một view transition, cái mới sẽ đẩy cái cũ tới đích ngay) |
+
+Cách mình chọn trong thực tế: design system nội bộ cần menu, combobox và date picker đạt chuẩn accessibility thì vẫn dùng Radix hoặc một thư viện headless tương đương, vì phần khó nhất của chúng là hành vi bàn phím và screen reader chứ không phải định vị. Còn ở tầng ứng dụng, những popover đơn giản, tooltip và chuyển trang thì mình viết thẳng bằng nền tảng, bundle nhẹ hơn hẳn và không còn lớp JavaScript nào phải chạy mỗi lần scroll.
+
+## Những lỗi hay gặp
+
+**Mang thói quen `z-index` vào top layer.** Popover và modal dialog nằm trong top layer, nên `z-index: 9999` trên chúng là vô nghĩa; thứ tự giữa các phần tử trong top layer là thứ tự chúng được mở. Ngược lại, một toast tự làm bằng `position: fixed; z-index: 10000` sẽ luôn nằm *dưới* một popover, dù z-index lớn đến đâu. Cách sửa là cho toast cũng thành `popover="manual"`. Một hệ quả khác: `::backdrop` của popover không chặn click, đừng dùng nó để giả modal.
+
+**Tên anchor toàn cục.** Như đã nói, `anchor-name` có phạm vi toàn document; nhiều phần tử cùng tên thì phần tử *cuối cùng* thắng, và mọi popover đều bám vào nó. Dùng implicit anchor qua `popovertarget`/`commandfor`, hoặc `anchor-scope` trên container của mỗi thẻ. Thêm một điều kiện ít ai đọc: anchor phải được layout *trước* phần tử định vị (chung containing block và đứng trước trong DOM, hoặc nằm ở lớp top layer thấp hơn), nếu không trình duyệt coi như không tìm thấy anchor.
+
+**`view-transition-name` bị trùng.** Gắn tên tĩnh trong CSS cho phần tử lặp lại, như `.card .cover { view-transition-name: cover }`, là transition bị huỷ ngay. Dùng `view-transition-class` để style chung, gắn tên động cho đúng phần tử cần ghép cặp, hoặc `match-element` khi chỉ cần mỗi phần tử tự là chính nó.
+
+**Layout shift trong lúc transition.** Trạng thái mới được chụp ngay khi callback xong. Nếu trang chi tiết render khung trống rồi mới nạp ảnh và dữ liệu, cái bạn animate là khung trống, và layout còn nhảy tiếp sau khi transition kết thúc. Lấy dữ liệu trước khi gọi `startViewTransition`, đặt `width`/`height` hay `aspect-ratio` cho ảnh, và đừng để font đổi kích thước giữa chừng. Với MPA, `<link rel="expect" blocking="render">` có thể giữ render tới khi phần tử quan trọng xuất hiện, nhưng nó chỉ có ở Chromium và làm chậm first paint.
+
+**Animate những snapshot khổng lồ.** Mỗi phần tử có tên được chụp thành một texture trên GPU. Gắn tên cho cả một danh sách dài hay một phần tử cao bằng chục màn hình nghĩa là trình duyệt phải giữ những texture rất lớn, trên điện thoại tầm trung là thấy giật. Thêm nữa, `::view-transition-group` animate `width` và `height`, tức layout lại mỗi frame. Mình giới hạn ở vài phần tử thật sự cần ghép cặp, để phần còn lại cross-fade theo `root`, và giữ thời lượng dưới khoảng 300ms.
+
+## Đọc thêm
+
+- [MDN: Popover API](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API) và [hướng dẫn sử dụng](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using)
+- [MDN: CSS anchor positioning](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_anchor_positioning) và [spec CSS Anchor Positioning](https://drafts.csswg.org/css-anchor-position-1/)
+- [Chrome for Developers: same-document view transitions](https://developer.chrome.com/docs/web-platform/view-transitions/same-document) và [cross-document view transitions](https://developer.chrome.com/docs/web-platform/view-transitions/cross-document)
+- [React 19.3](https://react.dev/blog/2026/09/09/react-19-3) và [tài liệu `<ViewTransition>`](https://react.dev/reference/react/ViewTransition)
+- [WAI-ARIA APG: Menu Button pattern](https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/)
+- [webstatus.dev](https://webstatus.dev) để kiểm tra trạng thái Baseline mới nhất
+
+## Tóm tắt
+
+<Checklist>
+
+- Popover đưa phần tử vào top layer, có light dismiss và Esc, tự gắn `aria-expanded` với `popovertarget`: dùng nó cho menu, tooltip, panel thay cho portal và listener click-outside.
+- `popover` không phải modal: thứ cần chặn tương tác dùng `<dialog>` với `showModal()`, mở khai báo bằng `commandfor` và `command="show-modal"`.
+- Anchor positioning đã Baseline từ 01/2026: `position-area` cho 90% trường hợp, `position-try-fallbacks` thay `flip()`, implicit anchor hoặc `anchor-scope` cho danh sách.
+- Luôn reset `margin` của popover và ghi rõ `position-anchor`, vì giá trị mặc định đã đổi qua các phiên bản.
+- `popover="hint"` và `interestfor` chưa Baseline: tooltip vẫn cần vài dòng JS cho hover, focus và Esc.
+- View Transitions cùng document đã Baseline: lấy dữ liệu trước, gắn `view-transition-name` duy nhất cho đúng phần tử cần ghép cặp, style chung bằng `view-transition-class` và transition types.
+- `@view-transition` giữa các trang chưa có ở Firefox nhưng an toàn để thêm; React 19.3 có `<ViewTransition>` stable cho app React.
+- Mọi lớp nâng cấp đều có đường lùi qua `@supports` và feature detection, và mọi animation đều tôn trọng `prefers-reduced-motion`.
+
+</Checklist>

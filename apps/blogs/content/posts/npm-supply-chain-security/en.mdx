@@ -1,0 +1,502 @@
+---
+title: "npm supply chain attacks after Shai-Hulud: what changed and how to harden a JavaScript monorepo"
+excerpt: "From Nx s1ngularity and chalk/debug to Shai-Hulud, TanStack and ChainDrop: what the npm attacks actually did, what npm and GitHub changed, and a layered defense — install, CI, publish — applied directly to a Bun + Turborepo monorepo."
+---
+
+<Lead>Before September 2025, "supply chain attack" was still somebody else's problem for most JavaScript teams I know. Then, in a little over a year, npm saw packages with billions of weekly downloads hijacked through a phishing email, a self-replicating worm spreading through its victims' own tokens, and, by 2026, malicious releases carrying **valid provenance** because they were built by the projects' own pipelines. This post walks through those incidents at the level of mechanics (there is no malware here), what npm and GitHub changed, and how I harden each layer — install, CI, publish — using the Bun + Turborepo monorepo that hosts this blog as the worked example.</Lead>
+
+## A year in review: what the attacks actually did
+
+Each incident below teaches something different about the *entry point* — and the entry point decides which defenses matter.
+
+### Nx "s1ngularity" (Aug 26, 2025): the hole was in a CI workflow
+
+Nobody was phished. The Nx repo had a GitHub Actions workflow triggered by `pull_request_target` that interpolated the PR title straight into a shell command — a textbook injection. Opening a PR with a crafted title was enough to run code in the repo's privileged context and grab an npm publish token. According to the [official Nx advisory](https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c), malicious versions of `nx` and several `@nx/*` plugins were live for a few hours.
+
+The payload ran in `postinstall`, collected GitHub and npm tokens, SSH keys and `.env` files, and pushed them to a **public** repo named `s1ngularity-repository` created under the victim's own account. The novel twist: it invoked locally installed AI CLIs (Claude Code, Gemini CLI, Amazon Q) with their confirmation prompts disabled, asking them to go find sensitive files.
+
+### chalk, debug and a "please update your 2FA" email (Sep 8, 2025)
+
+The maintainer of `chalk`, `debug`, `ansi-styles`, `strip-ansi` and a dozen other foundational packages received an email from `npmjs.help` — a convincing npm lookalike — asking him to update his 2FA. The phishing page captured both the password and the TOTP code. Eighteen packages with more than two billion combined weekly downloads got malicious releases.
+
+This payload targeted **end users**: bundled into web apps, it hooked `fetch`, `XMLHttpRequest` and browser wallet APIs to swap crypto recipient addresses. The bad versions were pulled within hours, but the lesson stuck: TOTP does not stop phishing, and one maintainer account can reach almost every JavaScript project.
+
+### Shai-Hulud: the self-replicating worm (mid-September 2025)
+
+About a week later, starting with `@ctrl/tinycolor`, npm met a real **worm**. The payload ran at install time, used TruffleHog to scan for secrets, pushed its findings to a public repo named `Shai-Hulud`, and planted a workflow in victims' repos to exfiltrate CI secrets. The dangerous part: whenever it found an npm token, it injected itself into every package that maintainer could publish, bumped the version and republished. Every victim became a new launch pad. CISA published an [alert on Sep 23, 2025](https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem) citing more than 500 affected packages.
+
+### Shai-Hulud 2.0 (late November 2025)
+
+The second version moved to `preinstall`, downloaded the Bun runtime to run its payload outside Node (dodging tools that only watch `node` processes), registered the victim machine as a **self-hosted runner** to keep a backdoor, and wiped the home directory when it found no credentials. Reports at the time counted roughly 800 packages and more than 25,000 GitHub repos holding stolen data.
+
+### 2026: when valid provenance stopped meaning safe
+
+In 2026, attackers learned to walk straight through the defenses the ecosystem had just rolled out:
+
+- **Mini Shai-Hulud (from Apr 29, 2026)**, the next generation of this worm family, targeting both npm and PyPI. Per [Tenable's FAQ](https://tenable.com/blog/mini-shai-hulud-frequently-asked-questions), the TanStack wave in May (CVE-2026-45321) stole no token at all: a PR from a fork abused a `pull_request_target` workflow to poison the GitHub Actions cache; the real release workflow restored that cache, and the injected code pulled an OIDC token from runner memory. Result: 84 malicious versions across 42 `@tanstack` packages in under six minutes, **with valid SLSA provenance**.
+- **ChainDrop (Aug 4, 2026):** per [StepSecurity](https://stepsecurity.io/blog/chaindrop-npm-worm), the attacker took over the GitHub account of the `keyv`/`cacheable` maintainer, pushed commits to `main` and created tags — triggering the project's own trusted-publishing release workflow. From 11 packages, the worm spread to 444 packages and more than 2,200 versions within hours, with persistence planted via hooks in `.claude/settings.json` and `.vscode/tasks.json`.
+
+StepSecurity's one-line summary is my favorite: *provenance proves which commit was built; it cannot prove the commit was authorized*.
+
+## Anatomy of a worm-style attack
+
+Strip away the details and these incidents follow the same chain — and every link is a place where we can cut.
+
+<Figure src="/blog/npm-supply-chain-security-worm-anatomy.svg" alt="Worm-style attack chain: a phished maintainer or compromised CI, a malicious version is published, an install script runs on developer and CI machines, secrets are stolen, and the stolen token is used to self-publish into other packages" caption="The five links of a worm-style compromise. The loop back to step 2 is what turns an incident into an epidemic." />
+
+1. **Gain publish access.** Phish a maintainer (chalk/debug), exploit a CI workflow (Nx, TanStack), or reuse a token stolen from an earlier victim (every Shai-Hulud wave).
+2. **Publish a malicious version.** Usually a patch or minor — exactly what the `^` ranges most projects declare will pick up.
+3. **Run code at install time.** A `preinstall`/`postinstall` hook runs with the full privileges of whoever typed the command: it can read `~/.npmrc`, `~/.aws`, `~/.ssh` and CI environment variables.
+4. **Steal and exfiltrate.** Push to public GitHub repos, a webhook, or a planted workflow that dumps CI secrets.
+5. **Self-replicate.** Use the freshly stolen npm token to republish every package the victim can publish — back to step 2, somewhere new.
+
+From this chain I split defenses into three layers: **at install time** (steps 2–3), **in CI** (steps 1, 3, 4) and **when publishing your own packages** (steps 1 and 5). No layer is enough on its own; the goal is that every link has to get past at least two barriers.
+
+## What npm and GitHub changed
+
+The platform side reacted quickly and firmly. The milestones I could verify:
+
+| When | Change |
+| --- | --- |
+| Jul 31, 2025 | npm trusted publishing (OIDC) GA: publish from GitHub Actions or GitLab CI/CD without a stored token, provenance generated automatically. |
+| Sep 22, 2025 | GitHub publishes its [plan for a more secure npm supply chain](https://github.blog/security/supply-chain-security/our-plan-for-a-more-secure-npm-supply-chain/): 2FA for local publishing, short-lived tokens, retiring classic tokens, moving from TOTP to FIDO/WebAuthn. |
+| Nov 5, 2025 | [Classic token creation disabled](https://github.blog/changelog/2025-11-05-npm-security-update-classic-token-creation-disabled-and-granular-token-changes/); write-enabled granular tokens enforce 2FA by default, 90-day maximum lifetime. |
+| Dec 9, 2025 | [All classic tokens revoked](https://github.blog/changelog/2025-12-09-npm-classic-tokens-revoked-session-based-auth-and-cli-token-management-now-available/); `npm login` now creates a two-hour session. |
+| Feb 2026 | npm CLI 11.10.0 adds `min-release-age` — a cooldown measured in days. |
+
+What this means for teams: **a long-lived npm token in CI secrets is now an exception that needs a justification**. A publish pipeline still relying on an old `NPM_TOKEN` either broke in December 2025 or runs on a 2FA-bypass granular token — exactly the kind of token worms hunt for.
+
+<Callout>
+  **Provenance is evidence of origin, not a certificate of innocence.** It tells you which repo, commit and workflow built a package. TanStack and ChainDrop showed that if the attacker controls that very workflow, provenance is still perfectly valid. Use it to detect *anomalies* (a package that suddenly loses provenance), not as a reason to trust.
+</Callout>
+
+## Layer 1: at install time
+
+This is the cheapest and most effective layer, because it cuts steps 2 and 3 for *every* package — including the ones you don't know you depend on.
+
+### Lockfiles and frozen installs
+
+A range like `^4.1.0` means "the newest 4.x at install time". Without a lockfile, or with CI allowed to update it, a malicious patch published at 9:00 is in your 9:05 build. The lockfile pins exact versions and integrity hashes; a frozen install forces CI to honor it or fail.
+
+```bash
+# npm: install exactly what package-lock.json says, fail if it drifts from package.json
+npm ci
+
+# Bun: same idea, fail if bun.lock would need to change
+bun install --frozen-lockfile
+
+# pnpm: already frozen in CI by default, but be explicit
+pnpm install --frozen-lockfile
+```
+
+A lockfile does not stop a bad version from coming in on the next **update** — it only forces every change through a PR with a diff. That's why it must be paired with the cooldown below.
+
+### Disable install scripts by default
+
+Most packages need nothing at install time; the ones that do — typically native binaries like `esbuild` or `sharp` — can be counted on one hand. The sane policy: **block everything, allow by list**.
+
+- **npm** still runs scripts by default; set `ignore-scripts=true` in `.npmrc`. Side effects: your project's own lifecycle scripts (like a `prepare` that installs husky) are skipped too, and `npm run build` still runs `build` but skips `prebuild`/`postbuild`.
+- **Bun** does not run dependency lifecycle scripts *except* for packages in `trustedDependencies` **and** a default list maintained by Bun. Per [Bun's docs](https://bun.com/docs/pm/lifecycle), declaring `trustedDependencies` **replaces** the default list; an empty array `[]` trusts nothing. `bun pm untrusted` lists the scripts being blocked.
+- **pnpm** has not run unapproved scripts since v10. Since pnpm 11 the approval list is the `allowBuilds` map (replacing the removed `onlyBuiltDependencies`), and `strictDepBuilds` defaults to `true`, so a new package that wants to run a script fails the install instead of being silently skipped.
+
+I collect the concrete config at the end of the cooldown section, because these two settings always travel together.
+
+<Callout>
+  **Blocking scripts is not blocking code.** A malicious package can still inject code into functions you `import` at build or test time — the chalk/debug attack never used an install script. Blocking scripts cuts the fastest, most common infection path, but the other layers still matter.
+</Callout>
+
+### Cooldown: don't be the first to install a version
+
+The incidents above share one trait: malicious versions are usually detected and removed within **hours to a day or two**. Refusing any version younger than N days is enough for most attack waves to be over before they reach you — the best cost-to-benefit ratio of any measure I know. A cooldown belongs in **two places**: the package manager (so a manual `bun add` doesn't pull a brand-new version) and the dependency update bot.
+
+```text
+# .npmrc (npm). min-release-age needs npm 11.10+, unit is DAYS
+ignore-scripts=true
+min-release-age=3
+```
+
+```yaml
+# pnpm-workspace.yaml (pnpm 11+; pnpm 10 uses onlyBuiltDependencies)
+allowBuilds:
+  esbuild: true
+  sharp: true
+  core-js: false # has a script, but I don't need it
+strictDepBuilds: true # already the default; explicit so nobody quietly flips it
+# Unit is MINUTES (since pnpm 10.16; pnpm 11 defaults to 1440 = 1 day)
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  - "@my-org/*" # internal packages you publish yourself
+```
+
+In Bun, `minimumReleaseAge` lives in `bunfig.toml` and is measured in **seconds** — the full config is in the real-world section. Three tools, three units; `3` in bunfig means three seconds, not three days. The [`bun install` docs](https://bun.com/docs/pm/cli/install) also note the filter only applies to *new resolutions*; entries already in `bun.lock` stay put.
+
+On the bot side, Renovate has `minimumReleaseAge` (formerly `stabilityDays`), and Dependabot has had a `cooldown` block since mid-2025 (example later):
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "14 days"
+    }
+  ]
+}
+```
+
+`internalChecksFilter: "strict"` (the default in current Renovate) means no PR is created until the update is old enough; I still spell it out so nobody switches it to `"none"` to "stop waiting". With Dependabot, cooldown only applies to *version updates*; security updates are still raised immediately — which is what I want.
+
+<Callout>
+  **Cooldown has a price.** When a critical CVE gets patched, you either wait or bypass the cooldown for that specific package. I accept that: security updates take their own path, everything else waits three days.
+</Callout>
+
+## Layer 2: CI is your most valuable asset
+
+CI machines usually hold more credentials than any developer laptop, and three of the incidents above (Nx, TanStack, ChainDrop) went through CI rather than a personal machine. What I apply to every repo:
+
+**Pin actions to a commit SHA, not a tag.** A tag like `@v4` is a movable pointer; a full 40-character SHA is immutable. Keep the version in a comment so humans and update bots know what it is. Since August 2025, GitHub's "allowed actions" policy also lets organizations *require* SHA pinning.
+
+**Least-privilege `permissions:`.** `contents: read` at the workflow level, widened only for the job that needs it. A read-only token cannot push a malicious workflow or create a release.
+
+**`persist-credentials: false` on checkout.** By default `actions/checkout` stores the token in the workspace's git config. If the job doesn't push, don't leave the token lying around for a curious install script.
+
+**Be extremely careful with `pull_request_target`.** It runs in the base repo's *privileged* context even for PRs from forks. Nx fell because PR data was interpolated into a shell; TanStack fell because such a workflow could write to a cache that the release workflow later restored.
+
+```yaml
+# ❌ PR data goes straight into a shell, in a privileged context
+on: pull_request_target
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Title: ${{ github.event.pull_request.title }}"
+
+# ✅ Use pull_request (forks get no secrets) and pass data through env
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: echo "Title: $PR_TITLE"
+```
+
+The `${{ }}` expression is substituted *before* the shell runs, so a title containing `"` and `;` becomes a command. Through an environment variable, it is just data.
+
+**No long-lived tokens.** Deploy to the cloud with OIDC, publish to npm with trusted publishing (next section). Whatever secrets remain should be scoped to environments with required reviewers.
+
+**Turn on secret scanning and push protection**, so you can't accidentally commit an `.npmrc` with a token and you hear about it when a token leaks on GitHub.
+
+Two tools worth adding: [zizmor](https://docs.zizmor.sh/) — a static analyzer for GitHub Actions that catches template injection, unpinned actions and over-broad permissions (`uvx zizmor .github/workflows/`) — and egress monitoring for runners (such as StepSecurity's Harden-Runner) to spot CI jobs calling unexpected domains.
+
+## Layer 3: when you are the publisher
+
+If your team publishes packages — a design system, an SDK, an internal CLI — you are link number 5 in somebody else's chain. The goal: **no publish token lives long enough to be stolen**.
+
+With [trusted publishing](https://docs.npmjs.com/trusted-publishers), you declare on npmjs.com that a package may only be published from repo X, workflow Y (optionally environment Z). When the workflow runs, GitHub issues a short-lived OIDC token; npm exchanges it for a single-use publish credential. Nothing to store in secrets, nothing for a worm to lift from `~/.npmrc`, and provenance is generated automatically.
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Environment with required reviewers: a human has to approve
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # required for OIDC
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing requires npm CLI 11.5.1 or later
+      - run: npm install -g npm@^11.5.1
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm publish --access public
+```
+
+After the first successful trusted publish, go to the package settings on npmjs.com and choose to require 2FA **and disallow tokens**. From then on, an old granular token that leaks can't publish this package.
+
+The ChainDrop lesson: trusted publishing moves the risk from "leaked token" to "hijacked workflow". An attacker holding a maintainer's GitHub account only has to push a tag and let the real pipeline do the rest. So three companions are mandatory:
+
+- **An environment with required reviewers** for the publish job, and that same environment named in the trusted publisher config on npm. A tag pushed at 3 a.m. then waits for a human.
+- **Rulesets protecting `v*` tags and `main`**: no direct pushes, reviewed PRs only.
+- **Phishing-resistant 2FA (passkeys, security keys) on every maintainer's GitHub account** — because the GitHub account is now the publish key.
+
+On the consuming side, `npm audit signatures` verifies registry signatures and provenance attestations for installed packages. What's worth watching is **a package that used to have provenance and suddenly doesn't** — a sign the new release was published with a stolen token rather than from CI. pnpm's `trustPolicy: no-downgrade` (since 10.21) rejects exactly that automatically.
+
+## Know what you run: SBOMs and scanners
+
+When a new incident breaks, the first question is always: "Do we use that package, which version, in which app?". Half a day to answer is half a day in which secrets may be in use.
+
+An **SBOM** (Software Bill of Materials) is a machine-readable inventory of every component in a product. `npm sbom` emits a CycloneDX or SPDX SBOM from the dependency tree; `@cyclonedx/cyclonedx-npm` is an alternative. Store the SBOM as an artifact of every build so that during an incident you can see in seconds what production contains.
+
+```bash
+# CycloneDX SBOM for production dependencies
+npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+
+# Known vulnerabilities and malicious packages (OSV-Scanner v2), reads bun.lock too
+osv-scanner scan source -r .
+
+# Registry signatures and provenance (npm-installed trees only)
+npm audit signatures
+```
+
+Scanners catch very different things, and misunderstanding that is why teams that "already have a scanner" still get hit:
+
+| Tool | Catches | Misses | Runs when |
+| --- | --- | --- | --- |
+| `npm audit`, Dependabot alerts | Vulnerabilities with an advisory, including malware advisories | Malicious packages nobody has reported yet | After an advisory exists |
+| OSV-Scanner | Vulnerabilities and malicious-package records (`MAL-...`, from OpenSSF's malicious-packages data) | Same as above | In CI, against the lockfile |
+| Socket (GitHub app, CLI, Bun scanner) | Suspicious behavior: new install scripts, network access, env var reads, obfuscated code | Malicious code with no behavioral signal | On dependency PRs, or at install time |
+| `npm audit signatures`, pnpm `trustPolicy` | Packages that lost signatures or provenance | Malicious releases with valid provenance | After install / at resolve time |
+
+The thing to remember: **every advisory-based tool lags the attacker by hours**. In the first hours of an incident, only behavioral analysis and cooldowns help. Bun 1.3 has a Security Scanner API that plugs a scanner (Socket's, for example) into `bun install` itself — the config is in the real-world section.
+
+In a Bun repo, check that your SBOM and scanning tools actually read `bun.lock`. A "0 dependencies, 0 vulnerabilities" report usually doesn't mean you're safe — it means the tool doesn't understand your lockfile.
+
+## Putting the layers together: a comparison
+
+<Figure src="/blog/npm-supply-chain-security-defense-layers.svg" alt="Three defense layers: install time with lockfiles, blocked install scripts and cooldowns; CI with SHA-pinned actions, least privilege and OIDC instead of tokens; publish with trusted publishing, reviewed environments and provenance; underneath, SBOMs, scanners and an incident playbook" caption="Defense in layers: each layer cuts one segment of the attack chain, and the detection layer at the bottom assumes the layers above will sometimes fail." />
+
+| Defense | What it stops | Cost / friction |
+| --- | --- | --- |
+| Lockfile + frozen install | Bad versions slipping into a build through `^` ranges with no visible diff | Close to zero |
+| Blocked install scripts, allow-list | Credential theft at install time (Nx, the Shai-Hulud family, ChainDrop) | Low; a few native packages need approval |
+| 3–7 day cooldown | Most malicious releases, which are pulled within hours to a day | Medium; security fixes need their own path |
+| SHA-pinned actions | A compromised action whose tag gets moved | Low with a bot updating SHAs |
+| Least-privilege `permissions`, `persist-credentials: false` | CI tokens used to push workflows or create releases | Low |
+| No `pull_request_target`, isolated caches | Injection from fork PRs, cache poisoning (Nx, TanStack) | Medium; workflows needing write access must be redesigned |
+| Trusted publishing + tokens disallowed | Stolen publish tokens used to self-replicate | Low after initial setup |
+| Reviewer-gated publish environment | A hijacked maintainer account cutting its own release tag (ChainDrop) | Medium; every release needs an approver |
+| Passkey / security-key 2FA | Phishing for passwords and TOTP codes (chalk/debug) | Low |
+| Behavioral scanner | Malicious packages with no advisory yet | Medium; false positives, may cost money |
+| SBOM + playbook | Stops nothing — shortens time to resolution | Low if done before, very high during an incident |
+
+## A real-world example: hardening this blog's monorepo
+
+The blog you are reading lives in a Bun 1.3 + Turborepo monorepo: three Next.js apps in `apps/`, a few shared packages in `packages/`, CI on GitHub Actions, deploys on Vercel. I opened each file and graded it against the three layers above.
+
+### What's already fine
+
+- **The Bun version is pinned** in both `packageManager: "bun@1.3.3"` and `bun-version: 1.3.3` in CI.
+- **Frozen installs everywhere**: CI runs `bun install --frozen-lockfile`, and so does the `installCommand` in `apps/blogs/vercel.json`.
+- **Bun doesn't run dependency install scripts by default**, so most Shai-Hulud-style payloads won't fire on install.
+
+### What needs fixing
+
+**1. A misleading field in `package.json`.** All three apps contain this:
+
+```json
+{
+  "ignoreScripts": ["sharp", "unrs-resolver"],
+  "trustedDependencies": ["sharp", "unrs-resolver"]
+}
+```
+
+At a glance, you'd think `sharp`'s scripts are blocked. The opposite is true: `ignoreScripts` is not a field Bun reads from `package.json` — the documented switches are the `--ignore-scripts` flag, `ignoreScripts` under `[install]` in `bunfig.toml`, or `ignore-scripts` in `.npmrc`. Meanwhile `trustedDependencies` *allows* exactly those two packages to run scripts; since an explicit list replaces Bun's default list, this is the entire effective allow-list (`bun.lock` records exactly this array at the top level). A security setting that reads backwards is a dangerous one: the next person who adds a package to `ignoreScripts` "to block it" blocks nothing.
+
+The fix: move the allow-list to the root `package.json`, where reviewers look first, and delete the dead field:
+
+```diff
+--- a/package.json
++++ b/package.json
+@@
+   "packageManager": "bun@1.3.3",
+   "workspaces": [
+     "apps/*",
+     "packages/*"
+-  ]
++  ],
++  "trustedDependencies": [
++    "sharp",
++    "unrs-resolver"
++  ]
+ }
+--- a/apps/blogs/package.json
++++ b/apps/blogs/package.json
+@@
+     "typescript": "5.9.3"
+-  },
+-  "ignoreScripts": [
+-    "sharp",
+-    "unrs-resolver"
+-  ],
+-  "trustedDependencies": [
+-    "sharp",
+-    "unrs-resolver"
+-  ]
++  }
+ }
+```
+
+Do the same for `apps/dicodeweb` and `apps/me`, then run `bun pm untrusted` to see which packages still have blocked scripts — the input for a deliberate decision about which packages truly need them.
+
+**2. No cooldown.** The repo has no `bunfig.toml`. Add one at the root:
+
+```text
+# bunfig.toml
+[install]
+# Don't resolve any version younger than 3 days (unit: seconds)
+minimumReleaseAge = 259200
+# List packages that need an urgent fix here, with the reason in the PR
+minimumReleaseAgeExcludes = []
+
+# Optional: a scanner that runs inside bun install (install the scanner package as a devDependency)
+# [install.security]
+# scanner = "@socketsecurity/bun-security-scanner"
+```
+
+**3. CI uses tags and default permissions.** `ci.yml` calls `actions/checkout@v4` and `oven-sh/setup-bun@v2`, declares no `permissions`, and lets checkout keep its token in the workspace — while the job runs `bun install` and the build of all three apps. The fix:
+
+```diff
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@
+ concurrency:
+   group: ci-${{ github.workflow }}-${{ github.ref }}
+   cancel-in-progress: true
+
++permissions:
++  contents: read
++
+ jobs:
+   quality:
+     name: Lint, Build
+     runs-on: ubuntu-latest
+     timeout-minutes: 30
+     steps:
+       - name: Checkout
+-        uses: actions/checkout@v4
++        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
++        with:
++          persist-credentials: false
+
+       - name: Setup Bun
+-        uses: oven-sh/setup-bun@v2
++        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         with:
+           bun-version: 1.3.3
+```
+
+The diff also bumps `checkout` to v6; if you'd rather separate behavior changes from security changes, pin the SHA of the latest v4 first. Get SHAs from the action's own repo (`git ls-remote --tags https://github.com/actions/checkout`), not by copying them from a blog — this one included.
+
+**4. No dependency update bot.** Without one, dependencies either rot or get a hurried `bun update` — no cooldown, no review. Add Dependabot for both Bun and GitHub Actions, so it also keeps the freshly pinned SHAs current:
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+```
+
+No auto-merge: one grouped PR a week is few enough that I actually read the `bun.lock` diff, especially lines adding *new* packages I never declared.
+
+**5. Outside the repo.** Turn on secret scanning and push protection; add a ruleset for `main`; use a passkey on the GitHub account; and on Vercel, check which environment variables the Preview environment receives — a PR build runs dependency code with exactly those variables.
+
+The result after about an hour: new dependency versions wait three days, only two packages may run scripts and that list sits where everyone can see it, and CI runs with a read-only token and immutable actions. None of it slows down day-to-day writing.
+
+## When a dependency is compromised: an incident playbook
+
+Write the playbook while things are calm; when "package X was hijacked" hits your feed, you don't want to read docs and make decisions at the same time. The sequence I use:
+
+**Step 1 — Establish exposure.** Is the bad version in any lockfile, and where was it installed (developer machines, CI jobs, preview builds)?
+
+```bash
+# 1. Is the package in the lockfile, at which version? Did the lockfile ever contain it?
+grep -n '"keyv@' bun.lock
+git log -S'keyv@6.0.0' --oneline -- bun.lock
+
+# Recent unexpected commits touching workflows or editor/AI agent config
+git log --all --since="14 days ago" --name-only --format='%h %an %s' -- .github/workflows .claude .vscode
+
+# 4. Traces on GitHub: new repos, unknown runners, unknown SSH keys, live npm tokens
+gh repo list --limit 300 --json name,visibility,createdAt \
+  --jq '.[] | select(.createdAt > "2026-08-01") | "\(.createdAt) \(.visibility) \(.name)"'
+gh api repos/OWNER/REPO/actions/runners --jq '.runners[] | "\(.name) \(.status)"'
+gh api user/keys --jq '.[] | "\(.id) \(.title) \(.created_at)"'
+npm token list
+```
+
+A clean lockfile today is not enough: a developer may have run `bun add` while the bad version was on the registry and then reverted. Search CI logs for the window in which that version was live, too.
+
+**Step 2 — Check for persistence *before* revoking tokens.** Recent variants install a process that watches the stolen token and turns destructive when it is revoked, or plant hooks in `.claude/settings.json` and `.vscode/tasks.json` that re-run on project open. Look for unknown services or launch agents, the files above and unfamiliar self-hosted runners; for many machines, reinstalling from scratch is the safest option.
+
+**Step 3 — Rotate every secret that may have been read.** Not just npm tokens: GitHub tokens, SSH keys, cloud keys, Vercel tokens, values in `.env` and any secrets the affected CI jobs could reach. Treat any machine or runner that installed the bad version as fully compromised.
+
+**Step 4 — Look for traces on GitHub** with the `gh` commands above, plus your organization's audit log: repos switched from private to public, new deploy keys, new webhooks.
+
+**Step 5 — Clean up and prevent reinfection.** Pin back to a known-good version, delete `node_modules` and the package manager cache, reinstall, and write a short postmortem: which layer stopped it, and which layer should have but didn't.
+
+## Common mistakes
+
+**`npm install` in CI.** `npm install` is allowed to rewrite `package-lock.json` to satisfy the ranges in `package.json`, so today's build can use different dependencies than yesterday's with nobody reviewing it. Always use `npm ci` or `--frozen-lockfile`.
+
+**`^` ranges without a committed lockfile.** Common in libraries ("libraries don't commit lockfiles") and fresh repos. Every install is a lottery draw for the newest version — exactly what an attacker needs.
+
+**Trusting download counts.** `chalk` and `debug` are among the most downloaded packages in the ecosystem. Downloads measure popularity, not safety — and the more popular a package, the more valuable a target it is. Look instead at whether you really need it, whether it publishes from CI with provenance, and whether a new version adds install scripts or network calls.
+
+**Tokens in `.npmrc` that get committed or cached.** An `_authToken=...` in the repo, in a directory saved by `actions/cache`, or baked into a Docker image. Read tokens from environment variables, add secret-bearing `.npmrc` files to `.gitignore` and `.dockerignore` — and ideally need no token at all thanks to trusted publishing.
+
+**Auto-merging dependency PRs without a cooldown.** The bot opens a PR five minutes after a release, CI is green (malicious code doesn't break tests), auto-merge, deploy — before the community has noticed anything. If you want auto-merge, restrict it to patch/minor, *after* a cooldown, and never for PRs that add new dependencies.
+
+**Thinking only CI matters.** Developer laptops hold write-scoped GitHub tokens, cloud sessions and SSH keys. Script blocking and cooldowns must live in committed config files (`bunfig.toml`, `pnpm-workspace.yaml`, `.npmrc`) so they apply locally too, not just in CI commands.
+
+## Further reading
+
+- [npm Docs: Trusted publishing](https://docs.npmjs.com/trusted-publishers)
+- [GitHub: Our plan for a more secure npm supply chain](https://github.blog/security/supply-chain-security/our-plan-for-a-more-secure-npm-supply-chain/)
+- [CISA: Widespread Supply Chain Compromise Impacting npm Ecosystem](https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem)
+- [Bun Docs: Lifecycle scripts](https://bun.com/docs/pm/lifecycle) and [`bun install`](https://bun.com/docs/pm/cli/install)
+- [GitHub Docs: Security hardening for GitHub Actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
+- [StepSecurity: ChainDrop npm worm](https://stepsecurity.io/blog/chaindrop-npm-worm)
+
+## Summary
+
+<Checklist>
+
+- The 2025–2026 incidents share one chain: gain publish access, release a bad version, run at install, steal secrets, self-replicate. Defense means cutting every link, each one at least twice.
+- Commit lockfiles and use frozen installs everywhere; never `npm install` in CI.
+- Block install scripts by default and allow a short, justified list: `ignore-scripts` (npm), `trustedDependencies` in the root `package.json` (Bun), `allowBuilds` (pnpm 11+).
+- Set a cooldown of at least a few days in both the package manager and the update bot; mind the units: seconds (Bun), minutes (pnpm), days (npm, Renovate, Dependabot).
+- CI: pin actions to SHAs, `permissions: contents: read`, `persist-credentials: false`, avoid `pull_request_target`, no long-lived tokens.
+- Publish with trusted publishing, disallow tokens on npm, and protect it with a reviewer-gated environment and phishing-resistant 2FA on GitHub accounts.
+- Provenance is evidence of origin, not of innocence; watch for packages that lose it.
+- Have SBOMs, a behavioral scanner and an incident playbook before you need them; during an incident, check for persistence before revoking tokens.
+
+</Checklist>

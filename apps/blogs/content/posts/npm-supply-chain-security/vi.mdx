@@ -1,0 +1,502 @@
+---
+title: "Tấn công chuỗi cung ứng npm sau Shai-Hulud: điều gì đã thay đổi và cách gia cố một monorepo JavaScript"
+excerpt: "Từ Nx s1ngularity, chalk/debug đến Shai-Hulud, TanStack và ChainDrop: các vụ tấn công npm thực sự đã làm gì, npm và GitHub đã thay đổi những gì, và một hệ phòng thủ nhiều lớp — install, CI, publish — áp dụng thẳng vào một monorepo Bun + Turborepo."
+---
+
+<Lead>Trước tháng 9/2025, "supply chain attack" với nhiều team JavaScript mình biết vẫn là chuyện của người khác. Rồi trong hơn một năm, npm chứng kiến package hàng tỷ lượt tải bị chiếm qua email lừa đảo, một con sâu tự nhân bản bằng token của chính nạn nhân, và đến 2026 là những bản phát hành độc hại mang **provenance hợp lệ** vì được build bằng chính pipeline của dự án. Bài này đi qua các vụ đó ở mức cơ chế (không có mã độc nào ở đây), những gì npm và GitHub đã thay đổi, và cách mình gia cố từng lớp — lúc cài đặt, trong CI, lúc publish — với ví dụ là chính monorepo Bun + Turborepo chứa blog này.</Lead>
+
+## Hơn một năm nhìn lại: các vụ tấn công thực sự đã làm gì
+
+Mỗi vụ dưới đây dạy một bài học khác nhau về *điểm vào* — và điểm vào quyết định lớp phòng thủ nào có tác dụng.
+
+### Nx "s1ngularity" (26/8/2025): lỗ hổng nằm trong workflow CI
+
+Kẻ tấn công không phishing ai cả. Repo Nx có một GitHub Actions workflow chạy với trigger `pull_request_target` và nội suy tiêu đề PR thẳng vào lệnh shell — một lỗi injection kinh điển. Mở một PR với tiêu đề được dựng sẵn là đủ để chạy code trong ngữ cảnh có quyền của repo và lấy được token publish npm. Theo [advisory chính thức của Nx](https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c), các bản `nx` và một số plugin `@nx/*` độc hại tồn tại trên registry khoảng vài giờ.
+
+Payload chạy qua `postinstall`, gom token GitHub, npm, SSH key, file `.env` rồi đẩy lên một repo **public** tên `s1ngularity-repository` tạo bằng chính tài khoản của nạn nhân. Chi tiết mới: nó gọi các CLI AI đang cài trên máy (Claude Code, Gemini CLI, Amazon Q) với cờ bỏ qua xác nhận để "nhờ" chúng đi tìm file nhạy cảm.
+
+### chalk, debug và một email "cập nhật 2FA" (8/9/2025)
+
+Maintainer của `chalk`, `debug`, `ansi-styles`, `strip-ansi` và hơn chục package nền tảng khác nhận email từ tên miền `npmjs.help` — trông như npm thật — yêu cầu cập nhật 2FA. Trang lừa đảo lấy được cả mật khẩu lẫn mã TOTP. Mười tám package với tổng hơn hai tỷ lượt tải mỗi tuần bị phát hành bản độc hại.
+
+Lần này payload nhắm vào **người dùng cuối**: nó được bundle vào ứng dụng web, móc vào `fetch`, `XMLHttpRequest` và API ví crypto trong trình duyệt để tráo địa chỉ nhận tiền. Các bản độc bị gỡ trong vòng vài giờ, nhưng bài học còn đó: TOTP không chống được phishing, và một tài khoản maintainer là đủ để chạm tới gần như mọi dự án JavaScript.
+
+### Shai-Hulud: con sâu tự nhân bản (giữa tháng 9/2025)
+
+Khoảng một tuần sau, bắt đầu từ `@ctrl/tinycolor`, npm gặp một **worm** thực thụ. Payload chạy khi cài, dùng TruffleHog quét secret, đẩy kết quả lên repo public tên `Shai-Hulud`, và cài thêm workflow vào repo của nạn nhân để tuồn secret của CI. Phần nguy hiểm nhất: tìm thấy token npm là nó chèn chính mình vào mọi package maintainer đó có quyền publish, tăng phiên bản và publish lại. Mỗi nạn nhân trở thành bệ phóng mới. CISA ra [cảnh báo ngày 23/9/2025](https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem) với con số hơn 500 package bị ảnh hưởng.
+
+### Shai-Hulud 2.0 (cuối tháng 11/2025)
+
+Phiên bản thứ hai chuyển sang `preinstall`, tự tải runtime Bun để chạy payload ngoài Node (né công cụ chỉ theo dõi tiến trình `node`), đăng ký máy nạn nhân làm **self-hosted runner** để giữ cửa hậu, và xoá thư mục home khi không tìm thấy credential nào. Các báo cáo khi đó ghi nhận khoảng 800 package và hơn 25.000 repo GitHub chứa dữ liệu bị đánh cắp.
+
+### 2026: khi provenance hợp lệ không còn có nghĩa là an toàn
+
+Năm 2026, kẻ tấn công học cách đi xuyên qua chính những biện pháp ecosystem vừa triển khai:
+
+- **Mini Shai-Hulud (từ 29/4/2026)**, thế hệ tiếp theo của họ worm này, nhắm cả npm lẫn PyPI. Theo [FAQ của Tenable](https://tenable.com/blog/mini-shai-hulud-frequently-asked-questions), đợt TanStack tháng 5 (CVE-2026-45321) không đánh cắp token nào: PR từ fork lợi dụng workflow `pull_request_target` để đầu độc cache của GitHub Actions; release workflow thật khôi phục cache đó, và code độc lấy OIDC token từ bộ nhớ runner. Kết quả: 84 phiên bản độc trên 42 package `@tanstack` trong chưa đầy sáu phút, **kèm provenance SLSA hợp lệ**.
+- **ChainDrop (4/8/2026):** theo [StepSecurity](https://stepsecurity.io/blog/chaindrop-npm-worm), kẻ tấn công chiếm tài khoản GitHub của maintainer hệ `keyv`/`cacheable`, push commit lên `main` rồi tạo tag — kích hoạt release workflow dùng trusted publishing của chính dự án. Từ 11 package, worm lan ra 444 package và hơn 2.200 phiên bản trong vài giờ, kèm cơ chế bám trụ qua hook trong `.claude/settings.json` và `.vscode/tasks.json`.
+
+Câu tổng kết của StepSecurity mà mình rất thích: *provenance chứng minh commit nào đã được build, không chứng minh commit đó được phép tồn tại*.
+
+## Giải phẫu một vụ tấn công kiểu sâu
+
+Gạt chi tiết sang một bên, các vụ trên đi qua cùng một chuỗi bước, và mỗi mắt xích là một chỗ ta có thể cắt.
+
+<Figure src="/blog/npm-supply-chain-security-worm-anatomy.svg" alt="Chuỗi tấn công kiểu sâu: maintainer bị phishing hoặc CI bị chiếm, phiên bản độc được publish, install script chạy trên máy dev và CI, đánh cắp secret, rồi dùng token lấy được để tự publish sang package khác" caption="Năm mắt xích của một vụ tấn công kiểu sâu. Vòng lặp quay về bước 2 là thứ biến một sự cố thành một dịch bệnh." />
+
+1. **Chiếm quyền publish.** Phishing maintainer (chalk/debug), lỗi workflow CI (Nx, TanStack), hoặc token bị đánh cắp từ một nạn nhân trước đó (mọi vụ Shai-Hulud).
+2. **Phát hành phiên bản độc.** Thường là bản patch hoặc minor — vừa khớp với range `^` mà phần lớn project đang khai báo.
+3. **Code chạy lúc cài đặt.** Hook `preinstall`/`postinstall` chạy với toàn quyền của user đang gõ lệnh: đọc được `~/.npmrc`, `~/.aws`, `~/.ssh`, biến môi trường của CI.
+4. **Đánh cắp và tuồn dữ liệu.** Đẩy lên repo GitHub public, webhook, hoặc lén cài workflow để lấy secret của CI.
+5. **Tự nhân bản.** Dùng token npm vừa lấy để publish lại mọi package nạn nhân có quyền — quay về bước 2 ở một chỗ mới.
+
+Từ chuỗi này, mình chia phòng thủ thành ba lớp: **lúc cài đặt** (bước 2–3), **trong CI** (bước 1, 3, 4) và **lúc publish package của chính bạn** (bước 1 và 5). Không lớp nào đủ một mình; mục tiêu là mỗi mắt xích phải vượt qua ít nhất hai rào chắn.
+
+## npm và GitHub đã thay đổi gì
+
+Phía nền tảng đã phản ứng khá nhanh và mạnh tay. Các mốc mình kiểm tra được:
+
+| Thời điểm | Thay đổi |
+| --- | --- |
+| 31/7/2025 | Trusted publishing (OIDC) cho npm GA: publish từ GitHub Actions hoặc GitLab CI/CD không cần token trong secrets, provenance tự động. |
+| 22/9/2025 | GitHub công bố [kế hoạch gia cố npm](https://github.blog/security/supply-chain-security/our-plan-for-a-more-secure-npm-supply-chain/): 2FA khi publish từ local, token ngắn hạn, bỏ classic token, chuyển từ TOTP sang FIDO/WebAuthn. |
+| 5/11/2025 | [Ngừng tạo classic token mới](https://github.blog/changelog/2025-11-05-npm-security-update-classic-token-creation-disabled-and-granular-token-changes/); granular token quyền ghi mặc định bắt buộc 2FA, tối đa 90 ngày. |
+| 9/12/2025 | [Thu hồi toàn bộ classic token](https://github.blog/changelog/2025-12-09-npm-classic-tokens-revoked-session-based-auth-and-cli-token-management-now-available/); `npm login` tạo session sống hai giờ. |
+| 2/2026 | npm CLI 11.10.0 thêm `min-release-age` — cooldown tính bằng ngày. |
+
+Hệ quả cho team: **token npm dài hạn trong secrets của CI giờ là ngoại lệ phải có lý do**. Pipeline publish còn dựa vào một `NPM_TOKEN` cũ thì hoặc đã gãy từ tháng 12/2025, hoặc đang chạy bằng granular token bypass 2FA — đúng loại token worm săn lùng.
+
+<Callout>
+  **Provenance là bằng chứng về nguồn gốc, không phải chứng nhận vô hại.** Nó cho biết package được build từ repo, commit, workflow nào. TanStack và ChainDrop cho thấy nếu kẻ tấn công điều khiển được chính workflow đó, provenance vẫn hợp lệ hoàn toàn. Hãy dùng nó để phát hiện *bất thường* (package bỗng mất provenance), không phải để tin tưởng.
+</Callout>
+
+## Lớp 1: lúc cài đặt
+
+Đây là lớp rẻ và hiệu quả nhất, vì nó cắt bước 2 và 3 cho *mọi* package — kể cả những package bạn không biết mình đang dùng.
+
+### Lockfile và cài đặt "đóng băng"
+
+Range `^4.1.0` nghĩa là "bản 4.x mới nhất lúc cài". Không có lockfile, hoặc CI được phép cập nhật nó, thì bản patch độc phát hành lúc 9 giờ sáng sẽ nằm trong build lúc 9 giờ 5. Lockfile ghi chính xác phiên bản và hash integrity; cài đặt "đóng băng" bắt CI tuân thủ đúng file đó hoặc thất bại.
+
+```bash
+# npm: cài đúng theo package-lock.json, fail nếu lệch với package.json
+npm ci
+
+# Bun: tương tự, fail nếu bun.lock cần thay đổi
+bun install --frozen-lockfile
+
+# pnpm: mặc định đã frozen khi chạy trong CI, ghi rõ cho chắc
+pnpm install --frozen-lockfile
+```
+
+Lockfile không chặn bản độc đi vào ở lần **cập nhật** tiếp theo — nó chỉ buộc mọi thay đổi đi qua một PR có diff. Vì vậy nó phải đi cùng cooldown ở phần dưới.
+
+### Tắt install script theo mặc định
+
+Phần lớn package không cần chạy gì lúc cài; những package cần — thường là native binary như `esbuild`, `sharp` — đếm được trên đầu ngón tay. Chính sách hợp lý: **chặn hết, cho phép theo danh sách**.
+
+- **npm** vẫn chạy script mặc định; bật `ignore-scripts=true` trong `.npmrc`. Tác dụng phụ: script vòng đời của chính project (như `prepare` cài husky) cũng bị bỏ qua, và `npm run build` vẫn chạy `build` nhưng bỏ qua `prebuild`/`postbuild`.
+- **Bun** không chạy lifecycle script của dependency, *trừ* package trong `trustedDependencies` **và** một danh sách mặc định do Bun duy trì. Theo [tài liệu của Bun](https://bun.com/docs/pm/lifecycle), khai báo `trustedDependencies` **thay thế** danh sách mặc định; mảng rỗng `[]` là không tin package nào. `bun pm untrusted` liệt kê script đang bị chặn.
+- **pnpm** từ v10 không chạy script chưa được duyệt. Từ pnpm 11, danh sách duyệt là map `allowBuilds` (thay cho `onlyBuiltDependencies` đã bị gỡ), và `strictDepBuilds` mặc định `true` nên package mới muốn chạy script làm install thất bại thay vì lặng lẽ bị bỏ qua.
+
+Cấu hình cụ thể mình gom ở cuối phần cooldown, vì hai thiết lập này luôn đi cùng nhau.
+
+<Callout>
+  **Tắt script không phải là tắt code.** Package độc vẫn có thể chèn code vào hàm được `import` lúc build hay chạy test — vụ chalk/debug không hề dùng install script. Chặn script cắt đường lây nhanh và phổ biến nhất, nhưng các lớp khác vẫn cần thiết.
+</Callout>
+
+### Cooldown: đừng là người đầu tiên cài một phiên bản
+
+Các vụ ở trên có một điểm chung: phiên bản độc thường bị phát hiện và gỡ trong vòng **vài giờ đến một hai ngày**. Từ chối mọi phiên bản mới hơn N ngày là đủ để phần lớn các đợt tấn công kết thúc trước khi chạm tới bạn — biện pháp có tỷ lệ chi phí trên hiệu quả tốt nhất mà mình biết. Cooldown cần đặt ở **hai nơi**: trong package manager (để `bun add` thủ công không kéo bản quá mới) và trong bot cập nhật dependency.
+
+```text
+# .npmrc (npm). min-release-age cần npm 11.10+, đơn vị là NGÀY
+ignore-scripts=true
+min-release-age=3
+```
+
+```yaml
+# pnpm-workspace.yaml (pnpm 11+; pnpm 10 dùng onlyBuiltDependencies)
+allowBuilds:
+  esbuild: true
+  sharp: true
+  core-js: false # có script nhưng mình không cần
+strictDepBuilds: true # mặc định đã là true; ghi rõ để không ai lặng lẽ tắt
+# Đơn vị là PHÚT (từ pnpm 10.16; pnpm 11 mặc định 1440 = 1 ngày)
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  - "@my-org/*" # package nội bộ do chính bạn publish
+```
+
+Với Bun, `minimumReleaseAge` nằm trong `bunfig.toml` và tính bằng **giây** — cấu hình đầy đủ ở phần ví dụ thực tế. Ba công cụ, ba đơn vị; đặt `3` trong bunfig là ba giây, không phải ba ngày. [Tài liệu `bun install`](https://bun.com/docs/pm/cli/install) cũng ghi rõ bộ lọc chỉ áp dụng cho lần *resolve mới*; entry đã có trong `bun.lock` giữ nguyên.
+
+Phía bot, Renovate có `minimumReleaseAge` (tên cũ là `stabilityDays`), còn Dependabot có khối `cooldown` từ giữa năm 2025 (ví dụ ở phần sau):
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "14 days"
+    }
+  ]
+}
+```
+
+`internalChecksFilter: "strict"` (mặc định ở các bản Renovate hiện tại) nghĩa là chưa tạo PR cho đến khi bản cập nhật đủ tuổi; mình vẫn ghi tường minh để không ai đổi sang `"none"` cho "đỡ phải chờ". Với Dependabot, cooldown chỉ áp dụng cho *version updates*; security updates vẫn được tạo ngay — đúng như mình muốn.
+
+<Callout>
+  **Cooldown có giá.** Khi một CVE nghiêm trọng được vá, bạn phải chờ hoặc tự bỏ qua cooldown cho đúng package đó. Mình chấp nhận: security update đi đường riêng, mọi thứ còn lại chờ ba ngày.
+</Callout>
+
+## Lớp 2: CI là tài sản đáng giá nhất
+
+Máy CI thường giữ nhiều credential hơn máy của bất kỳ developer nào, và ba vụ ở trên (Nx, TanStack, ChainDrop) đi qua CI chứ không qua máy cá nhân. Những gì mình áp dụng cho mọi repo:
+
+**Pin action theo commit SHA, không theo tag.** Tag như `@v4` là con trỏ có thể bị di chuyển; SHA đầy đủ 40 ký tự thì bất biến. Ghi phiên bản trong comment để người đọc và bot cập nhật biết đang ở bản nào. Từ tháng 8/2025, policy "allowed actions" của GitHub còn cho phép tổ chức *bắt buộc* pin SHA.
+
+**`permissions:` tối thiểu.** `contents: read` ở cấp workflow, chỉ mở thêm cho đúng job cần. Token chỉ đọc không thể push workflow độc hay tạo release.
+
+**`persist-credentials: false` cho checkout.** Mặc định `actions/checkout` lưu token vào cấu hình git trong workspace. Job không cần push thì đừng để token nằm đó cho một install script tò mò.
+
+**Cẩn thận tối đa với `pull_request_target`.** Trigger này chạy trong ngữ cảnh *có quyền* của repo gốc kể cả khi PR đến từ fork. Nx bị chiếm vì nội suy dữ liệu PR vào shell; TanStack bị chiếm vì workflow loại này ghi được vào cache mà release workflow sau đó khôi phục.
+
+```yaml
+# ❌ Dữ liệu từ PR đi thẳng vào shell, trong ngữ cảnh có quyền
+on: pull_request_target
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Tiêu đề: ${{ github.event.pull_request.title }}"
+
+# ✅ Dùng pull_request (không có secret với fork), và truyền qua env
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: echo "Tiêu đề: $PR_TITLE"
+```
+
+Biểu thức `${{ }}` được thay vào *trước khi* shell chạy, nên một tiêu đề chứa `"` và `;` trở thành lệnh. Qua biến môi trường, nó chỉ là dữ liệu.
+
+**Không token dài hạn.** Deploy cloud bằng OIDC, publish npm bằng trusted publishing (phần sau). Secret còn lại thì giới hạn theo environment có reviewer bắt buộc.
+
+**Bật secret scanning và push protection**, để chặn chính bạn vô tình commit `.npmrc` có token và được báo khi token đã lộ trên GitHub.
+
+Hai công cụ đáng thêm: [zizmor](https://docs.zizmor.sh/) — static analyzer cho GitHub Actions, bắt template injection, action chưa pin, quyền quá rộng (`uvx zizmor .github/workflows/`) — và giám sát egress cho runner (như Harden-Runner của StepSecurity) để phát hiện job CI gọi tới domain lạ.
+
+## Lớp 3: khi bạn là người publish
+
+Nếu team bạn publish package — design system, SDK, CLI nội bộ — thì bạn là mắt xích số 5 của người khác. Mục tiêu: **không có token publish nào tồn tại đủ lâu để bị đánh cắp**.
+
+Với [trusted publishing](https://docs.npmjs.com/trusted-publishers), bạn khai báo trên npmjs.com rằng package chỉ được publish từ repo X, workflow Y (tuỳ chọn environment Z). Khi workflow chạy, GitHub cấp một OIDC token ngắn hạn; npm đổi nó lấy quyền publish dùng một lần. Không có gì để lưu trong secrets, không có gì để worm lấy từ `~/.npmrc`, và provenance được tạo tự động.
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Environment có required reviewers: một người phải bấm duyệt
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # bắt buộc cho OIDC
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing cần npm CLI 11.5.1 trở lên
+      - run: npm install -g npm@^11.5.1
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm publish --access public
+```
+
+Sau lần publish đầu tiên bằng trusted publishing, vào cài đặt của package trên npmjs.com và chọn yêu cầu 2FA **và không cho phép token**. Từ đó, một granular token cũ bị lộ cũng không publish được package này.
+
+Bài học từ ChainDrop: trusted publishing chuyển rủi ro từ "token bị lộ" sang "workflow bị điều khiển". Kẻ tấn công nắm tài khoản GitHub của maintainer chỉ cần push tag và để pipeline thật làm phần còn lại. Nên ba thứ đi kèm là bắt buộc:
+
+- **Environment có required reviewers** cho job publish, khai báo đúng environment đó trong cấu hình trusted publisher trên npm. Tag push lúc 3 giờ sáng sẽ phải chờ người duyệt.
+- **Ruleset bảo vệ tag `v*` và nhánh `main`**: không push thẳng, bắt buộc PR có review.
+- **2FA chống phishing (passkey, security key) cho tài khoản GitHub** của mọi maintainer — vì tài khoản GitHub giờ chính là chìa khoá publish.
+
+Phía người dùng package, `npm audit signatures` kiểm tra chữ ký registry và attestation provenance của các package đã cài. Điều đáng theo dõi là **package nào từng có provenance rồi bỗng không còn** — dấu hiệu bản mới được publish bằng token đánh cắp thay vì qua CI. pnpm có `trustPolicy: no-downgrade` (từ 10.21) để tự động từ chối trường hợp này.
+
+## Biết mình đang chạy gì: SBOM và scanner
+
+Khi một vụ mới nổ ra, câu hỏi đầu tiên luôn là: "Mình có dùng package đó không, phiên bản nào, trong app nào?". Trả lời mất nửa ngày là nửa ngày secret có thể đang bị dùng.
+
+**SBOM** (Software Bill of Materials) là danh sách máy đọc được của mọi thành phần trong sản phẩm. `npm sbom` xuất SBOM chuẩn CycloneDX hoặc SPDX từ cây dependency; `@cyclonedx/cyclonedx-npm` là lựa chọn thay thế. Lưu SBOM như artifact của mỗi bản build để khi có sự cố, tra trong vài giây bản production đang chứa gì.
+
+```bash
+# SBOM CycloneDX cho dependency production
+npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+
+# Quét lỗ hổng và package độc đã biết (OSV-Scanner v2), đọc cả bun.lock
+osv-scanner scan source -r .
+
+# Kiểm tra chữ ký registry và provenance (chỉ với cây do npm cài)
+npm audit signatures
+```
+
+Các scanner bắt những thứ rất khác nhau, và hiểu nhầm điều này là lý do nhiều team "có scanner rồi" mà vẫn bị:
+
+| Công cụ | Bắt được | Không bắt được | Chạy khi nào |
+| --- | --- | --- | --- |
+| `npm audit`, Dependabot alerts | Lỗ hổng đã có advisory, kể cả advisory malware | Package độc chưa ai báo cáo | Sau khi advisory xuất hiện |
+| OSV-Scanner | Lỗ hổng và bản ghi package độc (`MAL-...`, từ dữ liệu malicious-packages của OpenSSF) | Như trên | Trong CI, trên lockfile |
+| Socket (GitHub app, CLI, scanner cho Bun) | Hành vi đáng ngờ: install script mới, gọi mạng, đọc biến môi trường, code bị làm rối | Code độc không có dấu hiệu hành vi | Trên PR dependency, hoặc lúc cài |
+| `npm audit signatures`, pnpm `trustPolicy` | Package mất chữ ký hoặc mất provenance | Bản độc có provenance hợp lệ | Sau khi cài / lúc resolve |
+
+Điểm cần nhớ: **mọi công cụ dựa trên advisory đều chậm hơn kẻ tấn công vài giờ**. Trong những giờ đầu, chỉ phân tích hành vi và cooldown còn tác dụng. Bun 1.3 có Security Scanner API để cắm một scanner (ví dụ của Socket) vào chính bước `bun install` — xem cấu hình ở phần ví dụ thực tế.
+
+Với repo Bun, hãy kiểm tra công cụ SBOM và scanner có thực sự đọc được `bun.lock`. Báo cáo "0 dependency, 0 lỗ hổng" thường không có nghĩa là an toàn — mà là công cụ không hiểu lockfile của bạn.
+
+## Ghép các lớp lại: bảng so sánh
+
+<Figure src="/blog/npm-supply-chain-security-defense-layers.svg" alt="Ba lớp phòng thủ: lúc cài đặt gồm lockfile, chặn install script, cooldown; trong CI gồm pin SHA, quyền tối thiểu, OIDC thay token; lúc publish gồm trusted publishing, environment có reviewer, provenance; dưới cùng là SBOM, scanner và playbook ứng phó" caption="Phòng thủ theo lớp: mỗi lớp cắt một đoạn của chuỗi tấn công, và lớp phát hiện ở dưới cùng giả định rằng các lớp trên sẽ có lúc thất bại." />
+
+| Biện pháp | Chặn được gì | Chi phí / độ ma sát |
+| --- | --- | --- |
+| Lockfile + frozen install | Bản độc lọt vào build qua range `^` mà không ai thấy diff | Gần như bằng không |
+| Chặn install script, allow-list | Đánh cắp credential lúc cài (Nx, họ Shai-Hulud, ChainDrop) | Thấp; vài package native cần duyệt |
+| Cooldown 3–7 ngày | Phần lớn bản độc bị gỡ trong vài giờ đến một ngày | Trung bình; bản vá bảo mật cần đi đường riêng |
+| Pin action theo SHA | Action bị chiếm, tag bị di chuyển | Thấp nếu có bot cập nhật SHA |
+| `permissions` tối thiểu, `persist-credentials: false` | Token CI bị dùng để push workflow, tạo release | Thấp |
+| Bỏ `pull_request_target`, tách cache | Injection từ PR fork, đầu độc cache (Nx, TanStack) | Trung bình; phải thiết kế lại workflow cần quyền ghi |
+| Trusted publishing + chặn token | Token publish bị đánh cắp để tự nhân bản | Thấp sau lần cấu hình đầu |
+| Environment có reviewer cho publish | Tài khoản maintainer bị chiếm tự tạo tag (ChainDrop) | Trung bình; mỗi release cần một người duyệt |
+| 2FA bằng passkey/security key | Phishing lấy mật khẩu và TOTP (chalk/debug) | Thấp |
+| Scanner hành vi | Package độc chưa có advisory | Trung bình; có false positive, có thể tốn phí |
+| SBOM + playbook | Không chặn gì — rút ngắn thời gian xử lý | Thấp nếu làm trước, rất cao nếu làm trong lúc sự cố |
+
+## Ví dụ thực tế: gia cố chính monorepo của blog này
+
+Blog bạn đang đọc nằm trong một monorepo Bun 1.3 + Turborepo: ba app Next.js trong `apps/`, vài package dùng chung trong `packages/`, CI trên GitHub Actions, deploy lên Vercel. Mình mở từng file ra và chấm điểm theo ba lớp ở trên.
+
+### Những gì đã ổn
+
+- **Phiên bản Bun được pin** ở cả `packageManager: "bun@1.3.3"` lẫn `bun-version: 1.3.3` trong CI.
+- **Cài đặt đóng băng ở mọi nơi**: CI chạy `bun install --frozen-lockfile`, và `installCommand` trong `apps/blogs/vercel.json` cũng vậy.
+- **Bun không chạy install script của dependency theo mặc định**, nên phần lớn payload kiểu Shai-Hulud không tự chạy khi cài.
+
+### Những gì cần sửa
+
+**1. Một field gây hiểu nhầm trong `package.json`.** Cả ba app đều có đoạn này:
+
+```json
+{
+  "ignoreScripts": ["sharp", "unrs-resolver"],
+  "trustedDependencies": ["sharp", "unrs-resolver"]
+}
+```
+
+Đọc lướt, người ta nghĩ script của `sharp` bị chặn. Thực tế ngược lại: `ignoreScripts` không phải field Bun đọc trong `package.json` — các công tắc được tài liệu hoá là cờ `--ignore-scripts`, `ignoreScripts` trong mục `[install]` của `bunfig.toml`, hoặc `ignore-scripts` trong `.npmrc`. Còn `trustedDependencies` thì *cho phép* đúng hai package đó chạy script; vì danh sách tường minh thay thế danh sách mặc định của Bun, đây là toàn bộ allow-list hiệu lực (`bun.lock` cũng ghi đúng mảng này ở cấp cao nhất). Cấu hình bảo mật đọc lên hiểu ngược là cấu hình nguy hiểm: lần tới ai đó thêm package vào `ignoreScripts` "để chặn", thực ra chẳng chặn gì.
+
+Cách sửa: gom allow-list về `package.json` gốc, nơi reviewer nhìn vào đầu tiên, và xoá field thừa:
+
+```diff
+--- a/package.json
++++ b/package.json
+@@
+   "packageManager": "bun@1.3.3",
+   "workspaces": [
+     "apps/*",
+     "packages/*"
+-  ]
++  ],
++  "trustedDependencies": [
++    "sharp",
++    "unrs-resolver"
++  ]
+ }
+--- a/apps/blogs/package.json
++++ b/apps/blogs/package.json
+@@
+     "typescript": "5.9.3"
+-  },
+-  "ignoreScripts": [
+-    "sharp",
+-    "unrs-resolver"
+-  ],
+-  "trustedDependencies": [
+-    "sharp",
+-    "unrs-resolver"
+-  ]
++  }
+ }
+```
+
+Làm tương tự cho `apps/dicodeweb` và `apps/me`, rồi chạy `bun pm untrusted` để xem còn package nào có script bị chặn — đầu vào cho một quyết định có ý thức về việc package nào thực sự cần script.
+
+**2. Chưa có cooldown.** Repo chưa có `bunfig.toml`. Thêm một file ở gốc:
+
+```text
+# bunfig.toml
+[install]
+# Không resolve phiên bản nào mới hơn 3 ngày (đơn vị: giây)
+minimumReleaseAge = 259200
+# Package cần vá gấp thì liệt kê ở đây, kèm lý do trong PR
+minimumReleaseAgeExcludes = []
+
+# Tuỳ chọn: scanner chạy ngay trong bun install (cần cài package scanner làm devDependency)
+# [install.security]
+# scanner = "@socketsecurity/bun-security-scanner"
+```
+
+**3. Workflow CI dùng tag và quyền mặc định.** `ci.yml` gọi `actions/checkout@v4` và `oven-sh/setup-bun@v2`, không khai báo `permissions`, và để checkout lưu token trong workspace — trong khi job này chạy `bun install` lẫn build của ba app. Bản sửa:
+
+```diff
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@
+ concurrency:
+   group: ci-${{ github.workflow }}-${{ github.ref }}
+   cancel-in-progress: true
+
++permissions:
++  contents: read
++
+ jobs:
+   quality:
+     name: Lint, Build
+     runs-on: ubuntu-latest
+     timeout-minutes: 30
+     steps:
+       - name: Checkout
+-        uses: actions/checkout@v4
++        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
++        with:
++          persist-credentials: false
+
+       - name: Setup Bun
+-        uses: oven-sh/setup-bun@v2
++        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         with:
+           bun-version: 1.3.3
+```
+
+Diff này nhân tiện nâng `checkout` lên v6; muốn tách thay đổi hành vi khỏi thay đổi bảo mật thì pin SHA của bản v4 mới nhất trước. SHA lấy từ chính repo của action (`git ls-remote --tags https://github.com/actions/checkout`), không copy từ blog — kể cả blog này.
+
+**4. Chưa có bot cập nhật dependency.** Không có bot thì dependency hoặc bị bỏ quên, hoặc được `bun update` lúc vội — không cooldown, không review. Thêm Dependabot cho cả Bun lẫn GitHub Actions, để nó cập nhật luôn các SHA vừa pin:
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+```
+
+Không bật auto-merge: một PR gộp mỗi tuần đủ ít để mình đọc diff của `bun.lock`, nhất là những dòng thêm package *mới* mà mình không hề khai báo.
+
+**5. Phần ngoài repo.** Bật secret scanning và push protection; ruleset cho `main`; passkey cho tài khoản GitHub; và trên Vercel, kiểm tra biến môi trường nào được cấp cho môi trường Preview — build của một PR chạy code dependency với đúng những biến đó.
+
+Kết quả sau khoảng một giờ: bản dependency mới phải chờ ba ngày, chỉ hai package được chạy script và danh sách nằm ở chỗ ai cũng thấy, CI chạy với token chỉ đọc và action bất biến. Không thứ nào làm chậm việc viết blog hằng ngày.
+
+## Khi một dependency bị xâm phạm: playbook ứng phó
+
+Viết playbook khi trời yên; lúc nhận tin "package X bị chiếm", bạn không muốn vừa đọc tài liệu vừa quyết định. Trình tự mình dùng:
+
+**Bước 1 — Xác định phơi nhiễm.** Bản độc có trong lockfile nào không, và đã được cài ở đâu (máy dev, job CI, build preview)?
+
+```bash
+# 1. Package có trong lockfile không, phiên bản nào? Lịch sử lockfile từng chứa nó không?
+grep -n '"keyv@' bun.lock
+git log -S'keyv@6.0.0' --oneline -- bun.lock
+
+# Commit lạ gần đây chạm tới workflow hoặc cấu hình editor/agent AI
+git log --all --since="14 days ago" --name-only --format='%h %an %s' -- .github/workflows .claude .vscode
+
+# 4. Dấu vết trên GitHub: repo mới tạo, runner lạ, SSH key lạ, token npm còn sống
+gh repo list --limit 300 --json name,visibility,createdAt \
+  --jq '.[] | select(.createdAt > "2026-08-01") | "\(.createdAt) \(.visibility) \(.name)"'
+gh api repos/OWNER/REPO/actions/runners --jq '.runners[] | "\(.name) \(.status)"'
+gh api user/keys --jq '.[] | "\(.id) \(.title) \(.created_at)"'
+npm token list
+```
+
+Lockfile hiện tại sạch chưa đủ: một developer có thể đã `bun add` lúc bản độc còn trên registry rồi revert. Hãy tìm cả trong log CI theo khoảng thời gian phiên bản đó tồn tại.
+
+**Bước 2 — Kiểm tra cơ chế bám trụ *trước khi* thu hồi token.** Các biến thể gần đây cài tiến trình theo dõi token và phá hoại khi token bị thu hồi, hoặc cài hook vào `.claude/settings.json`, `.vscode/tasks.json` để chạy lại khi mở project. Kiểm tra service/launch agent lạ, các file kể trên và self-hosted runner lạ; với nhiều máy, cài lại từ đầu là an toàn nhất.
+
+**Bước 3 — Xoay vòng mọi secret có thể đã bị đọc.** Không chỉ token npm: token GitHub, SSH key, key cloud, token Vercel, giá trị trong `.env` và secrets mà job CI bị ảnh hưởng truy cập được. Coi máy hoặc runner đã cài bản độc là bị chiếm hoàn toàn.
+
+**Bước 4 — Tìm dấu vết trên GitHub** bằng các lệnh `gh` ở trên, cộng audit log của tổ chức: repo đổi từ private sang public, deploy key mới, webhook mới.
+
+**Bước 5 — Dọn và chặn tái nhiễm.** Pin về phiên bản sạch, xoá `node_modules` và cache của package manager, cài lại, rồi viết postmortem ngắn: lớp nào đã chặn được, lớp nào đáng lẽ phải chặn mà không chặn.
+
+## Những sai lầm thường gặp
+
+**`npm install` trong CI.** `npm install` được phép sửa `package-lock.json` cho khớp range trong `package.json`, nên build hôm nay có thể dùng dependency khác hôm qua mà không ai review. Luôn dùng `npm ci` hoặc `--frozen-lockfile`.
+
+**Range `^` mà không commit lockfile.** Hay gặp ở thư viện ("thư viện thì không commit lockfile") và repo mới tạo. Mỗi lần cài là một lần bốc thăm phiên bản mới nhất — đúng thứ kẻ tấn công cần.
+
+**Tin vào lượt tải.** `chalk` và `debug` thuộc nhóm được tải nhiều nhất hệ sinh thái. Lượt tải đo độ phổ biến, không đo độ an toàn — và package càng phổ biến càng là mục tiêu đáng giá. Nên xem: package có thực sự cần không, có publish qua CI với provenance không, bản mới có thêm install script hay gọi mạng không.
+
+**Token trong `.npmrc` bị commit hoặc bị cache.** `_authToken=...` nằm trong repo, trong thư mục được `actions/cache` lưu lại, hoặc bị đóng vào Docker image. Đọc token từ biến môi trường, thêm `.npmrc` chứa secret vào `.gitignore` và `.dockerignore` — và tốt nhất là không cần token nào nhờ trusted publishing.
+
+**Auto-merge PR dependency không có cooldown.** Bot tạo PR năm phút sau khi bản mới phát hành, CI xanh (code độc không làm vỡ test), auto-merge, deploy — trước khi cộng đồng kịp phát hiện. Nếu muốn auto-merge, chỉ bật cho patch/minor, *sau* cooldown, và không bao giờ cho PR thêm dependency mới.
+
+**Nghĩ rằng chỉ CI mới quan trọng.** Laptop của developer có token GitHub quyền ghi, session cloud, SSH key. Chặn script và cooldown phải nằm trong file cấu hình được commit (`bunfig.toml`, `pnpm-workspace.yaml`, `.npmrc`) để áp dụng cả ở máy local, không chỉ trong lệnh CI.
+
+## Đọc thêm
+
+- [npm Docs: Trusted publishing](https://docs.npmjs.com/trusted-publishers)
+- [GitHub: Our plan for a more secure npm supply chain](https://github.blog/security/supply-chain-security/our-plan-for-a-more-secure-npm-supply-chain/)
+- [CISA: Widespread Supply Chain Compromise Impacting npm Ecosystem](https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem)
+- [Bun Docs: Lifecycle scripts](https://bun.com/docs/pm/lifecycle) và [`bun install`](https://bun.com/docs/pm/cli/install)
+- [GitHub Docs: Security hardening for GitHub Actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
+- [StepSecurity: ChainDrop npm worm](https://stepsecurity.io/blog/chaindrop-npm-worm)
+
+## Tóm tắt
+
+<Checklist>
+
+- Các vụ 2025–2026 có chung một chuỗi: chiếm quyền publish, phát hành bản độc, chạy lúc cài, đánh cắp secret, tự nhân bản. Phòng thủ là cắt từng mắt xích, mỗi mắt xích ít nhất hai lần.
+- Lockfile được commit cùng frozen install trong mọi môi trường; không bao giờ `npm install` trong CI.
+- Chặn install script theo mặc định, cho phép theo danh sách ngắn có lý do: `ignore-scripts` (npm), `trustedDependencies` ở `package.json` gốc (Bun), `allowBuilds` (pnpm 11+).
+- Cooldown ít nhất vài ngày ở cả package manager lẫn bot cập nhật; để ý đơn vị: giây (Bun), phút (pnpm), ngày (npm, Renovate, Dependabot).
+- CI: pin action theo SHA, `permissions: contents: read`, `persist-credentials: false`, tránh `pull_request_target`, không token dài hạn.
+- Publish bằng trusted publishing, chặn token trên npm, bảo vệ bằng environment có reviewer và 2FA chống phishing cho tài khoản GitHub.
+- Provenance là bằng chứng nguồn gốc, không phải chứng nhận vô hại; theo dõi trường hợp provenance biến mất.
+- Có SBOM, scanner hành vi và playbook ứng phó trước khi cần đến; khi ứng phó, kiểm tra cơ chế bám trụ trước khi thu hồi token.
+
+</Checklist>

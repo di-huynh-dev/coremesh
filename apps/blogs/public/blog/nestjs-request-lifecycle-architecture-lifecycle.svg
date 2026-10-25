@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#9CA3AF"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#DC2626"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="66" fill="#111827" font-size="34" font-weight="800">NestJS request lifecycle</text>
+  <text x="40" y="104" fill="#4B5563" font-size="18">G = global · C = controller · R = route</text>
+
+  <!-- Middleware -->
+  <g filter="url(#shadow)">
+    <rect x="36" y="190" width="176" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="124" y="244" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Middleware</text>
+  <text x="124" y="278" text-anchor="middle" fill="#4B5563" font-size="18">raw req, res</text>
+  <text x="124" y="310" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">global → module</text>
+
+  <!-- Guards -->
+  <g filter="url(#shadow)">
+    <rect x="252" y="190" width="160" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="332" y="244" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Guards</text>
+  <text x="332" y="278" text-anchor="middle" fill="#4B5563" font-size="18">allow or deny</text>
+  <text x="332" y="310" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">G → C → R</text>
+
+  <!-- Interceptor wrapper -->
+  <rect x="452" y="140" width="520" height="250" rx="26" fill="#F5F3FF" stroke="#7C3AED" stroke-width="2.5"/>
+  <text x="476" y="178" fill="#7C3AED" font-size="22" font-weight="700">Interceptors</text>
+  <text x="948" y="178" text-anchor="end" fill="#4B5563" font-size="18">in: G → C → R · out: R → C → G</text>
+
+  <!-- Pipes -->
+  <g filter="url(#shadow)">
+    <rect x="478" y="205" width="205" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="580" y="259" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Pipes</text>
+  <text x="580" y="293" text-anchor="middle" fill="#4B5563" font-size="18">validate, coerce</text>
+  <text x="580" y="325" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">G → C → R → param</text>
+
+  <!-- Handler -->
+  <g filter="url(#shadow)">
+    <rect x="735" y="205" width="210" height="150" rx="22" fill="white" stroke="#16A34A" stroke-width="2.5"/>
+  </g>
+  <text x="840" y="259" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Handler</text>
+  <text x="840" y="293" text-anchor="middle" fill="#4B5563" font-size="18">controller method</text>
+  <text x="840" y="325" text-anchor="middle" fill="#16A34A" font-size="18" font-weight="600">→ service</text>
+
+  <!-- Response -->
+  <g filter="url(#shadow)">
+    <rect x="1012" y="190" width="152" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="1088" y="256" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Response</text>
+  <text x="1088" y="292" text-anchor="middle" fill="#4B5563" font-size="18">JSON body</text>
+
+  <!-- happy-path arrows -->
+  <g stroke="#9CA3AF" stroke-width="4" stroke-linecap="round">
+    <path d="M214 265H246" marker-end="url(#arrow)"/>
+    <path d="M414 265H472" marker-end="url(#arrow)"/>
+    <path d="M685 280H729" marker-end="url(#arrow)"/>
+    <path d="M947 265H1006" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- error paths -->
+  <g stroke="#DC2626" stroke-width="3" stroke-dasharray="8 8" stroke-linecap="round">
+    <path d="M124 342V472" marker-end="url(#arrowRed)"/>
+    <path d="M332 342V472" marker-end="url(#arrowRed)"/>
+    <path d="M580 357V472" marker-end="url(#arrowRed)"/>
+    <path d="M840 357V472" marker-end="url(#arrowRed)"/>
+    <path d="M1088 478V346" marker-end="url(#arrowRed)"/>
+  </g>
+  <text x="352" y="430" fill="#DC2626" font-size="18" font-weight="600">throw</text>
+
+  <!-- Exception filters -->
+  <g filter="url(#shadow)">
+    <rect x="36" y="480" width="1128" height="120" rx="24" fill="#FEF2F2" stroke="#DC2626" stroke-width="2.5"/>
+  </g>
+  <text x="64" y="530" fill="#DC2626" font-size="24" font-weight="700">Exception filters</text>
+  <text x="64" y="568" fill="#4B5563" font-size="18">R → C → G, first match wins · errors from middleware reach global filters only</text>
+</svg>

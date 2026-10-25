@@ -1,0 +1,680 @@
+---
+title: "Caching trong Next.js 16: Cache Components, use cache và Partial Prerendering thực chiến"
+excerpt: "Next.js 16 bỏ kiểu cache ngầm của App Router cũ: mọi thứ dynamic theo mặc định, bạn tự chọn chỗ cần cache bằng use cache. Bài này đi qua static shell và dynamic hole, cache key, cacheLife, cacheTag với updateTag, revalidateTag, refresh, và một trang sản phẩm e-commerce làm từ đầu đến cuối."
+---
+
+<Lead>Với App Router của Next.js 13 và 14, câu hỏi mình nghe nhiều nhất trong team không phải "làm sao cho nhanh" mà là "sao dữ liệu này cũ thế?" và "sao trang này lại thành dynamic?". Cache khi đó là ngầm định: `fetch` tự được cache, route tự được đoán là tĩnh hay động, và cách duy nhất để hiểu nó là đọc kỹ tài liệu rồi thử. Next.js 16 lật ngược mô hình đó với Cache Components: mọi thứ chạy lúc request theo mặc định, và bạn đánh dấu tường minh những gì được cache bằng `"use cache"`. Blog này đang chạy Next.js 16.2, nên mình viết theo 16.x, ghi rõ phiên bản ở chỗ nào API thay đổi. Bài đi qua static shell và dynamic hole, cache key và ràng buộc serialization, `cacheLife`, bộ ba `updateTag`, `revalidateTag`, `refresh`, hai biến thể `private` và `remote`, rồi ráp tất cả vào một trang sản phẩm e-commerce thật.</Lead>
+
+## Từ cache ngầm sang cache tường minh
+
+Để hiểu vì sao Next.js 16 thay đổi lớn như vậy, cần nhớ lại App Router cũ hoạt động thế nào. Ở Next.js 14, một lời gọi `fetch` trong Server Component mặc định được lưu vào Data Cache (tương đương `cache: "force-cache"`). Route không dùng API động như `cookies()` sẽ được render một lần lúc build và nằm trong Full Route Cache. Trình duyệt còn có Router Cache giữ payload của trang động 30 giây. Bốn tầng cache, phần lớn bật sẵn, và bạn dành thời gian để *tắt* chúng: `export const dynamic = "force-dynamic"`, `cache: "no-store"`, `revalidate = 0`.
+
+[Next.js 15](https://nextjs.org/blog/next-15) (10/2024) đảo các mặc định đó: `fetch`, Route Handler `GET` và Router Cache cho page không còn cache sẵn. Đỡ bất ngờ hơn, nhưng mô hình vẫn là "framework đoán, bạn sửa": route vẫn bị phân loại tĩnh hoặc động theo cả trang, và chỉ cần một lời gọi `cookies()` trong layout là cả cây con thành dynamic.
+
+[Next.js 16](https://nextjs.org/blog/next-16) (21/10/2025) giới thiệu **Cache Components** và nói thẳng: khác với kiểu cache ngầm của các bản App Router trước, cache bây giờ hoàn toàn opt-in. Mọi code động trong page, layout hay API route chạy lúc request, trừ khi bạn đánh dấu nó bằng `"use cache"`. Cùng lúc, Partial Prerendering (PPR) trở thành cách render mặc định: mỗi route có một **static shell** được dựng sẵn, và các **dynamic hole** được stream vào trong cùng một response.
+
+| | Next.js 14 | Next.js 15 | Next.js 16 + `cacheComponents` |
+| --- | --- | --- | --- |
+| `fetch` mặc định | Cache vào Data Cache | Không cache (route tĩnh vẫn fetch một lần lúc build) | Không cache; phải nằm trong `use cache` hoặc dưới `Suspense` |
+| Đơn vị tĩnh/động | Cả route | Cả route | Từng component: shell tĩnh + hole động |
+| Cách cấu hình | `dynamic`, `revalidate`, `fetchCache` | Như 14 | `use cache`, `cacheLife`, `cacheTag` |
+| Router Cache phía client | Page động giữ 30 giây | Page động không giữ | Theo `stale` của `cacheLife`, tối thiểu 30 giây |
+| Invalidate | `revalidateTag(tag)`, `revalidatePath` | Như 14 | `updateTag`, `revalidateTag(tag, profile)`, `refresh`, `revalidatePath` |
+
+Thay đổi quan trọng nhất không nằm ở API mà ở câu hỏi bạn đặt ra. Trước đây là "chỗ này đang bị cache ở tầng nào, làm sao tắt?". Bây giờ là "chỗ này có đáng cache không, cache bao lâu, và ai được thấy cùng một bản?". Mình thấy câu hỏi thứ hai dễ trả lời hơn nhiều, vì câu trả lời nằm ngay trong code, cạnh dữ liệu.
+
+Về trạng thái: Cache Components ra mắt ở 16.0 cùng với `cacheLife` và `cacheTag` bản ổn định (không còn tiền tố `unstable_`). Đến [Next.js 16.4](https://nextjs.org/blog/next-16-4) (10/2026), team Next.js khuyến nghị nó cho mọi ứng dụng, `create-next-app` bật sẵn cho dự án mới, và đây sẽ là mặc định ở Next.js 17. Nếu bạn còn ở mô hình cũ thì không sao: tắt `cacheComponents`, mọi thứ chạy như Next.js 15.
+
+## Bật Cache Components và những gì thay đổi theo
+
+Bật bằng một flag trong `next.config.ts`. Mình khai báo luôn một cache profile riêng cho catalog sản phẩm, sẽ dùng ở ví dụ phía sau:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+  cacheLife: {
+    // Profile riêng cho dữ liệu catalog: admin sửa không thường xuyên
+    catalog: {
+      stale: 300, // client dùng lại 5 phút không cần hỏi server
+      revalidate: 3600, // sau 1 giờ, request kế tiếp kích hoạt làm mới nền
+      expire: 86400, // 1 ngày không có traffic thì phải render lại đồng bộ
+    },
+  },
+};
+
+export default nextConfig;
+```
+
+Flag này gom ba thứ từng là experimental ở Next.js 15: `experimental.dynamicIO` (được đổi tên thành `cacheComponents`), `experimental.useCache` và `experimental.ppr`. Flag `ppr` cùng export `experimental_ppr` trong route đã bị xoá ở 16. Khi bật lên, vài thứ đổi theo mà bạn nên biết trước khi migrate:
+
+- **Route segment config cũ không còn dùng.** `dynamic`, `revalidate`, `fetchCache` được thay bằng `use cache` và `cacheLife`. `force-dynamic` thì bỏ hẳn, vì mặc định đã là dynamic.
+- **Không hỗ trợ `runtime = "edge"`.** Cache Components cần Node.js runtime.
+- **`generateStaticParams` phải trả về ít nhất một phần tử.** Mảng rỗng là lỗi build, vì Next.js cần ít nhất một bộ params mẫu để kiểm tra route có truy cập dữ liệu runtime sai chỗ hay không.
+- **Route Handler `GET` đi theo cùng mô hình prerender như page.**
+- **State được giữ khi điều hướng.** Next.js dùng `<Activity>` của React ở chế độ hidden thay vì unmount route cũ, nên quay lại trang trước sẽ thấy dropdown vẫn mở, form vẫn giữ giá trị. Phần lớn là điều tốt, nhưng code nào dựa vào unmount để reset state sẽ cần sửa.
+
+Với dự án đang chạy, mình không khuyên bật flag rồi sửa lỗi cho tới khi build xanh trong một PR. Cách đỡ đau hơn là bật trên một nhánh, chạy `next build`, gom danh sách route báo lỗi, rồi xử lý từng route theo các mẫu trong phần sau.
+
+## Static shell và dynamic hole: PPR thực sự làm gì
+
+Khi build (và khi revalidate), Next.js render cây component của route và phân loại từng nhánh theo những gì nó làm:
+
+- **Công việc đồng bộ và thuần tuý** (tính toán, import module, đọc file đồng bộ): chạy xong ngay trong lúc prerender, kết quả nằm trong static shell.
+- **Nhánh được đánh dấu `use cache`**: kết quả được cache và cũng nằm trong static shell.
+- **Nhánh chờ dữ liệu không cache hoặc dữ liệu runtime** (`cookies()`, query DB không cache...): không thể hoàn tất lúc build. Nó phải nằm dưới một `<Suspense>`, và *fallback* của Suspense đó được đưa vào shell. Nội dung thật được render lúc có request.
+
+Nói cách khác, **ranh giới `<Suspense>` chính là đường viền của dynamic hole**. Khi người dùng mở trang, server gửi ngay static shell (HTML cho lần tải đầu, kèm RSC payload cho điều hướng phía client), rồi stream từng hole vào **cùng một HTTP response** khi chúng render xong. Không có request thứ hai, không có fetch từ client.
+
+<Figure src="/blog/nextjs-16-cache-components-ppr.svg" alt="Sơ đồ static shell với các dynamic hole được stream vào sau" caption="Shell gồm phần tĩnh, phần use cache và fallback của Suspense; các hole như giá theo hạng thành viên và giỏ hàng được stream vào cùng response." />
+
+```tsx
+// app/page.tsx
+import { Suspense } from "react";
+import { cookies } from "next/headers";
+import { cacheLife } from "next/cache";
+import { db } from "@/lib/db";
+import { getCart } from "@/lib/cart";
+import { SiteHeader, ProductGrid, CartBadge } from "@/components";
+
+export default function HomePage() {
+  return (
+    <>
+      <SiteHeader /> {/* đồng bộ: vào shell */}
+      <FeaturedProducts /> {/* use cache: vào shell */}
+      <Suspense fallback={<CartBadge count={null} />}>
+        <MiniCart /> {/* đọc cookies: dynamic hole */}
+      </Suspense>
+    </>
+  );
+}
+
+async function FeaturedProducts() {
+  "use cache";
+  cacheLife("hours");
+  const products = await db.product.findMany({ where: { featured: true }, take: 8 });
+  return <ProductGrid products={products} />;
+}
+
+async function MiniCart() {
+  const cartId = (await cookies()).get("cart_id")?.value;
+  const cart = cartId ? await getCart(cartId) : null;
+  return <CartBadge count={cart?.items.length ?? 0} />;
+}
+```
+
+Nếu bạn bỏ `<Suspense>` quanh `MiniCart`, build sẽ dừng với lỗi kiểu `Uncached data was accessed outside of <Suspense>` hoặc `Runtime data such as cookies() ... was accessed outside of <Suspense>`. Đây là điểm mình thích nhất ở mô hình mới: thay vì lặng lẽ biến cả trang thành dynamic như trước, Next.js bắt bạn quyết định tường minh, ngay lúc build. Một lưu ý ngược lại: bản thân `<Suspense>` không biến gì thành dynamic. Component chỉ làm việc đồng bộ vẫn render xong lúc prerender dù có bọc Suspense hay không.
+
+### Cái gì đẩy một component ra khỏi shell
+
+Danh sách khá ngắn, đáng thuộc:
+
+- `cookies()`, `headers()`, `searchParams`, và `params` nếu route không có `generateStaticParams`.
+- `connection()` từ `next/server`: cách nói thẳng "phần sau chỉ chạy khi có request", dùng khi bạn không đọc API nào ở trên nhưng vẫn cần kết quả khác nhau mỗi request.
+- I/O bất đồng bộ không được cache: `fetch` không có cấu hình cache, query qua driver bất đồng bộ.
+- `use cache` có thời gian sống quá ngắn: profile `seconds`, `revalidate: 0`, hoặc `expire` dưới 5 phút. Next.js coi đó là "short-lived cache", loại khỏi prerender và biến nó thành hole.
+- `"use cache: private"`, vì nó được phép đọc cookies.
+
+Riêng `Date.now()`, `Math.random()`, `crypto.randomUUID()` có luật riêng. Gọi chúng trong Server Component *trước khi* chạm vào dữ liệu runtime hoặc dữ liệu không cache sẽ ra lỗi `next-prerender-current-time` hoặc `next-prerender-random`, vì Next.js không biết bạn muốn giá trị lúc build hay lúc request. Bạn chọn một trong ba: gọi `connection()` trước (giá trị theo từng request, nhớ bọc Suspense), đưa vào `use cache` (chấp nhận giá trị bị đóng băng tới lần revalidate), hoặc chuyển sang Client Component.
+
+```tsx
+import { connection } from "next/server";
+
+export async function RequestStamp() {
+  await connection(); // prerender dừng ở đây; phần dưới chỉ chạy lúc có request
+  const id = crypto.randomUUID();
+  return <small>Request {id.slice(0, 8)} lúc {new Date().toISOString()}</small>;
+}
+// Dùng: <Suspense fallback={null}><RequestStamp /></Suspense>
+```
+
+`connection()` thay thế `unstable_noStore` và không được dùng bên trong `use cache` lẫn `use cache: private`.
+
+## "use cache" ở ba cấp độ
+
+`"use cache"` là một directive, giống `"use client"` hay `"use server"`: compiler nhìn thấy nó và bọc hàm của bạn bằng logic đọc/ghi cache, tự sinh cache key. Bạn đặt nó ở ba chỗ:
+
+```tsx
+// 1) Cấp file: app/lib/cms.ts. Mọi export của file phải là async function.
+"use cache";
+import { cacheLife } from "next/cache";
+import { cms } from "@/lib/cms-client";
+
+export async function getFooterLinks() {
+  cacheLife("max");
+  return cms.footer.get();
+}
+
+// 2) Cấp component: cache cả output UI theo props
+export async function CategoryNav({ locale }: { locale: "vi" | "en" }) {
+  "use cache";
+  cacheLife("days");
+  const categories = await cms.categories.list(locale);
+  return <nav>{categories.map((c) => <a key={c.slug} href={`/c/${c.slug}`}>{c.name}</a>)}</nav>;
+}
+
+// 3) Cấp hàm: cache dữ liệu, dùng lại ở nhiều component
+export async function getBrand(slug: string) {
+  "use cache";
+  cacheLife("days");
+  return cms.brands.findBySlug(slug);
+}
+```
+
+Cấp hàm là thứ mình dùng nhiều nhất: dữ liệu được dùng ở nhiều nơi, component gọi nó không cần biết có cache hay không. Cấp component hợp khi phần render tốn kém (markdown, tính toán nặng) hoặc khi muốn cache cả cây con. Cấp file tiện cho module chỉ chứa hàm đọc dữ liệu, nhưng mình ít dùng vì nó giấu directive khỏi chỗ người đọc nhìn vào.
+
+Muốn cache cả route thì đặt `"use cache"` ở đầu *cả* `layout` lẫn `page`, vì mỗi segment là một entry riêng. Một cached component vẫn nhận được `children` hay slot JSX khác mà không ảnh hưởng tới key, miễn là nó chỉ truyền chúng qua chứ không đọc bên trong. Nhờ vậy một layout được cache vẫn bọc được nội dung động.
+
+### Cache key gồm những gì
+
+Theo [tài liệu `use cache`](https://nextjs.org/docs/app/api-reference/directives/use-cache), key của một entry được tạo từ:
+
+1. **Build ID**: mỗi lần build một giá trị, đổi build là toàn bộ entry cũ hết hiệu lực.
+2. **Function ID**: hash an toàn của vị trí và chữ ký hàm trong codebase.
+3. **Tham số đã serialize**: props của component hoặc tham số của hàm.
+4. **Giá trị closure**: biến từ scope ngoài mà hàm tham chiếu tới được tự động bắt và gắn vào như tham số.
+5. Ở môi trường dev, thêm hash của HMR để sửa code là cache mới.
+
+Ba hệ quả thực tế. Thứ nhất, **mỗi lần deploy là cache nguội**: kể cả khi bạn dùng cache handler bền vững như Redis, entry của build cũ không còn được đọc, nên sau deploy DB sẽ nhận một đợt traffic dồn. Thứ hai, **truyền định danh nhỏ nhất có thể**: truyền `productId` chứ đừng truyền nguyên object `product`, vì mọi field đều vào key; một field như `updatedAt` hay `lastSeenAt` thay đổi liên tục là đủ để tỉ lệ hit về không. Thứ ba, **closure cũng là key**: hàm lồng bên trong component bắt biến `userId` từ ngoài thì `userId` nằm trong key, dù bạn không truyền nó như tham số.
+
+### Ràng buộc serialization
+
+Tham số và giá trị trả về phải serialize được, nhưng theo hai hệ khác nhau: tham số dùng cách serialize của React Server Components (chặt hơn), giá trị trả về dùng cách serialize khi gửi xuống Client Component.
+
+| Kiểu | Làm tham số | Làm giá trị trả về |
+| --- | --- | --- |
+| `string`, `number`, `boolean`, `null`, `undefined` | Được | Được |
+| Plain object, array | Được | Được |
+| `Date`, `Map`, `Set`, TypedArray, `ArrayBuffer` | Được | Được |
+| JSX (`children`, slot) | Chỉ truyền qua, không đọc | Được |
+| Server Action | Chỉ truyền qua, không gọi | Không áp dụng |
+| Class instance, `URL` | Không | Không |
+| `Symbol`, `WeakMap`, `WeakSet` | Không | Không |
+
+Lỗi mình gặp thật nhiều nhất là class instance lọt vào: kiểu `Decimal` của ORM cho cột tiền, object model có method, `URL`. Cách sửa luôn giống nhau: chuyển về dạng thô trước khi rời khỏi hàm cache.
+
+```tsx
+import { cacheTag } from "next/cache";
+import { db } from "@/lib/db";
+
+// SAI: nguyên row làm prop, mọi field vào key; price là Decimal (class instance)
+async function PriceTag({ product }: { product: ProductRow }) {
+  "use cache";
+  return <span>{product.price.toString()}</span>;
+}
+
+// ĐÚNG: nhận id, trả về số thuần
+export async function getBasePrice(productId: string): Promise<number> {
+  "use cache";
+  cacheTag(`product-${productId}`);
+  const row = await db.product.findUniqueOrThrow({
+    where: { id: productId },
+    select: { price: true },
+  });
+  return row.price.toNumber();
+}
+```
+
+Hai ràng buộc nữa ít người để ý. `React.cache` bị cô lập bên trong `use cache`: giá trị bạn đặt vào `React.cache` ở ngoài sẽ không nhìn thấy được bên trong, nên đừng dùng nó để "truyền ngầm" dữ liệu vào. Và đừng truyền một Promise phụ thuộc dữ liệu runtime (như `cookies()` chưa `await`, hay `searchParams`) vào hàm cache: lúc build, hàm sẽ chờ một thứ không bao giờ resolve, rồi timeout sau 50 giây với lỗi `Filling a cache during prerender timed out`.
+
+## cacheLife: thời gian sống được khai báo ngay tại chỗ
+
+Mỗi entry có ba mốc thời gian, và hiểu sai một trong ba là nguồn của rất nhiều bug "dữ liệu cũ":
+
+- **`stale`**: thời gian *client router* dùng lại dữ liệu mà không hỏi server. Giá trị này được gửi xuống qua header `x-nextjs-stale-time`, và router luôn áp mức tối thiểu 30 giây để link đã prefetch không hết hạn trước khi người dùng kịp bấm.
+- **`revalidate`**: sau mốc này, request kế tiếp vẫn nhận bản đang có, đồng thời server render lại ở nền (stale-while-revalidate, giống ISR).
+- **`expire`**: nếu quá mốc này mà không có request nào, request tiếp theo phải chờ render mới. `expire` phải lớn hơn `revalidate`, Next.js báo lỗi nếu cấu hình ngược.
+
+Các profile có sẵn (giá trị lấy từ cấu hình mặc định của Next.js 16.2):
+
+| Profile | `stale` | `revalidate` | `expire` | Hợp với |
+| --- | --- | --- | --- | --- |
+| `default` | 5 phút | 15 phút | Không giới hạn | Khi bạn không gọi `cacheLife` |
+| `seconds` | 30 giây | 1 giây | 1 phút | Gần realtime, trở thành dynamic hole |
+| `minutes` | 5 phút | 1 phút | 1 giờ | Feed, tin tức |
+| `hours` | 5 phút | 1 giờ | 1 ngày | Tồn kho, giá cập nhật vài lần mỗi ngày |
+| `days` | 5 phút | 1 ngày | 1 tuần | Bài viết, trang danh mục |
+| `weeks` | 5 phút | 1 tuần | 30 ngày | Nội dung theo tuần |
+| `max` | 5 phút | 30 ngày | 1 năm | Trang pháp lý, nội dung lưu trữ |
+
+Ngoài profile có sẵn, bạn có thể ghi đè chúng hoặc định nghĩa profile mới trong `next.config.ts` như `catalog` ở trên, hoặc truyền thẳng object. Thuộc tính nào bỏ trống sẽ kế thừa từ `default`. `cacheLife` có thể gọi theo nhánh điều kiện, miễn mỗi lần chạy chỉ một lời gọi được thực thi:
+
+```ts
+import { cacheLife, cacheTag } from "next/cache";
+import { cms } from "@/lib/cms-client";
+
+export async function getPromotion(slug: string) {
+  "use cache";
+  cacheTag(`promo-${slug}`);
+
+  const promo = await cms.promotions.findBySlug(slug);
+  if (!promo) {
+    // Chưa publish: cache ngắn để đỡ tải cho CMS, nhưng vẫn sớm thấy khi publish
+    cacheLife("minutes");
+    return null;
+  }
+
+  // Mỗi chương trình có nhịp cập nhật riêng do CMS quy định
+  cacheLife({ revalidate: promo.revalidateSeconds ?? 3600 });
+  return { title: promo.title, endsAt: promo.endsAt, bannerUrl: promo.bannerUrl };
+}
+```
+
+Hai quy tắc khi lồng cache vào nhau mà mình phải đọc kỹ mới hiểu:
+
+1. **Không gọi `cacheLife` ở scope ngoài thì scope ngoài bị kéo theo scope trong.** Nó dùng `default`, nhưng nếu bên trong có cache ngắn hơn thì scope ngoài cũng ngắn theo; cache trong dài hơn thì không kéo dài được scope ngoài. Có gọi `cacheLife` tường minh thì scope ngoài dùng đúng giá trị của nó. Nếu bên trong là cache short-lived mà scope ngoài không khai báo, Next.js báo lỗi lúc prerender (`nested-use-cache-no-explicit-cachelife`) để bạn không vô tình biến cả khối thành dynamic. Lời khuyên của team Next.js, và cũng là thói quen của mình: luôn gọi `cacheLife` tường minh.
+2. **Static shell kế thừa thời gian sống và tag của những gì nằm trong nó.** Mình đọc source 16.2 để chắc chắn: khi một entry `use cache` được dùng trong lúc prerender, tag của nó được gom lên entry của route, còn `stale`, `revalidate`, `expire` của route lấy giá trị nhỏ nhất. Hệ quả là shell của một trang sẽ revalidate theo nhịp của phần ngắn nhất bên trong, và invalidate một tag cũng làm shell chứa nó hết hạn. Đây chính là cơ chế giúp ví dụ phía dưới hoạt động đúng.
+
+## cacheTag và ba cách làm mới: updateTag, revalidateTag, refresh
+
+Thời gian sống chỉ là một nửa. Nửa còn lại là làm mới *theo sự kiện*: khi admin sửa sản phẩm, bạn không muốn đợi tới mốc `revalidate`. `cacheTag(...tags)` gắn một hoặc nhiều tag (tối đa 128 tag mỗi lần gọi, mỗi tag tối đa 256 ký tự) vào entry đang được tạo. Tag gắn qua `fetch(url, { next: { tags } })` theo kiểu cũ cũng dùng chung hệ thống này. Sau đó, Next.js 16 cho bạn ba công cụ với ngữ nghĩa khác hẳn nhau:
+
+- **`updateTag(tag: string): void`** (mới ở 16). Chỉ gọi được trong Server Action. Nó cho entry hết hạn *ngay*, và lần đọc kế tiếp phải chờ dữ liệu mới chứ không nhận bản cũ. Quan trọng hơn, Server Action đó sẽ render lại route hiện tại phía server và gửi RSC payload mới về *trong chính response của action*. Đây là ngữ nghĩa **read-your-own-writes**: người vừa sửa thấy ngay thay đổi của mình, trong một vòng request.
+- **`revalidateTag(tag: string, profile: string | { expire?: number }): void`**. Gọi được trong Server Action và Route Handler. Với `"max"` (khuyến nghị), tag bị đánh dấu stale: lần truy cập tiếp theo nhận bản cũ trong khi bản mới được tạo ở nền. Từ 16, tham số thứ hai là bắt buộc; dạng một tham số đã deprecated, gây lỗi TypeScript và có thể bị gỡ ở bản sau. Khi webhook cần hết hạn ngay, truyền `{ expire: 0 }`. Lưu ý: dùng profile stale-while-revalidate trong Server Action thì response của action **không** kèm bản render mới.
+- **`refresh(): void`** (mới ở 16). Chỉ gọi được trong Server Action. Nó không đụng vào cache nào cả, chỉ render lại route hiện tại để những phần *không cache* (số thông báo, trạng thái đơn hàng) phản ánh thay đổi. Nó là bản phía server của `router.refresh()`.
+
+Còn `revalidatePath(path)` vẫn tồn tại và hoạt động qua cùng hệ thống tag (Next.js tự sinh "soft tag" theo đường dẫn), nhưng tài liệu khuyên ưu tiên tag vì chính xác hơn, tránh invalidate thừa.
+
+| | `updateTag` | `revalidateTag(tag, "max")` | `revalidateTag(tag, { expire: 0 })` | `refresh` |
+| --- | --- | --- | --- | --- |
+| Gọi ở đâu | Server Action | Server Action, Route Handler | Server Action, Route Handler | Server Action |
+| Entry có tag | Hết hạn ngay | Đánh dấu stale | Hết hạn ngay | Không đổi |
+| Lần đọc kế tiếp | Chờ dữ liệu mới | Nhận bản cũ, làm mới ở nền | Chờ dữ liệu mới | Không liên quan |
+| Response của action có render lại route | Có | Không | Tài liệu không nói rõ | Có |
+| Dùng khi | Người dùng cần thấy ngay thay đổi của họ | Nội dung chấp nhận trễ vài giây | Webhook từ hệ thống ngoài | Dữ liệu không cache vừa đổi |
+
+Một chi tiết nữa từ tài liệu `cacheLife`: khi Server Action gọi bất kỳ hàm nào trong nhóm này, toàn bộ client router cache *của trình duyệt gọi action* bị xoá, bỏ qua `stale`. Trình duyệt của người khác thì không: nếu họ đã có trang trong router cache, điều hướng phía client vẫn có thể hiển thị bản cũ tới hết thời gian `stale`. Đó là lý do mình giữ `stale` của dữ liệu catalog ở mức vài phút, không phải vài giờ.
+
+<Figure src="/blog/nextjs-16-cache-components-invalidation.svg" alt="Luồng invalidate từ Server Action qua updateTag và revalidateTag tới các cache entry và lần render tiếp theo" caption="updateTag cho entry hết hạn ngay và render lại route trong response của action; revalidateTag với max chỉ đánh dấu stale và làm mới ở lần đọc sau." />
+
+Hai giới hạn hạ tầng cần biết khi tự host. Cache mặc định nằm trong bộ nhớ từng process: ở môi trường serverless, entry tạo lúc runtime thường không sống qua request tiếp theo (cache lúc build thì vẫn bình thường). Và [invalidate mặc định chỉ có tác dụng trên instance nhận lời gọi](https://nextjs.org/docs/app/guides/how-revalidation-works): chạy nhiều pod sau load balancer mà không có cache handler dùng chung, hiện thực `updateTags()` và `refreshTags()`, thì `updateTag` trên pod A không làm pod B quên bản cũ.
+
+## "use cache: private" và "use cache: remote"
+
+`"use cache"` có hai biến thể, và bảng so sánh trong [tài liệu `use cache: remote`](https://nextjs.org/docs/app/api-reference/directives/use-cache-remote) là thứ mình in ra dán cạnh màn hình:
+
+| | `use cache` | `use cache: remote` | `use cache: private` |
+| --- | --- | --- | --- |
+| Lưu phía server | Bộ nhớ (hoặc handler `default`) | Handler `remote` | Không lưu qua các request |
+| Phạm vi | Dùng chung mọi người dùng | Dùng chung mọi người dùng, mọi instance | Từng trình duyệt |
+| Đọc trực tiếp cookies, headers | Không, truyền qua tham số | Không, truyền qua tham số | Có |
+| Chi phí thêm | Không | Lưu trữ, mạng, độ trễ tra cache | Không |
+
+**`use cache: remote`** lưu entry vào cache handler `remote` khai báo trong `cacheHandlers` (option top-level từ 16.0), ví dụ Redis hay KV của nền tảng. Một điểm dễ hiểu nhầm: nếu bạn không cấu hình `cacheHandlers`, cả `default` lẫn `remote` đều là LRU trong bộ nhớ. Nghĩa là khi tự host, đổi sang `remote` mà quên cấu hình handler thì chẳng khác gì. Giá trị thật của nó nằm *bên trong dynamic hole*: ở đó mỗi request đều chạy component và tra cache, và trên serverless mỗi instance có bộ nhớ riêng, tỉ lệ hit rất thấp. Mình dùng nó cho API bên thứ ba bị giới hạn tần suất, backend chậm, hoặc query đắt. Mình không dùng khi thao tác đã nhanh (dưới khoảng 50ms), khi dữ liệu đổi theo giây, hoặc khi key gần như duy nhất mỗi request.
+
+```tsx
+import { cookies } from "next/headers";
+import { cacheLife, cacheTag } from "next/cache";
+import { carrier } from "@/lib/carrier";
+
+// Nằm trong <Suspense> vì đọc cookies
+export async function ShippingEstimate({ productId }: { productId: string }) {
+  // Tỉnh/thành chỉ có vài chục giá trị, khác với id người dùng
+  const province = (await cookies()).get("province")?.value ?? "HCM";
+  const eta = await getShippingEta(productId, province);
+  return <p>Giao dự kiến trong {eta.days} ngày</p>;
+}
+
+async function getShippingEta(productId: string, province: string) {
+  "use cache: remote";
+  cacheTag(`shipping-${productId}`);
+  cacheLife({ revalidate: 900, expire: 3600 });
+  // API đơn vị vận chuyển giới hạn số request mỗi phút: cache dùng chung mọi instance
+  return carrier.estimate({ productId, province });
+}
+```
+
+**`use cache: private`** là ngoại lệ duy nhất được gọi `cookies()`, `headers()`, `searchParams` bên trong scope cache. Kết quả không bao giờ được lưu ở server qua các request; nó chỉ được giữ trong bộ nhớ trình duyệt theo `stale`, mất khi reload. Nó không chạy lúc dựng static shell, không cấu hình handler được, không dùng trong Route Handler, và `connection()` vẫn bị cấm bên trong. Tài liệu đi kèm bản 16.2 gắn nhãn experimental cho directive này vì nó phụ thuộc vào runtime prefetching chưa ổn định; hãy kiểm tra lại trạng thái trong docs của đúng phiên bản bạn dùng. Mình chỉ dùng nó khi có yêu cầu compliance không cho lưu dữ liệu người dùng phía server, hoặc khi không thể refactor để truyền giá trị runtime qua tham số.
+
+Luật lồng nhau: `remote` lồng trong `remote` hoặc trong `use cache` thường được; `remote` lồng trong `private` hoặc ngược lại thì lỗi.
+
+## Đọc cookies, headers, searchParams trong dynamic hole
+
+Mẫu chung mà tài liệu khuyến nghị, và mình thấy đúng trong thực tế, gồm bốn bước:
+
+1. Đọc API runtime trong một component **không cache**, nằm dưới `<Suspense>`.
+2. Rút ra giá trị nhỏ nhất cần dùng (một chuỗi, một số).
+3. Truyền giá trị đó làm tham số cho hàm `use cache`, nên nó vào cache key.
+4. Chọn chiều có ít giá trị nhất để làm key: hạng thành viên thay vì id người dùng, mã tiền tệ thay vì session, danh mục thay vì từng mức giá lọc. Phần còn lại lọc trong bộ nhớ.
+
+Với `searchParams`, mình truyền Promise xuống component con trong Suspense rồi mới `await` ở đó, để trang cha vẫn nằm trong shell:
+
+```tsx
+// app/products/[id]/variants.tsx
+import { getVariants } from "@/lib/catalog";
+
+export async function VariantPicker({
+  productId,
+  searchParams,
+}: {
+  productId: string;
+  searchParams: Promise<{ color?: string }>;
+}) {
+  const { color } = await searchParams; // dữ liệu runtime: component này là hole
+  const variants = await getVariants(productId); // cache theo productId, không theo color
+  const selected = variants.find((v) => v.color === color) ?? variants[0];
+  return <VariantList variants={variants} selectedSku={selected?.sku} />;
+}
+// Trong page: <Suspense fallback={<VariantSkeleton />}>
+//   <VariantPicker productId={id} searchParams={searchParams} />
+// </Suspense>
+```
+
+Với `params`, có hai đường. Có `generateStaticParams` thì bạn `await params` ngay ở page được, vì Next.js có giá trị mẫu để prerender; id ngoài danh sách sẽ được render ở lần request đầu rồi lưu lại. Không có `generateStaticParams` thì `params` là dữ liệu runtime, phải đọc dưới Suspense hoặc thêm `loading.tsx`.
+
+## Còn fetch cache và các config cũ thì sao?
+
+Với Cache Components, một lời gọi `fetch` không có cấu hình cache được coi là dữ liệu không cache: nó phải nằm trong `use cache` hoặc dưới `<Suspense>`, giống hệt một query DB. Các tuỳ chọn cũ như `cache: "force-cache"`, `next: { revalidate }` và `next: { tags }` vẫn còn để tương thích, và tag gắn theo kiểu này vẫn bị `updateTag`/`revalidateTag` nhắm tới được. Nhưng với code mới mình không dùng chúng nữa: một hàm `use cache` gói được cả lời gọi `fetch` lẫn phần xử lý sau đó, áp dụng cho mọi nguồn dữ liệu chứ không riêng HTTP, và khai báo `cacheLife`/`cacheTag` ở cùng một chỗ.
+
+Bảng mình dùng khi migrate từng route:
+
+| Cách cũ | Với Cache Components |
+| --- | --- |
+| `export const dynamic = "force-dynamic"` | Xoá, mặc định đã là dynamic |
+| `export const dynamic = "force-static"` | Xoá; thêm `use cache` + `cacheLife("max")` sát chỗ lấy dữ liệu; bỏ mọi chỗ đọc dữ liệu runtime |
+| `export const revalidate = 3600` | `cacheLife("hours")` bên trong `use cache` |
+| `export const fetchCache = "force-cache"` | Không cần: `fetch` trong scope `use cache` được cache cùng scope |
+| `unstable_cache(fn, keys, opts)` | `use cache` + `cacheTag` + `cacheLife`; tài liệu 16 ghi rõ API này đã được thay thế |
+| `revalidateTag("posts")` | `revalidateTag("posts", "max")`, hoặc `updateTag("posts")` trong Server Action |
+| `experimental.ppr`, `export const experimental_ppr` | Đã xoá ở 16; PPR là mặc định khi bật `cacheComponents` |
+| `export const runtime = "edge"` | Không hỗ trợ; về Node.js runtime, phần cần edge chuyển sang `proxy.ts` |
+
+## Ví dụ thực tế: trang sản phẩm e-commerce
+
+Bài toán mình từng làm: một shop vài chục nghìn sản phẩm. Trang `/products/[id]` có tên, ảnh, mô tả (admin sửa vài lần mỗi tuần), tóm tắt đánh giá (chấp nhận trễ một giờ), giá theo hạng thành viên (khách, thành viên, VIP), và số món trong giỏ của người đang xem. Admin sửa sản phẩm trong back-office qua Server Action. Hệ thống ERP đẩy thay đổi giá qua webhook. Yêu cầu: trang mở tức thì, admin lưu xong thấy ngay bản mới, và tuyệt đối không ai thấy giỏ hàng của người khác.
+
+Phân loại từng phần trước khi viết code:
+
+- Chi tiết sản phẩm: `use cache`, profile `catalog`, tag `product-{id}`. Nằm trong shell.
+- Tóm tắt đánh giá: `use cache`, profile `hours`, tag `reviews-{id}`. Nằm trong shell.
+- Giá theo hạng: dynamic hole (đọc session), nhưng gọi hàm cache theo cặp `(productId, tier)`, nên chỉ có ba entry mỗi sản phẩm.
+- Giỏ hàng: dynamic hole, không cache gì cả.
+
+Lớp dữ liệu, nơi duy nhất biết về cache:
+
+```ts
+// lib/catalog.ts
+import "server-only";
+import { cacheLife, cacheTag } from "next/cache";
+import { db } from "@/lib/db";
+
+export type PriceTier = "guest" | "member" | "vip";
+
+export async function getProduct(id: string) {
+  "use cache";
+  cacheTag(`product-${id}`);
+
+  const row = await db.product.findUnique({ where: { id } });
+  if (!row) {
+    cacheLife("minutes"); // id chưa tồn tại: cache ngắn
+    return null;
+  }
+  cacheLife("catalog");
+  // Chỉ trả về field trang cần, dạng thuần (không Decimal, không model)
+  return { id: row.id, name: row.name, description: row.description, images: row.images };
+}
+
+export async function getReviewSummary(productId: string) {
+  "use cache";
+  cacheTag(`reviews-${productId}`);
+  cacheLife("hours");
+
+  const [stats, latest] = await Promise.all([
+    db.review.aggregate({ where: { productId }, _avg: { rating: true }, _count: true }),
+    db.review.findMany({
+      where: { productId },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { id: true, author: true, rating: true, body: true, createdAt: true },
+    }),
+  ]);
+  return { average: stats._avg.rating ?? 0, count: stats._count, latest };
+}
+
+export async function getTierPrice(productId: string, tier: PriceTier) {
+  "use cache";
+  cacheTag(`product-${productId}`, `price-${productId}`);
+  cacheLife("minutes");
+
+  const price = await db.price.findUnique({
+    where: { productId_tier: { productId, tier } },
+    select: { amount: true }, // lưu số nguyên VND
+  });
+  return price?.amount ?? null;
+}
+
+export async function getBestSellerIds(limit: number) {
+  const rows = await db.product.findMany({
+    orderBy: { soldCount: "desc" },
+    take: limit,
+    select: { id: true },
+  });
+  return rows.map((r) => r.id);
+}
+```
+
+Trang sản phẩm. Phần trên cùng `await params` được vì có `generateStaticParams`:
+
+```tsx
+// app/products/[id]/page.tsx
+import { Suspense } from "react";
+import { notFound } from "next/navigation";
+import { getBestSellerIds, getProduct, getReviewSummary } from "@/lib/catalog";
+import { PersonalPrice, CartSummary } from "./personalized";
+import { Gallery, PriceSkeleton, CartSkeleton, ReviewList } from "@/components/product";
+
+export async function generateStaticParams() {
+  // Với Cache Components phải trả về ít nhất một phần tử
+  const ids = await getBestSellerIds(500);
+  return ids.map((id) => ({ id }));
+}
+
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const [product, reviews] = await Promise.all([getProduct(id), getReviewSummary(id)]);
+  if (!product) notFound();
+
+  return (
+    <main>
+      <Gallery images={product.images} />
+      <h1>{product.name}</h1>
+
+      <Suspense fallback={<PriceSkeleton />}>
+        <PersonalPrice productId={id} />
+      </Suspense>
+      <Suspense fallback={<CartSkeleton />}>
+        <CartSummary productId={id} />
+      </Suspense>
+
+      <article>{product.description}</article>
+      <ReviewList average={reviews.average} count={reviews.count} items={reviews.latest} />
+    </main>
+  );
+}
+```
+
+Hai dynamic hole. Chúng đọc cookies, rồi chỉ đưa vào hàm cache những gì có ít giá trị:
+
+```tsx
+// app/products/[id]/personalized.tsx
+import { cookies } from "next/headers";
+import { getTierPrice, type PriceTier } from "@/lib/catalog";
+import { getUserBySession } from "@/lib/auth";
+import { getCart } from "@/lib/cart";
+import { AddToCartButton } from "./add-to-cart-button";
+
+const vnd = new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND" });
+
+export async function PersonalPrice({ productId }: { productId: string }) {
+  const token = (await cookies()).get("session")?.value;
+  const user = token ? await getUserBySession(token) : null; // không cache: dữ liệu từng người
+  const tier: PriceTier = user?.tier ?? "guest";
+  const amount = await getTierPrice(productId, tier); // mọi khách VIP dùng chung một entry
+  if (amount === null) return <p>Tạm hết hàng</p>;
+  return <p className="price">{vnd.format(amount)}</p>;
+}
+
+export async function CartSummary({ productId }: { productId: string }) {
+  const cartId = (await cookies()).get("cart_id")?.value;
+  const cart = cartId ? await getCart(cartId) : null; // luôn đọc mới, không bao giờ cache
+  const quantity = cart?.items.find((item) => item.productId === productId)?.quantity ?? 0;
+  return <AddToCartButton productId={productId} quantityInCart={quantity} />;
+}
+```
+
+Server Action của admin. Kiểm tra quyền nằm *trong* action, vì action là một endpoint POST công khai, ẩn form khỏi người thường không phải là bảo vệ:
+
+```ts
+// app/admin/products/actions.ts
+"use server";
+
+import { revalidateTag, updateTag } from "next/cache";
+import { z } from "zod";
+import { requireAdmin } from "@/lib/auth";
+import { db } from "@/lib/db";
+
+const ProductUpdate = z.object({
+  id: z.string().min(1),
+  name: z.string().trim().min(1).max(200),
+  description: z.string().max(20_000),
+});
+
+export type UpdateState = { ok: boolean; message: string };
+
+export async function updateProduct(_prev: UpdateState, formData: FormData): Promise<UpdateState> {
+  await requireAdmin();
+  const parsed = ProductUpdate.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { ok: false, message: "Dữ liệu không hợp lệ" };
+
+  const { id, ...data } = parsed.data;
+  await db.product.update({ where: { id }, data });
+
+  // Admin thấy ngay bản mới: entry hết hạn, route hiện tại render lại trong chính response này
+  updateTag(`product-${id}`);
+  // Trang danh mục, tìm kiếm (các hàm có cacheTag("products")) chấp nhận trễ vài giây
+  revalidateTag("products", "max");
+
+  return { ok: true, message: "Đã lưu" };
+}
+```
+
+Và webhook từ ERP. Route Handler không gọi được `updateTag`, nên dùng `revalidateTag` với `{ expire: 0 }`:
+
+```ts
+// app/api/webhooks/erp/route.ts
+import { revalidateTag } from "next/cache";
+import { verifyErpSignature } from "@/lib/webhooks";
+
+type ErpEvent = { type: "price.updated"; productId: string };
+
+export async function POST(request: Request) {
+  const body = await request.text();
+  if (!verifyErpSignature(body, request.headers.get("x-erp-signature"))) {
+    return new Response("Invalid signature", { status: 401 });
+  }
+  const event = JSON.parse(body) as ErpEvent;
+  revalidateTag(`price-${event.productId}`, { expire: 0 });
+  return Response.json({ revalidated: true });
+}
+```
+
+Giờ đi qua vòng đời của trang `/products/42`:
+
+1. **`next build`.** 500 trang bán chạy được prerender. Shell của mỗi trang gồm gallery, tên, mô tả, đánh giá, cùng skeleton của giá và giỏ hàng. Build output đánh dấu route là `◐ (Partial Prerender)`. Nếu bạn thấy `ƒ` thay vào đó, shell đang rỗng: có thứ gì đó chặn ở gần gốc cây.
+2. **Khách A chưa đăng nhập.** Shell được gửi ngay. Trong cùng response, server chạy `PersonalPrice` (hạng `guest`, tạo entry `getTierPrice("42", "guest")`) và `CartSummary`, rồi stream kết quả vào chỗ skeleton.
+3. **Hàng trăm khách VIP.** Tất cả dùng chung entry `("42", "vip")`. Chỉ phần đọc session và giỏ hàng chạy riêng cho từng người.
+4. **Admin sửa mô tả.** `updateTag("product-42")` cho hết hạn `getProduct("42")`, mọi entry `getTierPrice("42", ...)`, *và* shell của `/products/42`, vì tag của `getProduct` đã được gom lên entry của route khi prerender. Response của action mang theo trang admin đã render lại với dữ liệu mới. `revalidateTag("products", "max")` đánh dấu stale các trang danh sách.
+5. **Khách E vào ngay sau đó.** Entry đã hết hạn nên request này chờ render mới thay vì nhận bản cũ; shell mới được lưu và người sau lại nhận tức thì. Trang danh mục thì ngược lại: E thấy bản cũ một lần trong khi bản mới được tạo ở nền.
+6. **ERP đổi giá VIP.** Chỉ entry có tag `price-42` hết hạn. Shell không bị đụng tới, vì giá nằm trong hole chứ không nằm trong shell.
+
+Còn một khoảng hở cần chấp nhận: khách A nếu vẫn mở tab và điều hướng phía client quay lại trang này trong 5 phút (`stale` của profile `catalog`) có thể thấy mô tả cũ từ router cache của trình duyệt. Reload là thấy bản mới. Với mô tả sản phẩm, mình thấy chấp nhận được; với giá, đó là lý do giá nằm trong dynamic hole.
+
+## Những lỗi thường gặp
+
+### Dữ liệu theo người dùng trong cache dùng chung
+
+Tin tốt là Next.js 16 đã chặn lỗi kinh điển nhất: gọi `cookies()` hay `headers()` trong `use cache` sẽ ném lỗi `next-request-in-use-cache` ngay, nên khó vô tình cache trang của người A rồi trả cho người B như thời tự cấu hình cache. Nhưng vẫn còn những đường khác:
+
+- **Đưa id người dùng vào key của `use cache: remote`.** Không rò rỉ giữa người dùng vì key khác nhau, nhưng dữ liệu cá nhân giờ nằm trong một kho dùng chung (Redis) với thời gian sống bạn có thể không kiểm soát, và số entry tăng theo số người dùng nên tỉ lệ hit gần như bằng không. Hãy cache theo chiều ít giá trị (hạng, ngôn ngữ, tiền tệ), còn dữ liệu từng người thì đọc thẳng từ nguồn.
+- **Kiểm tra quyền nằm ngoài hàm cache.** `getOrder(orderId)` được cache theo `orderId` và trả về đơn hàng cho bất kỳ ai gọi nó. Nếu kiểm tra "đơn này có thuộc người đang đăng nhập không" chỉ nằm ở một component, thì code path tiếp theo quên kiểm tra sẽ trả đơn của người khác, nhanh hơn nhờ cache. Đặt kiểm tra quyền ở lớp truy cập dữ liệu, ngoài phần cache.
+- **CDN cache nguyên response.** Response có dynamic hole chứa cả phần được stream theo từng người. Nếu bạn đặt rule CDN "cache mọi HTML" bỏ qua `Cache-Control` mà Next.js gửi, bạn vừa tự tạo ra lỗi rò rỉ mà framework đã cố tránh.
+
+### Date.now() và Math.random() bên trong scope được cache
+
+Bên trong `use cache`, gọi `Date.now()` không gây lỗi. Đó chính là vấn đề: giá trị được đóng băng vào entry và dùng chung cho mọi người tới lần revalidate tiếp theo.
+
+```tsx
+// SAI: "còn khuyến mãi không" được tính một lần rồi cache hàng giờ
+async function SaleBadge({ productId }: { productId: string }) {
+  "use cache";
+  cacheLife("hours");
+  const sale = await getSale(productId);
+  const active = sale !== null && Date.now() < Date.parse(sale.endsAt);
+  return active ? <Badge>Giảm {sale.percent}%</Badge> : null;
+}
+
+// ĐÚNG: cache dữ liệu thô (getSale có "use cache"), so thời gian ở client
+async function SaleBadge({ productId }: { productId: string }) {
+  const sale = await getSale(productId);
+  return sale ? <SaleCountdown endsAt={sale.endsAt} percent={sale.percent} /> : null;
+}
+// SaleCountdown là Client Component ("use client") tự so Date.now() với endsAt
+```
+
+Tương tự, `Math.random()` để chia nhóm A/B bên trong cache nghĩa là mọi người dùng cùng rơi vào một nhóm. Quy tắc của mình: trong scope cache chỉ có dữ liệu, mọi thứ phụ thuộc "bây giờ" hay "người này" nằm ngoài.
+
+### Vô tình biến cả route thành dynamic
+
+Shell rỗng là lỗi khó thấy nhất, vì trang vẫn chạy đúng, chỉ chậm. Các nguyên nhân mình gặp:
+
+- **Đọc `cookies()` trong root layout** (theme, header có avatar) rồi "sửa" lỗi build bằng `<Suspense fallback={null}>` bọc quanh `<body>`. Lỗi biến mất, nhưng cả ứng dụng không còn static shell nào. Hãy đẩy phần đọc cookies xuống component nhỏ nhất cần nó.
+- **`await params` ở đầu page mà không có `generateStaticParams`.** Cả trang thành phần runtime. Truyền Promise xuống component con trong Suspense, hoặc cung cấp params mẫu.
+- **`generateMetadata` đọc dữ liệu runtime** trong khi phần còn lại của trang tĩnh được. Next.js có cảnh báo riêng cho trường hợp này.
+- **Một component dùng `cacheLife("seconds")` ở gần gốc.** Cache short-lived thành hole, kéo theo cả nhánh bên dưới.
+
+Cách kiểm tra rẻ nhất là đọc build output: route bạn muốn có shell phải là `◐` hoặc `○`. Từ 16.4 còn có `export const ensureStatic` để biến kỳ vọng đó thành lỗi build nếu ai đó thêm component động vào route.
+
+### Đọc lỗi build cho đúng
+
+Lỗi của Cache Components dài nhưng có cấu trúc rất đều. Đây là ba dạng mình gặp nhiều nhất (trích nguyên văn từ Next.js 16.2):
+
+```text
+Route "/products/[id]": Uncached data was accessed outside of <Suspense>. This delays
+the entire page from rendering, resulting in a slow user experience.
+Learn more: https://nextjs.org/docs/messages/blocking-route
+
+Route "/products/[id]": Runtime data such as `cookies()`, `headers()`, `params`, or
+`searchParams` was accessed outside of `<Suspense>`. This delays the entire page ...
+
+Route "/products/[id]" used `Date.now()` before accessing either uncached data
+(e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and
+`searchParams`). ... See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+```
+
+Cách đọc: phần đầu cho biết **route** nào, phần giữa cho biết **loại** dữ liệu (không cache hay runtime), link cuối dẫn tới trang giải thích kèm các cách sửa. Lỗi chỉ cho biết route chứ không chỉ component; khi chạy `next dev`, overlay thường trỏ đúng component, còn nếu lỗi chỉ xuất hiện trên CI thì chạy `next build --debug-prerender` để có stack trace của prerender. Sau đó luôn là một câu hỏi: dữ liệu này có được phép giống nhau cho mọi người trong một khoảng thời gian không? Có thì `use cache` với `cacheLife` phù hợp. Không thì `<Suspense>` với fallback tử tế, đặt càng sâu càng tốt.
+
+## Đọc thêm
+
+- [Next.js 16](https://nextjs.org/blog/next-16): bài công bố Cache Components, `updateTag`, `refresh` và chữ ký mới của `revalidateTag`.
+- [Caching](https://nextjs.org/docs/app/getting-started/caching) và [Revalidating](https://nextjs.org/docs/app/getting-started/revalidating): hướng dẫn chính thức theo mô hình mới.
+- [`use cache`](https://nextjs.org/docs/app/api-reference/directives/use-cache) và [`cacheLife`](https://nextjs.org/docs/app/api-reference/functions/cacheLife): cache key, serialization, profile, luật lồng nhau.
+- [Server Actions](https://nextjs.org/docs/app/guides/server-actions): mô hình một vòng request, so sánh `updateTag`, `revalidateTag`, `revalidatePath`, `refresh`.
+- [Migrating to Cache Components](https://nextjs.org/docs/app/guides/migrating-to-cache-components): bảng chuyển đổi route segment config.
+- [Uncached data was accessed outside of Suspense](https://nextjs.org/docs/messages/blocking-route): trang giải thích lỗi build hay gặp nhất.
+
+## Tóm tắt
+
+<Checklist>
+
+- Với `cacheComponents: true`, mọi thứ chạy lúc request theo mặc định; bạn chọn chỗ cache bằng `"use cache"` ở cấp file, component hoặc hàm.
+- Ranh giới `<Suspense>` là đường viền của dynamic hole: shell gồm phần tĩnh, phần `use cache` và fallback; hole được stream vào cùng response.
+- Cache key gồm build ID, function ID, tham số và closure: truyền id nhỏ nhất, không truyền object lớn, class instance hay Promise của dữ liệu runtime.
+- Luôn gọi `cacheLife` tường minh; nhớ rằng shell kế thừa thời gian sống ngắn nhất và tag của những gì nằm trong nó.
+- `updateTag` cho read-your-own-writes trong Server Action, `revalidateTag(tag, "max")` cho nội dung chấp nhận trễ, `{ expire: 0 }` cho webhook, `refresh` cho dữ liệu không cache.
+- Đọc cookies, headers, searchParams trong hole, rồi truyền giá trị ít biến thiên nhất vào hàm cache; dữ liệu từng người dùng thì không cache.
+- Đừng để `Date.now()` hay `Math.random()` bị đóng băng trong cache; dùng `connection()`, Client Component hoặc chấp nhận có chủ đích.
+- Kiểm tra build output: route cần shell phải là `◐` hoặc `○`; tự host nhiều instance thì cần cache handler dùng chung để invalidate lan ra mọi nơi.
+
+</Checklist>

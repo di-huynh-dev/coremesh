@@ -1,0 +1,949 @@
+---
+title: "RAG That Actually Answers Correctly: Chunking, Hybrid Search with pgvector, Reranking and Evaluation"
+excerpt: "Anyone can build a RAG demo in an afternoon; making it answer correctly is the hard part. This post walks through a TypeScript RAG pipeline on PostgreSQL/pgvector: structure-aware chunking, hybrid search fused with RRF in a single SQL query, reranking, filtering by permission before ranking, citations, and how to measure quality with numbers."
+---
+
+<Lead>My first RAG demo went great in the meeting: ask anything about the company handbook and a fluent answer came back. Two weeks later, someone asked "how do I fix VPN-403" and got the full VPN installation guide — right topic, wrong answer. Someone else asked about parental leave and the bot quoted an HR document they weren't allowed to see. Neither failure was the LLM's fault; both were *retrieval* failures. This post is the pipeline I rebuilt afterwards, in TypeScript on PostgreSQL/pgvector: structure-aware chunking, hybrid search fused with Reciprocal Rank Fusion, reranking, permission filtering before ranking, prompts with citations — and, most importantly, how to measure whether each change makes the system better or worse.</Lead>
+
+## RAG, long context or fine-tuning — how to choose in 2026
+
+The first question isn't "which vector database" but "do I need RAG at all". In 2026 the answer is different from two years ago, because context windows are huge: current Claude models have a 1-million-token context. Putting whole documents in the prompt is now a serious option, not a joke.
+
+The three approaches solve different problems:
+
+| | RAG | Long context (put it all in the prompt) | Fine-tuning |
+| --- | --- | --- | --- |
+| **Best at** | Large, frequently changing knowledge bases that need citations | Small corpora, questions that need a holistic read | Teaching the model a style, format or behaviour |
+| **New data** | Re-ingest a few documents | Available on the next request | Retrain |
+| **Per-user permissions** | Filter at query time | Build a separate context per permission group | Practically impossible — knowledge is baked into weights |
+| **Citations** | Natural — you know exactly which passage was used | Possible, but the model must locate it in a very long context | No |
+| **Cost per question** | Low, a few thousand tokens of context | High without caching; prompt caching cuts it a lot | Low at inference, expensive to train |
+| **Weak spot** | Wrong retrieval means a wrong answer | Quality drops as context grows; capped by window size | Confident hallucination, hard to update |
+
+A few practical observations:
+
+- **Small corpus? Don't build RAG.** In [Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval) (September 2024), Anthropic advises that if your whole knowledge base is under roughly 200,000 tokens (about 500 pages), you should just put it in the prompt and use prompt caching. With 1M-token contexts today, that threshold can move higher. An 80-page policy manual needs no chunking, embeddings or index.
+- **Long context isn't free in quality.** "Lost in the Middle" (Liu et al., 2023) and Chroma's [Context Rot](https://research.trychroma.com/context-rot) report (July 2025, testing 18 models) both show that models don't treat every position in the context equally, and reliability drops as input grows — even on simple tasks. Sending 800,000 tokens to answer a question about annual leave is both expensive and riskier.
+- **Permissions often decide for you.** Everyone can read the general handbook, but not the payments team's technical docs, HR procedures or board minutes. When each user may see a different set of documents, RAG with permission filtering at query time is the cleanest design.
+- **Fine-tuning is not a way to load knowledge.** It's good for "answer in our house style, in exactly this JSON format", not for "remember last month's updated leave policy". You can't cite weights, and you can't remove a revoked document from a model.
+
+So my rule is simple: small, stable corpus, same permissions for everyone → long context plus prompt caching. Large, changing corpus, different permissions, citations required → RAG. The two aren't exclusive either: RAG can retrieve whole documents (not just small passages) and let the long context give the model enough surrounding text.
+
+<Callout>
+  **RAG mostly fails at retrieval, not generation.** When the right passage is in the context, modern models almost always answer correctly. When it isn't, no prompt can save you. That's why most of this post is about fetching the right passage and measuring whether you did.
+</Callout>
+
+## The big picture: two pipelines
+
+A RAG system is really two pipelines running at different rhythms:
+
+- **Ingestion (offline):** read documents, split them into chunks, add context, create embeddings, write to Postgres. Runs when documents change — via a webhook, a cron job or CI in the docs repo.
+- **Query (online):** take a question, search full-text and vectors in parallel, fuse the results, rerank, assemble the prompt, call the LLM, return an answer with citations. Runs per request, within a latency budget.
+
+<Figure src="/blog/rag-pipeline-in-practice-pipelines.svg" alt="The two RAG pipelines: offline ingestion with parse, chunk, contextualize, embed and store in Postgres; online query with permission filter, hybrid search, RRF, rerank, prompt and LLM" caption="Ingestion runs when documents change; the query pipeline runs per request. Postgres is where the two meet." />
+
+Why PostgreSQL with [pgvector](https://github.com/pgvector/pgvector) rather than a dedicated vector database: the permission data (tenants, user groups) already lives in Postgres, full-text search is built in, transactions make updating a document and its chunks atomic, and the team doesn't have to operate another system. At the time of writing the latest pgvector release is 0.8.7 (October 1, 2026); everything here needs 0.8.0 or later because it uses iterative index scans.
+
+## Ingestion: parsing and chunking
+
+### Parsing: keep the structure
+
+Parsing is the most underrated step, and everything downstream depends on it. My rule: **convert everything to Markdown and keep the structure** — headings, tables, code blocks, lists. Export Confluence or Notion to Markdown; for PDFs use an extractor that recognizes tables and headings, and eyeball a few files before running the whole corpus. A table "flattened" into a run of numbers can't be rescued by any chunking algorithm.
+
+Alongside the content, store metadata: source URL, title, last updated, owner, and most importantly **who is allowed to read this document**. Permission data must travel with the document from ingestion onwards, not be bolted on later.
+
+### Three chunking strategies
+
+| Strategy | How | Pros | Cons |
+| --- | --- | --- | --- |
+| **Fixed-size** | Cut every N tokens, with overlap | Simple, uniform size, easy to estimate cost | Cuts through sentences, tables and code; chunks mix two topics |
+| **Recursive** | Try paragraphs, then sentences, then words until it fits | Respects paragraph boundaries, still easy | Unaware of headings; a chunk can still span two sections |
+| **Structure-aware (headings)** | Split by heading, each chunk belongs to exactly one section; long sections split recursively | Coherent chunks with a ready-made "heading path" as context | Depends on parse quality; uneven chunk sizes |
+
+For handbooks and technical docs — which are written with clear headings — structure-aware chunking wins almost every time. Fixed-size only suits unstructured text like meeting transcripts.
+
+### Chunk size and overlap
+
+There's no universally right number, but the trade-offs are clear:
+
+- **Small chunks (100–200 tokens):** sharper embeddings because each chunk is about one thing, but context gets lost ("This rate applies from Q3" — which rate?). You need a larger top-k to gather enough information.
+- **Large chunks (800–1,500 tokens):** plenty of context, but the embedding is "diluted" by several ideas, and each chunk takes more room in the prompt.
+- **Overlap:** keeps an idea at a boundary from being cut in half, at the cost of duplication and storage. With structure-aware chunking overlap matters less, because boundaries are already natural ones.
+
+I start around 400–500 tokens per chunk, overlap by one whole short paragraph (never mid-paragraph), and tune with the evaluation set at the end of this post. The starting number matters less than having a way to measure changes to it.
+
+### A heading-aware chunker that never splits tables or code
+
+This is the Markdown chunker I use. It walks line by line, treats code blocks and tables as atomic, keeps a "heading stack" so every chunk knows which section it belongs to, and only splits further when a block exceeds the size limit:
+
+```ts
+// chunker.ts
+export interface Chunk {
+  ordinal: number;
+  headingPath: string[]; // ["Handbook", "Leave", "Parental leave"]
+  text: string;
+  tokens: number;
+}
+
+type Block = { kind: "text" | "code" | "table"; text: string };
+type Heading = { level: number; title: string };
+
+// A rough estimate. Measure with your embedding model's real tokenizer before tuning sizes.
+export const estimateTokens = (s: string) => Math.ceil(s.length / 4);
+
+function* walk(markdown: string): Generator<Block | Heading> {
+  const lines = markdown.split(/\r?\n/);
+  let buf: string[] = [];
+  let kind: Block["kind"] = "text";
+  const flush = function* () {
+    const text = buf.join("\n").trim();
+    if (text) yield { kind, text } as Block;
+    buf = [];
+    kind = "text";
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("```")) {
+      // A code block is atomic: read until the closing fence.
+      yield* flush();
+      const fence = [line];
+      while (++i < lines.length) {
+        fence.push(lines[i]);
+        if (lines[i].startsWith("```")) break;
+      }
+      yield { kind: "code", text: fence.join("\n") };
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (heading) {
+      yield* flush();
+      yield { level: heading[1].length, title: heading[2].trim() };
+      continue;
+    }
+    const isRow = line.trimStart().startsWith("|");
+    if (buf.length && isRow !== (kind === "table")) yield* flush(); // a table starts or ends
+    if (isRow) kind = "table";
+    if (!line.trim()) {
+      yield* flush(); // blank line = paragraph boundary
+      continue;
+    }
+    buf.push(line);
+  }
+  yield* flush();
+}
+
+// Oversized table: split by rows and repeat the header in every piece.
+function splitTable(table: string, maxTokens: number): string[] {
+  const [head, sep, ...rows] = table.split("\n");
+  const pieces: string[] = [];
+  let cur: string[] = [];
+  for (const row of rows) {
+    if (cur.length && estimateTokens([head, sep, ...cur, row].join("\n")) > maxTokens) {
+      pieces.push([head, sep, ...cur].join("\n"));
+      cur = [];
+    }
+    cur.push(row);
+  }
+  if (cur.length) pieces.push([head, sep, ...cur].join("\n"));
+  return pieces;
+}
+
+// Recursive fallback: an oversized paragraph is split at sentence boundaries.
+function splitSentences(text: string, maxTokens: number): string[] {
+  const pieces: string[] = [];
+  let cur = "";
+  for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+    if (cur && estimateTokens(cur + " " + sentence) > maxTokens) {
+      pieces.push(cur);
+      cur = sentence;
+    } else {
+      cur = cur ? cur + " " + sentence : sentence;
+    }
+  }
+  if (cur) pieces.push(cur);
+  return pieces;
+}
+
+export function chunkMarkdown(markdown: string, { maxTokens = 500, overlapTokens = 60 } = {}): Chunk[] {
+  const chunks: Chunk[] = [];
+  const stack: Heading[] = [];
+  let parts: Block[] = [];
+
+  const size = (bs: Block[]) => estimateTokens(bs.map((b) => b.text).join("\n\n"));
+  const emit = (carryOverlap: boolean) => {
+    if (!parts.length) return;
+    const text = parts.map((b) => b.text).join("\n\n");
+    chunks.push({ ordinal: chunks.length, headingPath: stack.map((h) => h.title), text, tokens: estimateTokens(text) });
+    // Overlap by a whole paragraph, never by half a table or half a code block.
+    const last = parts[parts.length - 1];
+    parts = carryOverlap && last.kind === "text" && estimateTokens(last.text) <= overlapTokens ? [last] : [];
+  };
+
+  for (const item of walk(markdown)) {
+    if ("level" in item) {
+      emit(false); // a heading always closes the current chunk: sections never mix
+      while (stack.length && stack[stack.length - 1].level >= item.level) stack.pop();
+      stack.push(item);
+      continue;
+    }
+    // An oversized code block stays whole: half a function is worse than one big chunk.
+    const pieces: Block[] =
+      item.kind === "code" || estimateTokens(item.text) <= maxTokens
+        ? [item]
+        : (item.kind === "table" ? splitTable : splitSentences)(item.text, maxTokens).map((text) => ({
+            kind: item.kind,
+            text,
+          }));
+    for (const piece of pieces) {
+      if (parts.length && size([...parts, piece]) > maxTokens) {
+        emit(true);
+        if (size([...parts, piece]) > maxTokens) parts = []; // the overlap doesn't fit: drop it
+      }
+      parts.push(piece);
+    }
+  }
+  emit(false);
+  return chunks;
+}
+```
+
+Three decisions worth noting: a heading always closes the chunk, so a chunk never spans two sections; long tables are split by rows but every piece carries the header row (a row like "| L3 | 15 |" without its header is meaningless); and code blocks stay whole even when they exceed the limit. `estimateTokens` is only an estimate — the characters-per-token ratio varies by language and tokenizer, and text with diacritics such as Vietnamese often deviates from the English-based "4 characters per token" rule, so measure with the real tokenizer before trusting the numbers.
+
+### Giving chunks context: contextual chunk headers
+
+A chunk cut out of its document often loses its subject. "The allowance increases to 5 million VND from Q3" tells neither the embedding nor full-text search what allowance, or for whom. There are two ways to restore it, cheap first:
+
+1. **A deterministic header (free):** prepend the document title and heading path to the chunk when embedding and indexing: `Handbook › Benefits › Learning allowance`. This alone fixes a surprising number of cases, because headings often contain exactly the words users ask with.
+2. **LLM-written context (contextual retrieval):** give a small model the whole document plus the chunk and ask for a sentence or two that situates the chunk. This is the technique Anthropic describes in [Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval). On the datasets they tested, the top-20 retrieval failure rate (1 − recall@20) dropped by 35% with contextual embeddings alone (5.7% to 3.7%), by 49% when adding BM25 over the contextualized chunks (to 2.9%), and by 67% with reranking on top (to 1.9%). Those are measurements on their data — your corpus will give different numbers, which is exactly why you need your own evaluation set.
+
+The cost of the second approach is one LLM call per chunk with the whole document in the prompt. Prompt caching takes care of most of it: the document goes first and is cached, so the other chunks of the same document only pay for what changes.
+
+```ts
+// contextualize.ts
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment
+
+export async function contextualize(doc: { title: string; markdown: string }, chunk: string): Promise<string> {
+  const res = await anthropic.messages.create({
+    model: "claude-haiku-5-5", // short, high-volume task: use a small model
+    max_tokens: 2048,
+    output_config: { effort: "low" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `<document title="${doc.title}">\n${doc.markdown}\n</document>`,
+            // The document is a shared prefix for all of its chunks → cache it
+            cache_control: { type: "ephemeral" },
+          },
+          {
+            type: "text",
+            text:
+              `<chunk>\n${chunk}\n</chunk>\n` +
+              "Write 1–2 short sentences that situate this chunk within the whole document " +
+              "(what it is about, which part it belongs to, who it applies to) to improve search retrieval. " +
+              "Answer only with the context, in the same language as the document.",
+          },
+        ],
+      },
+    ],
+  });
+  if (res.stop_reason === "refusal") return ""; // don't block ingestion over one chunk
+  return res.content
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .join("")
+    .trim();
+}
+```
+
+I store this context in its own column (`context`) instead of mixing it into the original content. Embeddings and the full-text index use `header + context + content`; the reranker sees the same; the final prompt gets only the original text, so every citation points at real words from the source rather than a machine-written summary (more on that below). Regenerating the context with a different prompt also doesn't require re-parsing documents.
+
+## Embeddings: dimensions, normalization and versions
+
+Three embedding decisions will stay with you for a long time, so they deserve thought:
+
+- **Dimensions.** Many models now let you pick the output dimension. The Voyage 4 family (released January 2026), for example, defaults to 1024 and supports 256, 512 and 2048. More dimensions are usually slightly more accurate but cost memory and slow down indexing. Mind pgvector's limits: an HNSW index on `vector` supports up to 2,000 dimensions; `halfvec` (16-bit floats) goes up to 4,000.
+- **Storage precision.** Per the pgvector README, a `vector` takes `4 × dimensions + 8` bytes and a `halfvec` `2 × dimensions + 8` bytes. At 1024 dimensions that's 4,104 versus 2,056 bytes per chunk — 100,000 chunks is about 410 MB versus 206 MB, before the index. I default to `halfvec`; the precision loss barely affects ranking at this scale, but verify it with your evaluation set anyway.
+- **Normalization.** Voyage embeddings are [normalized to length 1](https://docs.voyageai.com/docs/faq), so cosine similarity and dot product give the same ranking. I still use the cosine operator `<=>` because it stays correct if I later switch to a model that doesn't normalize. If you use inner product `<#>`, remember pgvector returns the *negative* inner product (Postgres only supports ascending-order index scans on operators).
+
+One easily missed detail: many embedding models distinguish **queries** from **documents**. Voyage's `input_type` parameter prepends the appropriate prompt for each; forgetting it throws away free quality.
+
+```ts
+// embed.ts
+export const EMBEDDING = { model: "voyage-4-large", dimensions: 1024 } as const;
+export const EMBEDDING_ID = `${EMBEDDING.model}/${EMBEDDING.dimensions}`; // stored with every chunk
+
+type VoyageResponse = { data: { embedding: number[]; index: number }[]; usage: { total_tokens: number } };
+
+export async function embed(texts: string[], inputType: "document" | "query"): Promise<number[][]> {
+  const vectors: number[][] = [];
+  // Per-request limits: 1,000 inputs and a model-specific token budget — keep batches small
+  for (let i = 0; i < texts.length; i += 128) {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        input: texts.slice(i, i + 128),
+        model: EMBEDDING.model,
+        input_type: inputType,
+        output_dimension: EMBEDDING.dimensions,
+      }),
+    });
+    if (!res.ok) throw new Error(`Voyage ${res.status}: ${await res.text()}`);
+    const json = (await res.json()) as VoyageResponse;
+    for (const item of json.data.sort((a, b) => a.index - b.index)) vectors.push(item.embedding);
+  }
+  return vectors;
+}
+```
+
+### Store the model version and plan for re-embedding
+
+Embeddings from two different models (or the same model at different dimensions) live in different spaces; distances between them are meaningless. So every chunk stores `embedding_model` (e.g. `voyage-4-large/1024`), and when I change models I do it blue-green instead of in place:
+
+1. Add an `embedding_next` column and build its HNSW index with `CREATE INDEX CONCURRENTLY`.
+2. Backfill in the background, in batches, possibly for hours — queries keep reading the old column.
+3. Run the evaluation set against the new column. Switch only if the numbers are better or equal.
+4. Switch queries, watch for a few days, then drop the old column.
+
+One special case: the Voyage 4 models [share an embedding space](https://www.mongodb.com/products/updates/the-voyage-4-series-now-available) within the family, so you can index with `voyage-4-large` and embed questions with the cheaper `voyage-4-lite`. That's a property of this particular family; by default, treat every model change as a full re-embed.
+
+## Schema and HNSW index
+
+The schema below runs on PostgreSQL 18 with pgvector 0.8.x. Two tables: `documents` holds metadata and permissions, `chunks` holds content, embedding and a `tsvector` for full-text search. Permission data is *denormalized* onto each chunk so the search query can filter without a join.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE documents (
+  id             uuid PRIMARY KEY DEFAULT uuidv7(),  -- uuidv7() is new in Postgres 18
+  tenant_id      uuid NOT NULL,
+  source_uri     text NOT NULL,
+  title          text NOT NULL,
+  allowed_groups text[] NOT NULL,                    -- e.g. {all} or {eng,payments}
+  content_hash   text NOT NULL,
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, source_uri)
+);
+
+CREATE TABLE chunks (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  document_id     uuid NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
+  tenant_id       uuid NOT NULL,
+  allowed_groups  text[] NOT NULL,
+  ordinal         int NOT NULL,
+  heading_path    text NOT NULL,
+  context         text NOT NULL DEFAULT '',
+  content         text NOT NULL,
+  token_count     int NOT NULL,
+  embedding       halfvec(1024) NOT NULL,
+  embedding_model text NOT NULL,
+  -- Postgres has no Vietnamese text search config → use 'simple' (no stemming)
+  tsv tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('simple', heading_path), 'A') ||
+    setweight(to_tsvector('simple', context || ' ' || content), 'B')
+  ) STORED
+);
+
+CREATE INDEX chunks_embedding_hnsw ON chunks
+  USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
+CREATE INDEX chunks_tsv_gin ON chunks USING gin (tsv);
+CREATE INDEX chunks_tenant_idx ON chunks (tenant_id);
+```
+
+A few points worth explaining:
+
+- **Say `STORED` explicitly.** Since Postgres 18, generated columns default to `VIRTUAL` (computed on read). The `tsv` column needs to be physically stored for the GIN index and so `to_tsvector` isn't recomputed on every query.
+- **The `'simple'` config.** Postgres ships text search configurations for around thirty languages, but not Vietnamese. `'simple'` only lowercases and tokenizes — no stemming, no stop words. If your corpus is entirely English, `'english'` is the better choice. Headings get weight `A` and content `B`, so heading matches rank higher.
+- **HNSW parameters.** `m` (connections per node, default 16) and `ef_construction` (candidate list size while building, default 64) are pgvector's defaults; raising them improves recall at the cost of build time and index size. At query time, `hnsw.ef_search` (default 40) controls search breadth — and, as we'll see, it's also the cap on how many rows a single index scan returns.
+- **Why cosine.** The opclass must match the query operator: a `halfvec_cosine_ops` index is only used for `ORDER BY embedding <=> ...`. Accidentally writing `<->` (L2) silently gives you a sequential scan.
+
+### Writing a document: atomic and idempotent
+
+Each document is ingested in one transaction: upsert `documents`, delete old chunks, insert new ones. Users never see a document half old, half new. `content_hash` includes `EMBEDDING_ID`, so unchanged documents are skipped while a model change automatically triggers reprocessing.
+
+```ts
+// ingest.ts
+import { createHash } from "node:crypto";
+import pg from "pg";
+import pgvector from "pgvector/pg";
+import { chunkMarkdown } from "./chunker";
+import { contextualize } from "./contextualize";
+import { embed, EMBEDDING_ID } from "./embed";
+
+export interface SourceDoc {
+  tenantId: string;
+  uri: string;
+  title: string;
+  markdown: string;
+  allowedGroups: string[];
+}
+
+export async function ingestDocument(pool: pg.Pool, doc: SourceDoc): Promise<void> {
+  const hash = createHash("sha256").update(EMBEDDING_ID).update(doc.markdown).digest("hex");
+  const prev = await pool.query("SELECT content_hash FROM documents WHERE tenant_id = $1 AND source_uri = $2", [
+    doc.tenantId,
+    doc.uri,
+  ]);
+  if (prev.rows[0]?.content_hash === hash) return; // nothing changed
+
+  const chunks = chunkMarkdown(doc.markdown);
+  const contexts: string[] = [];
+  for (const c of chunks) contexts.push(await contextualize(doc, c.text)); // sequential to reuse the cache
+  const header = (path: string[]) => [doc.title, ...path].join(" › ");
+  const vectors = await embed(
+    chunks.map((c, i) => `${header(c.headingPath)}\n\n${contexts[i]}\n\n${c.text}`),
+    "document",
+  );
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO documents (tenant_id, source_uri, title, allowed_groups, content_hash)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (tenant_id, source_uri) DO UPDATE
+         SET title = EXCLUDED.title, allowed_groups = EXCLUDED.allowed_groups,
+             content_hash = EXCLUDED.content_hash, updated_at = now()
+       RETURNING id`,
+      [doc.tenantId, doc.uri, doc.title, doc.allowedGroups, hash],
+    );
+    const documentId: string = rows[0].id;
+    await client.query("DELETE FROM chunks WHERE document_id = $1", [documentId]);
+    for (const [i, c] of chunks.entries()) {
+      await client.query(
+        `INSERT INTO chunks (document_id, tenant_id, allowed_groups, ordinal, heading_path,
+                             context, content, token_count, embedding, embedding_model)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [documentId, doc.tenantId, doc.allowedGroups, c.ordinal, header(c.headingPath),
+         contexts[i], c.text, c.tokens, pgvector.toSql(vectors[i]), EMBEDDING_ID],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+```
+
+The LLM and embedding calls happen *outside* the transaction — holding a transaction open while waiting tens of seconds on external APIs is the quickest way to drain a connection pool.
+
+## Hybrid search: full-text and vectors in one SQL query
+
+Back to "how do I fix VPN-403". Vector search sees the question as "similar" to every VPN document, and the VPN installation guide — long, full of the word "VPN" — wins. Meanwhile, the only passage containing the exact string `VPN-403` sits at rank 12. Embeddings are good at *meaning* but weak on exact tokens: error codes, service names, config keys, clause numbers. Full-text search is the opposite.
+
+| | Dense (vector) | Sparse (full-text / BM25) | Hybrid |
+| --- | --- | --- | --- |
+| **Good at** | Paraphrases, synonyms, asking in Vietnamese about English docs | Error codes, proper names, rare keywords, exact matches | Both; when one misses, the other compensates |
+| **Weak at** | Rare exact tokens, negation, numbers | Synonyms, different phrasing, other languages | One more query; fusing two different score scales |
+| **In Postgres** | pgvector + HNSW | `tsvector` + GIN (or a BM25 extension) | Two CTEs plus RRF |
+| **Extra cost** | Embedding the question | Almost none | The sum of both |
+
+An honest caveat: Postgres's built-in full-text search is *not BM25*. `ts_rank`/`ts_rank_cd` only look at term frequency and position within the document itself and [use no global information](https://www.postgresql.org/docs/current/textsearch-controls.html) such as IDF, so a common word counts as much as a rare one. As the "catch exact keywords" branch of a hybrid search that's good enough. If you need real BM25 inside Postgres, there are extensions such as ParadeDB's `pg_search` and Tiger Data's `pg_textsearch`.
+
+### Reciprocal Rank Fusion
+
+Cosine distances and `ts_rank_cd` scores live on completely different scales; adding them up is meaningless. [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (Cormack, Clarke and Büttcher, SIGIR 2009) ignores scores and uses only *ranks*:
+
+```text
+RRF(d) = Σ  1 / (k + rank_i(d))      with k = 60, summed over the lists that contain d
+```
+
+The constant `k = 60` comes from the original paper and has become the common default. It flattens the gap between top ranks: rank 1 and rank 2 differ very little, so a document that appears in *both* lists usually beats one that tops only a single list. Working it out for four chunks:
+
+| Chunk | Dense rank | Full-text rank | RRF score |
+| --- | --- | --- | --- |
+| A | 1 | 4 | 1/61 + 1/64 = 0.03202 |
+| C (contains "VPN-403") | 12 | 1 | 1/72 + 1/61 = 0.03028 |
+| B | 2 | — | 1/62 = 0.01613 |
+| D | — | 2 | 1/62 = 0.01613 |
+
+Chunk C jumps from rank 12 in the dense list to rank 2 after fusion — exactly what I want for an error-code question.
+
+<Figure src="/blog/rag-pipeline-in-practice-hybrid-search.svg" alt="Hybrid search: a full-text list and a vector list, both filtered by tenant and permissions, are fused with RRF, then a reranker picks the top context for the prompt" caption="Two candidate lists (already permission-filtered) are fused by rank with RRF, then a reranker rescores them to pick the few best chunks for the prompt." />
+
+### The whole hybrid search in one query
+
+I let Postgres do everything: both search branches, permission filtering, ranking and RRF fusion in one SQL statement, one round-trip. I ran this query against PostgreSQL 18 with pgvector 0.8.7:
+
+```sql
+-- $1 question vector, $2 keyword query, $3 tenant, $4 the user's groups,
+-- $5 candidates per branch, $6 results after fusion
+WITH dense AS MATERIALIZED (
+  SELECT c.id, c.embedding <=> $1::halfvec(1024) AS distance
+  FROM chunks c
+  WHERE c.tenant_id = $3 AND c.allowed_groups && $4::text[]
+  ORDER BY distance
+  LIMIT $5
+),
+dense_ranked AS (
+  -- relaxed_order may return slightly out-of-order rows → re-rank outside the CTE
+  SELECT id, row_number() OVER (ORDER BY distance) AS rank FROM dense
+),
+sparse AS (
+  SELECT c.id,
+         row_number() OVER (ORDER BY ts_rank_cd(c.tsv, q.query) DESC) AS rank
+  FROM chunks c, websearch_to_tsquery('simple', $2) AS q(query)
+  WHERE c.tenant_id = $3 AND c.allowed_groups && $4::text[]
+    AND c.tsv @@ q.query
+  ORDER BY rank
+  LIMIT $5
+),
+fused AS (
+  SELECT id,
+         coalesce(1.0 / (60 + dr.rank), 0) + coalesce(1.0 / (60 + sp.rank), 0) AS rrf_score,
+         dr.rank AS dense_rank,
+         sp.rank AS sparse_rank
+  FROM dense_ranked dr
+  FULL OUTER JOIN sparse sp USING (id)
+)
+SELECT f.id, f.rrf_score, f.dense_rank, f.sparse_rank,
+       c.heading_path, c.context, c.content, doc.title, doc.source_uri
+FROM fused f
+JOIN chunks c ON c.id = f.id
+JOIN documents doc ON doc.id = c.document_id
+ORDER BY f.rrf_score DESC
+LIMIT $6;
+```
+
+`FULL OUTER JOIN` keeps chunks that appear in only one branch; `coalesce(..., 0)` makes the missing branch contribute zero. I return both `dense_rank` and `sparse_rank` — when debugging, knowing which branch a chunk came from is worth more than any score.
+
+On the TypeScript side, the important parts are configuring the index scan in the *same transaction* as the query, and turning a natural-language question into a keyword query:
+
+```ts
+// search.ts
+import type pg from "pg";
+import pgvector from "pgvector/pg";
+import { embed } from "./embed";
+import { HYBRID_SQL } from "./sql"; // the SQL above
+
+export interface Principal { tenantId: string; groups: string[] }
+export interface Candidate {
+  id: string; rrfScore: number; denseRank: number | null; sparseRank: number | null;
+  headingPath: string; context: string; content: string; title: string; sourceUri: string;
+}
+
+const STOPWORDS = new Set([
+  "tôi", "mình", "bạn", "là", "của", "và", "có", "không", "được", "cho", "với", "thì", "các",
+  "những", "một", "này", "đó", "nào", "gì", "bao", "nhiêu", "sao", "nếu", "khi", "ở", "trong",
+  "the", "a", "an", "is", "are", "of", "to", "in", "for", "how", "what", "do", "does", "i",
+]);
+
+// websearch_to_tsquery joins words with AND: "how many days of annual leave do I get" would require
+// every word in a single chunk. Drop stop words and join with "or" so the full-text branch returns rows.
+export function keywordQuery(question: string): string {
+  const terms = question
+    .normalize("NFC") // NFD Vietnamese (separate combining marks) won't match an NFC tsvector
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .filter((t) => t.length > 1 && !STOPWORDS.has(t));
+  return [...new Set(terms)].join(" or ");
+}
+
+export async function hybridSearch(
+  pool: pg.Pool, who: Principal, question: string, { perBranch = 50, limit = 30 } = {},
+): Promise<Candidate[]> {
+  const [queryVector] = await embed([question], "query");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // SET LOCAL lives only inside this transaction → it can't leak to other requests on the same connection
+    await client.query("SET LOCAL hnsw.ef_search = 100"); // must be ≥ perBranch
+    await client.query("SET LOCAL hnsw.iterative_scan = relaxed_order");
+    const { rows } = await client.query(HYBRID_SQL, [
+      pgvector.toSql(queryVector), keywordQuery(question), who.tenantId, who.groups, perBranch, limit,
+    ]);
+    await client.query("COMMIT");
+    return rows.map((r) => ({
+      id: String(r.id), // node-postgres returns bigint as a string
+      rrfScore: Number(r.rrf_score), // and numeric too
+      denseRank: r.dense_rank === null ? null : Number(r.dense_rank),
+      sparseRank: r.sparse_rank === null ? null : Number(r.sparse_rank),
+      headingPath: r.heading_path, context: r.context, content: r.content,
+      title: r.title, sourceUri: r.source_uri,
+    }));
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+```
+
+Why `hnsw.ef_search = 100`? The pgvector README is explicit: the number of rows an HNSW scan returns is limited by `hnsw.ef_search`, 40 by default. Write `LIMIT 50` with the default and you get at most 40 rows, sometimes fewer because of dead tuples or filter conditions — and nothing tells you.
+
+## Access control: filter before you rank
+
+The second incident from the intro — the bot quoting HR documents to someone without access — came from a very common design: retrieve the top-k across the *whole* corpus, then filter by permission in application code, or worse, tell the LLM in the prompt to "only use documents the user may see". Both are wrong, in different ways:
+
+- **Filtering in the prompt is not access control.** Once content is in the context it can leak into the answer, through citations, through logs, through a cleverly phrased question. Documents a user can't see must not leave the database, full stop.
+- **Filtering afterwards in the app loses results.** Take the global top 50, drop what the user can't see, and you may be left with 3 chunks — or none — even though the corpus has dozens of relevant passages that person is allowed to read.
+- **Rerankers and LLMs are third parties.** Chunks sent to a rerank API or an LLM API have left your system. Permission filtering must happen *before* those steps.
+
+That's why `tenant_id = $3 AND allowed_groups && $4` sits inside both branches of the SQL above. But with an approximate index, putting the `WHERE` in the right place still isn't enough.
+
+### The HNSW post-filtering trap
+
+With HNSW, pgvector applies filter conditions *after* scanning the index. The index returns roughly `ef_search` nearest candidates from the whole table, and only then does Postgres discard rows that fail the `WHERE`. The pgvector README gives the example: a condition matching 10% of rows with the default `ef_search` of 40 leaves 4 rows on average. Your tenant is 2% of the data? Less than one row on average. No error, no warning — just "I couldn't find that" for small customers, and a support team that can't explain why.
+
+The options, in the order I usually consider them:
+
+1. **Iterative index scans (pgvector 0.8.0+).** With `hnsw.iterative_scan` enabled, the index keeps scanning when there aren't enough rows after filtering. `relaxed_order` gives better recall but results may be slightly out of distance order — which is why the SQL above uses a `MATERIALIZED` CTE and re-ranks with `row_number()`. The extra scanning is bounded: `hnsw.max_scan_tuples` (default 20,000) and `hnsw.scan_mem_multiplier` (default 1 × `work_mem`). A very small tenant in a very large table can still hit those limits.
+2. **Let the planner use an exact scan.** For small tenants, a B-tree on `tenant_id` and computing distances for a few thousand rows is fast and gives *exact* results. When I tested the query on a small table, the planner picked `chunks_tenant_idx` over HNSW on its own. Look at `EXPLAIN` on real data instead of guessing.
+3. **Partial indexes for a few large filter values.** When a handful of big tenants hold most of the data, give each its own HNSW index.
+4. **Partition by tenant when there are many values.** Each partition gets its own HNSW index, so filtering by tenant becomes partition pruning rather than post-filtering.
+
+```sql
+-- (3) A partial index for one large tenant
+CREATE INDEX chunks_hnsw_acme ON chunks
+  USING hnsw (embedding halfvec_cosine_ops)
+  WHERE tenant_id = '0199f0b2-0000-7000-8000-000000000001';
+
+-- (4) Or partition by tenant from the start (instead of the chunks table above)
+-- CREATE TABLE chunks (...) PARTITION BY LIST (tenant_id);
+
+-- A second line of defense: Row Level Security
+ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY chunk_access ON chunks
+  USING (
+    tenant_id = current_setting('app.tenant_id')::uuid
+    AND allowed_groups && string_to_array(current_setting('app.groups'), ',')
+  );
+-- Per request, inside the transaction:
+--   SELECT set_config('app.tenant_id', $1, true), set_config('app.groups', $2, true);
+```
+
+Row Level Security is a safety net for when someone writes a new query and forgets the permission condition. Two caveats: RLS doesn't apply to superusers and by default doesn't apply to the table owner (unless you `FORCE ROW LEVEL SECURITY`), so the app must connect as a dedicated role; and the third argument `true` to `set_config` scopes the value to the current transaction — forget it with a connection pool and the next request "inherits" the previous request's permissions. RLS is the second layer, not a replacement for explicit filters in the query: it's also a post-filter under HNSW, so everything above still applies.
+
+## Reranking: rescoring with a cross-encoder
+
+Embeddings are *bi-encoders*: the question and the chunk are encoded separately and then compared by distance. Fast and indexable, but the model never "sees" the question and the chunk together. A reranker is a *cross-encoder*: it reads the (question, chunk) pair jointly and scores relevance. Much more accurate, but far too slow to run over the whole corpus — so it only rescores the few dozen candidates hybrid search already picked.
+
+My pipeline: 50 per branch, RRF fuses down to 30, the reranker picks 8 for the prompt. In Anthropic's Contextual Retrieval experiments they retrieved 150 candidates and reranked down to 20 — both sets of numbers should be tuned to your evaluation set and latency budget.
+
+```ts
+// rerank.ts
+import type { Candidate } from "./search";
+
+export interface Ranked extends Candidate { relevance: number | null }
+
+type RerankResponse = { data: { index: number; relevance_score: number }[]; usage: { total_tokens: number } };
+
+export async function rerank(question: string, candidates: Candidate[], topK = 8): Promise<Ranked[]> {
+  if (candidates.length === 0) return [];
+  try {
+    const res = await fetch("https://api.voyageai.com/v1/rerank", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: question,
+        documents: candidates.map((c) => `${c.headingPath}\n${c.context}\n\n${c.content}`),
+        model: "rerank-3",
+        top_k: topK,
+      }),
+      signal: AbortSignal.timeout(3_000), // if the reranker is slow, RRF order is good enough
+    });
+    if (!res.ok) throw new Error(`rerank ${res.status}`);
+    const json = (await res.json()) as RerankResponse;
+    // data is sorted by relevance_score descending; index points into the array we sent
+    return json.data.map((d) => ({ ...candidates[d.index], relevance: d.relevance_score }));
+  } catch (err) {
+    console.warn("rerank failed, falling back to RRF order", err);
+    return candidates.slice(0, topK).map((c) => ({ ...c, relevance: null }));
+  }
+}
+```
+
+I use Voyage's rerank API (`rerank-3` launched at the end of September 2026; `rerank-2.5` is still supported), but Cohere Rerank or a self-hosted open-source cross-encoder plug into the same spot. Things I learned:
+
+- **Give the reranker the same text a human would read**, heading and context included. A reranker scores "The allowance increases to 5 million" low because it doesn't know which allowance — just like an embedding.
+- **Rerank scores aren't probabilities.** `relevance_score` isn't calibrated across questions, so don't read 0.5 as "50% relevant". Still, an unusually low top score is a good signal for "I don't know" behaviour — with a threshold chosen from the evaluation set, not guessed.
+- **Have a way back.** The reranker is one more network dependency on the request path. A timeout plus fallback to RRF order lets the system degrade gracefully instead of failing.
+
+## Prompt assembly: citations and permission to say "I don't know"
+
+For the last step I want three things: an answer based only on the retrieved documents, a citation pointing back to the source for every claim, and a plain "I don't know" when the documents aren't enough. Anthropic's Messages API has a content block type, [`search_result`](https://platform.claude.com/docs/en/build-with-claude/search-results), built for exactly this: you pass each chunk as a search result with a `source` and `title`, enable citations, and the response comes back as text blocks with structured citations — no inventing a `[1]`, `[2]` syntax and parsing it back out.
+
+```ts
+// answer.ts
+import Anthropic from "@anthropic-ai/sdk";
+import type { Ranked } from "./rerank";
+
+const anthropic = new Anthropic();
+const MIN_RELEVANCE = 0.3; // chosen from the evaluation set, not a universal constant
+
+const SYSTEM = `You answer questions about the company's internal documents.
+- Use only information from the provided search results, never outside knowledge.
+- If the search results are not enough to answer, say clearly that the documents don't cover it and suggest who to ask. Do not guess.
+- If sources contradict each other, present both and say which is which.
+- Answer concisely, in the language of the question.`;
+
+export interface Answer {
+  text: string;
+  citations: { title: string; source: string; quote: string }[];
+  grounded: boolean;
+}
+
+const NOT_FOUND: Answer = {
+  text: "I couldn't find this in the internal documents.",
+  citations: [],
+  grounded: false,
+};
+
+export async function answer(question: string, context: Ranked[]): Promise<Answer> {
+  const usable = context.filter((c) => c.relevance === null || c.relevance >= MIN_RELEVANCE);
+  if (usable.length === 0) return NOT_FOUND; // don't call the LLM with nothing to stand on
+
+  const res = await anthropic.messages.create({
+    model: "claude-opus-5-5",
+    max_tokens: 4096,
+    output_config: { effort: "medium" },
+    system: SYSTEM,
+    messages: [
+      {
+        role: "user",
+        content: [
+          ...usable.map((c) => ({
+            type: "search_result" as const,
+            source: c.sourceUri,
+            title: c.headingPath,
+            // One block per paragraph → citations point at the exact paragraph, not the whole chunk
+            content: c.content.split(/\n{2,}/).map((p) => ({ type: "text" as const, text: p })),
+            citations: { enabled: true },
+          })),
+          { type: "text" as const, text: question },
+        ],
+      },
+    ],
+  });
+  if (res.stop_reason === "refusal") return NOT_FOUND;
+
+  let text = "";
+  const citations: Answer["citations"] = [];
+  for (const block of res.content) {
+    if (block.type !== "text") continue;
+    text += block.text;
+    for (const c of block.citations ?? []) {
+      if (c.type === "search_result_location") {
+        citations.push({ title: c.title ?? c.source, source: c.source, quote: c.cited_text });
+      }
+    }
+  }
+  return { text, citations, grounded: citations.length > 0 };
+}
+```
+
+The decisions in this code:
+
+- **"I don't know" is decided at two levels.** In code: if no chunk clears the relevance threshold, answer "not found" without calling the LLM — cheap, fast and impossible to hallucinate. In the prompt: when there are chunks but they aren't enough, the model is explicitly *allowed* to say it doesn't know. That explicit permission matters more than you'd think; a model told to "answer the question" will try to answer.
+- **Only original text goes into the prompt.** The LLM-written `context` from ingestion serves *finding*; at *answering* time I send only the source text and heading path, so every citation points at real words in the document rather than a machine-written summary.
+- **`grounded` is an operational signal.** A substantive answer with zero citations suggests the model is speaking from its own knowledge. I log this rate daily; a sudden spike usually means retrieval just broke somewhere.
+- **Citations go straight to the UI.** `source` and `cited_text` let you show the verbatim quote with a link — users can verify for themselves, and that, not a confident tone, is what builds trust.
+
+## Evaluation: measure before you trust
+
+This is what separates a real RAG system from a demo. Without an evaluation set, every change — bigger chunks, a new embedding model, adding a reranker — is a gut call: you try five familiar questions, it "seems better", you deploy. I've done exactly that, and broken the questions I didn't try.
+
+### A golden set labelled by evidence, not chunk IDs
+
+A golden set is a list of questions with *evidence* — which passage in which document answers each one. The best source of questions is real (anonymized) query logs, topped up with questions written by people who know the documents. 50–100 questions is enough to start; diversity matters more than volume.
+
+```json
+[
+  {
+    "id": "leave-007",
+    "kind": "answerable",
+    "question": "Do employees on probation get annual leave?",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all"] },
+    "evidence": [{ "source": "handbook/leave.md", "quote": "Employees on probation accrue annual leave pro rata" }],
+    "facts": ["Yes, pro rata to months worked"]
+  },
+  {
+    "id": "vpn-403",
+    "kind": "answerable",
+    "question": "how do I fix VPN-403",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all", "eng"] },
+    "evidence": [{ "source": "eng/runbooks/vpn.md", "quote": "VPN-403 means your certificate has expired" }],
+    "facts": ["The certificate has expired", "Run the certificate renewal command"]
+  },
+  {
+    "id": "salary-bands-forbidden",
+    "kind": "forbidden",
+    "question": "What is the salary band for level L4?",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all"] },
+    "evidence": [{ "source": "hr/compensation.md", "quote": "L4 salary band" }]
+  },
+  {
+    "id": "no-answer-012",
+    "kind": "unanswerable",
+    "question": "Does the company cover pet care costs?",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all"] }
+  }
+]
+```
+
+Three kinds of question, three purposes: `answerable` measures retrieval and answer quality; `unanswerable` checks "I don't know" behaviour; `forbidden` is a question whose asker is *not* allowed to see the evidence — retrieving that evidence is a leak, and that number must always be zero.
+
+The most important detail: **evidence is recorded as a source plus a quote, not a chunk ID.** Chunk IDs change every time you change chunking — exactly when you need the evaluation set most. With quotes, a chunk counts as relevant if it belongs to the right source and contains the quote, however the chunker cut it.
+
+### Measuring retrieval: recall@k and MRR
+
+Two retrieval metrics I track:
+
+- **recall@k:** the fraction of questions with at least one relevant chunk in the top k (some sources call this hit rate; a stricter definition counts the fraction of *all* evidence retrieved — better for questions that need several sources). This answers "does the right passage make it into the prompt".
+- **MRR (Mean Reciprocal Rank):** the mean of `1 / rank` of the first relevant chunk, counting 0 if it's not in the top k. This answers "how high does the right passage rank" — which matters because top chunks get more of the model's attention, and because you want to shrink k without losing recall.
+
+```ts
+// eval-retrieval.ts
+import type { Candidate, Principal } from "./search";
+
+export interface GoldenItem {
+  id: string;
+  kind: "answerable" | "unanswerable" | "forbidden";
+  question: string;
+  principal: Principal;
+  evidence?: { source: string; quote: string }[];
+}
+
+const norm = (s: string) => s.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+
+const isRelevant = (c: Candidate, item: GoldenItem) =>
+  (item.evidence ?? []).some((e) => c.sourceUri === e.source && norm(c.content).includes(norm(e.quote)));
+
+export function scoreRetrieval(items: GoldenItem[], results: Map<string, Candidate[]>, k: number) {
+  let answerable = 0, hits = 0, reciprocalRanks = 0, leaks = 0;
+  for (const item of items) {
+    const top = (results.get(item.id) ?? []).slice(0, k);
+    if (item.kind === "forbidden") {
+      if (top.some((c) => isRelevant(c, item))) leaks++; // must always be 0
+      continue;
+    }
+    if (item.kind !== "answerable") continue;
+    answerable++;
+    const first = top.findIndex((c) => isRelevant(c, item));
+    if (first !== -1) {
+      hits++;
+      reciprocalRanks += 1 / (first + 1);
+    }
+  }
+  return { [`recall@${k}`]: hits / answerable, [`mrr@${k}`]: reciprocalRanks / answerable, leaks };
+}
+```
+
+Run this for each *stage* of the pipeline — dense only, full-text only, hybrid after RRF, after reranking — not just for the final output. When a metric drops, you immediately know which stage caused it.
+
+### Measuring answers: faithfulness and LLM-as-judge
+
+Good retrieval isn't enough; the model can still misread or embellish. For generation I measure two things:
+
+- **Faithfulness (groundedness):** does the answer stick to the context? The [Ragas](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness/) definition is easy to follow: split the answer into claims, count the claims supported by the context, divide by the total. An answer with 4 claims, one of which isn't in the context, has a faithfulness of 0.75.
+- **Correctness:** does the answer contain the expected `facts` from the golden set, and for `unanswerable` questions, does it decline correctly?
+
+Both are usually graded by another LLM — LLM-as-judge. It scales, but it has documented biases; the MT-Bench study by Zheng et al. (2023), for instance, describes position bias when comparing two answers, a preference for longer answers, and a preference for answers written by the judge model itself. How I reduce the risk:
+
+- **Grade small, binary things.** "Is this claim supported by this passage: yes/no" is far more reliable than "score this answer from 1 to 10".
+- **Calibrate against humans.** Take 30–50 samples, have people grade them independently, and measure agreement with the judge. If agreement is low, fix the grading prompt before trusting any number.
+- **Pin the judge.** Model, version and grading prompt are recorded with the results. Changing the judge changes the ruler — never compare scores across judges.
+- **Don't grade only end to end.** A low final-answer score doesn't tell you whether chunking, retrieval, reranking or the prompt failed. The retrieval metrics above are what point at the broken part.
+
+### Regression tests when chunking or models change
+
+An evaluation set is only valuable if it runs automatically. I split it into two rhythms:
+
+- **On every pull request** touching the chunker, embedding config, SQL or prompt: run the retrieval evaluation against a database re-ingested from a fixed document snapshot. It's cheap — only question embeddings and a few queries. Fail if `leaks > 0`, or if recall@k drops past a threshold relative to a baseline committed to the repo.
+- **Nightly or before a release:** run generation plus LLM-as-judge, since it's slower and costs money.
+
+A note on thresholds: with 80 `answerable` questions, each one is worth 1.25 percentage points. A change that "lowers recall by 1.25%" may be a single question flipping. Look at the list of flipped questions rather than just the total, and set the failure threshold in questions (for example: no more than 2 previously correct questions now failing).
+
+## A real-world example: Q&A over an internal handbook and engineering docs
+
+Putting it all together in a concrete setting: a company of about 400 people, an HR handbook written in Vietnamese, engineering docs (runbooks, ADRs, deploy guides) mostly in English. Around 1,800 Markdown files exported from Confluence and the docs repo, roughly 3.1 million tokens after cleanup. Three permission groups: `all` (everyone), `eng` (engineers), `hr` (HR).
+
+**Do we need RAG?** 3.1 million tokens exceeds a 1-million-token context, and people in `all` must not see `hr` documents. Either reason is enough to choose RAG, before even discussing cost.
+
+**Sizing.** At an average of 400 tokens per chunk, 3.1 million tokens gives about 7,750 chunks. 1024-dimension `halfvec` embeddings take 7,750 × 2,056 bytes ≈ 16 MB (≈ 32 MB as `vector`). At this scale the whole index fits comfortably in the RAM of a small Postgres instance — you don't need a separate vector database, and you don't need to worry about HNSW tuning yet.
+
+**Evaluating stage by stage.** To illustrate how to read the numbers, here is a toy evaluation set of 6 `answerable` questions. Each cell is the rank of the first relevant chunk at each stage (— means not in the top 10):
+
+| Question | Dense | Full-text | Hybrid (RRF) | Hybrid + rerank |
+| --- | --- | --- | --- | --- |
+| Q1. Do probationers get annual leave? | 2 | 5 | 1 | 1 |
+| Q2. How do I fix VPN-403? | 12 | 1 | 2 | 1 |
+| Q3. Hotfix deploy process? (asked in Vietnamese, English doc) | 1 | — | 1 | 1 |
+| Q4. Yearly learning allowance? | 7 | 3 | 4 | 2 |
+| Q5. Who approves expenses above 50 million VND? | 4 | 9 | 3 | 1 |
+| Q6. How is on-call compensated? | — | — | — | — |
+
+From that table you can compute:
+
+| Stage | recall@5 | MRR@5 | recall@3 |
+| --- | --- | --- | --- |
+| Dense | 3/6 = 0.50 | 0.29 | 2/6 = 0.33 |
+| Full-text | 3/6 = 0.50 | 0.26 | 2/6 = 0.33 |
+| Hybrid (RRF) | 5/6 = 0.83 | 0.51 | 4/6 = 0.67 |
+| Hybrid + rerank | 5/6 = 0.83 | 0.75 | 5/6 = 0.83 |
+
+For example, hybrid MRR@5 is (1 + 1/2 + 1 + 1/4 + 1/3 + 0) / 6 = 3.083 / 6 ≈ 0.51. What the tables say — and what I've actually run into with real data:
+
+- **Dense and full-text have the same recall but fail on different questions.** Dense misses Q2 (the error code) and Q4; full-text misses Q3 (Vietnamese question, English document) and Q5. That's the condition for hybrid to help. If both branches failed on the same questions, fusing them would save nothing.
+- **The reranker doesn't raise recall@5, but it clearly raises MRR.** It only reorders what was retrieved. Its real value shows in the recall@3 column: if you want fewer chunks in the prompt (cheaper, less noise), the reranker keeps the right passage from falling out of the top.
+- **Q6 fails at every stage, and no stage is to blame.** Opening the document reveals that the on-call allowance table was pasted into Confluence as a *screenshot* of a spreadsheet — there's no text to index. No amount of retrieval tuning fixes a parsing problem. If you only looked at end-to-end scores, you'd spend an afternoon tweaking prompts for a question whose answer doesn't exist in the index.
+
+Six questions are of course not enough to make decisions; with real data use at least a few dozen and look at each flipped question. But the computation and the way you read it stay the same.
+
+**`forbidden` questions.** In the real golden set I add about ten questions on compensation, disciplinary matters and performance reviews, asked as a user in the `all` group. The `leaks` metric must be 0 at every stage — and I deliberately run it once with the permission condition removed from the SQL to make sure the test *can* fail. A test that has never been red is a test that hasn't been verified.
+
+## Common pitfalls
+
+**Chunks cut through tables or code.** Half a table loses its header and its numbers become meaningless; half a function gets "completed" by the model's imagination. Treat both as atomic, and repeat the header when a table must be split.
+
+**Mixing embedding model versions.** A config bump re-embeds new documents while old chunks keep old vectors. Nothing errors — older documents just quietly drop out of results. Store `embedding_model` per chunk, include it in `content_hash`, and alert when `SELECT embedding_model, count(*) FROM chunks GROUP BY 1` returns more than one row outside a planned migration.
+
+**Top-k too small.** Five candidates per branch leave the reranker nothing to choose from, and `LIMIT 100` with the default `hnsw.ef_search` of 40 returns at most 40 rows. Retrieve wide, narrow at the reranker, and let the evaluation set pick the prompt size.
+
+**Leaking documents across tenants or groups.** Filtering after retrieval or in the prompt, caching answers without tenant and groups in the cache key, logging full contexts where everyone can read them. Filter in SQL, add RLS, and keep `forbidden` questions in the golden set.
+
+**Silent post-filtering with approximate indexes.** The `WHERE` is in the right place, but HNSW filters after scanning and small tenants get almost nothing. Enable iterative scans, read `EXPLAIN`, and add a golden question for your smallest tenant.
+
+**Evaluating only end-to-end answers.** A correctness score falling from 0.82 to 0.74 says nothing about the cause. Measure retrieval per stage and faithfulness separately, and read each flipped question.
+
+**Forgetting Unicode normalization.** Vietnamese text may arrive as NFC or NFD; identical-looking strings won't match in a `tsvector`. Normalize to NFC at ingestion and at query time.
+
+## Further reading
+
+- [pgvector README](https://github.com/pgvector/pgvector) — HNSW, `halfvec`, filtering, iterative index scans, hybrid search.
+- [PostgreSQL: Controlling Text Search](https://www.postgresql.org/docs/current/textsearch-controls.html) — `websearch_to_tsquery`, `ts_rank_cd` and their limits.
+- [Anthropic — Introducing Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval) — contextual embeddings, contextual BM25 and reranking.
+- [Cormack, Clarke, Büttcher — Reciprocal Rank Fusion (SIGIR 2009)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — the original RRF paper.
+- [Claude API — Search results](https://platform.claude.com/docs/en/build-with-claude/search-results) — the `search_result` content block and citations.
+- [Chroma — Context Rot](https://research.trychroma.com/context-rot) — why long context isn't free.
+- [Ragas — Faithfulness](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness/) — the faithfulness metric definition.
+
+## Summary
+
+<Checklist>
+
+- Don't rush into RAG: for a small, stable corpus with uniform permissions, long context plus prompt caching is simpler. RAG wins when the corpus is large, changes often, has varying permissions and needs citations.
+- Parse to Markdown keeping structure, chunk by heading, treat tables and code as atomic, add a deterministic header and (when it pays off) LLM-written context.
+- Store `embedding_model` with every chunk, use query/document `input_type`, and change models blue-green with evaluation.
+- Hybrid search: full-text catches exact tokens, vectors catch meaning, fused with RRF (k = 60) in a single SQL query.
+- Filter tenant and permissions in SQL, before any ranking step; enable iterative scans, keep `hnsw.ef_search` at least as large as the candidates you need, and add RLS as a safety net.
+- Rerank a few dozen candidates down to a handful, with a timeout and fallback; use rerank scores with a threshold derived from the evaluation set.
+- Put only original text in the prompt, enable citations, explicitly allow "I don't know", and track the rate of uncited answers.
+- Label the golden set by source and quote, include `answerable`, `unanswerable` and `forbidden` questions; measure recall@k and MRR per stage, and run it as a regression test whenever chunking, models or prompts change.
+
+</Checklist>

@@ -1,0 +1,959 @@
+---
+title: "Xây dựng UI chat AI streaming mà vẫn mượt: SSE, ReadableStream, markdown tăng dần và nút Stop"
+excerpt: "Phần frontend mà các tutorial chat AI hay bỏ qua: chọn transport, tự parse SSE với event bị cắt giữa chunk, Route Handler giữ API key và huỷ ngược lên upstream, state theo message parts, gom render theo requestAnimationFrame, markdown tăng dần an toàn, autoscroll, accessibility và xử lý lỗi."
+---
+
+<Lead>Demo chat AI nào cũng trông ổn: gõ câu hỏi, chữ chạy ra từng chút. Nhưng khi đưa vào sản phẩm thật, mình gặp đủ thứ mà tutorial không nhắc tới: chữ đứng im rồi đổ ra một cục vì proxy buffer, tab giật khi câu trả lời dài vì markdown bị parse lại từ đầu mỗi token, bấm Stop xong mà hoá đơn API vẫn tăng vì request upstream không hề bị huỷ, screen reader đọc lắp bắp từng mảnh chữ. Bài này đi qua toàn bộ đường ống frontend của một chat LLM — transport, parse, state, render, UX — bằng một ví dụ xuyên suốt: trợ lý hỗ trợ khách hàng trong một app Next.js.</Lead>
+
+## Vì sao phải stream: thời gian đến token đầu tiên
+
+Streaming không làm model trả lời nhanh hơn. Một câu trả lời 600 token mất bao lâu để sinh ra thì vẫn mất chừng đó, dù bạn stream hay không. Thứ thay đổi là **thời điểm người dùng thấy phản hồi đầu tiên**:
+
+- **Không stream:** người dùng nhìn spinner suốt toàn bộ thời gian sinh — có thể 10–20 giây với câu trả lời dài. Cảm giác là "app treo".
+- **Có stream:** chữ đầu tiên xuất hiện sau khoảng thời gian gọi là **time to first token (TTFT)**, phần còn lại chạy ra trong lúc người dùng đã bắt đầu đọc. Tổng thời gian như nhau, nhưng thời gian *chờ* gần như biến mất.
+
+Vì vậy chỉ số mình theo dõi cho một UI chat không phải "tổng thời gian trả lời" mà là ba con số:
+
+1. **TTFT phía client:** từ lúc bấm gửi đến khi ký tự đầu tiên được paint. Con số này gồm cả network, hàng đợi của provider, thời gian route handler khởi động — và cả độ trễ do proxy buffer nếu có.
+2. **Độ mượt khi chạy chữ:** chữ ra đều hay giật từng cục, main thread có bị chặn không (đo bằng INP khi người dùng gõ hay cuộn trong lúc stream).
+3. **Time to stop:** từ lúc bấm Stop đến khi chữ ngừng chạy *và* request upstream thực sự bị huỷ.
+
+Có một chi tiết mới cần lưu ý: nhiều model hiện nay có giai đoạn suy luận (thinking) trước khi viết câu trả lời. Với một số model, phần suy luận này mặc định không trả nội dung về, nên stream có thể "im lặng" vài giây trước token text đầu tiên. UI cần biết trạng thái đó để hiện "Đang suy nghĩ…" thay vì để người dùng tưởng app bị treo — mình sẽ đưa nó vào protocol ngay từ đầu.
+
+<Figure src="/blog/streaming-ai-chat-ui-pipeline.svg" alt="Sơ đồ đường ống: LLM API stream tới Route Handler, Route Handler gửi SSE tới trình duyệt, parser tách event, reducer cập nhật state, render được gom theo requestAnimationFrame; nút Stop huỷ ngược qua AbortSignal tới upstream" caption="Toàn bộ đường ống: dữ liệu đi từ trái sang phải, tín hiệu huỷ đi ngược từ nút Stop về tận LLM API." />
+
+## Chọn transport: EventSource, fetch streaming hay WebSocket
+
+Có ba cách phổ biến để đẩy token từ server xuống trình duyệt. Cả ba đều chạy được, nhưng trade-off rất khác nhau:
+
+| | `EventSource` (SSE chuẩn) | `fetch` + `ReadableStream` | WebSocket |
+| --- | --- | --- | --- |
+| **Method** | Chỉ `GET` | Bất kỳ, thường là `POST` | Upgrade từ `GET`, sau đó là kênh hai chiều |
+| **Gửi lịch sử hội thoại** | Phải nhét vào URL hoặc lưu trước ở server | Nằm trong body JSON | Gửi qua message sau khi kết nối |
+| **Header tuỳ ý (Authorization...)** | Không — chỉ có `withCredentials` | Có | Không trong handshake của trình duyệt |
+| **Huỷ** | `close()` | `AbortController` — có sẵn, truyền được lên server | Tự định nghĩa message "cancel" |
+| **Tự reconnect** | Có, kèm `Last-Event-ID` | Không — tự viết | Không — tự viết |
+| **Chạy trên serverless / Route Handler** | Tốt | Tốt | Khó — cần server giữ kết nối lâu hoặc dịch vụ riêng |
+| **Đi qua proxy, CDN** | Tốt nếu tắt buffer | Tốt nếu tắt buffer | Cần proxy hỗ trợ upgrade |
+| **Hợp với** | Feed thông báo một chiều | Chat LLM request–response | Voice, cộng tác realtime, agent cần đẩy sự kiện hai chiều |
+
+Với chat LLM, mình gần như luôn chọn **`POST` + `fetch` streaming, nhưng giữ định dạng `text/event-stream` cho body**. Lý do:
+
+- **`EventSource` chỉ gửi được `GET` và không cho đặt header.** [Spec HTML](https://html.spec.whatwg.org/multipage/server-sent-events.html) chỉ định nghĩa một option duy nhất là `withCredentials`. Lịch sử hội thoại vài chục KB không thuộc về query string — nó sẽ nằm trong log của mọi proxy trên đường đi.
+- **Tự reconnect là con dao hai lưỡi.** Khi kết nối rớt, `EventSource` tự gửi lại request. Với LLM, request mới thường nghĩa là *sinh lại từ đầu* — người dùng thấy chữ lặp, còn bạn trả tiền hai lần. Mình muốn tự quyết định khi nào retry.
+- **Giới hạn kết nối trên HTTP/1.1.** [MDN](https://developer.mozilla.org/en-US/docs/Web/API/EventSource) cảnh báo SSE qua HTTP/1.1 bị giới hạn 6 kết nối mỗi trình duyệt cho một domain — mở vài tab chat là hết.
+- **WebSocket thừa cho bài toán request–response.** Bạn phải tự viết framing, auth, heartbeat, huỷ, và hạ tầng serverless thường không giữ WebSocket. Mình chỉ dùng khi thật sự cần hai chiều liên tục, ví dụ voice.
+
+Giữ định dạng SSE (các dòng `event:` / `data:` ngăn bởi dòng trống) có lợi: nó là chuẩn, dễ debug bằng `curl -N`, và proxy lẫn DevTools đều hiểu content type `text/event-stream`. Ta chỉ không dùng `EventSource` để đọc nó.
+
+## Một protocol nhỏ giữa server và trình duyệt
+
+Sai lầm mình hay thấy là forward thẳng event của provider xuống client. Làm vậy thì UI bị buộc chặt vào một provider, và client phải hiểu cả những event nó không cần. Mình định nghĩa một protocol nhỏ, không phụ thuộc provider, dùng chung type giữa server và client:
+
+```ts
+// lib/chat-protocol.ts
+export type ChatEvent =
+  | { type: "status"; value: "thinking" | "writing" }
+  | { type: "text-delta"; text: string }
+  | { type: "tool-call"; id: string; name: string; input: unknown }
+  | { type: "tool-result"; id: string; output: unknown; isError: boolean }
+  | { type: "error"; message: string; retryable: boolean }
+  | { type: "done"; reason: "end_turn" | "max_tokens" | "aborted" | "other" };
+
+const encoder = new TextEncoder();
+
+/** Mã hoá một event theo định dạng text/event-stream. */
+export function encodeEvent(event: ChatEvent): Uint8Array {
+  // JSON.stringify không sinh ký tự xuống dòng thô, nên một dòng data: là đủ
+  return encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+/** Dòng comment — client bỏ qua, nhưng giữ kết nối không bị proxy cắt. */
+export const HEARTBEAT = encoder.encode(": ping\n\n");
+```
+
+Sáu loại event là đủ cho phần lớn UI chat: trạng thái, chữ, tool call, kết quả tool, lỗi và kết thúc. Đổi provider thì chỉ route handler thay đổi; toàn bộ phần client giữ nguyên.
+
+## Route Handler: giữ API key ở server, huỷ ngược lên upstream
+
+Trình duyệt không bao giờ được gọi thẳng API của provider — API key nằm trong bundle JS là API key công khai. Route Handler của Next.js đóng vai trò proxy: nhận lịch sử hội thoại, gọi provider bằng key ở server, dịch event của provider sang protocol ở trên và stream về.
+
+Ví dụ dưới dùng [TypeScript SDK chính thức của Anthropic](https://github.com/anthropics/anthropic-sdk-typescript) (`@anthropic-ai/sdk`, bản 1.x ra ngày 21/10/2026, chuyển sang API version `2026-10-21`). Helper `client.messages.stream()` trả về một `MessageStream` vừa async-iterable, vừa có `finalMessage()`; tham số thứ hai nhận request options, trong đó có `signal` — abort signal đó sẽ huỷ cả request HTTP tới Anthropic. Model id đọc từ biến môi trường để đổi model không cần sửa code.
+
+```ts
+// app/api/chat/route.ts
+import Anthropic from "@anthropic-ai/sdk";
+import { encodeEvent, HEARTBEAT, type ChatEvent } from "@/lib/chat-protocol";
+import { SUPPORT_TOOLS, runSupportTool } from "@/lib/support-tools";
+import { requireSession } from "@/lib/auth";
+
+export const maxDuration = 60;
+
+const client = new Anthropic(); // đọc ANTHROPIC_API_KEY — chỉ tồn tại trên server
+const MODEL = process.env.CHAT_MODEL;
+const MAX_TOOL_ROUNDS = 3;
+
+type ClientMessage = { role: "user" | "assistant"; text: string };
+
+function isRetryable(err: unknown): boolean {
+  if (!(err instanceof Anthropic.APIError)) return false;
+  // status undefined: lỗi kết nối hoặc event error giữa stream (vd. overloaded)
+  return err.status === undefined || err.status === 429 || err.status >= 500;
+}
+
+export async function POST(req: Request) {
+  const session = await requireSession(req); // ném 401 nếu chưa đăng nhập
+  if (!MODEL) return Response.json({ error: "CHAT_MODEL is not set" }, { status: 500 });
+
+  const { messages } = (await req.json()) as { messages: ClientMessage[] };
+  // Chỉ nhận role user/assistant và text — không bao giờ để client gửi role "system"
+  const history: Anthropic.MessageParam[] = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role, content: String(m.text).slice(0, 8_000) }));
+
+  // Hai cách biết client đã bỏ đi: req.signal, hoặc response stream bị cancel
+  const upstream = new AbortController();
+  req.signal.addEventListener("abort", () => upstream.abort(), { once: true });
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: ChatEvent) => {
+        if (!upstream.signal.aborted) controller.enqueue(encodeEvent(event));
+      };
+      heartbeat = setInterval(() => {
+        if (!upstream.signal.aborted) controller.enqueue(HEARTBEAT);
+      }, 15_000);
+
+      try {
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          const stream = client.messages.stream(
+            { model: MODEL, max_tokens: 4096, system: SYSTEM_PROMPT, tools: SUPPORT_TOOLS, messages: history },
+            { signal: upstream.signal },
+          );
+
+          for await (const event of stream) {
+            if (event.type === "content_block_start") {
+              if (event.content_block.type === "thinking") send({ type: "status", value: "thinking" });
+              if (event.content_block.type === "text") send({ type: "status", value: "writing" });
+            } else if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+              send({ type: "text-delta", text: event.delta.text });
+            }
+          }
+
+          const message = await stream.finalMessage();
+          const calls = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+          if (message.stop_reason !== "tool_use" || calls.length === 0) {
+            const r = message.stop_reason;
+            send({ type: "done", reason: r === "end_turn" || r === "max_tokens" ? r : "other" });
+            return;
+          }
+
+          history.push({ role: "assistant", content: message.content });
+          const results: Anthropic.ToolResultBlockParam[] = [];
+          for (const call of calls) {
+            send({ type: "tool-call", id: call.id, name: call.name, input: call.input });
+            // Tool chạy với quyền của session, không tin input của model về "ai là chủ đơn"
+            const { output, isError } = await runSupportTool(call, session, upstream.signal);
+            send({ type: "tool-result", id: call.id, output, isError });
+            results.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(output), is_error: isError });
+          }
+          history.push({ role: "user", content: results });
+        }
+        send({ type: "error", message: "Too many tool steps", retryable: false });
+      } catch (err) {
+        if (upstream.signal.aborted) return; // người dùng bấm Stop — không phải lỗi
+        send({ type: "error", message: "The assistant is unavailable", retryable: isRetryable(err) });
+      } finally {
+        clearInterval(heartbeat);
+        try { controller.close(); } catch { /* stream đã bị cancel */ }
+      }
+    },
+    cancel() {
+      clearInterval(heartbeat);
+      upstream.abort();
+    },
+  });
+
+  return new Response(body, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+const SYSTEM_PROMPT =
+  "You are the support assistant for our store. Use lookup_order for order questions. Answer in the user's language.";
+```
+
+Vài điểm trong đoạn code này mình cố ý làm, không phải ngẫu nhiên:
+
+- **Abort được nối từ hai phía.** `req.signal` là cách chuẩn, nhưng không phải nền tảng nào cũng bắn nó đúng lúc. `cancel()` của `ReadableStream` được gọi khi phía đọc response huỷ stream — đó là lưới an toàn thứ hai. Cả hai cùng abort một `AbortController` duy nhất, được truyền vào SDK và vào tool.
+- **Kiểm tra `aborted` trước mỗi `enqueue`.** Gọi `enqueue` sau khi stream đã bị cancel sẽ ném lỗi; trong `setInterval` thì đó là uncaught exception.
+- **Không forward lỗi thô.** Message lỗi của provider có thể chứa chi tiết nội bộ. Client chỉ cần biết có retry được hay không.
+- **Client chỉ gửi text.** Lịch sử tool call của các lượt trước không đi qua client; nếu cần giữ, lưu ở server theo id hội thoại.
+
+Trên Vercel, việc huỷ function khi client ngắt kết nối là tính năng phải bật ([chỉ cho Node.js runtime](https://vercel.com/docs/functions/functions-api-reference#cancel-requests)). Nếu không bật, `req.signal` có thể không bao giờ fire và model cứ sinh tiếp đến hết `max_tokens`:
+
+```json
+{
+  "functions": {
+    "app/api/**/*": { "supportsCancellation": true }
+  }
+}
+```
+
+Bật cờ này cũng có nghĩa function bị dừng ngay khi client ngắt kết nối, nên việc *bắt buộc* phải hoàn tất — lưu câu trả lời dở dang vào database, ghi log chi phí — cần bọc trong `after()` của Next.js hoặc `waitUntil`.
+
+## Parse SSE bằng tay: event bị cắt ngang giữa các chunk
+
+Đây là phần mà gần như mọi đoạn code "stream chat trong 20 dòng" đều sai. Chúng thường làm thế này: đọc một chunk, `split("\n\n")`, `JSON.parse` từng phần. Chạy ngon trên localhost, rồi vỡ trên production.
+
+Lý do: **ranh giới chunk mà bạn nhận được không liên quan gì đến ranh giới event mà server gửi**. TCP, TLS, proxy, nén — mỗi lớp đều có thể gộp hoặc cắt dữ liệu ở bất cứ đâu. Một chunk có thể kết thúc giữa dòng `data:`, giữa chuỗi JSON, thậm chí giữa một ký tự nhiều byte. Tiếng Việt làm lỗi cuối lộ ra rất nhanh: chữ "ệ" chiếm 3 byte UTF-8, và nếu bạn decode từng chunk bằng `new TextDecoder().decode(chunk)` không có `stream: true`, byte bị cắt sẽ thành ký tự thay thế `�`.
+
+Cách làm đúng là một pipeline ba tầng, mỗi tầng giữ phần dở dang của mình:
+
+1. **`TextDecoderStream`** biến byte thành chuỗi và tự giữ lại byte của ký tự chưa đủ. API này đã [Baseline widely available](https://developer.mozilla.org/en-US/docs/Web/API/TextDecoderStream) từ tháng 9/2022.
+2. **Bộ tách dòng** giữ lại phần sau dấu xuống dòng cuối cùng cho chunk sau.
+3. **Bộ ráp event** gom các dòng `data:` cho tới khi gặp dòng trống, đúng theo [quy tắc của spec](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation): dòng kết thúc bằng CRLF, LF hoặc CR; dòng bắt đầu bằng `:` là comment; bỏ đúng một dấu cách sau dấu hai chấm; nhiều dòng `data:` nối với nhau bằng `\n`; event chưa có dòng trống kết thúc khi stream đóng thì bị bỏ.
+
+```ts
+// lib/sse.ts
+import type { ChatEvent } from "./chat-protocol";
+
+export type SSEMessage = { event: string; data: string };
+
+export function createSSEParser(): TransformStream<string, SSEMessage> {
+  let buffer = "";
+  let pendingCR = false; // chunk trước kết thúc bằng \r — có thể \n đang ở chunk sau
+  let eventName = "";
+  let data: string[] = [];
+
+  const processLine = (line: string, out: TransformStreamDefaultController<SSEMessage>) => {
+    if (line === "") {
+      if (data.length > 0) out.enqueue({ event: eventName || "message", data: data.join("\n") });
+      eventName = "";
+      data = [];
+      return;
+    }
+    if (line.startsWith(":")) return; // comment, ví dụ heartbeat
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    else if (field === "data") data.push(value);
+  };
+
+  return new TransformStream({
+    transform(chunk, out) {
+      if (pendingCR && chunk.startsWith("\n")) chunk = chunk.slice(1); // CRLF bị cắt đôi
+      pendingCR = chunk.endsWith("\r");
+      buffer += chunk;
+      const lines = buffer.split(/\r\n|\r|\n/);
+      buffer = lines.pop() ?? ""; // dòng chưa hoàn chỉnh, chờ chunk sau
+      for (const line of lines) processLine(line, out);
+    },
+    // flush: event dở dang khi stream đóng bị bỏ, đúng theo spec
+  });
+}
+
+export async function* readChatEvents(response: Response): AsyncGenerator<ChatEvent> {
+  if (!response.body) throw new Error("Response has no body");
+  const reader = response.body
+    .pipeThrough(new TextDecoderStream())
+    .pipeThrough(createSSEParser())
+    .getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      yield JSON.parse(value.data) as ChatEvent;
+    }
+  } finally {
+    reader.cancel().catch(() => {}); // người dùng break sớm → huỷ cả pipeline
+  }
+}
+```
+
+Mình dùng `getReader()` thay vì `for await (const chunk of stream)` vì async iteration của `ReadableStream` đến rất muộn trên Safari — theo dữ liệu [browser-compat-data của MDN](https://github.com/mdn/browser-compat-data), Safari chỉ hỗ trợ từ bản 27 (phát hành tháng 9/2026), trong khi Chrome có từ 124 và Firefox từ 110. Người dùng iOS chưa cập nhật vẫn còn nhiều.
+
+Chi tiết `pendingCR` trông thừa, nhưng nó sửa một lỗi có thật: nếu server (hoặc proxy) dùng CRLF và chunk bị cắt đúng giữa `\r` và `\n`, parser ngây thơ sẽ thấy thêm một dòng trống và dispatch event sớm, cắt một event nhiều dòng `data:` làm đôi. Server của mình chỉ gửi `\n`, nhưng parser là code dùng lại — nó nên đúng theo spec.
+
+## State: mỗi message là một danh sách "parts"
+
+Mô hình `{ role, content: string }` chỉ đủ cho demo. Một câu trả lời thật của trợ lý hỗ trợ có thể là: một câu mở đầu, một lần tra cứu đơn hàng, kết quả tra cứu, rồi thêm một đoạn giải thích — và có thể kết thúc bằng lỗi giữa chừng. Nếu dồn tất cả vào một chuỗi, bạn sẽ phải parse ngược chuỗi đó để vẽ UI.
+
+Mình mô hình hoá message thành danh sách **parts có type**, và mọi thay đổi đi qua một reducer thuần:
+
+```ts
+// lib/chat-state.ts
+import type { ChatEvent } from "./chat-protocol";
+
+export type Part =
+  | { type: "text"; text: string }
+  | { type: "tool-call"; id: string; name: string; input: unknown; state: "running" | "done" | "error"; output?: unknown }
+  | { type: "error"; message: string; retryable: boolean };
+
+export type Message = {
+  id: string;
+  role: "user" | "assistant";
+  status: "submitted" | "thinking" | "streaming" | "done" | "stopped" | "error";
+  parts: Part[];
+};
+
+export type Action =
+  | { type: "submit"; user: Message; assistantId: string }
+  | { type: "events"; id: string; events: ChatEvent[] } // cả một frame event một lúc
+  | { type: "stopped"; id: string }
+  | { type: "failed"; id: string; message: string; retryable: boolean }
+  | { type: "retry"; id: string };
+
+function applyEvent(msg: Message, e: ChatEvent): Message {
+  switch (e.type) {
+    case "status":
+      return { ...msg, status: e.value === "thinking" ? "thinking" : "streaming" };
+    case "text-delta": {
+      const parts = msg.parts.slice();
+      const last = parts.at(-1);
+      // Nối vào text part cuối; sau một tool call thì mở text part mới
+      if (last?.type === "text") parts[parts.length - 1] = { ...last, text: last.text + e.text };
+      else parts.push({ type: "text", text: e.text });
+      return { ...msg, status: "streaming", parts };
+    }
+    case "tool-call":
+      return { ...msg, parts: [...msg.parts, { type: "tool-call", id: e.id, name: e.name, input: e.input, state: "running" }] };
+    case "tool-result":
+      return {
+        ...msg,
+        parts: msg.parts.map((p) =>
+          p.type === "tool-call" && p.id === e.id ? { ...p, state: e.isError ? "error" : "done", output: e.output } : p,
+        ),
+      };
+    case "error":
+      return { ...msg, status: "error", parts: [...msg.parts, { type: "error", message: e.message, retryable: e.retryable }] };
+    case "done":
+      return { ...msg, status: "done" };
+  }
+}
+
+export function chatReducer(state: Message[], action: Action): Message[] {
+  switch (action.type) {
+    case "submit":
+      return [...state, action.user, { id: action.assistantId, role: "assistant", status: "submitted", parts: [] }];
+    case "events":
+      return state.map((m) => (m.id === action.id ? action.events.reduce(applyEvent, m) : m));
+    case "stopped":
+      return state.map((m) => (m.id === action.id && m.status !== "done" ? { ...m, status: "stopped" } : m));
+    case "failed":
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, status: "error", parts: [...m.parts, { type: "error", message: action.message, retryable: action.retryable }] }
+          : m,
+      );
+    case "retry":
+      return state.map((m) => (m.id === action.id ? { ...m, status: "submitted", parts: [] } : m));
+  }
+}
+
+/** Thứ duy nhất gửi lên server: role + text. */
+export function toWire(messages: Message[]) {
+  return messages
+    .map((m) => ({ role: m.role, text: m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("") }))
+    .filter((m) => m.text.length > 0);
+}
+```
+
+Ba quyết định đáng nói:
+
+- **Kết quả tool gộp vào part `tool-call` theo `id`**, thay vì là một part riêng. Một tool call có vòng đời (đang chạy → xong hoặc lỗi), và UI vẽ nó thành một card duy nhất; gộp lại thì component không phải đi tìm cặp.
+- **`status` của message tách khỏi parts.** "Đang suy nghĩ", "đang viết", "đã dừng" là trạng thái của cả câu trả lời, không phải của một mảnh nội dung.
+- **Bất biến nhưng tiết kiệm.** Mỗi lần cập nhật chỉ tạo object mới cho message đang stream và part cuối của nó. Mọi message cũ giữ nguyên tham chiếu, nên `React.memo` ở component message bỏ qua chúng hoàn toàn.
+
+## Gom cập nhật theo requestAnimationFrame
+
+Provider gửi token rất dày, và sau khi qua mạng mỗi chunk thường chứa một vài event. Mỗi chunk đến trong một task riêng, nên automatic batching của React không gộp chúng lại: `dispatch` cho từng event nghĩa là một lần render cho từng chunk, có khi vài chục lần mỗi giây, trong khi màn hình chỉ vẽ 60 lần. Phần render thừa đó chính là thứ làm input bị lag khi người dùng vừa đọc vừa gõ câu tiếp theo.
+
+Cách sửa đơn giản: đẩy event vào một hàng đợi trong ref, và chỉ `dispatch` **tối đa một lần mỗi frame** bằng `requestAnimationFrame`. Reducer nhận cả mảng event và áp lần lượt — đó là lý do action `events` ở trên nhận một mảng.
+
+```ts
+// hooks/useChatStream.ts
+"use client";
+import { useCallback, useEffect, useReducer, useRef } from "react";
+import type { ChatEvent } from "@/lib/chat-protocol";
+import { chatReducer, toWire, type Message } from "@/lib/chat-state";
+import { readChatEvents } from "@/lib/sse";
+
+class HttpError extends Error {
+  constructor(readonly status: number) {
+    super(`HTTP ${status}`);
+  }
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const ACTIVE = new Set<Message["status"]>(["submitted", "thinking", "streaming"]);
+
+export function useChatStream(endpoint = "/api/chat") {
+  const [messages, dispatch] = useReducer(chatReducer, []);
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages; // send/retry đọc qua ref → identity ổn định cho memo
+  });
+  const abortRef = useRef<AbortController | null>(null);
+  const pending = useRef<{ id: string; events: ChatEvent[] } | null>(null);
+  const frame = useRef<number | null>(null);
+
+  const flush = useCallback(() => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
+    const batch = pending.current;
+    pending.current = null;
+    if (batch) dispatch({ type: "events", id: batch.id, events: batch.events });
+  }, []);
+
+  const enqueue = useCallback(
+    (id: string, event: ChatEvent) => {
+      (pending.current ??= { id, events: [] }).events.push(event);
+      frame.current ??= requestAnimationFrame(flush); // tối đa một dispatch mỗi frame
+    },
+    [flush],
+  );
+
+  const run = useCallback(
+    async (assistantId: string, history: Message[]) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      let received = 0;
+      let finished = false;
+
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages: toWire(history) }),
+            signal: controller.signal,
+          });
+          if (!res.ok) throw new HttpError(res.status);
+          for await (const event of readChatEvents(res)) {
+            received++;
+            if (event.type === "done" || event.type === "error") finished = true;
+            enqueue(assistantId, event);
+          }
+          // Stream đóng êm mà không có "done" = bị cắt giữa đường (proxy timeout, deploy...)
+          if (!finished) throw new Error("Stream ended unexpectedly");
+          break;
+        } catch (err) {
+          if (controller.signal.aborted) break;
+          const retryable = !(err instanceof HttpError) || err.status === 429 || err.status >= 500;
+          // Chỉ tự retry khi người dùng chưa thấy chữ nào — tránh chữ bị lặp
+          if (received === 0 && retryable && attempt < 2) {
+            await sleep(500 * 2 ** attempt);
+            continue;
+          }
+          flush();
+          dispatch({ type: "failed", id: assistantId, message: "Connection lost", retryable });
+          break;
+        }
+      }
+      flush(); // tab ẩn thì rAF không chạy — flush đồng bộ khi kết thúc
+      if (controller.signal.aborted) dispatch({ type: "stopped", id: assistantId });
+      if (abortRef.current === controller) abortRef.current = null;
+    },
+    [endpoint, enqueue, flush],
+  );
+
+  const send = useCallback(
+    (text: string) => {
+      abortRef.current?.abort(); // mỗi lúc chỉ một câu trả lời
+      const user: Message = { id: crypto.randomUUID(), role: "user", status: "done", parts: [{ type: "text", text }] };
+      const assistantId = crypto.randomUUID();
+      dispatch({ type: "submit", user, assistantId });
+      void run(assistantId, [...messagesRef.current, user]);
+    },
+    [run],
+  );
+
+  const retry = useCallback(
+    (assistantId: string) => {
+      const all = messagesRef.current;
+      const index = all.findIndex((m) => m.id === assistantId);
+      if (index === -1) return;
+      dispatch({ type: "retry", id: assistantId });
+      void run(assistantId, all.slice(0, index));
+    },
+    [run],
+  );
+
+  const stop = useCallback(() => abortRef.current?.abort(), []);
+  const last = messages.at(-1);
+  const isStreaming = last?.role === "assistant" && ACTIVE.has(last.status);
+
+  return { messages, send, stop, retry, isStreaming };
+}
+```
+
+Một hệ quả dễ chịu của rAF: khi tab bị ẩn, trình duyệt tạm dừng callback của `requestAnimationFrame`, nên event cứ dồn trong hàng đợi mà không tốn lần render nào. Khi stream kết thúc, `flush()` được gọi đồng bộ nên state vẫn đầy đủ; khi người dùng quay lại tab, mọi thứ đã sẵn sàng. Nếu muốn mượt hơn nữa — chữ ra đều thay vì theo nhịp mạng — bạn có thể "nhả" chữ từ hàng đợi với tốc độ cố định mỗi frame, nhưng mình thấy với phần lớn sản phẩm, gom theo frame là đủ.
+
+`stop()` chỉ làm một việc: abort controller. Từ đó mọi thứ tự chảy: `fetch` huỷ body, `readChatEvents` ném lỗi, vòng lặp thoát, message chuyển sang `stopped` — và ở phía server, kết nối bị đóng khiến `req.signal` hoặc `cancel()` abort request tới provider.
+
+## Markdown tăng dần: block đã xong được memo, chỉ phần đuôi render lại
+
+Model trả về markdown, và cách dễ nhất là đưa cả chuỗi vào `<Markdown>` mỗi lần state đổi. Với câu trả lời ngắn thì không sao. Với câu trả lời 3.000 token có vài khối code, mỗi frame bạn parse lại toàn bộ văn bản, dựng lại toàn bộ cây React, highlight lại mọi khối code — tổng chi phí tăng theo bình phương độ dài, và đến cuối câu trả lời mỗi frame có thể tốn vài chục mili giây.
+
+Quan sát quan trọng: **markdown được viết theo block** (đoạn văn, danh sách, khối code, bảng), và một khi model đã bắt đầu block tiếp theo, các block phía trước gần như không bao giờ thay đổi nữa. Vậy ta chia văn bản thành hai phần:
+
+- **Các block ổn định:** mọi block đứng trước block cuối cùng. Mỗi block render một lần, bọc trong `memo`, kèm highlight code.
+- **Phần đuôi đang chạy:** block cuối cùng. Chỉ phần này được parse và render lại mỗi frame, không highlight.
+
+<Figure src="/blog/streaming-ai-chat-ui-markdown-blocks.svg" alt="Sơ đồ markdown tăng dần: văn bản được chia thành tiền tố ổn định và phần đuôi; các block ổn định render một lần và được memo, phần đuôi được đóng fence tạm rồi render lại mỗi frame" caption="Mỗi frame chỉ lex phần từ block ổn định cuối cùng trở đi; block đã xong không bao giờ render lại." />
+
+Để tách block, mình dùng lexer của [marked](https://marked.js.org/) — nhanh, và mỗi token giữ lại chuỗi `raw` gốc nên ghép lại đúng bằng văn bản ban đầu. Mẹo là không lex lại từ đầu: nhớ vị trí kết thúc của block ổn định cuối cùng, mỗi lần chỉ lex phần sau đó.
+
+```ts
+// lib/markdown-blocks.ts
+import { marked } from "marked";
+
+export type BlockState = { source: string; stable: string[]; stableLength: number; tail: string };
+export const EMPTY_BLOCKS: BlockState = { source: "", stable: [], stableLength: 0, tail: "" };
+
+export function splitBlocks(prev: BlockState, text: string): BlockState {
+  // Văn bản không còn nối tiếp phần đã ổn định (retry, sửa message) → làm lại từ đầu
+  const base = text.startsWith(prev.source.slice(0, prev.stableLength)) ? prev : EMPTY_BLOCKS;
+  const tokens = marked.lexer(text.slice(base.stableLength));
+
+  let last = tokens.length - 1; // token nội dung cuối cùng = phần đuôi đang chạy
+  while (last >= 0 && tokens[last].type === "space") last--;
+
+  const stable = base.stable.slice();
+  let consumed = 0;
+  for (let i = 0; i < last; i++) {
+    if (tokens[i].type !== "space") stable.push(tokens[i].raw);
+    consumed += tokens[i].raw.length;
+  }
+  const stableLength = base.stableLength + consumed;
+  return { source: text, stable, stableLength, tail: text.slice(stableLength) };
+}
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/gm;
+
+/** Làm phần đuôi "trông như đã xong" — chỉ để render, không sửa dữ liệu. */
+export function prepareTail(tail: string): { markdown: string; inCode: boolean } {
+  if ((tail.match(FENCE)?.length ?? 0) % 2 === 1) {
+    return { markdown: tail + "\n" + "`".repeat(3), inCode: true }; // fence chưa đóng
+  }
+  let md = tail.replace(/!?\[([^\]]*)\]\([^)]*$/, "$1"); // link/ảnh viết dở → chỉ giữ text
+  if ((md.match(/\*\*/g)?.length ?? 0) % 2 === 1) md += "**"; // in đậm chưa đóng
+  return { markdown: md, inCode: false };
+}
+```
+
+Về fence chưa đóng: theo CommonMark, một code fence chưa đóng kéo dài tới cuối văn bản, nên react-markdown vẫn vẽ nó thành khối code. Mình vẫn đóng tạm vì hai lý do: không phải renderer hay highlighter nào cũng xử lý giống vậy, và cờ `inCode` cho UI biết model đang viết code — lúc đó mình tắt highlight và hiện con trỏ ở cuối khối code. Phần link viết dở thì khác: nếu không xử lý, người dùng sẽ thấy cú pháp `[text](https://exa` nhấp nháy rồi mới biến thành link. Nếu muốn xử lý đầy đủ các trường hợp (in nghiêng, gạch ngang, bảng viết dở), thư viện [streamdown](https://github.com/vercel/streamdown) của Vercel làm đúng việc này và có thể thay thế react-markdown.
+
+Component render, với cấu hình an toàn cho nội dung do model sinh ra:
+
+```tsx
+// components/StreamingMarkdown.tsx
+"use client";
+import { memo, useState } from "react";
+import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import { EMPTY_BLOCKS, prepareTail, splitBlocks } from "@/lib/markdown-blocks";
+
+const REMARK = [remarkGfm];
+const REHYPE = [rehypeHighlight];
+
+function externalHost(href: string): string | null {
+  try {
+    return new URL(href).host; // URL tương đối ném lỗi → coi là nội bộ
+  } catch {
+    return null;
+  }
+}
+
+const components: Components = {
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow">
+      {children}
+      {href && externalHost(href) && <span className="link-host"> ({externalHost(href)})</span>}
+    </a>
+  ),
+  // Không tự tải ảnh do model sinh ra: URL ảnh có thể mang dữ liệu hội thoại ra ngoài
+  img: ({ alt }) => <span className="img-placeholder">[{alt || "image"}]</span>,
+};
+
+const Block = memo(function Block({ source, live }: { source: string; live: boolean }) {
+  return (
+    <Markdown remarkPlugins={REMARK} rehypePlugins={live ? [] : REHYPE} components={components} skipHtml>
+      {source}
+    </Markdown>
+  );
+});
+
+export function StreamingMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
+  const [blocks, setBlocks] = useState(() => splitBlocks(EMPTY_BLOCKS, text));
+  let current = blocks;
+  if (blocks.source !== text) {
+    current = splitBlocks(blocks, text);
+    setBlocks(current); // pattern "lưu thông tin từ lần render trước" của React
+  }
+  const tail = streaming ? prepareTail(current.tail).markdown : current.tail;
+
+  return (
+    <div className="prose">
+      {current.stable.map((source, i) => (
+        <Block key={i} source={source} live={false} />
+      ))}
+      {tail && <Block source={tail} live={streaming} />}
+    </div>
+  );
+}
+```
+
+Key theo index ở đây là đúng, vì danh sách block ổn định chỉ được nối thêm, không bao giờ chèn hay xoá ở giữa. Giới hạn cần biết: vì phần đuôi được lex tách riêng, link kiểu tham chiếu (`[text][1]` với định nghĩa ở block khác) sẽ không được nối với nhau — model hiếm khi viết kiểu đó trong chat, và mình chấp nhận trade-off này.
+
+## Autoscroll: dính đáy, nhưng tôn trọng người dùng cuộn lên
+
+Chữ chạy ra thì khung chat phải cuộn theo. Nhưng nếu người dùng cuộn lên đọc lại đoạn trước mà bị kéo tuột xuống đáy mỗi frame, đó là trải nghiệm tệ nhất có thể. Quy tắc mình dùng:
+
+- **Đang ở đáy (sai số vài chục pixel) thì "ghim" lại**, nội dung dài ra bao nhiêu cũng tự cuộn theo.
+- **Người dùng cuộn *lên* thì bỏ ghim** — và chỉ cuộn lên mới tính. Nội dung dài ra làm khoảng cách tới đáy tăng, nhưng đó không phải ý định của người dùng.
+- **Bỏ ghim thì hiện nút "Xuống tin mới nhất"**, bấm vào thì ghim lại.
+
+```ts
+// hooks/useStickToBottom.ts
+"use client";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+const THRESHOLD = 48; // px
+
+export function useStickToBottom<T extends HTMLElement>() {
+  const scrollRef = useRef<T>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return;
+    let lastTop = scroller.scrollTop;
+
+    const onScroll = () => {
+      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (scroller.scrollTop < lastTop && distance > THRESHOLD) pinned.current = false; // người dùng cuộn lên
+      if (distance <= THRESHOLD) pinned.current = true;
+      lastTop = scroller.scrollTop;
+      setShowJump(!pinned.current);
+    };
+    // Bắt mọi thay đổi chiều cao: chữ mới, khối code, card tool, ảnh placeholder
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) scroller.scrollTop = scroller.scrollHeight;
+    });
+
+    observer.observe(content);
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      observer.disconnect();
+      scroller.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    pinned.current = true;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  return { scrollRef, contentRef, showJump, jumpToBottom };
+}
+```
+
+`ResizeObserver` tốt hơn việc cuộn trong `useEffect` sau mỗi lần messages đổi, vì nó bắt được cả những thay đổi chiều cao không đi qua state: font tải xong, khối code được highlight sau khi trở thành block ổn định. CSS `overflow-anchor` về lý thuyết giải quyết một phần bài toán này, nhưng theo MDN browser-compat-data thì Safari chỉ hỗ trợ từ bản 27, nên mình chưa dựa vào nó. Nếu không muốn tự viết, [use-stick-to-bottom](https://github.com/stackblitz-labs/use-stick-to-bottom) của StackBlitz làm đúng việc này, kèm animation cuộn mượt hơn.
+
+## Accessibility: đừng để screen reader đọc từng token
+
+Phản xạ đầu tiên là gắn `aria-live` lên khung message để screen reader đọc câu trả lời. Kết quả: mỗi lần chữ được thêm vào, screen reader đọc một mảnh — hoặc ngắt lời chính nó liên tục, tuỳ phần mềm. `role="log"` cũng vậy, vì nó ngầm định là một live region.
+
+Chiến lược mình dùng:
+
+1. **Khung message không phải là live region.** Mỗi message là một `article` có nhãn; message đang stream mang `aria-busy="true"` để công nghệ hỗ trợ biết nội dung còn đang thay đổi.
+2. **Một live region riêng, ẩn khỏi màn hình,** chỉ thay đổi khi *trạng thái* đổi: "đang suy nghĩ", "đang trả lời", "đã dừng", "lỗi". Trong lúc stream, nội dung của nó đứng yên nên không bị đọc lại.
+3. **Khi xong, live region chứa toàn bộ câu trả lời dạng text thuần** — đọc một lần, liền mạch.
+4. **Focus ở lại ô nhập.** Nút Stop có nhãn rõ ràng và dùng được bằng bàn phím; bấm xong không cướp focus.
+
+```tsx
+// components/ChatAnnouncer.tsx
+import type { Message } from "@/lib/chat-state";
+
+const STATUS_TEXT: Partial<Record<Message["status"], string>> = {
+  thinking: "Trợ lý đang suy nghĩ",
+  streaming: "Trợ lý đang trả lời",
+  stopped: "Đã dừng câu trả lời",
+  error: "Câu trả lời gặp lỗi",
+};
+
+export function ChatAnnouncer({ message }: { message?: Message }) {
+  let text = "";
+  if (message?.role === "assistant") {
+    text =
+      message.status === "done"
+        ? message.parts
+            .flatMap((p) => (p.type === "text" ? [p.text] : []))
+            .join("")
+            .replace(/[*_`#>|]/g, "") // bỏ ký hiệu markdown để không bị đọc thành tiếng
+        : (STATUS_TEXT[message.status] ?? "");
+  }
+  return (
+    <div aria-live="polite" aria-atomic="true" className="sr-only">
+      {text}
+    </div>
+  );
+}
+```
+
+Hãy thử với ít nhất một screen reader thật (VoiceOver hoặc NVDA) — hành vi của live region khác nhau đáng kể giữa các tổ hợp trình duyệt và screen reader, và đây là phần không có unit test nào bắt được.
+
+## Lỗi, retry và resume
+
+Một request streaming có thể hỏng ở nhiều thời điểm hơn request thường, và mỗi thời điểm cần một cách xử lý khác:
+
+| Tình huống | Người dùng đã thấy gì | Mình xử lý |
+| --- | --- | --- |
+| HTTP lỗi hoặc mất mạng trước byte đầu tiên | Chưa thấy gì | Tự retry tối đa 2 lần với backoff, người dùng chỉ thấy "đang suy nghĩ" lâu hơn một chút |
+| Event `error` giữa stream (provider quá tải...) | Một phần câu trả lời | Giữ phần đã có, thêm error part với nút "Thử lại" nếu `retryable` |
+| Stream đóng êm mà không có `done` | Một phần câu trả lời | Coi như lỗi kết nối — proxy timeout và deploy giữa chừng đều trông như vậy |
+| Người dùng bấm Stop | Một phần câu trả lời | Không phải lỗi: trạng thái "Đã dừng", không hiện thông báo đỏ |
+
+Nguyên tắc quan trọng nhất: **chỉ tự động retry khi người dùng chưa thấy token nào.** Một khi chữ đã hiện ra, retry ngầm sẽ làm chữ bị lặp hoặc câu trả lời đổi giữa chừng — người dùng phải được quyết định.
+
+"Thử lại" có hai nghĩa khác nhau. **Regenerate** bỏ phần dở dang và sinh lại từ cùng lịch sử — đó là action `retry` trong reducer. **Tiếp tục** giữ phần đã có và yêu cầu model viết nốt. Với các model Claude từ 4.6 trở đi, [tài liệu streaming của Anthropic](https://platform.claude.com/docs/en/build-with-claude/streaming) khuyên gửi một user message chứa phần trả lời dở kèm chỉ dẫn "tiếp tục từ chỗ bị ngắt", thay vì prefill assistant message như trước.
+
+Còn **resume** theo nghĩa transport — tải lại trang mà vẫn nối được vào câu trả lời đang sinh dở — là một kiến trúc khác hẳn: việc sinh phải tách khỏi vòng đời HTTP request, server ghi event vào một kho tạm (thường là Redis), client kết nối lại và đọc tiếp từ event cuối đã nhận. Nó mâu thuẫn trực tiếp với "client ngắt thì huỷ upstream" ở trên, vì server không phân biệt được người dùng bấm Stop với mạng chập chờn. Tài liệu AI SDK nói rõ điều này: abort và resume không dùng chung được, muốn có cả hai thì cần một endpoint Stop riêng. Với chat hỗ trợ khách hàng, mình không làm resume: lưu message (kể cả phần dở) ở server, tải lại trang thì hiện bản đã lưu, thế là đủ.
+
+## Render tool call thành UI
+
+Khi trợ lý tra cứu đơn hàng, người dùng phải đợi thêm một vòng: model quyết định gọi tool, server gọi API nội bộ, rồi model viết tiếp. Nếu màn hình đứng im trong lúc đó, cảm giác chậm quay lại ngay. Part `tool-call` cho phép biến khoảng chờ thành thông tin:
+
+```tsx
+// components/ToolPart.tsx
+import type { Part } from "@/lib/chat-state";
+
+type ToolCall = Extract<Part, { type: "tool-call" }>;
+type Order = { id: string; status: "processing" | "shipping" | "delivered"; eta?: string };
+
+const ORDER_STATUS: Record<Order["status"], string> = {
+  processing: "Đang xử lý",
+  shipping: "Đang giao",
+  delivered: "Đã giao",
+};
+
+export function ToolPart({ part }: { part: ToolCall }) {
+  if (part.state === "running") {
+    const orderId = (part.input as { orderId?: string }).orderId;
+    return (
+      <div className="tool-card" aria-busy="true">
+        {part.name === "lookup_order" ? `Đang tra cứu đơn ${orderId ?? ""}…` : "Đang xử lý…"}
+      </div>
+    );
+  }
+  if (part.state === "error") {
+    return <div className="tool-card tool-card--error">Không tra cứu được — trợ lý sẽ giải thích bên dưới.</div>;
+  }
+  if (part.name !== "lookup_order") return null; // tool không có UI riêng: để model diễn giải bằng text
+
+  const order = part.output as Order; // code thật: validate bằng zod trước khi tin
+  return (
+    <dl className="order-card">
+      <dt>Đơn hàng</dt>
+      <dd>{order.id}</dd>
+      <dt>Trạng thái</dt>
+      <dd>{ORDER_STATUS[order.status]}</dd>
+      {order.eta && (
+        <>
+          <dt>Dự kiến giao</dt>
+          <dd>{order.eta}</dd>
+        </>
+      )}
+    </dl>
+  );
+}
+```
+
+Hai nguyên tắc: kết quả tool luôn được render bằng component có cấu trúc (text node của React, không bao giờ là HTML), và tool không có UI riêng thì đừng cố hiển thị JSON thô — để model diễn giải nó bằng lời.
+
+## Hay là dùng luôn `useChat` của Vercel AI SDK?
+
+Mọi thứ ở trên — protocol, parser, message parts, stop, throttle, tool UI — [AI SDK](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot) đều đã đóng gói sẵn. Bản major hiện tại là **AI SDK 7** (`ai@7`, `@ai-sdk/react@4`, phát hành cuối tháng 6/2026), yêu cầu Node.js 22 trở lên và chỉ còn ESM. API của `useChat` vẫn giữ kiến trúc transport từ bản 5: message có mảng `parts`, `status` là `submitted` / `streaming` / `ready` / `error`, có `stop()`, `regenerate()`, `resumeStream()` và option `throttle` để gom cập nhật UI. Phía server, bản 7 chuyển sang các helper top-level:
+
+```tsx
+// app/api/chat/route.ts — phiên bản dùng AI SDK 7
+import { anthropic } from "@ai-sdk/anthropic";
+import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream, type UIMessage } from "ai";
+
+export async function POST(req: Request) {
+  const { messages }: { messages: UIMessage[] } = await req.json();
+  const result = streamText({
+    model: anthropic(process.env.CHAT_MODEL!),
+    instructions: "You are the support assistant for our store.",
+    messages: await convertToModelMessages(messages),
+    abortSignal: req.signal, // vẫn phải tự nối abort lên upstream
+  });
+  return createUIMessageStreamResponse({ stream: toUIMessageStream({ stream: result.stream }) });
+}
+
+// components/SupportChat.tsx (client)
+// const { messages, sendMessage, status, stop, regenerate } = useChat({
+//   transport: new DefaultChatTransport({ api: "/api/chat" }),
+//   throttle: 50,
+// });
+```
+
+Mình cân nhắc thế này:
+
+- **Được:** protocol đã được kiểm chứng, tool call có kiểu, đổi provider bằng một dòng, resume stream có sẵn đường đi, ít code phải bảo trì. Với team nhỏ cần ra sản phẩm nhanh, đây là lựa chọn hợp lý.
+- **Mất:** quyền kiểm soát wire format và message format — mà message format thường đi thẳng vào database của bạn. AI SDK đã qua ba bản major trong khoảng một năm (5.0 tháng 7/2025, 6.0 tháng 12/2025, 7.0 tháng 6/2026), mỗi lần đều có thay đổi phá vỡ. Và nó không làm hộ bạn phần khó nhất của bài này: markdown tăng dần an toàn, autoscroll, accessibility, và việc bật cancellation ở tầng hạ tầng.
+
+Kể cả khi dùng AI SDK, mình vẫn thấy đáng hiểu đường ống bên dưới: lúc stream bị buffer trên production hay hoá đơn tăng vì abort không tới được upstream, bạn sẽ phải debug chính những tầng đó.
+
+## Ví dụ thực tế: trợ lý hỗ trợ khách hàng trong app Next.js
+
+Ghép mọi mảnh lại. Khách đã đăng nhập mở khung chat và hỏi: "Đơn A1023 của tôi tới đâu rồi?". Đây là những gì xảy ra:
+
+1. **Bấm gửi.** Reducer thêm ngay message của khách và một message trợ lý rỗng ở trạng thái `submitted` — khung chat phản hồi trong cùng frame, trước cả khi request rời trình duyệt.
+2. **Route Handler** kiểm tra session, lọc lịch sử chỉ còn role user/assistant, mở stream tới provider. Model bắt đầu bằng giai đoạn suy luận nên server gửi `status: thinking`; live region đọc "Trợ lý đang suy nghĩ".
+3. **Model gọi `lookup_order`.** Server gửi `tool-call`, card "Đang tra cứu đơn A1023…" hiện ra. Tool chạy với user id lấy từ session — nếu ai đó prompt injection để model tra đơn của người khác, API nội bộ vẫn từ chối.
+4. **Có kết quả.** `tool-result` biến card thành bảng trạng thái "Đang giao, dự kiến thứ Sáu". Vòng thứ hai bắt đầu và chữ chạy ra; các đoạn đã xong được memo, chỉ đoạn cuối render lại mỗi frame.
+5. **Khách bấm Dừng** giữa chừng. `AbortController` huỷ `fetch`, message chuyển sang "Đã dừng", và server — nhờ `req.signal` hoặc `cancel()` — huỷ request tới provider. Phần token đã sinh vẫn bị tính tiền, nhưng phần còn lại thì không.
+
+Component chính chỉ còn là phần lắp ráp:
+
+```tsx
+// components/SupportChat.tsx
+"use client";
+import { memo, useState } from "react";
+import { useChatStream } from "@/hooks/useChatStream";
+import { useStickToBottom } from "@/hooks/useStickToBottom";
+import type { Message } from "@/lib/chat-state";
+import { ChatAnnouncer } from "./ChatAnnouncer";
+import { StreamingMarkdown } from "./StreamingMarkdown";
+import { ToolPart } from "./ToolPart";
+
+const MessageItem = memo(function MessageItem({ message, onRetry }: { message: Message; onRetry: (id: string) => void }) {
+  const active = message.status === "submitted" || message.status === "thinking" || message.status === "streaming";
+  return (
+    <article aria-label={message.role === "user" ? "Bạn" : "Trợ lý"} aria-busy={active} className={`msg msg--${message.role}`}>
+      {message.status === "thinking" && <p className="msg-status">Đang suy nghĩ…</p>}
+      {message.parts.map((part, i) => {
+        if (part.type === "tool-call") return <ToolPart key={part.id} part={part} />;
+        if (part.type === "error")
+          return (
+            <p key={i} className="msg-error">
+              Trợ lý đang gặp sự cố.{" "}
+              {part.retryable && <button onClick={() => onRetry(message.id)}>Thử lại</button>}
+            </p>
+          );
+        return message.role === "user" ? (
+          <p key={i}>{part.text}</p>
+        ) : (
+          <StreamingMarkdown key={i} text={part.text} streaming={active && i === message.parts.length - 1} />
+        );
+      })}
+      {message.status === "stopped" && <p className="msg-status">Đã dừng.</p>}
+    </article>
+  );
+});
+
+export function SupportChat() {
+  const { messages, send, stop, retry, isStreaming } = useChatStream();
+  const { scrollRef, contentRef, showJump, jumpToBottom } = useStickToBottom<HTMLDivElement>();
+  const [input, setInput] = useState("");
+
+  return (
+    <section className="chat" aria-label="Trợ lý hỗ trợ khách hàng">
+      <div ref={scrollRef} className="chat-scroll">
+        <div ref={contentRef}>
+          {messages.map((m) => (
+            <MessageItem key={m.id} message={m} onRetry={retry} />
+          ))}
+        </div>
+      </div>
+      {showJump && <button className="chat-jump" onClick={jumpToBottom}>Xuống tin mới nhất</button>}
+      <ChatAnnouncer message={messages.at(-1)} />
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const text = input.trim();
+          if (!text || isStreaming) return;
+          send(text);
+          setInput("");
+        }}
+      >
+        <label htmlFor="chat-input" className="sr-only">Câu hỏi của bạn</label>
+        <textarea id="chat-input" value={input} onChange={(e) => setInput(e.target.value)} />
+        <button type="submit" disabled={isStreaming}>Gửi</button>
+        <button type="button" onClick={stop} disabled={!isStreaming}>Dừng</button>
+      </form>
+    </section>
+  );
+}
+```
+
+Để ý mình để nút Gửi và nút Dừng ở hai vị trí riêng thay vì một nút đổi nhãn. Với một nút đổi nhãn, người dùng bấm đúp nút Gửi sẽ vô tình bấm luôn Dừng ở cú click thứ hai — lỗi này mình đã gặp trên production.
+
+### Test streaming bằng ReadableStream giả
+
+Không cần provider thật để test phần khó nhất. Một `Response` bọc `ReadableStream` tự tạo cho phép cắt byte ở *mọi* vị trí có thể — kể cả giữa một emoji 4 byte hay một chữ tiếng Việt có dấu — và kiểm tra parser vẫn ráp đúng:
+
+```ts
+// lib/sse.test.ts
+import { describe, expect, it } from "vitest";
+import { encodeEvent, HEARTBEAT, type ChatEvent } from "./chat-protocol";
+import { readChatEvents } from "./sse";
+
+const EVENTS: ChatEvent[] = [
+  { type: "status", value: "writing" },
+  { type: "text-delta", text: "Đơn hàng của bạn đang được giao 🚚" },
+  { type: "done", reason: "end_turn" },
+];
+
+/** Body giả: cắt dữ liệu tại các vị trí byte cho trước. */
+function fakeResponse(bytes: Uint8Array, cuts: number[]): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let prev = 0;
+      for (const cut of [...cuts, bytes.length]) {
+        controller.enqueue(bytes.slice(prev, cut));
+        prev = cut;
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+}
+
+async function collect(res: Response): Promise<ChatEvent[]> {
+  const out: ChatEvent[] = [];
+  for await (const event of readChatEvents(res)) out.push(event);
+  return out;
+}
+
+describe("readChatEvents", async () => {
+  const parts = [encodeEvent(EVENTS[0]), HEARTBEAT, encodeEvent(EVENTS[1]), encodeEvent(EVENTS[2])];
+  const bytes = new Uint8Array(await new Blob(parts).arrayBuffer());
+
+  it("ráp đúng event dù chunk bị cắt ở bất kỳ byte nào", async () => {
+    for (let cut = 1; cut < bytes.length; cut++) {
+      expect(await collect(fakeResponse(bytes, [cut]))).toEqual(EVENTS);
+    }
+  });
+
+  it("chịu được mỗi chunk chỉ có một byte", async () => {
+    const cuts = Array.from({ length: bytes.length - 1 }, (_, i) => i + 1);
+    expect(await collect(fakeResponse(bytes, cuts))).toEqual(EVENTS);
+  });
+});
+```
+
+Cùng kỹ thuật đó dùng được cho hook: mock `fetch` trả về `fakeResponse`, rồi kiểm tra reducer nhận đủ event, `stop()` chuyển message sang `stopped`, và một stream đóng mà thiếu `done` sinh ra error part. Với route handler, mình tạo `Request` có `signal` từ một `AbortController`, abort giữa chừng và assert client giả của provider nhận được abort — đó là test chặn được lỗi tốn tiền nhất trong bài này.

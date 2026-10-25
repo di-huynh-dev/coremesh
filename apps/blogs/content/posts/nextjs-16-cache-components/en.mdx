@@ -1,0 +1,680 @@
+---
+title: "Caching in Next.js 16: Cache Components, use cache and Partial Prerendering in Practice"
+excerpt: "Next.js 16 drops the implicit caching of the old App Router: everything is dynamic by default and you opt in with use cache. This post covers the static shell and dynamic holes, cache keys, cacheLife, cacheTag with updateTag, revalidateTag and refresh, and an e-commerce product page built end to end."
+---
+
+<Lead>With the Next.js 13 and 14 App Router, the question I heard most on my team wasn't "how do we make this fast?" but "why is this data stale?" and "why did this page turn dynamic?". Caching was implicit: `fetch` was cached for you, routes were guessed to be static or dynamic, and the only way to understand it was to read the docs closely and experiment. Next.js 16 flips that model with Cache Components: everything runs at request time by default, and you explicitly mark what gets cached with `"use cache"`. This blog runs Next.js 16.2, so I write against 16.x and call out versions wherever an API changed. We'll go through the static shell and dynamic holes, cache keys and serialization rules, `cacheLife`, the `updateTag` / `revalidateTag` / `refresh` trio, the `private` and `remote` variants, and then put it all together on a real e-commerce product page.</Lead>
+
+## From implicit to explicit caching
+
+To see why Next.js 16 is such a big shift, recall how the old App Router behaved. In Next.js 14, a `fetch` in a Server Component was stored in the Data Cache by default (equivalent to `cache: "force-cache"`). A route that didn't use dynamic APIs like `cookies()` was rendered once at build time and kept in the Full Route Cache. The browser also had a Router Cache that held dynamic page payloads for 30 seconds. Four cache layers, mostly on by default, and you spent your time *turning them off*: `export const dynamic = "force-dynamic"`, `cache: "no-store"`, `revalidate = 0`.
+
+[Next.js 15](https://nextjs.org/blog/next-15) (October 2024) reversed those defaults: `fetch`, `GET` Route Handlers and the Router Cache for pages were no longer cached by default. Fewer surprises, but the model was still "the framework guesses, you correct it": a whole route was classified static or dynamic, and one `cookies()` call in a layout made the entire subtree dynamic.
+
+[Next.js 16](https://nextjs.org/blog/next-16) (October 21, 2025) introduced **Cache Components** and said it plainly: unlike the implicit caching of previous App Router versions, caching is now entirely opt-in. All dynamic code in a page, layout or API route runs at request time unless you mark it with `"use cache"`. At the same time, Partial Prerendering (PPR) became the default rendering model: every route gets a prebuilt **static shell**, and **dynamic holes** are streamed into the same response.
+
+| | Next.js 14 | Next.js 15 | Next.js 16 + `cacheComponents` |
+| --- | --- | --- | --- |
+| Default `fetch` | Cached in the Data Cache | Not cached (static routes still fetch once at build) | Not cached; must be inside `use cache` or under `Suspense` |
+| Unit of static vs dynamic | Whole route | Whole route | Per component: static shell + dynamic holes |
+| Configuration | `dynamic`, `revalidate`, `fetchCache` | Same as 14 | `use cache`, `cacheLife`, `cacheTag` |
+| Client Router Cache | Dynamic pages kept 30 seconds | Dynamic pages not kept | Follows `cacheLife` `stale`, minimum 30 seconds |
+| Invalidation | `revalidateTag(tag)`, `revalidatePath` | Same as 14 | `updateTag`, `revalidateTag(tag, profile)`, `refresh`, `revalidatePath` |
+
+The most important change isn't an API, it's the question you ask. It used to be "which layer is caching this, and how do I turn it off?". Now it's "is this worth caching, for how long, and who gets to see the same copy?". I find the second question much easier to answer, because the answer lives in the code, right next to the data.
+
+On status: Cache Components shipped in 16.0 along with stable `cacheLife` and `cacheTag` (no more `unstable_` prefix). By [Next.js 16.4](https://nextjs.org/blog/next-16-4) (October 2026) the Next.js team recommends it for every app, `create-next-app` enables it for new projects, and it will be the default in Next.js 17. If you're still on the previous model, that's fine: with `cacheComponents` off, everything behaves like Next.js 15.
+
+## Enabling Cache Components and what changes with it
+
+It's one flag in `next.config.ts`. I'm also declaring a custom cache profile for the product catalog, which we'll use in the example later:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+  cacheLife: {
+    // Custom profile for catalog data: admins edit it occasionally
+    catalog: {
+      stale: 300, // the client reuses it for 5 minutes without asking the server
+      revalidate: 3600, // after 1 hour, the next request triggers a background refresh
+      expire: 86400, // after 1 day without traffic, the next request renders synchronously
+    },
+  },
+};
+
+export default nextConfig;
+```
+
+This flag consolidates three experimental options from Next.js 15: `experimental.dynamicIO` (renamed to `cacheComponents`), `experimental.useCache` and `experimental.ppr`. The `ppr` flag and the per-route `experimental_ppr` export were removed in 16. Turning it on changes a few things you should know before migrating:
+
+- **The old route segment configs go away.** `dynamic`, `revalidate` and `fetchCache` are replaced by `use cache` and `cacheLife`. `force-dynamic` is simply unnecessary, since dynamic is the default.
+- **No `runtime = "edge"`.** Cache Components requires the Node.js runtime.
+- **`generateStaticParams` must return at least one entry.** An empty array is a build error, because Next.js needs at least one sample set of params to verify the route doesn't access runtime data in the wrong place.
+- **`GET` Route Handlers follow the same prerendering model as pages.**
+- **State survives navigation.** Next.js uses React's `<Activity>` in hidden mode instead of unmounting the previous route, so going back shows dropdowns still open and forms still filled. Mostly good, but code that relied on unmounting to reset state needs fixing.
+
+For an existing app, I don't recommend flipping the flag and fixing errors until the build is green in a single PR. The less painful path: enable it on a branch, run `next build`, collect the list of failing routes, and work through them one by one using the patterns below.
+
+## Static shell and dynamic holes: what PPR actually does
+
+At build time (and on revalidation), Next.js renders the route's component tree and classifies each branch by what it does:
+
+- **Synchronous, pure work** (computation, module imports, synchronous file reads): finishes during prerendering, and the output lands in the static shell.
+- **Branches marked `use cache`**: the result is cached and also lands in the static shell.
+- **Branches waiting on uncached or runtime data** (`cookies()`, an uncached DB query...): can't finish at build time. They must sit under a `<Suspense>`, and that Suspense's *fallback* goes into the shell. The real content renders when a request arrives.
+
+In other words, **a `<Suspense>` boundary is the outline of a dynamic hole**. When a user opens the page, the server sends the static shell right away (HTML for the initial load, plus the RSC payload for client navigations), then streams each hole into **the same HTTP response** as it finishes. No second request, no client-side fetch.
+
+<Figure src="/blog/nextjs-16-cache-components-ppr.svg" alt="Diagram of a static shell with dynamic holes streamed in afterwards" caption="The shell holds static parts, use cache output and Suspense fallbacks; holes such as the member price and the cart stream into the same response." />
+
+```tsx
+// app/page.tsx
+import { Suspense } from "react";
+import { cookies } from "next/headers";
+import { cacheLife } from "next/cache";
+import { db } from "@/lib/db";
+import { getCart } from "@/lib/cart";
+import { SiteHeader, ProductGrid, CartBadge } from "@/components";
+
+export default function HomePage() {
+  return (
+    <>
+      <SiteHeader /> {/* synchronous: in the shell */}
+      <FeaturedProducts /> {/* use cache: in the shell */}
+      <Suspense fallback={<CartBadge count={null} />}>
+        <MiniCart /> {/* reads cookies: dynamic hole */}
+      </Suspense>
+    </>
+  );
+}
+
+async function FeaturedProducts() {
+  "use cache";
+  cacheLife("hours");
+  const products = await db.product.findMany({ where: { featured: true }, take: 8 });
+  return <ProductGrid products={products} />;
+}
+
+async function MiniCart() {
+  const cartId = (await cookies()).get("cart_id")?.value;
+  const cart = cartId ? await getCart(cartId) : null;
+  return <CartBadge count={cart?.items.length ?? 0} />;
+}
+```
+
+Remove the `<Suspense>` around `MiniCart` and the build stops with `Uncached data was accessed outside of <Suspense>` or `Runtime data such as cookies() ... was accessed outside of <Suspense>`. This is my favorite part of the new model: instead of silently turning the whole page dynamic like before, Next.js makes you decide explicitly, at build time. One caveat in the other direction: `<Suspense>` by itself doesn't make anything dynamic. A component that only does synchronous work still completes during prerendering, wrapped in Suspense or not.
+
+### What pushes a component out of the shell
+
+The list is short and worth memorizing:
+
+- `cookies()`, `headers()`, `searchParams`, and `params` when the route has no `generateStaticParams`.
+- `connection()` from `next/server`: the explicit way to say "what follows only runs on a request", for when you don't read any of the APIs above but still need per-request output.
+- Uncached async I/O: a `fetch` without cache options, a query through an async driver.
+- A `use cache` with a very short lifetime: the `seconds` profile, `revalidate: 0`, or `expire` under 5 minutes. Next.js treats that as a "short-lived cache", excludes it from prerendering and turns it into a hole.
+- `"use cache: private"`, because it's allowed to read cookies.
+
+`Date.now()`, `Math.random()` and `crypto.randomUUID()` have their own rule. Calling them in a Server Component *before* touching runtime or uncached data throws `next-prerender-current-time` or `next-prerender-random`, because Next.js can't tell whether you want the build-time or request-time value. Pick one of three: call `connection()` first (per-request value, wrap it in Suspense), move it into `use cache` (accept that the value is frozen until revalidation), or move it to a Client Component.
+
+```tsx
+import { connection } from "next/server";
+
+export async function RequestStamp() {
+  await connection(); // prerendering stops here; the rest only runs on a request
+  const id = crypto.randomUUID();
+  return <small>Request {id.slice(0, 8)} at {new Date().toISOString()}</small>;
+}
+// Usage: <Suspense fallback={null}><RequestStamp /></Suspense>
+```
+
+`connection()` replaces `unstable_noStore` and isn't allowed inside `use cache` or `use cache: private`.
+
+## "use cache" at three levels
+
+`"use cache"` is a directive, like `"use client"` or `"use server"`: the compiler sees it, wraps your function with cache read/write logic and generates the cache key for you. You can place it in three spots:
+
+```tsx
+// 1) File level: app/lib/cms.ts. Every export in the file must be an async function.
+"use cache";
+import { cacheLife } from "next/cache";
+import { cms } from "@/lib/cms-client";
+
+export async function getFooterLinks() {
+  cacheLife("max");
+  return cms.footer.get();
+}
+
+// 2) Component level: caches the rendered output per props
+export async function CategoryNav({ locale }: { locale: "vi" | "en" }) {
+  "use cache";
+  cacheLife("days");
+  const categories = await cms.categories.list(locale);
+  return <nav>{categories.map((c) => <a key={c.slug} href={`/c/${c.slug}`}>{c.name}</a>)}</nav>;
+}
+
+// 3) Function level: caches data, reused across components
+export async function getBrand(slug: string) {
+  "use cache";
+  cacheLife("days");
+  return cms.brands.findBySlug(slug);
+}
+```
+
+Function level is what I use most: the data is used in many places, and the components calling it don't need to know whether it's cached. Component level fits when rendering is expensive (markdown, heavy computation) or when you want to cache a whole subtree. File level is handy for modules that only contain data readers, but I use it sparingly because it hides the directive from where readers look.
+
+To cache a whole route, put `"use cache"` at the top of *both* the `layout` and the `page`, since each segment is its own entry. A cached component can still receive `children` or other JSX slots without affecting its key, as long as it passes them through rather than inspecting them. That's how a cached layout can still wrap dynamic content.
+
+### What goes into the cache key
+
+According to the [`use cache` docs](https://nextjs.org/docs/app/api-reference/directives/use-cache), an entry's key is built from:
+
+1. **Build ID**: unique per build; a new build invalidates every old entry.
+2. **Function ID**: a secure hash of the function's location and signature in the codebase.
+3. **Serialized arguments**: a component's props or a function's arguments.
+4. **Closure values**: variables from outer scopes that the function references are captured automatically and bound as arguments.
+5. In development, an HMR hash so editing code gives you a fresh cache.
+
+Three practical consequences. First, **every deploy starts cold**: even with a durable handler like Redis, old-build entries are never read again, so your database takes a burst of traffic after each deploy. Second, **pass the smallest identifier you can**: pass `productId`, not the whole `product` object, because every field ends up in the key; one constantly changing field like `updatedAt` or `lastSeenAt` is enough to drive the hit rate to zero. Third, **closures are keys too**: a nested function that captures `userId` from its component has `userId` in its key, even though you never passed it as an argument.
+
+### Serialization constraints
+
+Arguments and return values must be serializable, but by two different systems: arguments use React Server Components serialization (stricter), return values use the serialization for passing data to Client Components.
+
+| Type | As an argument | As a return value |
+| --- | --- | --- |
+| `string`, `number`, `boolean`, `null`, `undefined` | Yes | Yes |
+| Plain objects, arrays | Yes | Yes |
+| `Date`, `Map`, `Set`, TypedArray, `ArrayBuffer` | Yes | Yes |
+| JSX (`children`, slots) | Pass-through only, don't inspect | Yes |
+| Server Actions | Pass-through only, don't call | Not applicable |
+| Class instances, `URL` | No | No |
+| `Symbol`, `WeakMap`, `WeakSet` | No | No |
+
+The real-world failure I see most is a class instance sneaking in: an ORM `Decimal` for money columns, a model object with methods, a `URL`. The fix is always the same: convert to plain data before it leaves the cached function.
+
+```tsx
+import { cacheTag } from "next/cache";
+import { db } from "@/lib/db";
+
+// WRONG: the whole row as a prop puts every field in the key; price is a Decimal (class instance)
+async function PriceTag({ product }: { product: ProductRow }) {
+  "use cache";
+  return <span>{product.price.toString()}</span>;
+}
+
+// RIGHT: take an id, return a plain number
+export async function getBasePrice(productId: string): Promise<number> {
+  "use cache";
+  cacheTag(`product-${productId}`);
+  const row = await db.product.findUniqueOrThrow({
+    where: { id: productId },
+    select: { price: true },
+  });
+  return row.price.toNumber();
+}
+```
+
+Two more constraints people miss. `React.cache` is isolated inside `use cache`: values you store in `React.cache` outside aren't visible inside, so don't use it to smuggle data in. And don't pass a Promise of runtime data (an un-awaited `cookies()`, or `searchParams`) into a cached function: at build time it waits for something that never resolves, then times out after 50 seconds with `Filling a cache during prerender timed out`.
+
+## cacheLife: lifetimes declared where the data lives
+
+Every entry has three timestamps, and misreading any of them causes a lot of "stale data" bugs:
+
+- **`stale`**: how long the *client router* reuses the data without asking the server. It's sent down in the `x-nextjs-stale-time` header, and the router enforces a 30-second minimum so prefetched links don't expire before the user can click them.
+- **`revalidate`**: after this point, the next request still gets the current copy while the server re-renders in the background (stale-while-revalidate, like ISR).
+- **`expire`**: if this much time passes with no requests, the next request waits for a fresh render. `expire` must be longer than `revalidate`; Next.js errors on the reverse.
+
+The built-in profiles (values from the Next.js 16.2 default config):
+
+| Profile | `stale` | `revalidate` | `expire` | Good for |
+| --- | --- | --- | --- | --- |
+| `default` | 5 min | 15 min | Never | When you don't call `cacheLife` |
+| `seconds` | 30 s | 1 s | 1 min | Near real-time, becomes a dynamic hole |
+| `minutes` | 5 min | 1 min | 1 hour | Feeds, news |
+| `hours` | 5 min | 1 hour | 1 day | Inventory, prices updated a few times a day |
+| `days` | 5 min | 1 day | 1 week | Articles, category pages |
+| `weeks` | 5 min | 1 week | 30 days | Weekly content |
+| `max` | 5 min | 30 days | 1 year | Legal pages, archives |
+
+Beyond the presets, you can override them or define new profiles in `next.config.ts` like `catalog` above, or pass an object inline. Omitted properties inherit from `default`. `cacheLife` can be called conditionally, as long as only one call runs per invocation:
+
+```ts
+import { cacheLife, cacheTag } from "next/cache";
+import { cms } from "@/lib/cms-client";
+
+export async function getPromotion(slug: string) {
+  "use cache";
+  cacheTag(`promo-${slug}`);
+
+  const promo = await cms.promotions.findBySlug(slug);
+  if (!promo) {
+    // Not published yet: cache briefly to protect the CMS, but notice publication soon
+    cacheLife("minutes");
+    return null;
+  }
+
+  // Each campaign has its own update cadence, set in the CMS
+  cacheLife({ revalidate: promo.revalidateSeconds ?? 3600 });
+  return { title: promo.title, endsAt: promo.endsAt, bannerUrl: promo.bannerUrl };
+}
+```
+
+Two rules about nesting that I had to read twice:
+
+1. **Without an explicit `cacheLife`, an outer scope follows its inner scopes.** It uses `default`, but a shorter inner cache shortens it; a longer inner cache can't extend it. With an explicit `cacheLife`, the outer scope uses exactly that. If an inner cache is short-lived and the outer scope doesn't declare one, Next.js errors during prerendering (`nested-use-cache-no-explicit-cachelife`) so you don't accidentally turn the whole block dynamic. The Next.js team's advice, and my habit: always call `cacheLife` explicitly.
+2. **The static shell inherits the lifetimes and tags of what's inside it.** I read the 16.2 source to be sure: when a `use cache` entry is used during prerendering, its tags are collected onto the route's entry, and the route's `stale`, `revalidate` and `expire` take the minimum values. So a page's shell revalidates at the pace of its shortest-lived part, and invalidating a tag also expires every shell containing it. That mechanism is exactly what makes the example below work.
+
+## cacheTag and three ways to refresh: updateTag, revalidateTag, refresh
+
+Lifetimes are only half the story. The other half is refreshing *on events*: when an admin edits a product, you don't want to wait for `revalidate`. `cacheTag(...tags)` attaches one or more tags (up to 128 per call, 256 characters each) to the entry being created. Tags attached the old way via `fetch(url, { next: { tags } })` share the same system. Then Next.js 16 gives you three tools with very different semantics:
+
+- **`updateTag(tag: string): void`** (new in 16). Server Actions only. It expires the entry *immediately*, and the next read waits for fresh data instead of getting the stale copy. More importantly, that Server Action re-renders the current route on the server and sends the new RSC payload back *in the action's own response*. These are **read-your-own-writes** semantics: whoever made the change sees it right away, in one round trip.
+- **`revalidateTag(tag: string, profile: string | { expire?: number }): void`**. Works in Server Actions and Route Handlers. With `"max"` (recommended), the tag is marked stale: the next visit gets the old copy while a fresh one is built in the background. Since 16 the second argument is required; the one-argument form is deprecated, a TypeScript error, and may be removed later. When a webhook needs immediate expiration, pass `{ expire: 0 }`. Note: with a stale-while-revalidate profile inside a Server Action, the action response does **not** include a re-render.
+- **`refresh(): void`** (new in 16). Server Actions only. It touches no cache at all; it just re-renders the current route so *uncached* parts (notification counts, order status) reflect the change. Think of it as the server-side counterpart of `router.refresh()`.
+
+`revalidatePath(path)` still exists and goes through the same tag system (Next.js generates path-based "soft tags"), but the docs recommend tags because they're more precise and avoid over-invalidating.
+
+| | `updateTag` | `revalidateTag(tag, "max")` | `revalidateTag(tag, { expire: 0 })` | `refresh` |
+| --- | --- | --- | --- | --- |
+| Where | Server Action | Server Action, Route Handler | Server Action, Route Handler | Server Action |
+| Tagged entries | Expire now | Marked stale | Expire now | Untouched |
+| Next read | Waits for fresh data | Gets stale copy, refreshes in background | Waits for fresh data | Not applicable |
+| Action response re-renders the route | Yes | No | Not documented | Yes |
+| Use when | Users must see their own change | Content can lag a few seconds | Webhooks from external systems | Uncached data just changed |
+
+One more detail from the `cacheLife` docs: when a Server Action calls any of these, the entire client router cache *of the browser that called the action* is cleared, bypassing `stale`. Other people's browsers aren't: if they already have the page in their router cache, a client-side navigation can show the old copy until `stale` runs out. That's why I keep `stale` for catalog data at a few minutes, not hours.
+
+<Figure src="/blog/nextjs-16-cache-components-invalidation.svg" alt="Invalidation flow from a Server Action through updateTag and revalidateTag to cache entries and the next render" caption="updateTag expires entries immediately and re-renders the route in the action response; revalidateTag with max only marks them stale and refreshes on the next read." />
+
+Two infrastructure limits matter when self-hosting. The default cache lives in each process's memory: in serverless environments, entries created at runtime usually don't survive to the next request (build-time caching still works). And [invalidation is local to the instance that receives the call by default](https://nextjs.org/docs/app/guides/how-revalidation-works): run several pods behind a load balancer without a shared cache handler implementing `updateTags()` and `refreshTags()`, and `updateTag` on pod A won't make pod B forget the old copy.
+
+## "use cache: private" and "use cache: remote"
+
+`"use cache"` has two variants, and the comparison table in the [`use cache: remote` docs](https://nextjs.org/docs/app/api-reference/directives/use-cache-remote) is the one I'd pin next to my monitor:
+
+| | `use cache` | `use cache: remote` | `use cache: private` |
+| --- | --- | --- | --- |
+| Server-side storage | Memory (or the `default` handler) | The `remote` handler | Not stored across requests |
+| Scope | Shared across all users | Shared across all users and instances | Per browser |
+| Reads cookies, headers directly | No, pass as arguments | No, pass as arguments | Yes |
+| Extra cost | None | Storage, network, lookup latency | None |
+
+**`use cache: remote`** stores entries in the `remote` cache handler declared in `cacheHandlers` (a top-level option since 16.0), such as Redis or a platform KV store. One easy misunderstanding: if you don't configure `cacheHandlers`, both `default` and `remote` are in-memory LRU caches. So when self-hosting, switching to `remote` without configuring a handler changes nothing. Its real value is *inside dynamic holes*: there every request runs the component and looks up the cache, and on serverless each instance has its own memory, so hit rates are poor. I use it for rate-limited third-party APIs, slow backends or expensive queries. I skip it when the operation is already fast (under roughly 50ms), when data changes every few seconds, or when keys are nearly unique per request.
+
+```tsx
+import { cookies } from "next/headers";
+import { cacheLife, cacheTag } from "next/cache";
+import { carrier } from "@/lib/carrier";
+
+// Lives inside <Suspense> because it reads cookies
+export async function ShippingEstimate({ productId }: { productId: string }) {
+  // There are a few dozen provinces, unlike user ids
+  const province = (await cookies()).get("province")?.value ?? "HCM";
+  const eta = await getShippingEta(productId, province);
+  return <p>Estimated delivery in {eta.days} days</p>;
+}
+
+async function getShippingEta(productId: string, province: string) {
+  "use cache: remote";
+  cacheTag(`shipping-${productId}`);
+  cacheLife({ revalidate: 900, expire: 3600 });
+  // The carrier API is rate limited per minute: share the cache across instances
+  return carrier.estimate({ productId, province });
+}
+```
+
+**`use cache: private`** is the one exception allowed to call `cookies()`, `headers()` and `searchParams` inside a cache scope. Its results are never stored on the server across requests; they're kept only in browser memory for the `stale` time and are gone on reload. It doesn't run during static shell generation, can't use a custom handler, isn't available in Route Handlers, and `connection()` is still forbidden inside it. The docs bundled with 16.2 label this directive experimental because it depends on runtime prefetching, which wasn't stable yet; check its status in the docs for the exact version you run. I only reach for it when compliance rules forbid storing user data server-side, or when refactoring to pass runtime values as arguments isn't practical.
+
+Nesting rules: `remote` inside `remote` or inside a regular `use cache` is fine; `remote` inside `private`, or the other way around, is an error.
+
+## Reading cookies, headers and searchParams in a dynamic hole
+
+The pattern the docs recommend, and that holds up in practice, has four steps:
+
+1. Read the runtime API in an **uncached** component under `<Suspense>`.
+2. Extract the smallest value you need (a string, a number).
+3. Pass that value as an argument to a `use cache` function, so it becomes part of the key.
+4. Key on the dimension with the fewest values: membership tier rather than user id, currency rather than session, category rather than every price filter. Filter the rest in memory.
+
+For `searchParams`, I pass the Promise down to a child inside Suspense and `await` it there, so the parent page stays in the shell:
+
+```tsx
+// app/products/[id]/variants.tsx
+import { getVariants } from "@/lib/catalog";
+
+export async function VariantPicker({
+  productId,
+  searchParams,
+}: {
+  productId: string;
+  searchParams: Promise<{ color?: string }>;
+}) {
+  const { color } = await searchParams; // runtime data: this component is a hole
+  const variants = await getVariants(productId); // cached per productId, not per color
+  const selected = variants.find((v) => v.color === color) ?? variants[0];
+  return <VariantList variants={variants} selectedSku={selected?.sku} />;
+}
+// In the page: <Suspense fallback={<VariantSkeleton />}>
+//   <VariantPicker productId={id} searchParams={searchParams} />
+// </Suspense>
+```
+
+For `params`, there are two paths. With `generateStaticParams`, you can `await params` directly in the page, since Next.js has sample values to prerender with; ids outside the list are rendered on their first request and then saved. Without `generateStaticParams`, `params` is runtime data and must be read under Suspense or covered by a `loading.tsx`.
+
+## What about the fetch cache and the old config?
+
+With Cache Components, a `fetch` without cache options counts as uncached data: it must be inside `use cache` or under `<Suspense>`, exactly like a database query. The old options, `cache: "force-cache"`, `next: { revalidate }` and `next: { tags }`, are still there for compatibility, and tags attached this way can still be targeted by `updateTag` and `revalidateTag`. But I don't use them in new code: a `use cache` function wraps both the `fetch` and the processing after it, works for every data source rather than just HTTP, and declares `cacheLife` and `cacheTag` in one place.
+
+The table I use when migrating route by route:
+
+| Old approach | With Cache Components |
+| --- | --- |
+| `export const dynamic = "force-dynamic"` | Delete it; dynamic is the default |
+| `export const dynamic = "force-static"` | Delete it; add `use cache` + `cacheLife("max")` close to the data access; remove runtime data access |
+| `export const revalidate = 3600` | `cacheLife("hours")` inside `use cache` |
+| `export const fetchCache = "force-cache"` | Not needed: a `fetch` inside a `use cache` scope is cached with the scope |
+| `unstable_cache(fn, keys, opts)` | `use cache` + `cacheTag` + `cacheLife`; the 16 docs say this API has been replaced |
+| `revalidateTag("posts")` | `revalidateTag("posts", "max")`, or `updateTag("posts")` in a Server Action |
+| `experimental.ppr`, `export const experimental_ppr` | Removed in 16; PPR is the default with `cacheComponents` |
+| `export const runtime = "edge"` | Not supported; use the Node.js runtime, move edge needs to `proxy.ts` |
+
+## A real-world example: an e-commerce product page
+
+The problem I worked on: a shop with tens of thousands of products. The `/products/[id]` page shows a name, images and description (admins edit a few times a week), a review summary (an hour of lag is fine), a price per membership tier (guest, member, VIP), and the number of items in the current viewer's cart. Admins edit products in a back office through a Server Action. The ERP pushes price changes through a webhook. Requirements: the page opens instantly, admins see their edits as soon as they save, and nobody ever sees someone else's cart.
+
+Classify each part before writing code:
+
+- Product details: `use cache`, profile `catalog`, tag `product-{id}`. In the shell.
+- Review summary: `use cache`, profile `hours`, tag `reviews-{id}`. In the shell.
+- Tier price: a dynamic hole (reads the session), but it calls a function cached by `(productId, tier)`, so there are only three entries per product.
+- Cart: a dynamic hole, nothing cached.
+
+The data layer, the only place that knows about caching:
+
+```ts
+// lib/catalog.ts
+import "server-only";
+import { cacheLife, cacheTag } from "next/cache";
+import { db } from "@/lib/db";
+
+export type PriceTier = "guest" | "member" | "vip";
+
+export async function getProduct(id: string) {
+  "use cache";
+  cacheTag(`product-${id}`);
+
+  const row = await db.product.findUnique({ where: { id } });
+  if (!row) {
+    cacheLife("minutes"); // unknown id: cache briefly
+    return null;
+  }
+  cacheLife("catalog");
+  // Return only what the page needs, as plain data (no Decimal, no model objects)
+  return { id: row.id, name: row.name, description: row.description, images: row.images };
+}
+
+export async function getReviewSummary(productId: string) {
+  "use cache";
+  cacheTag(`reviews-${productId}`);
+  cacheLife("hours");
+
+  const [stats, latest] = await Promise.all([
+    db.review.aggregate({ where: { productId }, _avg: { rating: true }, _count: true }),
+    db.review.findMany({
+      where: { productId },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { id: true, author: true, rating: true, body: true, createdAt: true },
+    }),
+  ]);
+  return { average: stats._avg.rating ?? 0, count: stats._count, latest };
+}
+
+export async function getTierPrice(productId: string, tier: PriceTier) {
+  "use cache";
+  cacheTag(`product-${productId}`, `price-${productId}`);
+  cacheLife("minutes");
+
+  const price = await db.price.findUnique({
+    where: { productId_tier: { productId, tier } },
+    select: { amount: true }, // stored as an integer amount of VND
+  });
+  return price?.amount ?? null;
+}
+
+export async function getBestSellerIds(limit: number) {
+  const rows = await db.product.findMany({
+    orderBy: { soldCount: "desc" },
+    take: limit,
+    select: { id: true },
+  });
+  return rows.map((r) => r.id);
+}
+```
+
+The product page. It can `await params` at the top because it has `generateStaticParams`:
+
+```tsx
+// app/products/[id]/page.tsx
+import { Suspense } from "react";
+import { notFound } from "next/navigation";
+import { getBestSellerIds, getProduct, getReviewSummary } from "@/lib/catalog";
+import { PersonalPrice, CartSummary } from "./personalized";
+import { Gallery, PriceSkeleton, CartSkeleton, ReviewList } from "@/components/product";
+
+export async function generateStaticParams() {
+  // With Cache Components this must return at least one entry
+  const ids = await getBestSellerIds(500);
+  return ids.map((id) => ({ id }));
+}
+
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const [product, reviews] = await Promise.all([getProduct(id), getReviewSummary(id)]);
+  if (!product) notFound();
+
+  return (
+    <main>
+      <Gallery images={product.images} />
+      <h1>{product.name}</h1>
+
+      <Suspense fallback={<PriceSkeleton />}>
+        <PersonalPrice productId={id} />
+      </Suspense>
+      <Suspense fallback={<CartSkeleton />}>
+        <CartSummary productId={id} />
+      </Suspense>
+
+      <article>{product.description}</article>
+      <ReviewList average={reviews.average} count={reviews.count} items={reviews.latest} />
+    </main>
+  );
+}
+```
+
+The two dynamic holes. They read cookies, then pass only low-cardinality values into cached functions:
+
+```tsx
+// app/products/[id]/personalized.tsx
+import { cookies } from "next/headers";
+import { getTierPrice, type PriceTier } from "@/lib/catalog";
+import { getUserBySession } from "@/lib/auth";
+import { getCart } from "@/lib/cart";
+import { AddToCartButton } from "./add-to-cart-button";
+
+const vnd = new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND" });
+
+export async function PersonalPrice({ productId }: { productId: string }) {
+  const token = (await cookies()).get("session")?.value;
+  const user = token ? await getUserBySession(token) : null; // not cached: per-user data
+  const tier: PriceTier = user?.tier ?? "guest";
+  const amount = await getTierPrice(productId, tier); // all VIP customers share one entry
+  if (amount === null) return <p>Out of stock</p>;
+  return <p className="price">{vnd.format(amount)}</p>;
+}
+
+export async function CartSummary({ productId }: { productId: string }) {
+  const cartId = (await cookies()).get("cart_id")?.value;
+  const cart = cartId ? await getCart(cartId) : null; // always fresh, never cached
+  const quantity = cart?.items.find((item) => item.productId === productId)?.quantity ?? 0;
+  return <AddToCartButton productId={productId} quantityInCart={quantity} />;
+}
+```
+
+The admin Server Action. The authorization check lives *inside* the action, because an action is a public POST endpoint; hiding the form from regular users is not protection:
+
+```ts
+// app/admin/products/actions.ts
+"use server";
+
+import { revalidateTag, updateTag } from "next/cache";
+import { z } from "zod";
+import { requireAdmin } from "@/lib/auth";
+import { db } from "@/lib/db";
+
+const ProductUpdate = z.object({
+  id: z.string().min(1),
+  name: z.string().trim().min(1).max(200),
+  description: z.string().max(20_000),
+});
+
+export type UpdateState = { ok: boolean; message: string };
+
+export async function updateProduct(_prev: UpdateState, formData: FormData): Promise<UpdateState> {
+  await requireAdmin();
+  const parsed = ProductUpdate.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { ok: false, message: "Invalid input" };
+
+  const { id, ...data } = parsed.data;
+  await db.product.update({ where: { id }, data });
+
+  // The admin sees the new version: entries expire, the current route re-renders in this response
+  updateTag(`product-${id}`);
+  // Category and search pages (functions tagged cacheTag("products")) can lag a few seconds
+  revalidateTag("products", "max");
+
+  return { ok: true, message: "Saved" };
+}
+```
+
+And the ERP webhook. Route Handlers can't call `updateTag`, so it uses `revalidateTag` with `{ expire: 0 }`:
+
+```ts
+// app/api/webhooks/erp/route.ts
+import { revalidateTag } from "next/cache";
+import { verifyErpSignature } from "@/lib/webhooks";
+
+type ErpEvent = { type: "price.updated"; productId: string };
+
+export async function POST(request: Request) {
+  const body = await request.text();
+  if (!verifyErpSignature(body, request.headers.get("x-erp-signature"))) {
+    return new Response("Invalid signature", { status: 401 });
+  }
+  const event = JSON.parse(body) as ErpEvent;
+  revalidateTag(`price-${event.productId}`, { expire: 0 });
+  return Response.json({ revalidated: true });
+}
+```
+
+Now walk through the life of `/products/42`:
+
+1. **`next build`.** The 500 best sellers are prerendered. Each shell contains the gallery, name, description and reviews, plus skeletons for the price and cart. The build output marks the route `◐ (Partial Prerender)`. If you see `ƒ` instead, the shell is empty: something near the root of the tree is blocking.
+2. **Guest A visits.** The shell goes out immediately. In the same response, the server runs `PersonalPrice` (tier `guest`, creating the `getTierPrice("42", "guest")` entry) and `CartSummary`, then streams the results into the skeletons' place.
+3. **Hundreds of VIP customers.** They all share the `("42", "vip")` entry. Only the session and cart reads run per person.
+4. **An admin edits the description.** `updateTag("product-42")` expires `getProduct("42")`, every `getTierPrice("42", ...)` entry, *and* the `/products/42` shell, because `getProduct`'s tag was collected onto the route's entry during prerendering. The action response carries the admin page re-rendered with fresh data. `revalidateTag("products", "max")` marks the listing pages stale.
+5. **Customer E arrives right after.** The entry has expired, so this request waits for a fresh render instead of getting the old copy; the new shell is saved and everyone after E gets it instantly again. The category page works the other way: E sees the old copy once while the new one is built in the background.
+6. **The ERP changes the VIP price.** Only entries tagged `price-42` expire. The shell isn't touched, because the price lives in a hole, not in the shell.
+
+There's one gap to accept: if guest A still has the tab open and navigates back to this page client-side within 5 minutes (the `catalog` profile's `stale`), they may see the old description from their browser's router cache. A reload shows the new one. For product descriptions I find that acceptable; for prices, it's exactly why the price lives in a dynamic hole.
+
+## Common mistakes
+
+### Per-user data in a shared cache
+
+The good news is that Next.js 16 blocks the classic version of this bug: calling `cookies()` or `headers()` inside `use cache` throws `next-request-in-use-cache` right away, so it's hard to accidentally cache user A's page and serve it to user B the way hand-configured caches used to. But other paths remain:
+
+- **Putting user ids into a `use cache: remote` key.** Users don't leak into each other since keys differ, but personal data now sits in a shared store (Redis) with a lifetime you may not control, and the entry count grows with your user count, so the hit rate is close to zero. Cache on low-cardinality dimensions (tier, language, currency) and read per-user data straight from the source.
+- **Authorization outside the cached function.** `getOrder(orderId)` is cached by `orderId` and returns the order to anyone who calls it. If the "does this order belong to the current user" check lives only in one component, the next code path that forgets it will return someone else's order, faster thanks to the cache. Keep authorization in the data access layer, outside the cached part.
+- **A CDN caching the whole response.** A response with dynamic holes includes per-user streamed content. If you add a CDN rule that caches all HTML regardless of the `Cache-Control` Next.js sends, you've recreated the leak the framework tries to prevent.
+
+### Date.now() and Math.random() inside a cached scope
+
+Inside `use cache`, calling `Date.now()` doesn't throw. That's exactly the problem: the value is frozen into the entry and shared with everyone until the next revalidation.
+
+```tsx
+// WRONG: "is the sale still on" is computed once and cached for hours
+async function SaleBadge({ productId }: { productId: string }) {
+  "use cache";
+  cacheLife("hours");
+  const sale = await getSale(productId);
+  const active = sale !== null && Date.now() < Date.parse(sale.endsAt);
+  return active ? <Badge>{sale.percent}% off</Badge> : null;
+}
+
+// RIGHT: cache the raw data (getSale has "use cache"), compare times on the client
+async function SaleBadge({ productId }: { productId: string }) {
+  const sale = await getSale(productId);
+  return sale ? <SaleCountdown endsAt={sale.endsAt} percent={sale.percent} /> : null;
+}
+// SaleCountdown is a Client Component ("use client") that compares Date.now() with endsAt
+```
+
+Likewise, `Math.random()` for A/B bucketing inside a cache puts every user in the same bucket. My rule: a cached scope contains data only; anything that depends on "now" or "this person" stays outside.
+
+### Accidentally making the whole route dynamic
+
+An empty shell is the hardest failure to notice, because the page still works, just slower. The causes I've run into:
+
+- **Reading `cookies()` in the root layout** (theme, a header with an avatar), then "fixing" the build error with `<Suspense fallback={null}>` around `<body>`. The error goes away, and so does every static shell in the app. Push the cookie read down into the smallest component that needs it.
+- **`await params` at the top of a page with no `generateStaticParams`.** The whole page becomes runtime work. Pass the Promise down to a child inside Suspense, or provide sample params.
+- **`generateMetadata` reading runtime data** while the rest of the page could be static. Next.js has a dedicated warning for this.
+- **A component near the root using `cacheLife("seconds")`.** Short-lived caches become holes and take the branch below with them.
+
+The cheapest check is the build output: a route you expect to have a shell should be `◐` or `○`. Since 16.4 there's also `export const ensureStatic`, which turns that expectation into a build error if someone adds a dynamic component to the route.
+
+### Reading build errors correctly
+
+Cache Components errors are long but very regular. These are the three shapes I see most (verbatim from Next.js 16.2):
+
+```text
+Route "/products/[id]": Uncached data was accessed outside of <Suspense>. This delays
+the entire page from rendering, resulting in a slow user experience.
+Learn more: https://nextjs.org/docs/messages/blocking-route
+
+Route "/products/[id]": Runtime data such as `cookies()`, `headers()`, `params`, or
+`searchParams` was accessed outside of `<Suspense>`. This delays the entire page ...
+
+Route "/products/[id]" used `Date.now()` before accessing either uncached data
+(e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and
+`searchParams`). ... See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+```
+
+How to read them: the start names the **route**, the middle names the **kind** of data (uncached or runtime), and the link at the end leads to a page with the possible fixes. The message names the route, not the component; under `next dev` the overlay usually points at the right component, and if the error only shows up in CI, run `next build --debug-prerender` to get prerender stack traces. After that it's always one question: is this data allowed to be the same for everyone for a while? If yes, `use cache` with a fitting `cacheLife`. If not, `<Suspense>` with a decent fallback, placed as deep as possible.
+
+## Further reading
+
+- [Next.js 16](https://nextjs.org/blog/next-16): the announcement of Cache Components, `updateTag`, `refresh` and the new `revalidateTag` signature.
+- [Caching](https://nextjs.org/docs/app/getting-started/caching) and [Revalidating](https://nextjs.org/docs/app/getting-started/revalidating): the official guides for the new model.
+- [`use cache`](https://nextjs.org/docs/app/api-reference/directives/use-cache) and [`cacheLife`](https://nextjs.org/docs/app/api-reference/functions/cacheLife): cache keys, serialization, profiles, nesting rules.
+- [Server Actions](https://nextjs.org/docs/app/guides/server-actions): the single round-trip model and how `updateTag`, `revalidateTag`, `revalidatePath` and `refresh` compare.
+- [Migrating to Cache Components](https://nextjs.org/docs/app/guides/migrating-to-cache-components): the route segment config migration table.
+- [Uncached data was accessed outside of Suspense](https://nextjs.org/docs/messages/blocking-route): the most common build error, explained.
+
+## Summary
+
+<Checklist>
+
+- With `cacheComponents: true`, everything runs at request time by default; you choose what to cache with `"use cache"` at file, component or function level.
+- A `<Suspense>` boundary outlines a dynamic hole: the shell holds static parts, `use cache` output and fallbacks; holes stream into the same response.
+- Cache keys combine build ID, function ID, arguments and closures: pass the smallest id, never big objects, class instances or Promises of runtime data.
+- Always call `cacheLife` explicitly, and remember the shell inherits the shortest lifetime and the tags of everything inside it.
+- `updateTag` for read-your-own-writes in Server Actions, `revalidateTag(tag, "max")` for content that can lag, `{ expire: 0 }` for webhooks, `refresh` for uncached data.
+- Read cookies, headers and searchParams inside holes, then pass the lowest-cardinality value into cached functions; don't cache per-user data.
+- Don't let `Date.now()` or `Math.random()` get frozen in a cache; use `connection()`, a Client Component, or freeze it on purpose.
+- Check the build output: routes that need a shell should be `◐` or `○`; when self-hosting multiple instances, use a shared cache handler so invalidation reaches all of them.
+
+</Checklist>

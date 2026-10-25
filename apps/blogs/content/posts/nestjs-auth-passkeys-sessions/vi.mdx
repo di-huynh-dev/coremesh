@@ -1,0 +1,925 @@
+---
+title: "Xác thực trong NestJS cho đúng: passkey, session hay JWT, và refresh token rotation"
+excerpt: "Một thiết kế xác thực trung thực cho API NestJS và frontend Next.js: khi nào dùng session, khi nào dùng JWT, cách xoay vòng refresh token có phát hiện tái sử dụng, đăng nhập bằng passkey với SimpleWebAuthn, và các guard, rate limit, CSRF đi kèm."
+---
+
+<Lead>Gần như dự án NestJS nào mình nhận lại cũng có cùng một kiểu auth: một JWT sống 7 ngày, lưu trong `localStorage`, không thu hồi được, và một endpoint login không giới hạn số lần thử. Nó chạy được — cho tới ngày cần khoá một tài khoản bị chiếm, hoặc ngày ai đó hỏi "đăng xuất khỏi mọi thiết bị thì làm sao?". Bài này là thiết kế mình thực sự dùng cho API NestJS 12 đi kèm frontend Next.js: so sánh trung thực session và JWT, access token ngắn kèm refresh token xoay vòng có phát hiện tái sử dụng, đăng nhập bằng passkey với SimpleWebAuthn v14, cùng các guard, rate limit và CSRF cần có để mọi thứ đứng vững.</Lead>
+
+## Session hay JWT: nhìn thẳng vào trade-off
+
+Cuộc tranh luận "session hay JWT" thường bị đóng khung sai. Câu hỏi thật không phải là định dạng token, mà là: **trạng thái xác thực nằm ở đâu, và bạn cần thu hồi nó nhanh tới mức nào?**
+
+- **Session phía server:** trình duyệt chỉ giữ một ID ngẫu nhiên, vô nghĩa (opaque). Mọi thông tin — user nào, hết hạn khi nào, đã bị thu hồi chưa — nằm trong store của server (Redis, Postgres). Mỗi request tốn một lần tra cứu, đổi lại bạn thu hồi được **ngay lập tức**: xoá bản ghi là xong.
+- **JWT (access token):** token tự mang claim và chữ ký. Server xác minh chữ ký bằng key, không cần tra cứu gì. Đổi lại, một khi đã phát hành, token **hợp lệ cho tới `exp`** — bạn không "xoá" được thứ không nằm trong store của mình.
+
+### Huyền thoại "stateless"
+
+JWT thường được quảng cáo là "stateless". Điều đó chỉ đúng khi bạn chấp nhận không thu hồi được token trước hạn. Ngay khi có yêu cầu "khoá tài khoản này ngay", "đăng xuất mọi nơi" hay "đổi mật khẩu thì các phiên cũ phải chết", bạn sẽ thêm một denylist, một cột `tokenVersion` để so sánh, hoặc một lần kiểm tra trong Redis ở mỗi request. Lúc đó bạn đã có state trở lại — chỉ là state nằm ở chỗ khó nhìn thấy hơn session.
+
+Cách trung thực để dùng JWT là **giữ thời gian sống thật ngắn** (5–15 phút) để "không thu hồi được" chỉ còn là một cửa sổ nhỏ, và đặt khả năng thu hồi vào một thứ có state: refresh token.
+
+Kích thước cũng đáng tính. Session ID là khoảng 32 byte ngẫu nhiên. Một JWT có vài claim, chữ ký và mã hoá base64url dễ dàng lên vài trăm byte tới hơn một KB, đi kèm **mọi** request. Nhồi roles, permission, tên, avatar vào JWT là cách nhanh nhất để header phình ra và dữ liệu cũ (stale) tồn tại cho tới khi token hết hạn.
+
+### Khi nào dùng cái nào
+
+| | Session cookie (Redis) | JWT access token sống lâu | JWT ngắn + refresh token xoay vòng |
+| --- | --- | --- | --- |
+| **Thu hồi** | Tức thì, xoá bản ghi | Không được trước `exp` (trừ khi thêm denylist) | Access token: chờ tối đa vài phút. Refresh: tức thì |
+| **Tra cứu mỗi request** | Có (một lần đọc Redis) | Không | Không cho access token; có khi refresh |
+| **Kích thước trên request** | ~32 byte | Hàng trăm byte trở lên | Hàng trăm byte (access) |
+| **Bị trộm thì sao** | Dùng được tới khi hết hạn hoặc bị xoá | Dùng được tới `exp` — có thể nhiều ngày | Access: vài phút. Refresh bị replay thì cả family bị huỷ |
+| **Nhiều service tự xác minh** | Phải gọi về session store | Dễ, chỉ cần public key | Dễ, chỉ cần public key |
+| **Client không phải trình duyệt** | Lúng túng | Dễ | Dễ |
+| **Độ phức tạp** | Thấp | Thấp — vì bỏ qua phần khó | Trung bình đến cao |
+
+Lựa chọn mặc định của mình:
+
+- **Một web app, một API, cùng site:** session trong Redis. Đơn giản, thu hồi được, ít chỗ để sai. Phần lớn các app nội bộ và SaaS cỡ vừa nên dừng ở đây.
+- **Nhiều service cần biết user là ai mà không gọi về auth service, hoặc có mobile app/CLI dùng chung API:** access token JWT ngắn + refresh token xoay vòng.
+- **JWT sống nhiều ngày không có cơ chế thu hồi:** không dùng cho người dùng thật. Chấm hết.
+
+Phần còn lại của bài đi theo phương án thứ hai vì nó khó làm đúng hơn, nhưng mình sẽ chỉ ra chỗ session đơn giản hơn ngay bên dưới.
+
+## Access token ngắn + refresh token xoay vòng
+
+Pattern này có ba mảnh, mỗi mảnh giải quyết một điểm yếu của mảnh kia:
+
+1. **Access token** là JWT sống khoảng 10 phút, chỉ chứa `sub` (user id), `sid` (id của phiên) và vài role thô. Frontend giữ nó **trong bộ nhớ** và gửi qua header `Authorization: Bearer`. Không `localStorage`, không cookie.
+2. **Refresh token** là chuỗi ngẫu nhiên 256 bit, **không phải JWT**. Server chỉ lưu **hash** của nó. Nó được giao trong cookie `HttpOnly`, `Secure`, `SameSite=Strict`, giới hạn `Path` về đúng các route auth.
+3. **Xoay vòng có phát hiện tái sử dụng:** mỗi lần refresh, token cũ bị đánh dấu đã dùng và một token mới được cấp. Mọi token sinh ra từ cùng một lần đăng nhập thuộc về một **family**. Nếu một token đã dùng rồi lại xuất hiện, server không biết ai là người dùng thật và ai là kẻ trộm — nên nó huỷ **cả family**. Đây đúng là cơ chế mà [RFC 9700 (OAuth 2.0 Security BCP, mục 4.14.2)](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14.2) mô tả: server không phân biệt được bên nào gửi token đã vô hiệu, nên thu hồi token đang hoạt động, chấp nhận việc người dùng thật phải đăng nhập lại.
+
+<Figure src="/blog/nestjs-auth-passkeys-sessions-rotation.svg" alt="Sơ đồ tuần tự: client đổi refresh token RT1 lấy RT2, kẻ tấn công replay RT1 và server huỷ cả family, sau đó RT2 của client cũng bị từ chối" caption="Xoay vòng refresh token: mỗi token chỉ dùng được một lần. Token cũ bị replay là bằng chứng có bản sao, nên cả family bị thu hồi." />
+
+Vài quyết định nhỏ nhưng quan trọng:
+
+- **Refresh token là opaque, không phải JWT.** Refresh token luôn phải tra cứu trong store (để kiểm tra đã dùng chưa, family còn sống không), nên chữ ký JWT không mua thêm được gì, chỉ làm token dài hơn và dễ bị nhầm là "tự xác minh được".
+- **Hash bằng SHA-256, không phải argon2.** Mật khẩu cần hàm băm chậm vì không gian mật khẩu nhỏ, đoán được. Token 256 bit ngẫu nhiên thì không thể brute force, nên SHA-256 là đủ — và cho phép tra cứu trực tiếp bằng hash qua một unique index. Mục đích của việc hash là: lộ bản dump database không đồng nghĩa với lộ phiên đăng nhập.
+- **Hai mức hết hạn.** Mỗi refresh token hết hạn sau 14 ngày không dùng (idle), còn cả family có hạn tuyệt đối 60 ngày (absolute) — quá hạn này thì phải đăng nhập lại, dù dùng đều đặn đến đâu.
+- **Giữ lại token đã dùng.** Nghe ngược đời, nhưng nếu bạn xoá token cũ ngay khi xoay, lần replay sau chỉ trả về "không tìm thấy" và bạn mất luôn khả năng phát hiện. Token đã dùng phải sống cho tới khi cả family hết hạn.
+
+Cookie trông như thế này:
+
+```http
+Set-Cookie: __Secure-rt=Vb9w...Q2k; Path=/api/auth; Expires=Sat, 07 Nov 2026 09:12:44 GMT; HttpOnly; Secure; SameSite=Strict
+Cache-Control: no-store
+```
+
+Lưu ý mình dùng prefix `__Secure-` chứ không phải `__Host-`. Prefix `__Host-` mạnh hơn (cấm `Domain`, chống subdomain ghi đè) nhưng bắt buộc `Path=/`, tức là cookie đi kèm mọi request tới API. Mình chọn `Path=/api/auth` để refresh token chỉ xuất hiện ở các endpoint auth; không khai báo `Domain` thì cookie vẫn là host-only. Chọn `__Host-` với `Path=/` cũng hợp lý — miễn là có chủ đích.
+
+`SameSite=Strict` ở đây gần như miễn phí: refresh cookie chỉ được dùng bởi `fetch` từ chính app của bạn, không bao giờ cần đi kèm điều hướng từ trang khác, nên cái giá thường thấy của `Strict` (bấm link từ email vào thấy như chưa đăng nhập) không áp dụng.
+
+## Phương án đơn giản hơn: session trong Redis
+
+Trước khi đi tiếp, đây là phiên bản mình khuyên cho phần lớn app chỉ có một frontend web. Không JWT, không refresh, không family — chỉ một ID ngẫu nhiên trong cookie và một bản ghi trong Redis:
+
+```ts
+// auth/session.store.ts
+import { Injectable } from "@nestjs/common";
+import { Redis } from "ioredis";
+import { createHash, randomBytes } from "node:crypto";
+
+const IDLE_TTL_S = 30 * 60; // 30 phút không hoạt động thì hết hạn
+const ABSOLUTE_TTL_MS = 12 * 60 * 60 * 1000; // tối đa 12 giờ, bất kể hoạt động
+
+interface SessionData {
+  userId: string;
+  createdAt: number;
+}
+
+const key = (sid: string) => `sess:${createHash("sha256").update(sid).digest("base64url")}`;
+
+@Injectable()
+export class SessionStore {
+  constructor(private readonly redis: Redis) {}
+
+  /** Luôn tạo ID mới sau khi đăng nhập — chống session fixation. */
+  async create(userId: string): Promise<string> {
+    const sid = randomBytes(32).toString("base64url");
+    const data: SessionData = { userId, createdAt: Date.now() };
+    await this.redis.set(key(sid), JSON.stringify(data), "EX", IDLE_TTL_S);
+    await this.redis.sadd(`user-sess:${userId}`, key(sid)); // để "đăng xuất mọi nơi"
+    return sid;
+  }
+
+  async touch(sid: string): Promise<SessionData | null> {
+    const raw = await this.redis.get(key(sid));
+    if (!raw) return null;
+    const data = JSON.parse(raw) as SessionData;
+    if (Date.now() - data.createdAt > ABSOLUTE_TTL_MS) {
+      await this.redis.del(key(sid));
+      return null;
+    }
+    await this.redis.expire(key(sid), IDLE_TTL_S); // gia hạn idle timeout
+    return data;
+  }
+
+  async destroyAll(userId: string): Promise<void> {
+    const keys = await this.redis.smembers(`user-sess:${userId}`);
+    if (keys.length) await this.redis.del(...keys);
+    await this.redis.del(`user-sess:${userId}`);
+  }
+}
+```
+
+Cookie là `__Host-sid` với `HttpOnly; Secure; SameSite=Lax; Path=/`. Guard đọc cookie, gọi `touch()`, gắn user vào request; thu hồi là xoá key. Các con số timeout theo [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): idle 15–30 phút cho app rủi ro thấp, ngắn hơn nhiều cho app giá trị cao, luôn có absolute timeout enforce **phía server**, và session ID từ CSPRNG với ít nhất 64 bit entropy.
+
+Nếu bạn chỉ có một web app Next.js nói chuyện với một API NestJS cùng site, hãy dừng ở đây.
+
+## Mật khẩu, nếu vẫn còn: argon2id
+
+Passkey là hướng đi, nhưng phần lớn hệ thống vẫn còn mật khẩu trong một thời gian dài — ít nhất là cho người dùng cũ và làm phương án dự phòng. Với mật khẩu, [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) khuyến nghị argon2id với cấu hình tối thiểu **19 MiB bộ nhớ (`m=19456`), 2 vòng lặp (`t=2`), parallelism 1** — hoặc các cấu hình tương đương như 46 MiB với `t=1`. Nếu không có argon2id, dùng scrypt; bcrypt chỉ cho hệ thống cũ, với work factor từ 10 trở lên và giới hạn 72 byte đầu vào.
+
+```ts
+// auth/password.service.ts
+import { Injectable, UnauthorizedException } from "@nestjs/common";
+import * as argon2 from "argon2";
+import { UserRepository } from "../users/user.repository";
+
+const PARAMS = { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
+
+@Injectable()
+export class PasswordService {
+  // Hash giả để user không tồn tại vẫn tốn đúng thời gian như user có thật
+  private readonly dummyHash = argon2.hash("not-a-real-password", PARAMS);
+
+  constructor(private readonly users: UserRepository) {}
+
+  hash(plain: string): Promise<string> {
+    return argon2.hash(plain, PARAMS); // ra chuỗi PHC: $argon2id$v=19$m=19456,t=2,p=1$...
+  }
+
+  async verifyLogin(email: string, plain: string): Promise<string> {
+    const user = await this.users.findByEmail(email.trim().toLowerCase());
+    const ok = await argon2.verify(user?.passwordHash ?? (await this.dummyHash), plain);
+    if (!user || !ok) throw new UnauthorizedException("Email hoặc mật khẩu không đúng");
+
+    // Nâng cấp hash cũ ngay lúc có mật khẩu gốc trong tay
+    if (argon2.needsRehash(user.passwordHash, PARAMS)) {
+      await this.users.updatePasswordHash(user.id, await this.hash(plain));
+    }
+    return user.id;
+  }
+}
+```
+
+Ba chi tiết trong đoạn code trên không phải để trang trí:
+
+- **Thông báo lỗi giống hệt nhau** cho "không có user" và "sai mật khẩu", và **thời gian phản hồi gần như giống nhau** nhờ hash giả. Nếu không, chỉ cần đo thời gian là biết email nào đã đăng ký.
+- **Chuỗi PHC tự mang tham số**, nên `needsRehash` cho phép nâng cấp dần: tăng `memoryCost` trong config, người dùng đăng nhập tới đâu hash được làm mới tới đó.
+- **Argon2 tốn RAM theo thiết kế.** 19 MiB mỗi lần hash nghĩa là 50 request login đồng thời chiếm gần 1 GB. Đây là một lý do nữa cho việc rate limit login — không chỉ để chống đoán mật khẩu mà còn để endpoint login không thành công cụ DoS.
+
+Node.js có `crypto.argon2()` từ v24.7.0, nhưng đó là primitive thô: bạn tự sinh salt, tự mã hoá tham số và tự so sánh. Package `argon2` xử lý chuỗi PHC và `needsRehash` sẵn, nên mình vẫn dùng nó.
+
+## Passkey và WebAuthn: chuyện gì thực sự xảy ra
+
+Passkey là một cặp khoá công khai/bí mật do authenticator (Touch ID, Windows Hello, trình quản lý mật khẩu, khoá bảo mật USB) tạo ra **riêng cho website của bạn**. Server chỉ giữ public key. Khi đăng nhập, server gửi một challenge ngẫu nhiên, authenticator ký nó bằng private key, server kiểm tra chữ ký. Không có bí mật chung nào nằm trên server để lộ, không có gì để người dùng gõ nhầm vào trang giả. Đặc tả nền tảng, [WebAuthn Level 3](https://www.w3.org/TR/webauthn-3/), đã trở thành W3C Recommendation vào ngày 25/8/2026.
+
+<Figure src="/blog/nestjs-auth-passkeys-sessions-ceremony.svg" alt="Sơ đồ hai nghi thức WebAuthn giữa trình duyệt, authenticator và server: đăng ký trả về public key, đăng nhập trả về chữ ký trên challenge" caption="Đăng ký và đăng nhập bằng passkey. Server sinh challenge và lưu ngắn hạn; trình duyệt gắn origin vào dữ liệu được ký; server kiểm tra challenge, origin, RP ID rồi mới tin chữ ký." />
+
+Có hai nghi thức (ceremony), cả hai đều theo khuôn "server ra đề, authenticator ký, server chấm":
+
+- **Đăng ký (registration):** server sinh options gồm challenge, thông tin RP và user, danh sách credential đã có để tránh đăng ký trùng. Trình duyệt gọi `navigator.credentials.create()`, authenticator tạo cặp khoá, trả về public key. Server xác minh rồi lưu credential.
+- **Đăng nhập (authentication):** server sinh challenge, trình duyệt gọi `navigator.credentials.get()`, authenticator ký challenge cùng dữ liệu client. Server tra public key theo credential ID và kiểm tra chữ ký.
+
+Những khái niệm phải nắm chắc trước khi viết code:
+
+**Challenge** phải ngẫu nhiên, dùng một lần, có hạn sống ngắn, và **gắn với đúng phiên trình duyệt đã yêu cầu nó**. Đặc tả yêu cầu challenge dài tối thiểu 16 byte; SimpleWebAuthn mặc định sinh sẵn cho bạn. Phần dễ sai là lưu trữ: mình lưu challenge trong Redis với TTL vài phút, key là một ceremony ID ngẫu nhiên nằm trong cookie `HttpOnly`, và lấy ra bằng `GETDEL` để mỗi challenge chỉ dùng được đúng một lần.
+
+**RP ID và origin** là thứ làm passkey chống được phishing. RP ID là domain (ví dụ `example.com`) mà credential thuộc về; trình duyệt không cho trang ở domain khác dùng credential đó. Origin (`https://app.example.com`) được trình duyệt ghi vào `clientDataJSON` — dữ liệu mà authenticator ký — nên trang giả không giả mạo được. Nhưng tất cả chỉ có ý nghĩa nếu **server kiểm tra** `expectedOrigin` và `expectedRPID`. Bỏ qua bước đó là tự tay vứt đi lý do để dùng passkey.
+
+**Signature counter** là bộ đếm authenticator tăng sau mỗi lần ký. Đặc tả nói: nếu một trong hai giá trị khác 0 và giá trị mới không lớn hơn giá trị đã lưu, có thể authenticator đã bị nhân bản — hoặc chỉ đang trục trặc. Passkey đồng bộ thường luôn trả về 0, nên counter chủ yếu có ý nghĩa với khoá phần cứng. SimpleWebAuthn tự ném lỗi trong trường hợp này; việc của bạn là lưu `newCounter` sau mỗi lần thành công và điều tra khi lỗi counter xuất hiện trong log.
+
+**Discoverable credential** (trước gọi là resident key) là passkey tự mang thông tin user, nên người dùng không cần gõ username: server gửi `allowCredentials` rỗng, authenticator tự đưa ra danh sách tài khoản. Đây là thứ cho phép **conditional UI** — passkey hiện ngay trong dropdown autofill của ô username, chỉ cần input có `autocomplete="username webauthn"` và trang gọi WebAuthn ở chế độ conditional từ lúc tải.
+
+**Cờ backup** (`credentialDeviceType`, `credentialBackedUp`) cho biết passkey là loại chỉ nằm trên một thiết bị hay được đồng bộ. Lưu lại chúng — chúng giúp bạn quyết định có nên nhắc người dùng tạo thêm passkey dự phòng hay không.
+
+### Khôi phục tài khoản: chỗ mọi thiết kế passkey bị thử thách
+
+Passkey mạnh tới đâu thì hệ thống cũng chỉ an toàn bằng **đường khôi phục yếu nhất**. Nếu "quên passkey" dẫn tới một link reset gửi qua email không có thêm bước nào, kẻ tấn công sẽ đi đường email chứ không đánh vào passkey. Chiến lược mình dùng:
+
+- **Khuyến khích nhiều passkey.** Sau khi đăng ký passkey đầu tiên trên thiết bị chỉ có một bản (không backup), gợi ý thêm một cái nữa — trên điện thoại hoặc trình quản lý mật khẩu đồng bộ.
+- **Fallback có kiểm soát.** Mật khẩu (argon2id) hoặc magic link qua email vẫn tồn tại cho người dùng chưa có passkey, nhưng phiên tạo từ fallback bị đánh dấu "mức đảm bảo thấp hơn": thêm hoặc xoá passkey, đổi email, xem mã khôi phục đều yêu cầu xác thực lại (step-up).
+- **Mã khôi phục dùng một lần,** lưu hash như mật khẩu, hiển thị đúng một lần lúc tạo.
+- **Khôi phục là sự kiện bảo mật:** gửi thông báo tới mọi kênh đã biết, thu hồi toàn bộ phiên cũ, và để một khoảng chờ cho thao tác nhạy cảm nếu sản phẩm cho phép.
+
+## Bộ khung trong NestJS: guard toàn cục, phân quyền, rate limit
+
+### Mặc định là đóng: guard toàn cục và @Public()
+
+Quy tắc đầu tiên: **mọi route đều yêu cầu đăng nhập, trừ khi được đánh dấu công khai một cách tường minh**. Ngược lại — nhớ gắn `@UseGuards()` vào từng controller — thì sớm muộn sẽ có một route mới bị quên.
+
+```ts
+// auth/access-token.guard.ts
+import {
+  CanActivate, ExecutionContext, Injectable, SetMetadata,
+  UnauthorizedException, createParamDecorator,
+} from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import { JwtService } from "@nestjs/jwt";
+import type { Request } from "express";
+
+export interface AccessClaims {
+  sub: string; // user id
+  sid: string; // id của token family (phiên đăng nhập)
+  roles: string[];
+}
+
+declare module "express-serve-static-core" {
+  interface Request {
+    auth?: AccessClaims;
+  }
+}
+
+export const IS_PUBLIC = "auth:isPublic";
+export const Public = (value = true) => SetMetadata(IS_PUBLIC, value);
+export const Auth = createParamDecorator(
+  (_: unknown, ctx: ExecutionContext) => ctx.switchToHttp().getRequest<Request>().auth,
+);
+
+@Injectable()
+export class AccessTokenGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector, private readonly jwt: JwtService) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]);
+    if (isPublic) return true;
+
+    const req = ctx.switchToHttp().getRequest<Request>();
+    const [scheme, token] = req.headers.authorization?.split(" ") ?? [];
+    if (scheme !== "Bearer" || !token) throw new UnauthorizedException();
+
+    try {
+      // Khoá cứng thuật toán, issuer và audience — đừng tin header "alg" của token
+      req.auth = await this.jwt.verifyAsync<AccessClaims>(token, {
+        algorithms: ["HS256"],
+        issuer: "https://api.example.com",
+        audience: "web",
+      });
+      return true;
+    } catch {
+      throw new UnauthorizedException();
+    }
+  }
+}
+```
+
+`getAllAndOverride` đọc metadata ở handler trước, rồi tới class, nên `@Public()` đặt ở controller áp dụng cho mọi method, còn đặt ở method thì chỉ method đó. Guard trả lỗi `401` (chưa xác thực), khác với `403` (đã xác thực nhưng không đủ quyền) của guard phân quyền bên dưới — phân biệt hai mã này giúp frontend biết khi nào nên thử refresh và khi nào thì không.
+
+### RBAC với Reflector.createDecorator, và khi nào chuyển sang CASL
+
+```ts
+// auth/roles.guard.ts
+import { CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import type { Request } from "express";
+
+export type Role = "admin" | "editor" | "member";
+export const Roles = Reflector.createDecorator<Role[]>();
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    const required = this.reflector.getAllAndOverride(Roles, [ctx.getHandler(), ctx.getClass()]);
+    if (!required?.length) return true;
+    const { auth } = ctx.switchToHttp().getRequest<Request>();
+    // false -> Nest tự ném ForbiddenException (403)
+    return !!auth && required.some((role) => auth.roles.includes(role));
+  }
+}
+
+// Dùng: @Roles(["admin"]) trên controller hoặc method
+```
+
+Role nằm trong access token, nên đổi role của một user sẽ có hiệu lực ở lần refresh tiếp theo — tối đa bằng thời gian sống của access token. Đó là lý do access token phải ngắn.
+
+RBAC đủ dùng khi câu hỏi là "user này có loại quyền này không". Khi câu hỏi trở thành "user này có được sửa **bài viết này** không" — phụ thuộc vào chủ sở hữu, trạng thái, tenant — thì roles bắt đầu nổ tung thành `editor-own-draft`, `editor-any-published`... Đó là lúc chuyển sang policy-based, ví dụ [CASL](https://casl.js.org/) (hiện là v7):
+
+```ts
+// auth/ability.ts
+import { AbilityBuilder, createMongoAbility, type InferSubjects, type MongoAbility } from "@casl/ability";
+import type { AccessClaims } from "./access-token.guard";
+
+interface Post { kind: "Post"; id: string; authorId: string; status: "draft" | "published" }
+type Action = "manage" | "read" | "update" | "publish";
+export type AppAbility = MongoAbility<[Action, InferSubjects<Post> | "all"]>;
+
+export function defineAbilityFor(user: AccessClaims): AppAbility {
+  const { can, cannot, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+  can("read", "Post", { status: "published" });
+  can(["read", "update"], "Post", { authorId: user.sub });
+  cannot("update", "Post", { status: "published" }); // tác giả chỉ sửa bản nháp
+  if (user.roles.includes("editor")) can("publish", "Post");
+  if (user.roles.includes("admin")) can("manage", "all"); // đặt cuối để thắng các rule trên
+  return build({ detectSubjectType: (subject) => subject.kind });
+}
+
+// Trong service, sau khi đã load bài viết:
+// if (defineAbilityFor(auth).cannot("update", post)) throw new ForbiddenException();
+```
+
+Khác biệt quan trọng: kiểm tra policy cần **dữ liệu của tài nguyên**, nên nó thường nằm trong service sau khi load bản ghi, không phải trong guard chạy trước handler.
+
+### Rate limit login và refresh với @nestjs/throttler
+
+```ts
+// app.module.ts (trích)
+import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { ThrottlerGuard, ThrottlerModule, minutes } from "@nestjs/throttler";
+import { AccessTokenGuard } from "./auth/access-token.guard";
+import { RolesGuard } from "./auth/roles.guard";
+
+@Module({
+  imports: [
+    ThrottlerModule.forRoot({
+      throttlers: [{ name: "default", ttl: minutes(1), limit: 120 }],
+      // Chạy nhiều instance? Thêm storage Redis, ví dụ @nest-lab/throttler-storage-redis
+    }),
+  ],
+  providers: [
+    // APP_GUARD chạy theo thứ tự đăng ký: chặn flood trước, rồi xác thực, rồi phân quyền
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: AccessTokenGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+  ],
+})
+export class AppModule {}
+```
+
+Từ v5, `ttl` tính bằng **mili giây**, và `@Throttle()` nhận object theo tên throttler: `@Throttle({ default: { limit: 5, ttl: minutes(1) } })`. Ở bản 6.x hiện tại, decorator còn nhận `blockDuration` và `getTracker` riêng cho từng route. Nếu API đứng sau proxy (kể cả rewrite của Next.js), phải bật `trust proxy` trên Express, không thì mọi người dùng chung một IP — tức là chung một bucket.
+
+Throttler theo IP chỉ chặn được flood từ một nguồn. Credential stuffing từ hàng nghìn IP thì cần thêm **bộ đếm lần thất bại theo tài khoản** trong service (Redis `INCR` có TTL, tăng độ trễ dần), và giới hạn đó phải trả về cùng một thông báo lỗi để không biến thành công cụ dò tài khoản.
+
+<Callout>
+  **Có package chính thức rồi.** Từ cuối tháng 9/2026, NestJS có `@nestjs/authentication` (đang ở 0.1.x, yêu cầu NestJS 12) với guard toàn cục, `@Public()`, session phía server, refresh token xoay vòng có phát hiện tái sử dụng, TOTP, OIDC. Nếu bắt đầu dự án mới, nên đánh giá nó. Bài này tự dựng các mảnh bằng tay để bạn hiểu chúng làm gì — và vì tại thời điểm viết, tài liệu của package chưa đề cập passkey.
+</Callout>
+
+## Ví dụ thực tế: refresh token rotation và đăng nhập passkey, từ đầu tới cuối
+
+Bối cảnh: một SaaS có frontend Next.js 16 ở `app.example.com` và API NestJS 12. Để cookie đơn giản nhất có thể, trình duyệt chỉ nói chuyện với **một origin**: Next.js rewrite `/api/*` sang NestJS, và NestJS dùng `app.setGlobalPrefix("api")` để đường dẫn hai bên khớp nhau. Chi tiết này quan trọng: cookie có `Path=/api/auth` được so khớp với đường dẫn **trình duyệt nhìn thấy**, nên nếu rewrite cắt mất tiền tố `/api`, cookie sẽ không bao giờ được gửi.
+
+```ts
+// next.config.ts (Next.js)
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return [{ source: "/api/:path*", destination: `${process.env.API_INTERNAL_URL}/api/:path*` }];
+  },
+};
+
+export default nextConfig;
+```
+
+### Bước 1: schema và repository không phụ thuộc ORM
+
+Bảng dữ liệu (Postgres làm ví dụ). Phần đáng chú ý nhất là câu `UPDATE` cuối — trái tim của việc xoay vòng an toàn khi có request đồng thời:
+
+```sql
+CREATE TABLE token_families (
+  id                  uuid PRIMARY KEY,
+  user_id             uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  absolute_expires_at timestamptz NOT NULL,
+  revoked_at          timestamptz,
+  revoke_reason       text,
+  user_agent          text
+);
+CREATE INDEX token_families_active ON token_families (user_id) WHERE revoked_at IS NULL;
+
+CREATE TABLE refresh_tokens (
+  id          uuid PRIMARY KEY,
+  family_id   uuid NOT NULL REFERENCES token_families(id) ON DELETE CASCADE,
+  user_id     uuid NOT NULL,
+  token_hash  text NOT NULL UNIQUE,  -- SHA-256 base64url, không bao giờ lưu token gốc
+  expires_at  timestamptz NOT NULL,
+  used_at     timestamptz            -- giữ lại sau khi dùng để phát hiện replay
+);
+
+-- Lõi của consumeAndReplace(): compare-and-set trong một transaction
+UPDATE refresh_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL;
+-- rowCount = 1: request này thắng, INSERT token mới trong cùng transaction
+-- rowCount = 0: token đã bị dùng trước đó -> reuse
+```
+
+Nếu chỉ đọc `used_at`, kiểm tra trong code rồi mới ghi, hai request tới cùng lúc sẽ cùng thấy `NULL` và cùng nhận token mới — một family bị tách đôi mà không ai biết. Điều kiện `used_at IS NULL` trong chính câu `UPDATE` khiến database làm trọng tài.
+
+Service không biết gì về Prisma, Drizzle hay TypeORM. Nó chỉ phụ thuộc vào một abstract class — trong Nest, abstract class dùng được trực tiếp làm DI token, nên đổi ORM chỉ là đổi provider:
+
+```ts
+// auth/refresh-token.repository.ts
+export type RevokeReason = "logout" | "logout_all" | "reuse_detected" | "password_changed";
+
+export interface TokenFamily {
+  id: string;
+  userId: string;
+  absoluteExpiresAt: Date;
+  revokedAt: Date | null;
+  userAgent: string | null;
+}
+
+export interface RefreshTokenRow {
+  id: string;
+  familyId: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: Date;
+  usedAt: Date | null;
+}
+
+export type NewRefreshToken = Omit<RefreshTokenRow, "usedAt">;
+
+export abstract class RefreshTokenRepository {
+  abstract createFamily(input: Omit<TokenFamily, "id" | "revokedAt">): Promise<TokenFamily>;
+  abstract findFamily(id: string): Promise<TokenFamily | null>;
+  abstract findByHash(tokenHash: string): Promise<RefreshTokenRow | null>;
+  abstract insert(token: NewRefreshToken): Promise<void>;
+  /** Một transaction: đánh dấu token cũ đã dùng (nếu chưa) và chèn token mới. */
+  abstract consumeAndReplace(oldId: string, next: NewRefreshToken): Promise<boolean>;
+  abstract revokeFamily(familyId: string, reason: RevokeReason): Promise<void>;
+  abstract revokeAllForUser(userId: string, reason: RevokeReason): Promise<void>;
+}
+```
+
+### Bước 2: service xoay vòng
+
+```ts
+// auth/refresh-token.service.ts
+import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { RefreshTokenRepository, type NewRefreshToken, type RevokeReason } from "./refresh-token.repository";
+import { UserRepository } from "../users/user.repository";
+
+const IDLE_MS = 14 * 24 * 3600 * 1000; // refresh token không dùng 14 ngày thì chết
+const ABSOLUTE_MS = 60 * 24 * 3600 * 1000; // cả family tối đa 60 ngày
+export const ACCESS_TTL_S = 600; // khớp với signOptions.expiresIn của JwtModule
+
+export interface IssuedTokens {
+  accessToken: string;
+  refreshToken: string;
+  refreshExpiresAt: Date;
+}
+
+const sha256 = (v: string) => createHash("sha256").update(v).digest("base64url");
+
+@Injectable()
+export class RefreshTokenService {
+  private readonly logger = new Logger(RefreshTokenService.name);
+
+  constructor(
+    private readonly repo: RefreshTokenRepository,
+    private readonly users: UserRepository,
+    private readonly jwt: JwtService,
+  ) {}
+
+  /** Sau khi đăng nhập thành công (mật khẩu hoặc passkey): mở một family mới. */
+  async startSession(userId: string, userAgent: string | null): Promise<IssuedTokens> {
+    const family = await this.repo.createFamily({
+      userId,
+      userAgent,
+      absoluteExpiresAt: new Date(Date.now() + ABSOLUTE_MS),
+    });
+    const next = this.mint(userId, family.id, family.absoluteExpiresAt);
+    await this.repo.insert(next.row);
+    return this.issue(userId, family.id, next);
+  }
+
+  async rotate(presented: string): Promise<IssuedTokens> {
+    const now = new Date();
+    const token = await this.repo.findByHash(sha256(presented));
+    if (!token) throw new UnauthorizedException();
+
+    const family = await this.repo.findFamily(token.familyId);
+    if (!family || family.revokedAt || family.absoluteExpiresAt <= now) {
+      throw new UnauthorizedException();
+    }
+    if (token.usedAt) return this.reuseDetected(token.userId, family.id);
+    if (token.expiresAt <= now) throw new UnauthorizedException();
+
+    const next = this.mint(token.userId, family.id, family.absoluteExpiresAt);
+    const won = await this.repo.consumeAndReplace(token.id, next.row);
+    if (!won) return this.reuseDetected(token.userId, family.id); // thua cuộc đua CAS
+
+    return this.issue(token.userId, family.id, next);
+  }
+
+  async revokeByToken(presented: string, reason: RevokeReason): Promise<void> {
+    const token = await this.repo.findByHash(sha256(presented));
+    if (token) await this.repo.revokeFamily(token.familyId, reason);
+  }
+
+  revokeAll(userId: string, reason: RevokeReason): Promise<void> {
+    return this.repo.revokeAllForUser(userId, reason);
+  }
+
+  private async reuseDetected(userId: string, familyId: string): Promise<never> {
+    await this.repo.revokeFamily(familyId, "reuse_detected");
+    // Sự kiện bảo mật thật sự: log có cấu trúc, đẩy vào alert, cân nhắc báo cho người dùng
+    this.logger.warn({ event: "refresh_token_reuse", userId, familyId });
+    throw new UnauthorizedException();
+  }
+
+  private mint(userId: string, familyId: string, familyExpiresAt: Date) {
+    const value = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Math.min(Date.now() + IDLE_MS, familyExpiresAt.getTime()));
+    const row: NewRefreshToken = { id: randomUUID(), familyId, userId, tokenHash: sha256(value), expiresAt };
+    return { value, row };
+  }
+
+  private async issue(userId: string, familyId: string, next: { value: string; row: NewRefreshToken }) {
+    // Đọc role mới nhất ở mỗi lần refresh: đổi role có hiệu lực sau tối đa ACCESS_TTL_S
+    const roles = await this.users.getRoles(userId);
+    const accessToken = await this.jwt.signAsync({ sub: userId, sid: familyId, roles });
+    return { accessToken, refreshToken: next.value, refreshExpiresAt: next.row.expiresAt };
+  }
+}
+```
+
+`JwtModule` được đăng ký với `secret` lấy từ config, `signOptions: { expiresIn: "10m", issuer, audience }` — cùng issuer/audience mà guard kiểm tra. Mình dùng HS256 vì chỉ một service ký và xác minh; khi có nhiều service cần tự xác minh, chuyển sang cặp khoá bất đối xứng (ES256 hoặc EdDSA) để chỉ auth service giữ private key.
+
+Một quyết định có chủ đích: **không có "grace window"**. Một số hệ thống cho phép token cũ được dùng lại trong vài giây sau khi xoay, để hai tab refresh cùng lúc không bị coi là tấn công. Mình không làm vậy, vì đó đúng là cửa sổ mà replay không bị phát hiện. Thay vào đó, mình giải quyết tranh chấp tận gốc ở client (xem bước 5). Cái giá: nếu server đã xoay mà response bị mất trên đường về, lần sau client gửi token cũ và bị đăng xuất. Hiếm, và an toàn theo hướng đúng.
+
+### Bước 3: controller và cookie
+
+```ts
+// auth/auth.controller.ts
+import {
+  Body, Controller, ForbiddenException, HttpCode, Post, Req, Res, UnauthorizedException,
+} from "@nestjs/common";
+import { Throttle, minutes } from "@nestjs/throttler";
+import type { CookieOptions, Request, Response } from "express";
+import { Auth, Public, type AccessClaims } from "./access-token.guard";
+import { PasswordService } from "./password.service";
+import { ACCESS_TTL_S, RefreshTokenService, type IssuedTokens } from "./refresh-token.service";
+import { LoginDto } from "./login.dto";
+
+const RT_COOKIE = "__Secure-rt";
+const rtCookie = (expires?: Date): CookieOptions => ({
+  httpOnly: true,
+  secure: true,
+  sameSite: "strict",
+  path: "/api/auth", // đường dẫn trình duyệt nhìn thấy, không phải đường dẫn sau rewrite
+  ...(expires && { expires }),
+});
+
+/** Request dùng cookie phải đến từ chính app của mình. */
+export function assertSameOrigin(req: Request): void {
+  const site = req.get("sec-fetch-site");
+  const origin = req.get("origin");
+  if (site ? site !== "same-origin" : origin !== process.env.APP_ORIGIN) {
+    throw new ForbiddenException();
+  }
+}
+
+@Public()
+@Controller("auth")
+export class AuthController {
+  constructor(private readonly passwords: PasswordService, private readonly tokens: RefreshTokenService) {}
+
+  @Post("login")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: minutes(1), blockDuration: minutes(5) } })
+  async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    assertSameOrigin(req);
+    const userId = await this.passwords.verifyLogin(dto.email, dto.password);
+    return this.respond(res, await this.tokens.startSession(userId, req.get("user-agent") ?? null));
+  }
+
+  @Post("refresh")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: minutes(1) } })
+  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    assertSameOrigin(req);
+    const presented: string | undefined = req.cookies?.[RT_COOKIE];
+    if (!presented) throw new UnauthorizedException();
+    try {
+      return this.respond(res, await this.tokens.rotate(presented));
+    } catch (err) {
+      res.clearCookie(RT_COOKIE, rtCookie()); // token chết thì xoá luôn cookie
+      throw err;
+    }
+  }
+
+  @Post("logout")
+  @HttpCode(204)
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    assertSameOrigin(req);
+    const presented: string | undefined = req.cookies?.[RT_COOKIE];
+    if (presented) await this.tokens.revokeByToken(presented, "logout");
+    res.clearCookie(RT_COOKIE, rtCookie());
+  }
+
+  @Public(false) // ghi đè: route này cần access token
+  @Post("logout-all")
+  @HttpCode(204)
+  async logoutAll(@Auth() auth: AccessClaims, @Res({ passthrough: true }) res: Response) {
+    await this.tokens.revokeAll(auth.sub, "logout_all");
+    res.clearCookie(RT_COOKIE, rtCookie());
+  }
+
+  private respond(res: Response, t: IssuedTokens) {
+    res.cookie(RT_COOKIE, t.refreshToken, rtCookie(t.refreshExpiresAt));
+    res.setHeader("Cache-Control", "no-store");
+    return { accessToken: t.accessToken, expiresIn: ACCESS_TTL_S };
+  }
+}
+```
+
+`@Public(false)` ở method thắng `@Public()` ở class vì `getAllAndOverride` đọc handler trước. `req.cookies` có được nhờ `app.use(cookieParser())` trong `main.ts`, cùng với `app.set("trust proxy", "loopback")` khi đứng sau rewrite của Next.js trên cùng máy.
+
+`logout-all` dùng access token thay vì cookie, nên không có rủi ro CSRF. Lưu ý trung thực: nó thu hồi mọi refresh token ngay, nhưng access token đã phát hành vẫn sống tới khi hết hạn — tối đa 10 phút. Nếu sản phẩm không chấp nhận được 10 phút đó (ví dụ khoá tài khoản bị chiếm), hãy để guard kiểm tra `sid` trong một set "family đã thu hồi" trên Redis với TTL bằng thời gian sống của access token. Lúc đó bạn đã thêm state vào đường đi của mọi request — đúng như phần "huyền thoại stateless" ở trên.
+
+### Bước 4: đăng nhập bằng passkey với SimpleWebAuthn
+
+SimpleWebAuthn v14 (ra tháng 9/2026) yêu cầu Node 22 trở lên. Chữ ký các hàm chính giữ nguyên từ v13: `verifyAuthenticationResponse` nhận `credential: { id, publicKey, counter, transports }`, và kết quả đăng ký nằm trong `registrationInfo.credential`. Challenge được lưu trong Redis, khoá bằng một ceremony ID nằm trong cookie `HttpOnly` — đó là cách **gắn challenge vào đúng trình duyệt đã yêu cầu nó**, kể cả khi người dùng chưa đăng nhập.
+
+```ts
+// auth/passkey.service.ts
+import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/common";
+import {
+  generateAuthenticationOptions, generateRegistrationOptions,
+  verifyAuthenticationResponse, verifyRegistrationResponse,
+  type AuthenticationResponseJSON, type RegistrationResponseJSON,
+} from "@simplewebauthn/server";
+import { Redis } from "ioredis";
+import { randomBytes } from "node:crypto";
+import { PasskeyRepository } from "./passkey.repository";
+import { UserRepository } from "../users/user.repository";
+
+const RP_ID = "example.com"; // domain, không có scheme và port
+const ORIGIN = "https://app.example.com"; // origin đầy đủ mà trình duyệt ghi vào clientDataJSON
+const CHALLENGE_TTL_S = 300;
+
+type Ceremony = { challenge: string; userId?: string };
+
+@Injectable()
+export class PasskeyService {
+  constructor(
+    private readonly redis: Redis,
+    private readonly passkeys: PasskeyRepository,
+    private readonly users: UserRepository,
+  ) {}
+
+  async registrationOptions(userId: string) {
+    const user = await this.users.findById(userId);
+    const existing = await this.passkeys.listByUser(userId);
+    const options = await generateRegistrationOptions({
+      rpName: "Example",
+      rpID: RP_ID,
+      userName: user.email,
+      userDisplayName: user.email,
+      // User handle ngẫu nhiên, cố định cho mỗi user — không dùng email hay id nội bộ
+      userID: new Uint8Array(Buffer.from(user.webauthnUserId, "base64url")),
+      excludeCredentials: existing.map((p) => ({ id: p.id, transports: p.transports })),
+      authenticatorSelection: { residentKey: "required", userVerification: "required" },
+    });
+    return { options, ceremonyId: await this.save("reg", { challenge: options.challenge, userId }) };
+  }
+
+  async verifyRegistration(userId: string, ceremonyId: string | undefined, response: RegistrationResponseJSON) {
+    const ceremony = await this.take("reg", ceremonyId);
+    if (ceremony.userId !== userId) throw new BadRequestException();
+    const result = await verifyRegistrationResponse({
+      response,
+      expectedChallenge: ceremony.challenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+    }).catch(() => null);
+    if (!result?.verified) throw new BadRequestException("Không xác minh được passkey");
+
+    const { credential, credentialDeviceType, credentialBackedUp } = result.registrationInfo;
+    await this.passkeys.create({
+      id: credential.id,
+      userId,
+      publicKey: credential.publicKey, // Uint8Array -> cột bytea
+      counter: credential.counter,
+      transports: credential.transports ?? [],
+      deviceType: credentialDeviceType,
+      backedUp: credentialBackedUp,
+    });
+  }
+
+  async authenticationOptions() {
+    // allowCredentials rỗng: discoverable credential, không cần username, không lộ tài khoản
+    const options = await generateAuthenticationOptions({ rpID: RP_ID, userVerification: "required" });
+    return { options, ceremonyId: await this.save("auth", { challenge: options.challenge }) };
+  }
+
+  /** Trả về userId nếu hợp lệ. */
+  async verifyAuthentication(ceremonyId: string | undefined, response: AuthenticationResponseJSON) {
+    const { challenge } = await this.take("auth", ceremonyId);
+    const passkey = await this.passkeys.findById(response.id);
+    if (!passkey) throw new UnauthorizedException();
+
+    const result = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: challenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+      credential: {
+        id: passkey.id,
+        publicKey: new Uint8Array(passkey.publicKey),
+        counter: passkey.counter,
+        transports: passkey.transports,
+      },
+    }).catch(() => null); // sai chữ ký, sai origin, counter đi lùi... đều ném lỗi
+    if (!result?.verified) throw new UnauthorizedException();
+
+    await this.passkeys.updateUsage(passkey.id, {
+      counter: result.authenticationInfo.newCounter,
+      backedUp: result.authenticationInfo.credentialBackedUp,
+      lastUsedAt: new Date(),
+    });
+    return passkey.userId;
+  }
+
+  private async save(kind: "reg" | "auth", data: Ceremony): Promise<string> {
+    const id = randomBytes(16).toString("base64url");
+    await this.redis.set(`webauthn:${kind}:${id}`, JSON.stringify(data), "EX", CHALLENGE_TTL_S);
+    return id;
+  }
+
+  private async take(kind: "reg" | "auth", id: string | undefined): Promise<Ceremony> {
+    // GETDEL: đọc và xoá trong một lệnh — challenge chỉ dùng được một lần
+    const raw = id ? await this.redis.getdel(`webauthn:${kind}:${id}`) : null;
+    if (!raw) throw new BadRequestException("Challenge không tồn tại hoặc đã hết hạn");
+    return JSON.parse(raw) as Ceremony;
+  }
+}
+```
+
+Controller chỉ còn là lớp mỏng: `POST /auth/passkey/options` gọi `authenticationOptions()`, đặt ceremony ID vào cookie `__Secure-wa` (`HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/api/auth`, sống 5 phút) và trả `options`; `POST /auth/passkey/verify` đọc cookie đó, gọi `verifyAuthentication()`, rồi gọi đúng `tokens.startSession()` như login bằng mật khẩu. Từ đây trở đi, phiên passkey và phiên mật khẩu đi chung một đường refresh. Hai endpoint đăng ký thì nằm sau `AccessTokenGuard` — chỉ user đã đăng nhập (tốt nhất là vừa xác thực lại) mới thêm được passkey.
+### Bước 5: phía Next.js
+
+Access token chỉ sống trong bộ nhớ của tab. Mọi request đi qua một hàm `apiFetch` lo việc gắn token, và khi gặp `401` thì refresh **đúng một lần**, dù có bao nhiêu request cùng thất bại. [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API) tuần tự hoá việc refresh giữa các tab cùng origin — tab sau chờ tab trước xong rồi mới gửi cookie (lúc này đã là token mới), nên không bao giờ có hai tab cùng đưa ra một refresh token.
+
+```ts
+// lib/auth-client.ts
+let accessToken: string | null = null;
+let inflight: Promise<string | null> | null = null;
+
+export const setAccessToken = (token: string | null) => {
+  accessToken = token;
+};
+
+function refresh(): Promise<string | null> {
+  // Single-flight trong tab + Web Locks giữa các tab
+  inflight ??= navigator.locks
+    .request("auth-refresh", async () => {
+      const res = await fetch("/api/auth/refresh", { method: "POST" });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { accessToken: string };
+      return body.accessToken;
+    })
+    .then((token) => (accessToken = token))
+    .finally(() => (inflight = null));
+  return inflight;
+}
+
+export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const send = (token: string | null) => {
+    const headers = new Headers(init.headers);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(input, { ...init, headers });
+  };
+
+  const res = await send(accessToken ?? (await refresh()));
+  if (res.status !== 401) return res;
+
+  const token = await refresh();
+  if (!token) {
+    window.location.assign("/login");
+    return res;
+  }
+  return send(token);
+}
+```
+
+Form đăng nhập bật conditional UI ngay khi mount, và vẫn giữ nút passkey tường minh cùng ô mật khẩu cho người dùng chưa có passkey:
+
+```tsx
+// app/login/login-form.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { WebAuthnError, browserSupportsWebAuthnAutofill, startAuthentication } from "@simplewebauthn/browser";
+import { setAccessToken } from "@/lib/auth-client";
+
+async function signInWithPasskey(useBrowserAutofill: boolean): Promise<void> {
+  const optionsJSON = await (await fetch("/api/auth/passkey/options", { method: "POST" })).json();
+  const assertion = await startAuthentication({ optionsJSON, useBrowserAutofill });
+  const res = await fetch("/api/auth/passkey/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(assertion),
+  });
+  if (!res.ok) throw new Error("passkey_failed");
+  setAccessToken((await res.json()).accessToken);
+}
+
+export function LoginForm() {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+
+  const run = (autofill: boolean) =>
+    signInWithPasskey(autofill)
+      .then(() => router.replace("/dashboard"))
+      .catch((err: unknown) => {
+        // Một lời gọi mới tự huỷ lời gọi conditional đang chờ (và Strict Mode chạy effect 2 lần)
+        if (err instanceof WebAuthnError && err.code === "ERROR_CEREMONY_ABORTED") return;
+        setError("Không đăng nhập được bằng passkey. Thử lại hoặc dùng mật khẩu.");
+      });
+
+  useEffect(() => {
+    browserSupportsWebAuthnAutofill().then((ok) => ok && run(true));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function onSubmit(form: FormData) {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
+    });
+    if (!res.ok) return setError("Email hoặc mật khẩu không đúng.");
+    setAccessToken((await res.json()).accessToken);
+    router.replace("/dashboard");
+  }
+
+  return (
+    <form action={onSubmit}>
+      <input name="email" type="email" autoComplete="username webauthn" required />
+      <input name="password" type="password" autoComplete="current-password" />
+      <button type="submit">Đăng nhập</button>
+      <button type="button" onClick={() => run(false)}>Dùng passkey</button>
+      {error && <p role="alert">{error}</p>}
+    </form>
+  );
+}
+```
+
+Một chi tiết vận hành: conditional request có thể chờ rất lâu (người dùng mở trang rồi đi pha cà phê), lâu hơn TTL 5 phút của challenge. Khi verify trả lỗi challenge hết hạn, chỉ cần gọi lại `run(true)` để lấy options mới — đừng kéo dài TTL lên hàng giờ.
+
+## CSRF khi refresh token nằm trong cookie
+
+Đưa refresh token vào cookie là để JavaScript (và XSS) không đọc được nó. Cái giá là cookie tự đi kèm request, nên các endpoint dùng cookie — `refresh`, `logout`, `passkey/verify`, `login` — lại có bề mặt CSRF. Kẻ tấn công không đọc được response (CORS chặn), nhưng vẫn có thể **gây tác dụng phụ**: ép xoay token để làm rối phiên, đăng xuất người dùng, hoặc login CSRF — đăng nhập nạn nhân vào tài khoản của kẻ tấn công.
+
+Các lớp mình xếp chồng, theo thứ tự quan trọng:
+
+1. **`SameSite=Strict`** trên refresh cookie và ceremony cookie. Trình duyệt không gửi chúng trong bất kỳ request cross-site nào. Như đã nói, với cookie chỉ dùng qua `fetch` thì `Strict` không tốn gì về UX.
+2. **Kiểm tra `Sec-Fetch-Site` / `Origin`** trong `assertSameOrigin()` ở bước 3. Cần thiết vì "same-site" rộng hơn "same-origin": một subdomain khác của `example.com` bị chiếm vẫn là same-site, và `SameSite` không chặn nó.
+3. **Chỉ `POST`, body JSON.** Không có endpoint auth nào thay đổi state qua `GET`, và yêu cầu `Content-Type: application/json` khiến request cross-origin phải qua preflight.
+4. **`Path=/api/auth`** giới hạn nơi cookie xuất hiện, nên các route khác không bao giờ vô tình "được xác thực bằng cookie".
+
+Còn access token gửi qua header `Authorization` thì miễn nhiễm CSRF theo bản chất: trình duyệt không tự gắn nó.
+
+<Callout>
+  **Không lớp nào ở đây sống sót qua XSS.** Script chạy trong origin của bạn gọi được `/api/auth/refresh` như chính app — nó không lấy được refresh token mang đi, nhưng lấy được access token mới chừng nào tab còn mở. Cookie `HttpOnly` giới hạn **thời gian và phạm vi** thiệt hại, không xoá được nó. CSP nghiêm ngặt và sanitize đầu vào vẫn là lớp phòng thủ chính.
+</Callout>
+
+## Những lỗi hay gặp
+
+**JWT sống lâu, không có đường thu hồi.** Access token 7 hay 30 ngày nghĩa là token bị lộ dùng được chừng ấy ngày, và nút "đăng xuất" chỉ là xoá token ở client. Giữ access token dưới 15 phút, đặt khả năng thu hồi vào refresh token hoặc session.
+
+**Lưu token trong `localStorage`.** Mọi script trên origin đều đọc được, và một lỗ XSS nhỏ biến thành vụ lộ thông tin xác thực kéo dài. OWASP nói thẳng: không lưu session ID, JWT hay refresh token trong Web Storage.
+
+**Không gắn challenge với phiên.** Lưu challenge theo `userId`, hoặc chấp nhận bất kỳ challenge nào server từng phát ra, mở đường cho replay và cho việc trình duyệt này hoàn tất nghi thức mà trình duyệt khác bắt đầu. Challenge phải gắn với ceremony cookie, sống ngắn, bị xoá ngay khi đọc.
+
+**Bỏ qua kiểm tra origin và RP ID.** Truyền `expectedOrigin` lấy từ header `Origin` của request "cho tiện chạy nhiều môi trường" là xoá bỏ khả năng chống phishing của passkey. Giá trị mong đợi phải đến từ config phía server; nhiều origin hợp lệ thì truyền một mảng cố định.
+
+**Lộ việc tài khoản có tồn tại hay không.** Ba chỗ hay lộ: thông báo lỗi khác nhau cho "không có user" và "sai mật khẩu"; thời gian phản hồi khác nhau; và luồng passkey "nhập username trước" trả `allowCredentials` rỗng cho user không tồn tại. Dùng discoverable credential, thông báo lỗi chung, và ở trang đăng ký thì gửi email "tài khoản đã tồn tại" thay vì báo lỗi trên màn hình.
+
+**Không rate limit.** Login, refresh, options/verify của passkey, quên mật khẩu — tất cả đều cần giới hạn. Với argon2, thiếu rate limit còn là lỗ hổng DoS.
+
+**Xoay vòng không nguyên tử, hoặc xoá token cũ.** Đọc-rồi-ghi khiến hai request đồng thời cùng thắng; xoá token đã dùng khiến replay không còn bị phát hiện. Cả hai cho cảm giác "đã làm rotation" mà không có lợi ích bảo mật nào.
+
+## Đọc thêm
+
+- [RFC 9700 — Best Current Practice for OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700.html), mục 4.14 về bảo vệ refresh token
+- [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
+- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+- [W3C Web Authentication Level 3](https://www.w3.org/TR/webauthn-3/)
+- [SimpleWebAuthn: server](https://simplewebauthn.dev/docs/packages/server) và [browser](https://simplewebauthn.dev/docs/packages/browser)
+- [NestJS: Guards](https://docs.nestjs.com/guards), [Authentication](https://docs.nestjs.com/security/authentication) và [Rate limiting](https://docs.nestjs.com/security/rate-limiting)
+
+## Tóm tắt
+
+<Checklist>
+
+- Chọn theo nhu cầu thu hồi: một web app cùng site thì session trong Redis là đủ và đơn giản nhất; JWT chỉ khi nhiều service cần tự xác minh hoặc có client không phải trình duyệt.
+- Access token JWT sống dưới 15 phút, nằm trong bộ nhớ, khoá cứng thuật toán, issuer và audience khi verify.
+- Refresh token là chuỗi ngẫu nhiên 256 bit, lưu SHA-256, giao trong cookie `HttpOnly; Secure; SameSite=Strict` giới hạn `Path`, xoay vòng mỗi lần dùng bằng compare-and-set.
+- Token đã dùng xuất hiện lại thì thu hồi cả family và log như một sự cố bảo mật; giữ token đã dùng tới khi family hết hạn.
+- Mật khẩu còn lại thì dùng argon2id với tối thiểu `m=19456, t=2, p=1`, hash giả cho user không tồn tại, `needsRehash` để nâng cấp dần.
+- Passkey: challenge gắn với ceremony cookie, TTL ngắn, `GETDEL`; luôn kiểm tra `expectedOrigin` và `expectedRPID` từ config; discoverable credential với `autocomplete="username webauthn"` cho conditional UI.
+- Thiết kế khôi phục tài khoản trước khi ra mắt passkey: nhiều passkey, fallback có step-up, mã khôi phục, thông báo và thu hồi phiên.
+- Trong NestJS: guard toàn cục với `@Public()`, RBAC bằng `Reflector.createDecorator`, chuyển sang CASL khi quyền phụ thuộc vào dữ liệu; `@nestjs/throttler` cho login và refresh, kèm bộ đếm thất bại theo tài khoản.
+- Endpoint dùng cookie phải có `SameSite=Strict`, kiểm tra `Sec-Fetch-Site`/`Origin`, chỉ `POST` với JSON. Đăng xuất mọi nơi thu hồi mọi family; chấp nhận hoặc đóng nốt cửa sổ vài phút của access token.
+
+</Checklist>

@@ -1,0 +1,4 @@
+topic: systems
+date: "2026-10-24"
+level: Advanced
+tags: [nestjs, bullmq, redis, backend, reliability]

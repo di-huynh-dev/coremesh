@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#2F5BFF"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#D97706"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="62" fill="#111827" font-size="34" font-weight="800">Modules, ports and events</text>
+  <path d="M660 50H710" stroke="#2F5BFF" stroke-width="4" marker-end="url(#arrowBlue)"/>
+  <text x="720" y="57" fill="#4B5563" font-size="18">call via port</text>
+  <path d="M880 50H930" stroke="#D97706" stroke-width="4" stroke-dasharray="8 7" marker-end="url(#arrowAmber)"/>
+  <text x="940" y="57" fill="#4B5563" font-size="18">domain event</text>
+
+  <!-- Orders -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="100" width="360" height="300" rx="26" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="68" y="146" fill="#111827" font-size="26" font-weight="800">orders</text>
+  <text x="68" y="190" fill="#111827" font-size="20" font-weight="600">OrdersController</text>
+  <text x="68" y="224" fill="#111827" font-size="20" font-weight="600">OrdersService</text>
+  <text x="68" y="258" fill="#111827" font-size="20" font-weight="600">OrderRepository (port)</text>
+  <text x="68" y="292" fill="#4B5563" font-size="18">PrismaOrderRepository</text>
+  <rect x="64" y="322" width="190" height="40" rx="20" fill="#F3F4F6" stroke="#E5E7EF"/>
+  <text x="159" y="348" text-anchor="middle" fill="#4B5563" font-size="18" font-weight="600">exports: none</text>
+
+  <!-- Payments -->
+  <g filter="url(#shadow)">
+    <rect x="800" y="100" width="360" height="140" rx="26" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="828" y="140" fill="#111827" font-size="26" font-weight="800">payments</text>
+  <rect x="824" y="156" width="230" height="38" rx="19" fill="#ECFDF3" stroke="#16A34A"/>
+  <text x="939" y="181" text-anchor="middle" fill="#16A34A" font-size="18" font-weight="600">exports PaymentsApi</text>
+  <text x="828" y="222" fill="#4B5563" font-size="18">uses PaymentGatewayModule</text>
+
+  <!-- Inventory -->
+  <g filter="url(#shadow)">
+    <rect x="800" y="262" width="360" height="140" rx="26" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="828" y="302" fill="#111827" font-size="26" font-weight="800">inventory</text>
+  <rect x="824" y="318" width="240" height="38" rx="19" fill="#ECFDF3" stroke="#16A34A"/>
+  <text x="944" y="343" text-anchor="middle" fill="#16A34A" font-size="18" font-weight="600">exports InventoryApi</text>
+  <text x="828" y="384" fill="#4B5563" font-size="18">listens: order.cancelled</text>
+
+  <!-- Notifications -->
+  <g filter="url(#shadow)">
+    <rect x="800" y="424" width="360" height="120" rx="26" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="828" y="472" fill="#111827" font-size="26" font-weight="800">notifications</text>
+  <text x="828" y="512" fill="#4B5563" font-size="18">listens: order.placed</text>
+
+  <!-- Event bus -->
+  <g filter="url(#shadow)">
+    <rect x="440" y="430" width="300" height="114" rx="24" fill="#FFFBEB" stroke="#D97706" stroke-width="2.5"/>
+  </g>
+  <text x="590" y="472" text-anchor="middle" fill="#D97706" font-size="24" font-weight="700">Event bus</text>
+  <text x="590" y="502" text-anchor="middle" fill="#4B5563" font-size="18">order.placed</text>
+  <text x="590" y="528" text-anchor="middle" fill="#4B5563" font-size="18">order.cancelled</text>
+
+  <!-- sync calls -->
+  <path d="M402 175H818" stroke="#2F5BFF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+  <text x="600" y="162" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">authorize()</text>
+  <path d="M402 290C600 290 620 337 818 337" stroke="#2F5BFF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+  <text x="600" y="290" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">reserve(), release()</text>
+
+  <!-- events -->
+  <g stroke="#D97706" stroke-width="4" stroke-dasharray="8 7" stroke-linecap="round">
+    <path d="M300 402C300 470 360 487 432 487" marker-end="url(#arrowAmber)"/>
+    <path d="M742 470C772 470 770 380 794 380" marker-end="url(#arrowAmber)"/>
+    <path d="M742 505C770 505 770 495 794 495" marker-end="url(#arrowAmber)"/>
+  </g>
+  <text x="248" y="470" fill="#D97706" font-size="18" font-weight="600">emit</text>
+
+  <!-- Global infra -->
+  <rect x="40" y="574" width="1120" height="72" rx="22" fill="#EEF2FF" stroke="#2F5BFF" stroke-width="2" stroke-dasharray="4 6"/>
+  <text x="68" y="618" fill="#111827" font-size="20" font-weight="700">Global infra</text>
+  <text x="220" y="618" fill="#4B5563" font-size="18">ConfigModule · ClsModule · EventEmitterModule · PrismaModule · APP_FILTER</text>
+</svg>

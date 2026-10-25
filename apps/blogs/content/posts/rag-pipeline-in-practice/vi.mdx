@@ -1,0 +1,949 @@
+---
+title: "RAG trả lời đúng trong thực tế: chunking, hybrid search với pgvector, reranking và đánh giá"
+excerpt: "Demo RAG thì ai cũng dựng được trong một buổi chiều; làm cho nó trả lời đúng mới là phần khó. Bài này đi qua một pipeline RAG viết bằng TypeScript trên PostgreSQL/pgvector: chunking theo cấu trúc, hybrid search gộp bằng RRF trong một câu SQL, reranking, phân quyền trước khi xếp hạng, trích dẫn và cách đo chất lượng bằng con số."
+---
+
+<Lead>Bản demo RAG đầu tiên của mình chạy rất ổn trong buổi họp: hỏi gì về handbook công ty cũng ra câu trả lời mượt mà. Hai tuần sau, một bạn hỏi "lỗi VPN-403 xử lý sao" và nhận được hướng dẫn cài VPN từ đầu — đúng chủ đề, sai câu trả lời. Một bạn khác hỏi về chính sách nghỉ thai sản và bot trích dẫn tài liệu của phòng nhân sự mà bạn đó không có quyền xem. Cả hai lỗi đều không nằm ở LLM, mà ở phần *retrieval*. Bài này là pipeline mình dựng lại sau đó, bằng TypeScript và PostgreSQL/pgvector: chunking theo cấu trúc, hybrid search gộp bằng Reciprocal Rank Fusion, reranking, lọc quyền trước khi xếp hạng, prompt có trích dẫn — và quan trọng nhất là cách đo để biết mỗi thay đổi làm hệ thống tốt lên hay tệ đi.</Lead>
+
+## RAG, long context hay fine-tuning — năm 2026 chọn thế nào?
+
+Câu hỏi đầu tiên không phải "dùng vector database nào" mà là "có cần RAG không". Năm 2026 câu trả lời khác hẳn hai năm trước, vì context window đã rất lớn: các model Claude hiện tại có context 1 triệu token. Nhét cả tài liệu vào prompt giờ là lựa chọn nghiêm túc chứ không còn là trò đùa.
+
+Ba cách tiếp cận giải ba bài toán khác nhau:
+
+| | RAG | Long context (nhét hết vào prompt) | Fine-tuning |
+| --- | --- | --- | --- |
+| **Giỏi nhất ở** | Kho tri thức lớn, thay đổi thường xuyên, cần trích dẫn | Kho nhỏ, câu hỏi cần đọc tổng thể nhiều phần | Dạy model một phong cách, định dạng, hành vi |
+| **Dữ liệu mới** | Ingest lại vài tài liệu là xong | Có ngay ở request kế tiếp | Phải train lại |
+| **Phân quyền theo người dùng** | Lọc ở tầng truy vấn | Phải dựng context riêng cho từng nhóm quyền | Gần như không thể — tri thức đã "nướng" vào trọng số |
+| **Trích dẫn nguồn** | Tự nhiên — biết chính xác đoạn nào được dùng | Được, nhưng model phải tự định vị trong context rất dài | Không |
+| **Chi phí mỗi câu hỏi** | Thấp, vài nghìn token context | Cao nếu không cache; prompt caching giảm mạnh | Thấp khi chạy, đắt lúc train |
+| **Điểm yếu** | Retrieval sai thì câu trả lời sai | Chất lượng giảm khi context dài, giới hạn bởi kích thước window | Bịa thông tin một cách tự tin, khó cập nhật |
+
+Vài nhận xét thực tế của mình:
+
+- **Kho nhỏ thì đừng dựng RAG.** Trong bài [Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval) (9/2024), Anthropic khuyên rằng nếu toàn bộ kho tri thức dưới khoảng 200.000 token (cỡ 500 trang), hãy đưa hết vào prompt và dùng prompt caching. Với context 1 triệu token hiện nay, ngưỡng đó còn có thể nâng lên. Một bộ quy định 80 trang thì không cần chunking, embedding hay index gì cả.
+- **Context dài không miễn phí về chất lượng.** Nghiên cứu "Lost in the Middle" (Liu và cộng sự, 2023) và báo cáo [Context Rot](https://research.trychroma.com/context-rot) của Chroma (7/2025, thử trên 18 model) đều cho thấy model không xử lý mọi vị trí trong context đều nhau, và độ tin cậy giảm khi input dài ra — kể cả với tác vụ đơn giản. Đưa 800.000 token vào prompt để trả lời một câu hỏi về số ngày nghỉ phép là vừa đắt vừa tăng rủi ro.
+- **Phân quyền thường quyết định thay bạn.** Handbook chung thì ai cũng đọc được, nhưng tài liệu kỹ thuật của team payments, quy trình của phòng nhân sự, biên bản họp ban giám đốc thì không. Khi mỗi người dùng được thấy một tập tài liệu khác nhau, RAG với bộ lọc quyền ở tầng truy vấn là cách sạch nhất.
+- **Fine-tuning không phải cách nạp kiến thức.** Fine-tune hợp với "trả lời theo giọng văn công ty, theo đúng format JSON này", không hợp với "nhớ chính sách nghỉ phép bản cập nhật tháng trước". Bạn không trích dẫn được trọng số, và không gỡ được một tài liệu đã bị thu hồi ra khỏi model.
+
+Nên lựa chọn của mình khá đơn giản: kho nhỏ, ít thay đổi, mọi người cùng quyền → long context + prompt caching. Kho lớn, thay đổi liên tục, quyền khác nhau, cần trích dẫn → RAG. Và hai cách không loại trừ nhau: RAG có thể lấy về cả tài liệu (không chỉ một đoạn nhỏ) rồi tận dụng context dài để model đọc đủ ngữ cảnh.
+
+<Callout>
+  **RAG thất bại chủ yếu ở retrieval, không ở generation.** Khi đoạn tài liệu đúng nằm trong context, model hiện đại hầu như luôn trả lời được. Khi nó không có mặt, không prompt nào cứu được. Vì vậy phần lớn bài này nói về việc lấy đúng đoạn tài liệu và đo xem mình có lấy đúng không.
+</Callout>
+
+## Bức tranh tổng thể: hai pipeline
+
+Một hệ thống RAG thực ra là hai pipeline chạy ở hai nhịp khác nhau:
+
+- **Ingestion (offline):** đọc tài liệu, tách thành chunk, thêm ngữ cảnh, tạo embedding, ghi vào Postgres. Chạy khi tài liệu thay đổi — qua webhook, cron hoặc job trong CI của repo docs.
+- **Query (online):** nhận câu hỏi, tìm song song bằng full-text và vector, gộp kết quả, rerank, ghép prompt, gọi LLM, trả về câu trả lời kèm trích dẫn. Chạy theo từng request, có ngân sách latency.
+
+<Figure src="/blog/rag-pipeline-in-practice-pipelines.svg" alt="Hai pipeline của RAG: ingestion offline gồm parse, chunk, contextualize, embed và lưu vào Postgres; query online gồm lọc quyền, hybrid search, RRF, rerank, prompt và LLM" caption="Ingestion chạy khi tài liệu thay đổi; query chạy theo từng request. Postgres là điểm gặp nhau của hai pipeline." />
+
+Lý do mình chọn PostgreSQL với [pgvector](https://github.com/pgvector/pgvector) thay vì một vector database riêng: dữ liệu quyền (tenant, nhóm người dùng) vốn đã nằm trong Postgres, full-text search có sẵn, transaction giúp cập nhật tài liệu và chunk một cách nguyên tử, và team không phải vận hành thêm một hệ thống nữa. Ở thời điểm viết bài, bản pgvector mới nhất là 0.8.7 (phát hành 1/10/2026); mọi thứ trong bài cần từ 0.8.0 trở lên vì có dùng iterative index scan.
+
+## Ingestion: parse và chunking
+
+### Parse: giữ lại cấu trúc
+
+Bước parse hay bị xem nhẹ nhất, nhưng mọi bước sau đều phụ thuộc vào nó. Nguyên tắc của mình: **chuyển mọi thứ về Markdown và giữ lại cấu trúc** — heading, bảng, code block, danh sách. Với Confluence hay Notion thì export ra Markdown; với PDF thì dùng công cụ trích xuất có nhận diện bảng và heading, và kiểm tra bằng mắt vài file trước khi chạy cả kho. Một bảng bị "làm phẳng" thành chuỗi số liền nhau thì không thuật toán chunking nào cứu được.
+
+Cùng với nội dung, lưu lại metadata: URL nguồn, tiêu đề, ngày cập nhật, người sở hữu, và quan trọng nhất là **ai được đọc tài liệu này**. Thông tin quyền phải đi theo tài liệu ngay từ lúc ingest, không phải bổ sung sau.
+
+### Ba chiến lược chunking
+
+| Chiến lược | Cách làm | Ưu điểm | Nhược điểm |
+| --- | --- | --- | --- |
+| **Fixed-size** | Cắt mỗi N token, có overlap | Đơn giản, kích thước đều, dễ ước lượng chi phí | Cắt ngang câu, ngang bảng, ngang code; chunk trộn hai chủ đề |
+| **Recursive** | Thử tách theo đoạn văn, rồi câu, rồi từ cho đến khi vừa kích thước | Tôn trọng ranh giới đoạn văn, vẫn dễ cài | Không biết heading; một chunk vẫn có thể vắt qua hai mục |
+| **Theo cấu trúc (heading)** | Tách theo heading, mỗi chunk thuộc đúng một mục; mục quá dài thì tách đệ quy | Chunk mạch lạc, có sẵn "đường dẫn heading" làm ngữ cảnh | Phụ thuộc chất lượng parse; kích thước chunk không đều |
+
+Với handbook và tài liệu kỹ thuật — vốn được viết có heading rõ ràng — chunking theo cấu trúc thắng gần như tuyệt đối. Fixed-size chỉ hợp với văn bản không có cấu trúc như transcript cuộc họp.
+
+### Kích thước chunk và overlap
+
+Không có con số đúng cho mọi kho, nhưng có trade-off rõ ràng:
+
+- **Chunk nhỏ (100–200 token):** embedding "sắc" hơn vì mỗi chunk nói về một ý, nhưng dễ mất ngữ cảnh ("Mức này áp dụng từ quý 3" — mức nào?). Cần top-k lớn hơn để gom đủ thông tin.
+- **Chunk lớn (800–1.500 token):** đủ ngữ cảnh, nhưng embedding bị "pha loãng" bởi nhiều ý, và mỗi chunk chiếm nhiều chỗ trong prompt.
+- **Overlap:** giúp một ý nằm ở ranh giới không bị cắt đôi, đổi lại là trùng lặp và tốn thêm lưu trữ. Với chunking theo cấu trúc, overlap ít quan trọng hơn vì ranh giới đã là ranh giới tự nhiên.
+
+Mình bắt đầu ở khoảng 400–500 token mỗi chunk, overlap bằng nguyên một đoạn văn ngắn (không cắt giữa đoạn), rồi điều chỉnh bằng bộ đánh giá ở cuối bài. Con số khởi điểm không quan trọng bằng việc có cách đo để đổi nó.
+
+### Chunker theo heading, không cắt ngang bảng và code
+
+Đây là chunker mình dùng cho Markdown. Nó duyệt từng dòng, coi code block và bảng là khối nguyên tử, giữ một "ngăn xếp heading" để mỗi chunk biết mình thuộc mục nào, và chỉ tách nhỏ hơn khi một khối vượt kích thước:
+
+```ts
+// chunker.ts
+export interface Chunk {
+  ordinal: number;
+  headingPath: string[]; // ["Handbook", "Nghỉ phép", "Nghỉ thai sản"]
+  text: string;
+  tokens: number;
+}
+
+type Block = { kind: "text" | "code" | "table"; text: string };
+type Heading = { level: number; title: string };
+
+// Ước lượng thô. Hãy đo bằng tokenizer thật của model embedding trước khi tinh chỉnh.
+export const estimateTokens = (s: string) => Math.ceil(s.length / 4);
+
+function* walk(markdown: string): Generator<Block | Heading> {
+  const lines = markdown.split(/\r?\n/);
+  let buf: string[] = [];
+  let kind: Block["kind"] = "text";
+  const flush = function* () {
+    const text = buf.join("\n").trim();
+    if (text) yield { kind, text } as Block;
+    buf = [];
+    kind = "text";
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("```")) {
+      // Code block là nguyên tử: đọc đến fence đóng.
+      yield* flush();
+      const fence = [line];
+      while (++i < lines.length) {
+        fence.push(lines[i]);
+        if (lines[i].startsWith("```")) break;
+      }
+      yield { kind: "code", text: fence.join("\n") };
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (heading) {
+      yield* flush();
+      yield { level: heading[1].length, title: heading[2].trim() };
+      continue;
+    }
+    const isRow = line.trimStart().startsWith("|");
+    if (buf.length && isRow !== (kind === "table")) yield* flush(); // bảng bắt đầu hoặc kết thúc
+    if (isRow) kind = "table";
+    if (!line.trim()) {
+      yield* flush(); // dòng trống = ranh giới đoạn văn
+      continue;
+    }
+    buf.push(line);
+  }
+  yield* flush();
+}
+
+// Bảng quá dài: tách theo hàng và lặp lại header ở mỗi phần.
+function splitTable(table: string, maxTokens: number): string[] {
+  const [head, sep, ...rows] = table.split("\n");
+  const pieces: string[] = [];
+  let cur: string[] = [];
+  for (const row of rows) {
+    if (cur.length && estimateTokens([head, sep, ...cur, row].join("\n")) > maxTokens) {
+      pieces.push([head, sep, ...cur].join("\n"));
+      cur = [];
+    }
+    cur.push(row);
+  }
+  if (cur.length) pieces.push([head, sep, ...cur].join("\n"));
+  return pieces;
+}
+
+// Fallback đệ quy: đoạn văn quá dài thì tách theo ranh giới câu.
+function splitSentences(text: string, maxTokens: number): string[] {
+  const pieces: string[] = [];
+  let cur = "";
+  for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+    if (cur && estimateTokens(cur + " " + sentence) > maxTokens) {
+      pieces.push(cur);
+      cur = sentence;
+    } else {
+      cur = cur ? cur + " " + sentence : sentence;
+    }
+  }
+  if (cur) pieces.push(cur);
+  return pieces;
+}
+
+export function chunkMarkdown(markdown: string, { maxTokens = 500, overlapTokens = 60 } = {}): Chunk[] {
+  const chunks: Chunk[] = [];
+  const stack: Heading[] = [];
+  let parts: Block[] = [];
+
+  const size = (bs: Block[]) => estimateTokens(bs.map((b) => b.text).join("\n\n"));
+  const emit = (carryOverlap: boolean) => {
+    if (!parts.length) return;
+    const text = parts.map((b) => b.text).join("\n\n");
+    chunks.push({ ordinal: chunks.length, headingPath: stack.map((h) => h.title), text, tokens: estimateTokens(text) });
+    // Overlap bằng nguyên một đoạn văn, không bao giờ bằng nửa bảng hay nửa code block.
+    const last = parts[parts.length - 1];
+    parts = carryOverlap && last.kind === "text" && estimateTokens(last.text) <= overlapTokens ? [last] : [];
+  };
+
+  for (const item of walk(markdown)) {
+    if ("level" in item) {
+      emit(false); // heading luôn đóng chunk hiện tại: hai mục không bao giờ trộn vào nhau
+      while (stack.length && stack[stack.length - 1].level >= item.level) stack.pop();
+      stack.push(item);
+      continue;
+    }
+    // Code block quá dài vẫn giữ nguyên: nửa hàm còn tệ hơn một chunk to.
+    const pieces: Block[] =
+      item.kind === "code" || estimateTokens(item.text) <= maxTokens
+        ? [item]
+        : (item.kind === "table" ? splitTable : splitSentences)(item.text, maxTokens).map((text) => ({
+            kind: item.kind,
+            text,
+          }));
+    for (const piece of pieces) {
+      if (parts.length && size([...parts, piece]) > maxTokens) {
+        emit(true);
+        if (size([...parts, piece]) > maxTokens) parts = []; // overlap không vừa thì bỏ
+      }
+      parts.push(piece);
+    }
+  }
+  emit(false);
+  return chunks;
+}
+```
+
+Ba quyết định đáng chú ý: heading luôn đóng chunk nên một chunk không bao giờ vắt qua hai mục; bảng dài được tách theo hàng nhưng mỗi phần đều mang lại dòng header (một hàng "| L3 | 15 |" mà không có header thì vô nghĩa); và code block giữ nguyên dù vượt kích thước. Hàm `estimateTokens` chỉ là ước lượng — tỉ lệ ký tự trên token khác nhau theo ngôn ngữ và theo tokenizer, và tiếng Việt có dấu thường lệch khỏi quy tắc "4 ký tự một token" vốn dựa trên tiếng Anh, nên hãy đo bằng tokenizer thật trước khi tin con số.
+
+### Thêm ngữ cảnh cho chunk: contextual chunk header
+
+Một chunk tách khỏi tài liệu thường mất chủ ngữ. Đoạn "Mức hỗ trợ tăng lên 5 triệu đồng từ quý 3" không cho embedding hay full-text biết đây là hỗ trợ gì, cho ai. Có hai cách bù lại, rẻ trước đắt sau:
+
+1. **Header tất định (miễn phí):** ghép tiêu đề tài liệu và đường dẫn heading vào trước chunk khi tạo embedding và index full-text: `Handbook › Phúc lợi › Hỗ trợ học tập`. Chỉ riêng việc này đã sửa được rất nhiều trường hợp, vì heading thường chứa đúng những từ người dùng hỏi.
+2. **Ngữ cảnh do LLM viết (contextual retrieval):** đưa cả tài liệu và chunk cho một model nhỏ, yêu cầu viết một hai câu đặt chunk vào ngữ cảnh. Đây là kỹ thuật Anthropic mô tả trong bài [Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval). Trên các bộ dữ liệu họ thử, tỉ lệ truy xuất thất bại ở top-20 (tức 1 − recall@20) giảm 35% khi chỉ dùng contextual embeddings (từ 5,7% xuống 3,7%), giảm 49% khi kết hợp thêm BM25 trên chunk đã có ngữ cảnh (còn 2,9%), và 67% khi có thêm reranking (còn 1,9%). Đó là số đo trên dữ liệu của họ — kho của bạn sẽ cho con số khác, và đó là lý do cần bộ đánh giá riêng.
+
+Chi phí của cách thứ hai là một lần gọi LLM cho mỗi chunk, với cả tài liệu trong prompt. Prompt caching giải quyết phần lớn chi phí đó: tài liệu đặt ở đầu prompt và được cache, các chunk của cùng tài liệu chỉ trả tiền cho phần thay đổi.
+
+```ts
+// contextualize.ts
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic(); // đọc ANTHROPIC_API_KEY từ môi trường
+
+export async function contextualize(doc: { title: string; markdown: string }, chunk: string): Promise<string> {
+  const res = await anthropic.messages.create({
+    model: "claude-haiku-5-5", // tác vụ hàng loạt, ngắn: dùng model nhỏ
+    max_tokens: 2048,
+    output_config: { effort: "low" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `<document title="${doc.title}">\n${doc.markdown}\n</document>`,
+            // Tài liệu là prefix chung cho mọi chunk của nó → cache lại
+            cache_control: { type: "ephemeral" },
+          },
+          {
+            type: "text",
+            text:
+              `<chunk>\n${chunk}\n</chunk>\n` +
+              "Viết 1–2 câu ngắn đặt đoạn trên vào ngữ cảnh của toàn bộ tài liệu " +
+              "(nói về gì, thuộc phần nào, áp dụng cho ai) để cải thiện việc tìm kiếm. " +
+              "Chỉ trả lời bằng phần ngữ cảnh, giữ nguyên ngôn ngữ của tài liệu.",
+          },
+        ],
+      },
+    ],
+  });
+  if (res.stop_reason === "refusal") return ""; // không chặn ingestion vì một chunk
+  return res.content
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .join("")
+    .trim();
+}
+```
+
+Mình lưu phần ngữ cảnh này ở cột riêng (`context`), không trộn vào nội dung gốc. Khi tạo embedding và index full-text thì dùng `header + context + content`, reranker cũng thấy đúng như vậy; còn prompt cuối cùng chỉ nhận văn bản gốc, để mọi trích dẫn đều trỏ về chữ thật trong tài liệu chứ không phải câu do máy viết thêm (chi tiết ở phần sau). Muốn sinh lại ngữ cảnh bằng prompt khác thì cũng không phải parse lại tài liệu.
+
+## Embeddings: số chiều, chuẩn hoá và phiên bản
+
+Ba quyết định về embedding sẽ theo bạn rất lâu, nên đáng nghĩ kỹ:
+
+- **Số chiều.** Nhiều model hiện nay cho chọn số chiều đầu ra. Ví dụ dòng Voyage 4 (ra mắt 1/2026) mặc định 1024 chiều và hỗ trợ 256, 512, 2048. Nhiều chiều hơn thường chính xác hơn một chút nhưng tốn bộ nhớ và index chậm hơn. Lưu ý giới hạn của pgvector: HNSW index trên kiểu `vector` chỉ tối đa 2.000 chiều, kiểu `halfvec` (số thực 16-bit) lên tới 4.000 chiều.
+- **Độ chính xác lưu trữ.** Theo README của pgvector, mỗi `vector` chiếm `4 × số chiều + 8` byte, `halfvec` chiếm `2 × số chiều + 8` byte. Với 1024 chiều: 4.104 byte so với 2.056 byte mỗi chunk — 100.000 chunk là khoảng 410 MB so với 206 MB, chưa tính index. Mình dùng `halfvec` mặc định; mất mát độ chính xác ở mức này hầu như không ảnh hưởng thứ hạng, nhưng vẫn nên kiểm chứng bằng bộ đánh giá.
+- **Chuẩn hoá.** Embedding của Voyage được [chuẩn hoá về độ dài 1](https://docs.voyageai.com/docs/faq), nên cosine similarity và dot product cho cùng thứ hạng. Mình vẫn dùng toán tử cosine `<=>` vì nó đúng kể cả khi sau này đổi sang model không chuẩn hoá. Nếu dùng inner product `<#>`, nhớ rằng pgvector trả về giá trị *âm* của inner product (vì Postgres chỉ hỗ trợ index scan theo thứ tự tăng dần).
+
+Một chi tiết hay bị bỏ qua: nhiều model embedding phân biệt **query** và **document**. Voyage có tham số `input_type` để thêm prompt phù hợp cho từng loại; quên tham số này là tự bỏ đi một phần chất lượng miễn phí.
+
+```ts
+// embed.ts
+export const EMBEDDING = { model: "voyage-4-large", dimensions: 1024 } as const;
+export const EMBEDDING_ID = `${EMBEDDING.model}/${EMBEDDING.dimensions}`; // lưu cùng mỗi chunk
+
+type VoyageResponse = { data: { embedding: number[]; index: number }[]; usage: { total_tokens: number } };
+
+export async function embed(texts: string[], inputType: "document" | "query"): Promise<number[][]> {
+  const vectors: number[][] = [];
+  // Giới hạn mỗi request: 1.000 input và một ngân sách token tuỳ model — chia batch nhỏ cho an toàn
+  for (let i = 0; i < texts.length; i += 128) {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        input: texts.slice(i, i + 128),
+        model: EMBEDDING.model,
+        input_type: inputType,
+        output_dimension: EMBEDDING.dimensions,
+      }),
+    });
+    if (!res.ok) throw new Error(`Voyage ${res.status}: ${await res.text()}`);
+    const json = (await res.json()) as VoyageResponse;
+    for (const item of json.data.sort((a, b) => a.index - b.index)) vectors.push(item.embedding);
+  }
+  return vectors;
+}
+```
+
+### Lưu phiên bản model và kế hoạch re-embed
+
+Embedding của hai model khác nhau (hoặc cùng model nhưng khác số chiều) nằm trong hai không gian khác nhau; so khoảng cách giữa chúng là vô nghĩa. Vì vậy mỗi chunk lưu `embedding_model` (ví dụ `voyage-4-large/1024`), và khi đổi model mình làm theo kiểu blue-green thay vì cập nhật tại chỗ:
+
+1. Thêm cột `embedding_next` và tạo HNSW index cho nó bằng `CREATE INDEX CONCURRENTLY`.
+2. Backfill nền, theo batch, có thể mất hàng giờ — truy vấn vẫn đọc cột cũ.
+3. Chạy bộ đánh giá trên cột mới. Chỉ chuyển truy vấn sang khi số liệu tốt hơn hoặc bằng.
+4. Đổi truy vấn, theo dõi vài ngày, rồi mới xoá cột cũ.
+
+Một trường hợp đặc biệt: dòng Voyage 4 [dùng chung một không gian embedding](https://www.mongodb.com/products/updates/the-voyage-4-series-now-available) giữa các model trong dòng, nên có thể index bằng `voyage-4-large` và embed câu hỏi bằng `voyage-4-lite` cho rẻ. Nhưng đó là thuộc tính của riêng dòng model này; mặc định hãy coi mọi lần đổi model là phải re-embed toàn bộ.
+
+## Schema và HNSW index
+
+Schema dưới đây chạy trên PostgreSQL 18 với pgvector 0.8.x. Hai bảng: `documents` giữ metadata và quyền, `chunks` giữ nội dung, embedding và `tsvector` cho full-text. Thông tin quyền được *denormalize* xuống từng chunk để lọc ngay trong câu truy vấn tìm kiếm, không cần join.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE documents (
+  id             uuid PRIMARY KEY DEFAULT uuidv7(),  -- uuidv7() có từ Postgres 18
+  tenant_id      uuid NOT NULL,
+  source_uri     text NOT NULL,
+  title          text NOT NULL,
+  allowed_groups text[] NOT NULL,                    -- ví dụ {all} hoặc {eng,payments}
+  content_hash   text NOT NULL,
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, source_uri)
+);
+
+CREATE TABLE chunks (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  document_id     uuid NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
+  tenant_id       uuid NOT NULL,
+  allowed_groups  text[] NOT NULL,
+  ordinal         int NOT NULL,
+  heading_path    text NOT NULL,
+  context         text NOT NULL DEFAULT '',
+  content         text NOT NULL,
+  token_count     int NOT NULL,
+  embedding       halfvec(1024) NOT NULL,
+  embedding_model text NOT NULL,
+  -- Postgres không có cấu hình full-text tiếng Việt → dùng 'simple' (không stemming)
+  tsv tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('simple', heading_path), 'A') ||
+    setweight(to_tsvector('simple', context || ' ' || content), 'B')
+  ) STORED
+);
+
+CREATE INDEX chunks_embedding_hnsw ON chunks
+  USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
+CREATE INDEX chunks_tsv_gin ON chunks USING gin (tsv);
+CREATE INDEX chunks_tenant_idx ON chunks (tenant_id);
+```
+
+Vài điểm cần giải thích:
+
+- **`STORED` phải ghi rõ.** Từ Postgres 18, generated column mặc định là `VIRTUAL` (tính lúc đọc). Cột `tsv` cần được lưu thật để GIN index và để không phải tính lại `to_tsvector` mỗi lần truy vấn.
+- **Cấu hình `'simple'`.** Postgres có cấu hình full-text cho khoảng ba chục ngôn ngữ nhưng không có tiếng Việt. `'simple'` chỉ hạ chữ thường và tách từ, không stemming, không bỏ stop word. Nếu kho của bạn hoàn toàn tiếng Anh thì dùng `'english'` sẽ tốt hơn. Heading được gán trọng số `A`, nội dung `B`, để khớp ở heading được xếp cao hơn.
+- **Tham số HNSW.** `m` (số kết nối mỗi node, mặc định 16) và `ef_construction` (kích thước danh sách ứng viên khi build, mặc định 64) là giá trị mặc định của pgvector; tăng lên cho recall tốt hơn nhưng build chậm và index to hơn. Ở thời điểm truy vấn, `hnsw.ef_search` (mặc định 40) quyết định độ rộng tìm kiếm — và như sẽ thấy ở phần sau, nó cũng là trần số kết quả một lần quét index trả về.
+- **Vì sao cosine.** Opclass phải khớp với toán tử trong truy vấn: index `halfvec_cosine_ops` chỉ được dùng khi `ORDER BY embedding <=> ...`. Viết nhầm `<->` (L2) là truy vấn âm thầm quét tuần tự.
+
+### Ghi một tài liệu: nguyên tử và idempotent
+
+Mỗi tài liệu được ingest trong một transaction: upsert `documents`, xoá chunk cũ, chèn chunk mới. Người dùng không bao giờ thấy tài liệu ở trạng thái nửa cũ nửa mới. `content_hash` có tính cả `EMBEDDING_ID`, nên tài liệu không đổi thì bỏ qua, còn đổi model thì tự động bị xử lý lại.
+
+```ts
+// ingest.ts
+import { createHash } from "node:crypto";
+import pg from "pg";
+import pgvector from "pgvector/pg";
+import { chunkMarkdown } from "./chunker";
+import { contextualize } from "./contextualize";
+import { embed, EMBEDDING_ID } from "./embed";
+
+export interface SourceDoc {
+  tenantId: string;
+  uri: string;
+  title: string;
+  markdown: string;
+  allowedGroups: string[];
+}
+
+export async function ingestDocument(pool: pg.Pool, doc: SourceDoc): Promise<void> {
+  const hash = createHash("sha256").update(EMBEDDING_ID).update(doc.markdown).digest("hex");
+  const prev = await pool.query("SELECT content_hash FROM documents WHERE tenant_id = $1 AND source_uri = $2", [
+    doc.tenantId,
+    doc.uri,
+  ]);
+  if (prev.rows[0]?.content_hash === hash) return; // không có gì thay đổi
+
+  const chunks = chunkMarkdown(doc.markdown);
+  const contexts: string[] = [];
+  for (const c of chunks) contexts.push(await contextualize(doc, c.text)); // tuần tự để tận dụng cache
+  const header = (path: string[]) => [doc.title, ...path].join(" › ");
+  const vectors = await embed(
+    chunks.map((c, i) => `${header(c.headingPath)}\n\n${contexts[i]}\n\n${c.text}`),
+    "document",
+  );
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO documents (tenant_id, source_uri, title, allowed_groups, content_hash)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (tenant_id, source_uri) DO UPDATE
+         SET title = EXCLUDED.title, allowed_groups = EXCLUDED.allowed_groups,
+             content_hash = EXCLUDED.content_hash, updated_at = now()
+       RETURNING id`,
+      [doc.tenantId, doc.uri, doc.title, doc.allowedGroups, hash],
+    );
+    const documentId: string = rows[0].id;
+    await client.query("DELETE FROM chunks WHERE document_id = $1", [documentId]);
+    for (const [i, c] of chunks.entries()) {
+      await client.query(
+        `INSERT INTO chunks (document_id, tenant_id, allowed_groups, ordinal, heading_path,
+                             context, content, token_count, embedding, embedding_model)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [documentId, doc.tenantId, doc.allowedGroups, c.ordinal, header(c.headingPath),
+         contexts[i], c.text, c.tokens, pgvector.toSql(vectors[i]), EMBEDDING_ID],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+```
+
+Gọi LLM và embedding nằm *ngoài* transaction — giữ transaction mở trong lúc chờ API bên ngoài vài chục giây là cách nhanh nhất để làm cạn connection pool.
+
+## Hybrid search: full-text và vector trong một câu SQL
+
+Quay lại câu hỏi "lỗi VPN-403 xử lý sao". Vector search thấy câu hỏi "giống" mọi tài liệu về VPN, và tài liệu cài đặt VPN — dài, nhiều chữ "VPN" — thắng. Trong khi đó, đoạn duy nhất chứa đúng chuỗi `VPN-403` lại nằm ở hạng 12. Embedding giỏi nắm *ý nghĩa*, nhưng kém với những token chính xác: mã lỗi, tên service, khoá cấu hình, số hiệu điều khoản. Full-text search thì ngược lại.
+
+| | Dense (vector) | Sparse (full-text / BM25) | Hybrid |
+| --- | --- | --- | --- |
+| **Giỏi** | Diễn đạt khác từ ngữ, đồng nghĩa, hỏi bằng tiếng Việt khi tài liệu tiếng Anh | Mã lỗi, tên riêng, từ khoá hiếm, khớp chính xác | Cả hai, khi một bên bỏ sót thì bên kia bù |
+| **Kém** | Token hiếm và chính xác, phủ định, con số | Từ đồng nghĩa, cách diễn đạt khác, khác ngôn ngữ | Thêm một truy vấn, phải gộp hai thang điểm khác nhau |
+| **Trong Postgres** | pgvector + HNSW | `tsvector` + GIN (hoặc extension BM25) | Hai CTE và RRF |
+| **Chi phí thêm** | Embedding câu hỏi | Gần như không | Tổng của hai bên |
+
+Một lưu ý trung thực: full-text sẵn có của Postgres *không phải BM25*. Hàm `ts_rank`/`ts_rank_cd` chỉ dựa vào tần suất và vị trí từ trong chính tài liệu đó, [không dùng thông tin toàn cục](https://www.postgresql.org/docs/current/textsearch-controls.html) như IDF, nên một từ phổ biến được tính ngang một từ hiếm. Với vai trò "nhánh bắt từ khoá chính xác" trong hybrid search thì vậy là đủ dùng. Nếu cần BM25 thật trong Postgres, có các extension như `pg_search` của ParadeDB hay `pg_textsearch` của Tiger Data.
+
+### Reciprocal Rank Fusion
+
+Điểm cosine và điểm `ts_rank_cd` nằm trên hai thang hoàn toàn khác nhau, cộng thẳng vào nhau là vô nghĩa. [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (Cormack, Clarke và Büttcher, SIGIR 2009) bỏ qua điểm số, chỉ dùng *thứ hạng*:
+
+```text
+RRF(d) = Σ  1 / (k + rank_i(d))      với k = 60, tổng trên các danh sách có chứa d
+```
+
+Hằng số `k = 60` được chọn trong nghiên cứu gốc và trở thành mặc định phổ biến. Nó làm phẳng khoảng cách giữa các hạng đầu: hạng 1 và hạng 2 chỉ chênh nhau rất ít, nên một tài liệu xuất hiện ở *cả hai* danh sách thường thắng tài liệu đứng đầu chỉ một danh sách. Tính thử với bốn chunk:
+
+| Chunk | Hạng dense | Hạng full-text | Điểm RRF |
+| --- | --- | --- | --- |
+| A | 1 | 4 | 1/61 + 1/64 = 0,03202 |
+| C (chứa "VPN-403") | 12 | 1 | 1/72 + 1/61 = 0,03028 |
+| B | 2 | — | 1/62 = 0,01613 |
+| D | — | 2 | 1/62 = 0,01613 |
+
+Chunk C từ hạng 12 bên dense nhảy lên hạng 2 sau khi gộp — đúng hành vi mình cần cho câu hỏi về mã lỗi.
+
+<Figure src="/blog/rag-pipeline-in-practice-hybrid-search.svg" alt="Hybrid search: danh sách full-text và danh sách vector, đã lọc theo tenant và quyền, được gộp bằng RRF, sau đó reranker chọn ra top context đưa vào prompt" caption="Hai danh sách ứng viên (đã lọc quyền) được gộp bằng RRF theo thứ hạng, rồi reranker chấm lại để chọn vài chunk tốt nhất cho prompt." />
+
+### Toàn bộ hybrid search trong một truy vấn
+
+Mình để Postgres làm hết: hai nhánh tìm kiếm, lọc quyền, đánh hạng và gộp RRF trong một câu SQL, một round-trip. Truy vấn này đã chạy thử trên PostgreSQL 18 với pgvector 0.8.7:
+
+```sql
+-- $1 vector câu hỏi, $2 truy vấn từ khoá, $3 tenant, $4 nhóm của người dùng,
+-- $5 số ứng viên mỗi nhánh, $6 số kết quả sau khi gộp
+WITH dense AS MATERIALIZED (
+  SELECT c.id, c.embedding <=> $1::halfvec(1024) AS distance
+  FROM chunks c
+  WHERE c.tenant_id = $3 AND c.allowed_groups && $4::text[]
+  ORDER BY distance
+  LIMIT $5
+),
+dense_ranked AS (
+  -- relaxed_order có thể trả kết quả hơi lệch thứ tự → đánh hạng lại ở ngoài CTE
+  SELECT id, row_number() OVER (ORDER BY distance) AS rank FROM dense
+),
+sparse AS (
+  SELECT c.id,
+         row_number() OVER (ORDER BY ts_rank_cd(c.tsv, q.query) DESC) AS rank
+  FROM chunks c, websearch_to_tsquery('simple', $2) AS q(query)
+  WHERE c.tenant_id = $3 AND c.allowed_groups && $4::text[]
+    AND c.tsv @@ q.query
+  ORDER BY rank
+  LIMIT $5
+),
+fused AS (
+  SELECT id,
+         coalesce(1.0 / (60 + dr.rank), 0) + coalesce(1.0 / (60 + sp.rank), 0) AS rrf_score,
+         dr.rank AS dense_rank,
+         sp.rank AS sparse_rank
+  FROM dense_ranked dr
+  FULL OUTER JOIN sparse sp USING (id)
+)
+SELECT f.id, f.rrf_score, f.dense_rank, f.sparse_rank,
+       c.heading_path, c.context, c.content, doc.title, doc.source_uri
+FROM fused f
+JOIN chunks c ON c.id = f.id
+JOIN documents doc ON doc.id = c.document_id
+ORDER BY f.rrf_score DESC
+LIMIT $6;
+```
+
+`FULL OUTER JOIN` giữ lại chunk chỉ xuất hiện ở một nhánh; `coalesce(..., 0)` cho nhánh vắng mặt đóng góp 0. Mình trả về cả `dense_rank` và `sparse_rank` — lúc debug, biết một chunk đến từ nhánh nào đáng giá hơn mọi con số điểm.
+
+Phía TypeScript, việc quan trọng nhất là cấu hình index scan trong *cùng transaction* với truy vấn, và biến câu hỏi tự nhiên thành truy vấn từ khoá:
+
+```ts
+// search.ts
+import type pg from "pg";
+import pgvector from "pgvector/pg";
+import { embed } from "./embed";
+import { HYBRID_SQL } from "./sql"; // câu SQL ở trên
+
+export interface Principal { tenantId: string; groups: string[] }
+export interface Candidate {
+  id: string; rrfScore: number; denseRank: number | null; sparseRank: number | null;
+  headingPath: string; context: string; content: string; title: string; sourceUri: string;
+}
+
+const STOPWORDS = new Set([
+  "tôi", "mình", "bạn", "là", "của", "và", "có", "không", "được", "cho", "với", "thì", "các",
+  "những", "một", "này", "đó", "nào", "gì", "bao", "nhiêu", "sao", "nếu", "khi", "ở", "trong",
+  "the", "a", "an", "is", "are", "of", "to", "in", "for", "how", "what", "do", "does", "i",
+]);
+
+// websearch_to_tsquery nối các từ bằng AND: "Tôi được nghỉ phép bao nhiêu ngày?" sẽ đòi đủ cả 7 từ
+// trong một chunk. Bỏ stop word rồi nối bằng "or" để nhánh full-text thực sự có kết quả.
+export function keywordQuery(question: string): string {
+  const terms = question
+    .normalize("NFC") // tiếng Việt dạng NFD (tổ hợp dấu rời) sẽ không khớp với tsvector dạng NFC
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .filter((t) => t.length > 1 && !STOPWORDS.has(t));
+  return [...new Set(terms)].join(" or ");
+}
+
+export async function hybridSearch(
+  pool: pg.Pool, who: Principal, question: string, { perBranch = 50, limit = 30 } = {},
+): Promise<Candidate[]> {
+  const [queryVector] = await embed([question], "query");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // SET LOCAL chỉ sống trong transaction này → không rò sang request khác dùng chung connection
+    await client.query("SET LOCAL hnsw.ef_search = 100"); // phải ≥ perBranch
+    await client.query("SET LOCAL hnsw.iterative_scan = relaxed_order");
+    const { rows } = await client.query(HYBRID_SQL, [
+      pgvector.toSql(queryVector), keywordQuery(question), who.tenantId, who.groups, perBranch, limit,
+    ]);
+    await client.query("COMMIT");
+    return rows.map((r) => ({
+      id: String(r.id), // bigint về dạng string trong node-postgres
+      rrfScore: Number(r.rrf_score), // numeric cũng vậy
+      denseRank: r.dense_rank === null ? null : Number(r.dense_rank),
+      sparseRank: r.sparse_rank === null ? null : Number(r.sparse_rank),
+      headingPath: r.heading_path, context: r.context, content: r.content,
+      title: r.title, sourceUri: r.source_uri,
+    }));
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+```
+
+Tại sao `hnsw.ef_search = 100`? README của pgvector ghi rõ: số kết quả một lần quét HNSW bị giới hạn bởi `hnsw.ef_search`, mặc định 40. Viết `LIMIT 50` với giá trị mặc định thì bạn nhận tối đa 40 dòng, có khi ít hơn vì dead tuple hoặc điều kiện lọc — và không có lỗi nào báo cho bạn biết.
+
+## Phân quyền: lọc trước khi xếp hạng
+
+Sự cố thứ hai ở đầu bài — bot trích dẫn tài liệu nhân sự cho người không có quyền — đến từ một thiết kế rất phổ biến: tìm top-k trên *toàn bộ* kho, rồi lọc theo quyền trong code ứng dụng, hoặc tệ hơn, dặn LLM trong prompt "chỉ dùng tài liệu người dùng được xem". Cả hai đều sai theo những cách khác nhau:
+
+- **Lọc trong prompt không phải là phân quyền.** Nội dung đã nằm trong context thì có thể lọt ra câu trả lời, qua trích dẫn, qua log, qua một câu hỏi khéo léo. Tài liệu không có quyền xem thì không được rời khỏi database, chấm hết.
+- **Lọc sau trong ứng dụng làm mất kết quả.** Lấy top-50 toàn kho rồi bỏ những chunk không có quyền, có khi chỉ còn 3 chunk — hoặc 0 — dù kho có hàng chục đoạn phù hợp mà người đó được xem.
+- **Reranker và LLM là bên thứ ba.** Chunk gửi sang API rerank hay API LLM là dữ liệu đã rời khỏi hệ thống của bạn. Lọc quyền phải xảy ra *trước* các bước đó.
+
+Vì vậy điều kiện `tenant_id = $3 AND allowed_groups && $4` nằm ngay trong cả hai nhánh của câu SQL ở trên. Nhưng với index xấp xỉ, đặt `WHERE` đúng chỗ vẫn chưa đủ.
+
+### Bẫy post-filtering của HNSW
+
+Với HNSW, pgvector áp dụng điều kiện lọc *sau khi* quét index. Index trả về khoảng `ef_search` ứng viên gần nhất trên toàn bảng, rồi Postgres mới bỏ những dòng không thoả `WHERE`. README của pgvector đưa ví dụ: điều kiện khớp 10% số dòng, `ef_search` mặc định 40, thì trung bình chỉ còn 4 dòng. Tenant của bạn chiếm 2% dữ liệu? Trung bình chưa tới 1 dòng. Không có lỗi, không có cảnh báo, chỉ có câu trả lời "mình không tìm thấy thông tin" cho khách hàng nhỏ — và đội support không hiểu vì sao.
+
+Các cách xử lý, theo thứ tự mình thường cân nhắc:
+
+1. **Iterative index scan (pgvector 0.8.0 trở lên).** Bật `hnsw.iterative_scan` thì index tự quét tiếp khi chưa đủ kết quả sau khi lọc. `relaxed_order` cho recall tốt hơn nhưng kết quả có thể hơi lệch thứ tự khoảng cách — đó là lý do câu SQL ở trên dùng CTE `MATERIALIZED` rồi đánh hạng lại bằng `row_number()`. Việc quét tiếp có giới hạn: `hnsw.max_scan_tuples` (mặc định 20.000) và `hnsw.scan_mem_multiplier` (mặc định 1 × `work_mem`). Với tenant rất nhỏ trong bảng rất lớn, giới hạn này vẫn có thể chạm tới.
+2. **Để planner dùng index chính xác.** Với tenant nhỏ, B-tree trên `tenant_id` rồi tính khoảng cách cho vài nghìn dòng là nhanh và cho kết quả *chính xác*. Lúc mình chạy thử truy vấn trên bảng nhỏ, planner đã tự chọn `chunks_tenant_idx` thay vì HNSW. Hãy xem `EXPLAIN` với dữ liệu thật thay vì đoán.
+3. **Partial index cho vài giá trị lọc lớn.** Khi chỉ có vài tenant lớn chiếm phần lớn dữ liệu, mỗi tenant một HNSW index riêng.
+4. **Partition theo tenant khi có nhiều giá trị.** Mỗi partition có HNSW index riêng, nên lọc theo tenant trở thành chọn partition chứ không còn là post-filter.
+
+```sql
+-- (3) Partial index cho một tenant lớn
+CREATE INDEX chunks_hnsw_acme ON chunks
+  USING hnsw (embedding halfvec_cosine_ops)
+  WHERE tenant_id = '0199f0b2-0000-7000-8000-000000000001';
+
+-- (4) Hoặc partition theo tenant ngay từ đầu (khai báo thay cho bảng chunks ở trên)
+-- CREATE TABLE chunks (...) PARTITION BY LIST (tenant_id);
+
+-- Lớp phòng thủ thứ hai: Row Level Security
+ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY chunk_access ON chunks
+  USING (
+    tenant_id = current_setting('app.tenant_id')::uuid
+    AND allowed_groups && string_to_array(current_setting('app.groups'), ',')
+  );
+-- Mỗi request, trong transaction:
+--   SELECT set_config('app.tenant_id', $1, true), set_config('app.groups', $2, true);
+```
+
+Row Level Security là lưới an toàn cho trường hợp ai đó viết một truy vấn mới và quên điều kiện quyền. Hai lưu ý: RLS không áp dụng cho superuser và mặc định không áp dụng cho chủ sở hữu bảng (trừ khi bật `FORCE ROW LEVEL SECURITY`), nên ứng dụng phải kết nối bằng một role riêng; và tham số thứ ba `true` của `set_config` giới hạn giá trị trong transaction hiện tại — quên nó với connection pool là cách nhanh nhất để request sau "thừa hưởng" quyền của request trước. RLS là lớp thứ hai, không thay thế điều kiện lọc tường minh trong truy vấn: nó cũng là post-filter với HNSW, nên mọi điều ở trên vẫn áp dụng.
+
+## Reranking: chấm lại bằng cross-encoder
+
+Embedding là *bi-encoder*: câu hỏi và chunk được mã hoá riêng rẽ, rồi so khoảng cách. Nhanh, index được, nhưng model chưa bao giờ "nhìn" câu hỏi và chunk cùng lúc. Reranker là *cross-encoder*: nó đọc cặp (câu hỏi, chunk) cùng nhau và cho điểm mức liên quan. Chính xác hơn hẳn, nhưng quá chậm để chạy trên cả kho — nên nó chỉ chấm lại vài chục ứng viên mà hybrid search đã lọc ra.
+
+Pipeline của mình: mỗi nhánh lấy 50, RRF gộp còn 30, reranker chọn 8 đưa vào prompt. Trong thử nghiệm của Anthropic ở bài Contextual Retrieval, họ lấy 150 ứng viên và rerank xuống 20 — cả hai con số đều nên được chỉnh theo bộ đánh giá và ngân sách latency của bạn.
+
+```ts
+// rerank.ts
+import type { Candidate } from "./search";
+
+export interface Ranked extends Candidate { relevance: number | null }
+
+type RerankResponse = { data: { index: number; relevance_score: number }[]; usage: { total_tokens: number } };
+
+export async function rerank(question: string, candidates: Candidate[], topK = 8): Promise<Ranked[]> {
+  if (candidates.length === 0) return [];
+  try {
+    const res = await fetch("https://api.voyageai.com/v1/rerank", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: question,
+        documents: candidates.map((c) => `${c.headingPath}\n${c.context}\n\n${c.content}`),
+        model: "rerank-3",
+        top_k: topK,
+      }),
+      signal: AbortSignal.timeout(3_000), // reranker chậm thì thà dùng thứ tự RRF
+    });
+    if (!res.ok) throw new Error(`rerank ${res.status}`);
+    const json = (await res.json()) as RerankResponse;
+    // data đã sắp theo relevance_score giảm dần; index trỏ về vị trí trong mảng gửi đi
+    return json.data.map((d) => ({ ...candidates[d.index], relevance: d.relevance_score }));
+  } catch (err) {
+    console.warn("rerank failed, falling back to RRF order", err);
+    return candidates.slice(0, topK).map((c) => ({ ...c, relevance: null }));
+  }
+}
+```
+
+Mình dùng API rerank của Voyage (model `rerank-3` ra mắt cuối tháng 9/2026; `rerank-2.5` vẫn được hỗ trợ), nhưng Cohere Rerank hay một cross-encoder mã nguồn mở tự host đều cắm vào cùng chỗ này. Vài điều mình học được:
+
+- **Đưa cho reranker cùng văn bản mà người đọc sẽ thấy**, gồm cả heading và context. Reranker chấm "Mức hỗ trợ tăng lên 5 triệu" thấp vì không biết hỗ trợ gì — y như embedding.
+- **Điểm rerank không phải xác suất.** `relevance_score` không được hiệu chỉnh giữa các câu hỏi, nên đừng coi 0,5 là "50% liên quan". Tuy vậy, điểm cao nhất trong top thấp bất thường là một tín hiệu tốt cho hành vi "không biết" — với ngưỡng được chọn từ bộ đánh giá, không phải đoán.
+- **Có đường lui.** Reranker là một dependency mạng nữa trên đường đi của request. Timeout và fallback về thứ tự RRF giúp hệ thống xuống cấp nhẹ nhàng thay vì sập.
+
+## Ghép prompt: trích dẫn và quyền được nói "không biết"
+
+Ở bước cuối, mình muốn ba thứ: câu trả lời chỉ dựa trên tài liệu đã lấy về, mỗi ý có trích dẫn trỏ về nguồn, và khi tài liệu không đủ thì nói thẳng là không biết. Messages API của Anthropic có sẵn kiểu content block [`search_result`](https://platform.claude.com/docs/en/build-with-claude/search-results) cho đúng bài toán này: bạn đưa mỗi chunk vào như một kết quả tìm kiếm có `source` và `title`, bật citations, và câu trả lời trả về các đoạn text kèm trích dẫn có cấu trúc — không cần tự chế cú pháp `[1]`, `[2]` rồi parse lại.
+
+```ts
+// answer.ts
+import Anthropic from "@anthropic-ai/sdk";
+import type { Ranked } from "./rerank";
+
+const anthropic = new Anthropic();
+const MIN_RELEVANCE = 0.3; // chọn từ bộ đánh giá, không phải hằng số vũ trụ
+
+const SYSTEM = `Bạn trả lời câu hỏi về tài liệu nội bộ của công ty.
+- Chỉ dùng thông tin trong các search result được cung cấp, không dùng kiến thức bên ngoài.
+- Nếu search result không đủ để trả lời, nói rõ là không tìm thấy trong tài liệu và gợi ý nên hỏi ai. Không đoán.
+- Nếu các nguồn mâu thuẫn nhau, nêu cả hai và ghi rõ nguồn nào.
+- Trả lời ngắn gọn, bằng ngôn ngữ của câu hỏi.`;
+
+export interface Answer {
+  text: string;
+  citations: { title: string; source: string; quote: string }[];
+  grounded: boolean;
+}
+
+const NOT_FOUND: Answer = {
+  text: "Mình không tìm thấy thông tin này trong tài liệu nội bộ.",
+  citations: [],
+  grounded: false,
+};
+
+export async function answer(question: string, context: Ranked[]): Promise<Answer> {
+  const usable = context.filter((c) => c.relevance === null || c.relevance >= MIN_RELEVANCE);
+  if (usable.length === 0) return NOT_FOUND; // không gọi LLM khi không có gì để dựa vào
+
+  const res = await anthropic.messages.create({
+    model: "claude-opus-5-5",
+    max_tokens: 4096,
+    output_config: { effort: "medium" },
+    system: SYSTEM,
+    messages: [
+      {
+        role: "user",
+        content: [
+          ...usable.map((c) => ({
+            type: "search_result" as const,
+            source: c.sourceUri,
+            title: c.headingPath,
+            // Mỗi đoạn văn một block → trích dẫn trỏ tới đúng đoạn, không phải cả chunk
+            content: c.content.split(/\n{2,}/).map((p) => ({ type: "text" as const, text: p })),
+            citations: { enabled: true },
+          })),
+          { type: "text" as const, text: question },
+        ],
+      },
+    ],
+  });
+  if (res.stop_reason === "refusal") return NOT_FOUND;
+
+  let text = "";
+  const citations: Answer["citations"] = [];
+  for (const block of res.content) {
+    if (block.type !== "text") continue;
+    text += block.text;
+    for (const c of block.citations ?? []) {
+      if (c.type === "search_result_location") {
+        citations.push({ title: c.title ?? c.source, source: c.source, quote: c.cited_text });
+      }
+    }
+  }
+  return { text, citations, grounded: citations.length > 0 };
+}
+```
+
+Những quyết định trong đoạn code này:
+
+- **"Không biết" được quyết định ở hai tầng.** Tầng code: nếu không chunk nào vượt ngưỡng relevance thì trả lời "không tìm thấy" mà không gọi LLM — rẻ, nhanh và không thể bịa. Tầng prompt: khi có chunk nhưng không đủ, model được *cho phép* nói không biết. Cho phép tường minh quan trọng hơn bạn nghĩ; model được dặn "hãy trả lời câu hỏi" sẽ cố trả lời.
+- **Chỉ đưa nội dung gốc vào prompt.** Phần `context` do LLM viết lúc ingest phục vụ việc *tìm*; lúc *trả lời* mình chỉ đưa văn bản gốc và đường dẫn heading, để mọi trích dẫn đều trỏ về chữ thật trong tài liệu chứ không phải câu do máy tóm tắt.
+- **`grounded` là một tín hiệu vận hành.** Câu trả lời có nội dung mà không có trích dẫn nào là dấu hiệu model đang nói từ kiến thức riêng. Mình log tỉ lệ này theo ngày; nó tăng đột biến thường nghĩa là retrieval vừa hỏng ở đâu đó.
+- **Citation đi thẳng ra UI.** `source` và `cited_text` cho phép hiển thị đoạn trích nguyên văn kèm link — người dùng tự kiểm chứng được, và đó là thứ tạo ra niềm tin chứ không phải giọng văn tự tin.
+
+## Đánh giá: đo trước khi tin
+
+Đây là phần phân biệt một hệ thống RAG thật với một bản demo. Không có bộ đánh giá, mọi thay đổi — chunk to hơn, model embedding mới, thêm reranker — đều là cảm tính: bạn thử năm câu hỏi quen thuộc, thấy "có vẻ tốt hơn", rồi deploy. Mình từng làm vậy và từng làm hỏng những câu hỏi mà mình không thử.
+
+### Golden set: nhãn theo bằng chứng, không theo chunk ID
+
+Golden set là danh sách câu hỏi kèm *bằng chứng* — đoạn văn trong tài liệu nào trả lời được câu hỏi đó. Nguồn câu hỏi tốt nhất là log câu hỏi thật (đã ẩn danh), bổ sung bằng câu hỏi do người hiểu tài liệu viết. 50–100 câu là đủ để bắt đầu; quan trọng là đa dạng hơn là nhiều.
+
+```json
+[
+  {
+    "id": "leave-007",
+    "kind": "answerable",
+    "question": "Nhân viên thử việc có được nghỉ phép năm không?",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all"] },
+    "evidence": [{ "source": "handbook/leave.md", "quote": "Nhân viên thử việc được hưởng phép năm theo tỉ lệ" }],
+    "facts": ["Có, theo tỉ lệ số tháng làm việc"]
+  },
+  {
+    "id": "vpn-403",
+    "kind": "answerable",
+    "question": "lỗi VPN-403 xử lý sao",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all", "eng"] },
+    "evidence": [{ "source": "eng/runbooks/vpn.md", "quote": "VPN-403 nghĩa là chứng chỉ đã hết hạn" }],
+    "facts": ["Chứng chỉ hết hạn", "Chạy lệnh gia hạn chứng chỉ"]
+  },
+  {
+    "id": "salary-bands-forbidden",
+    "kind": "forbidden",
+    "question": "Khung lương của level L4 là bao nhiêu?",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all"] },
+    "evidence": [{ "source": "hr/compensation.md", "quote": "Khung lương L4" }]
+  },
+  {
+    "id": "no-answer-012",
+    "kind": "unanswerable",
+    "question": "Công ty có hỗ trợ chi phí nuôi thú cưng không?",
+    "principal": { "tenantId": "0199f0b2-0000-7000-8000-000000000001", "groups": ["all"] }
+  }
+]
+```
+
+Ba loại câu hỏi, ba mục đích: `answerable` đo retrieval và chất lượng câu trả lời; `unanswerable` kiểm tra hành vi "không biết"; `forbidden` là câu hỏi mà người hỏi *không* có quyền xem bằng chứng — retrieval trả về bằng chứng đó là một vụ rò rỉ, và con số này phải luôn bằng 0.
+
+Chi tiết quan trọng nhất: **bằng chứng được ghi bằng nguồn và một đoạn trích, không phải chunk ID.** Chunk ID thay đổi mỗi lần bạn đổi chunking — đúng lúc bạn cần bộ đánh giá nhất. Ghi theo đoạn trích thì một chunk được coi là liên quan nếu nó thuộc đúng nguồn và chứa đoạn trích đó, bất kể chunker cắt thế nào.
+
+### Đo retrieval: recall@k và MRR
+
+Hai chỉ số mình theo dõi cho retrieval:
+
+- **recall@k:** tỉ lệ câu hỏi có ít nhất một chunk liên quan trong top-k (một số tài liệu gọi đây là hit rate; định nghĩa chặt hơn tính tỉ lệ *tất cả* bằng chứng được lấy về — hợp với câu hỏi cần ghép nhiều nguồn). Đây là câu hỏi "đoạn đúng có vào được prompt không".
+- **MRR (Mean Reciprocal Rank):** trung bình của `1 / hạng` của chunk liên quan đầu tiên, tính 0 nếu không có trong top-k. Đây là câu hỏi "đoạn đúng đứng cao đến đâu" — quan trọng vì chunk đứng đầu được model chú ý nhiều hơn, và vì bạn muốn giảm k mà không mất recall.
+
+```ts
+// eval-retrieval.ts
+import type { Candidate, Principal } from "./search";
+
+export interface GoldenItem {
+  id: string;
+  kind: "answerable" | "unanswerable" | "forbidden";
+  question: string;
+  principal: Principal;
+  evidence?: { source: string; quote: string }[];
+}
+
+const norm = (s: string) => s.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+
+const isRelevant = (c: Candidate, item: GoldenItem) =>
+  (item.evidence ?? []).some((e) => c.sourceUri === e.source && norm(c.content).includes(norm(e.quote)));
+
+export function scoreRetrieval(items: GoldenItem[], results: Map<string, Candidate[]>, k: number) {
+  let answerable = 0, hits = 0, reciprocalRanks = 0, leaks = 0;
+  for (const item of items) {
+    const top = (results.get(item.id) ?? []).slice(0, k);
+    if (item.kind === "forbidden") {
+      if (top.some((c) => isRelevant(c, item))) leaks++; // phải luôn bằng 0
+      continue;
+    }
+    if (item.kind !== "answerable") continue;
+    answerable++;
+    const first = top.findIndex((c) => isRelevant(c, item));
+    if (first !== -1) {
+      hits++;
+      reciprocalRanks += 1 / (first + 1);
+    }
+  }
+  return { [`recall@${k}`]: hits / answerable, [`mrr@${k}`]: reciprocalRanks / answerable, leaks };
+}
+```
+
+Chạy hàm này cho từng *tầng* của pipeline — chỉ dense, chỉ full-text, hybrid sau RRF, sau rerank — chứ không chỉ cho kết quả cuối. Khi một chỉ số tụt, bạn biết ngay tầng nào gây ra.
+
+### Đo câu trả lời: faithfulness và LLM-as-judge
+
+Retrieval tốt chưa đủ; model vẫn có thể diễn giải sai hoặc thêm thắt. Với phần generation, mình đo hai thứ:
+
+- **Faithfulness (groundedness):** câu trả lời có bám vào context không. Định nghĩa của [Ragas](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness/) khá dễ hiểu: tách câu trả lời thành các khẳng định, đếm số khẳng định được context hỗ trợ, chia cho tổng số khẳng định. Một câu trả lời có 4 ý mà 1 ý không có trong context thì faithfulness = 0,75.
+- **Correctness:** câu trả lời có chứa các `facts` mong đợi trong golden set không, và với câu `unanswerable` thì có từ chối đúng không.
+
+Cả hai thường được chấm bằng một LLM khác — LLM-as-judge. Cách này mở rộng được, nhưng có những thiên lệch đã được ghi nhận, ví dụ trong nghiên cứu MT-Bench của Zheng và cộng sự (2023): thiên vị vị trí khi so sánh hai câu trả lời, thiên vị câu trả lời dài hơn, và thiên vị câu trả lời do chính model đó viết. Cách mình giảm rủi ro:
+
+- **Chấm ở mức nhỏ, nhị phân.** "Khẳng định này có được đoạn context này hỗ trợ không: có/không" đáng tin hơn nhiều so với "chấm câu trả lời này từ 1 đến 10".
+- **Hiệu chỉnh với người thật.** Lấy 30–50 mẫu, cho người chấm độc lập, đo tỉ lệ đồng thuận với judge. Đồng thuận thấp thì sửa prompt chấm trước khi tin bất kỳ con số nào.
+- **Cố định judge.** Model, phiên bản, prompt chấm đều được ghi lại cùng kết quả. Đổi judge là đổi thước đo — không so điểm giữa hai judge khác nhau.
+- **Không chỉ chấm end-to-end.** Điểm câu trả lời cuối thấp không cho biết lỗi ở chunking, retrieval, rerank hay prompt. Chỉ số retrieval ở trên mới chỉ ra chỗ hỏng.
+
+### Regression test khi đổi chunking hoặc model
+
+Bộ đánh giá chỉ có giá trị khi nó chạy tự động. Mình chia làm hai nhịp:
+
+- **Mỗi pull request** chạm vào chunker, cấu hình embedding, câu SQL hay prompt: chạy đánh giá retrieval trên một database được ingest lại từ một snapshot tài liệu cố định. Rẻ — chỉ tốn embedding cho câu hỏi và vài truy vấn. Fail nếu `leaks > 0`, hoặc recall@k giảm quá ngưỡng so với baseline được commit trong repo.
+- **Hằng đêm hoặc trước release:** chạy cả generation và LLM-as-judge, vì tốn tiền và chậm hơn.
+
+Một lưu ý về ngưỡng: với 80 câu hỏi `answerable`, mỗi câu là 1,25 điểm phần trăm. Một thay đổi làm recall "giảm 1,25%" có thể chỉ là một câu hỏi lật kết quả. Hãy xem danh sách câu hỏi bị lật thay vì chỉ nhìn con số tổng, và đặt ngưỡng fail theo số câu (ví dụ: không quá 2 câu trước đây đúng nay sai).
+
+## Ví dụ thực tế: Q&A trên handbook và tài liệu kỹ thuật nội bộ
+
+Ghép tất cả lại trên một bối cảnh cụ thể: một công ty khoảng 400 người, handbook nhân sự viết bằng tiếng Việt, tài liệu kỹ thuật (runbook, ADR, hướng dẫn deploy) phần lớn bằng tiếng Anh. Tổng cộng khoảng 1.800 file Markdown export từ Confluence và repo docs, cỡ 3,1 triệu token sau khi làm sạch. Ba nhóm quyền: `all` (mọi người), `eng` (kỹ sư), `hr` (phòng nhân sự).
+
+**Có cần RAG không?** 3,1 triệu token vượt context 1 triệu token, và người ở nhóm `all` không được thấy tài liệu `hr`. Hai lý do đó đủ để chọn RAG, chưa cần bàn đến chi phí.
+
+**Ước lượng kích thước.** Nếu trung bình mỗi chunk 400 token, 3,1 triệu token cho khoảng 7.750 chunk. Embedding 1024 chiều ở dạng `halfvec` chiếm 7.750 × 2.056 byte ≈ 16 MB (dạng `vector` là ≈ 32 MB). Với quy mô này, toàn bộ index nằm gọn trong RAM của một instance Postgres nhỏ — bạn không cần một vector database riêng, và cũng chưa cần lo tối ưu HNSW.
+
+**Đánh giá theo từng tầng.** Để minh hoạ cách đọc số liệu, dưới đây là một bộ đánh giá đồ chơi gồm 6 câu hỏi `answerable`. Mỗi ô là hạng của chunk liên quan đầu tiên ở từng tầng (— là không có trong top 10):
+
+| Câu hỏi | Dense | Full-text | Hybrid (RRF) | Hybrid + rerank |
+| --- | --- | --- | --- | --- |
+| Q1. Nhân viên thử việc có phép năm không? | 2 | 5 | 1 | 1 |
+| Q2. Lỗi VPN-403 xử lý sao? | 12 | 1 | 2 | 1 |
+| Q3. Quy trình deploy hotfix? (tài liệu tiếng Anh) | 1 | — | 1 | 1 |
+| Q4. Mức hỗ trợ học tập mỗi năm? | 7 | 3 | 4 | 2 |
+| Q5. Ai duyệt chi phí trên 50 triệu? | 4 | 9 | 3 | 1 |
+| Q6. Trực on-call được bù thế nào? | — | — | — | — |
+
+Từ bảng trên, tự tính được:
+
+| Tầng | recall@5 | MRR@5 | recall@3 |
+| --- | --- | --- | --- |
+| Dense | 3/6 = 0,50 | 0,29 | 2/6 = 0,33 |
+| Full-text | 3/6 = 0,50 | 0,26 | 2/6 = 0,33 |
+| Hybrid (RRF) | 5/6 = 0,83 | 0,51 | 4/6 = 0,67 |
+| Hybrid + rerank | 5/6 = 0,83 | 0,75 | 5/6 = 0,83 |
+
+Ví dụ MRR@5 của hybrid: (1 + 1/2 + 1 + 1/4 + 1/3 + 0) / 6 = 3,083 / 6 ≈ 0,51. Những điều bảng này nói lên — và cũng là những gì mình thực sự gặp khi làm với dữ liệu thật:
+
+- **Dense và full-text có cùng recall nhưng hỏng ở những câu khác nhau.** Dense trượt Q2 (mã lỗi) và Q4; full-text trượt Q3 (hỏi tiếng Việt, tài liệu tiếng Anh) và Q5. Đó chính là điều kiện để hybrid có ích. Nếu hai nhánh cùng hỏng một chỗ, gộp lại cũng không cứu được.
+- **Reranker không tăng recall@5, nhưng tăng MRR rõ rệt.** Nó chỉ sắp xếp lại những gì đã được lấy về. Giá trị thật của nó thể hiện ở cột recall@3: nếu bạn muốn đưa ít chunk vào prompt (rẻ hơn, ít nhiễu hơn), reranker giúp đoạn đúng không bị rơi khỏi top.
+- **Q6 hỏng ở mọi tầng, và không tầng nào là thủ phạm.** Mở tài liệu ra mới thấy bảng phụ cấp on-call được dán vào Confluence dưới dạng *ảnh chụp* bảng tính — không có chữ nào để index. Không tuning retrieval nào sửa được lỗi parse. Nếu chỉ nhìn điểm end-to-end, bạn sẽ mất cả buổi chỉnh prompt cho một câu hỏi mà câu trả lời không hề tồn tại trong index.
+
+Sáu câu hỏi đương nhiên không đủ để ra quyết định; với dữ liệu thật hãy dùng ít nhất vài chục câu và nhìn vào từng câu bị lật. Nhưng cách tính và cách đọc thì giữ nguyên.
+
+**Câu hỏi `forbidden`.** Với golden set thật, mình thêm khoảng chục câu hỏi về lương thưởng, kỷ luật, đánh giá hiệu suất, được hỏi dưới danh nghĩa người dùng nhóm `all`. Chỉ số `leaks` phải bằng 0 ở mọi tầng — và mình cố tình chạy thêm một lần với điều kiện quyền bị gỡ khỏi câu SQL để chắc rằng bài kiểm tra *có thể* fail. Một bài test chưa bao giờ đỏ là một bài test chưa được kiểm chứng.
+
+## Những lỗi hay gặp
+
+**Chunk cắt ngang bảng hoặc code.** Nửa bảng mất header thì các con số thành vô nghĩa; nửa hàm thì model tự "viết tiếp" bằng trí tưởng tượng. Coi cả hai là khối nguyên tử, và lặp lại header khi buộc phải tách bảng.
+
+**Trộn embedding của nhiều phiên bản model.** Ai đó đổi model trong config, tài liệu mới dùng model mới, chunk cũ giữ vector cũ. Không có lỗi nào — tài liệu cũ chỉ lặng lẽ biến mất khỏi kết quả. Lưu `embedding_model` theo từng chunk, đưa nó vào `content_hash`, và cảnh báo khi `SELECT embedding_model, count(*) FROM chunks GROUP BY 1` trả về nhiều hơn một dòng ngoài đợt migrate có kế hoạch.
+
+**Top-k quá nhỏ.** Năm ứng viên mỗi nhánh thì reranker không có gì để chọn, còn `LIMIT 100` với `hnsw.ef_search` mặc định 40 chỉ trả về tối đa 40 dòng. Lấy rộng ở retrieval, thu hẹp ở rerank, để bộ đánh giá quyết định số chunk đưa vào prompt.
+
+**Rò tài liệu giữa các tenant hoặc nhóm quyền.** Lọc sau khi tìm kiếm hoặc lọc bằng lời dặn trong prompt, cache câu trả lời mà cache key thiếu tenant và nhóm quyền, log toàn bộ context vào nơi ai cũng đọc được. Lọc trong SQL, thêm RLS, giữ câu hỏi `forbidden` trong golden set.
+
+**Post-filtering âm thầm với index xấp xỉ.** `WHERE` đặt đúng chỗ nhưng HNSW lọc sau khi quét, nên tenant nhỏ gần như không nhận được gì. Bật iterative scan, đọc `EXPLAIN`, và thêm một câu hỏi golden cho tenant nhỏ nhất của bạn.
+
+**Chỉ đánh giá câu trả lời end-to-end.** Điểm đúng giảm từ 0,82 xuống 0,74 không nói gì về nguyên nhân. Đo retrieval theo từng tầng, đo faithfulness riêng, và đọc từng câu bị lật.
+
+**Quên chuẩn hoá Unicode.** Văn bản tiếng Việt có thể ở dạng NFC hoặc NFD; hai chuỗi trông giống hệt nhau vẫn không khớp trong `tsvector`. Chuẩn hoá về NFC cả lúc ingest lẫn lúc truy vấn.
+
+## Đọc thêm
+
+- [pgvector README](https://github.com/pgvector/pgvector) — HNSW, `halfvec`, filtering, iterative index scans, hybrid search.
+- [PostgreSQL: Controlling Text Search](https://www.postgresql.org/docs/current/textsearch-controls.html) — `websearch_to_tsquery`, `ts_rank_cd` và giới hạn của chúng.
+- [Anthropic — Introducing Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval) — contextual embeddings, contextual BM25 và reranking.
+- [Cormack, Clarke, Büttcher — Reciprocal Rank Fusion (SIGIR 2009)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — bài báo gốc của RRF.
+- [Claude API — Search results](https://platform.claude.com/docs/en/build-with-claude/search-results) — content block `search_result` và citations.
+- [Chroma — Context Rot](https://research.trychroma.com/context-rot) — vì sao context dài không miễn phí.
+- [Ragas — Faithfulness](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/faithfulness/) — định nghĩa chỉ số faithfulness.
+
+## Tóm tắt
+
+<Checklist>
+
+- Chưa vội dựng RAG: kho nhỏ, ít thay đổi, cùng quyền thì long context kèm prompt caching đơn giản hơn. RAG thắng khi kho lớn, thay đổi thường xuyên, quyền khác nhau và cần trích dẫn.
+- Parse về Markdown giữ cấu trúc, chunk theo heading, coi bảng và code là khối nguyên tử, thêm header tất định và (nếu đáng) ngữ cảnh do LLM viết.
+- Lưu `embedding_model` cùng mỗi chunk, dùng `input_type` query/document, đổi model theo kiểu blue-green kèm đánh giá.
+- Hybrid search: full-text bắt token chính xác, vector bắt ý nghĩa, gộp bằng RRF (k = 60) ngay trong một câu SQL.
+- Lọc tenant và quyền trong SQL, trước mọi bước xếp hạng; bật iterative scan, đặt `hnsw.ef_search` không nhỏ hơn số ứng viên cần lấy, thêm RLS làm lưới an toàn.
+- Rerank vài chục ứng viên xuống vài chunk, có timeout và fallback; dùng điểm rerank với ngưỡng rút ra từ bộ đánh giá.
+- Prompt chỉ chứa văn bản gốc, bật citations, cho phép tường minh câu trả lời "không biết", và theo dõi tỉ lệ câu trả lời không có trích dẫn.
+- Golden set ghi bằng chứng theo nguồn và đoạn trích, gồm câu `answerable`, `unanswerable` và `forbidden`; đo recall@k và MRR theo từng tầng, chạy như regression test mỗi khi đổi chunking, model hay prompt.
+
+</Checklist>

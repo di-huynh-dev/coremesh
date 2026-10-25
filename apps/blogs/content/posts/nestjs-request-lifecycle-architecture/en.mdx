@@ -1,0 +1,949 @@
+---
+title: "NestJS in production: the request lifecycle, dependency injection and module boundaries that scale"
+excerpt: "What NestJS does under the hood — the order of middleware, guards, interceptors, pipes and filters; DI, scopes and durable providers; dynamic modules — and how to use it to structure a large API as a clean modular monolith with a consistent error model, request context and graceful shutdown."
+---
+
+<Lead>NestJS is easy to start with: generate a module, add a controller, inject a service, ship. The hard part shows up about a year later, when the codebase has thirty modules, every controller calls services from other modules, `forwardRef` is everywhere, one `REQUEST`-scoped provider makes half the app re-instantiate on every request, and errors reach the client as Nest's JSON one day and a Prisma stack trace the next. This post goes into what NestJS actually does under the hood — the request lifecycle, dependency injection, scopes, dynamic modules — and then uses that to build an e-commerce API as a modular monolith: clear module boundaries, a consistent error model, request context without REQUEST scope, and shutdowns that don't drop requests.</Lead>
+
+## Version context: NestJS 12 and Express 5
+
+Everything in this post was checked against NestJS 12.2 (the latest on npm at the time of writing). A few recent changes directly affect what follows:
+
+- **NestJS 12 shipped at the end of August 2026.** The core packages are now ESM; CommonJS projects keep working through Node's `require(esm)`, so you aren't forced to switch formats. It requires Node.js 20.19+ or 22.12+. `nest new` now asks whether you want CommonJS or ESM, and new ESM projects default to Vitest. Details are in the [migration guide](https://docs.nestjs.com/migration-guide).
+- **Express 5 has been the default adapter since NestJS 11** (early 2025), and `@nestjs/platform-express` 12 still uses Express 5. The change most people trip over is route syntax: wildcards must be named (`@Get('files/*path')`), optional wildcards use braces (`'docs/{*path}'`), and global middleware is written `forRoutes('{*splat}')`. The default query parser is now `simple`, so `?items[]=1` no longer becomes an array — call `app.set('query parser', 'extended')` on a `NestExpressApplication` if you rely on that.
+- **Standard Schema validation (v12).** `@Body()`, `@Query()` and `@Param()` accept a `schema` option with any library that implements [Standard Schema](https://standardschema.dev/) (Zod, Valibot, ArkType), together with a built-in `StandardSchemaValidationPipe` in `@nestjs/common`. `ValidationPipe` + class-validator remains fully supported.
+- **`errorCode` on `HttpException` (v12)**: a machine-readable error code that is serialized into the response body.
+- **Lifecycle hooks are called by component hierarchy level (v12)**: the order of `onModuleInit` and shutdown hooks between related providers may differ from v11. If you have logic that depends on initialization order, re-test it when upgrading.
+
+<Callout>
+  **About ESM:** if your project is ESM, every relative import needs a `.js` extension (`./orders.service.js`). The code in this post omits the extension for brevity — in a CommonJS project you write it exactly as shown.
+</Callout>
+
+## The request lifecycle: where a request actually goes
+
+This is the exact order from NestJS's [request lifecycle documentation](https://docs.nestjs.com/faq/request-lifecycle). I'd recommend memorizing it, because nearly every "why doesn't my guard see the validated body?" or "why doesn't my filter catch this?" question is answered by this list:
+
+1. **Middleware** — globally bound middleware first, then module-bound middleware. Middleware from `@Global()` modules runs first, then the root module, then other modules ordered by their distance from the root.
+2. **Guards** — global → controller → route.
+3. **Interceptors (before the handler)** — global → controller → route.
+4. **Pipes** — global → controller → route → route-parameter pipes.
+5. **Controller (handler)** → service.
+6. **Interceptors (after the handler)** — reversed: route → controller → global.
+7. **Exception filters** — route → controller → global.
+8. Response.
+
+<Figure src="/blog/nestjs-request-lifecycle-architecture-lifecycle.svg" alt="Diagram of the NestJS request lifecycle: middleware, guards, interceptors before the handler, pipes, handler, interceptors after the handler; an error at any step goes straight to the exception filters" caption="A request passes through each enhancer layer in a fixed order. Interceptors wrap the handler, so they run twice; an uncaught error anywhere short-circuits to the exception filters." />
+
+A few important things live between the lines:
+
+- **Interceptors wrap the handler** first-in, last-out, like layers of an onion. A global interceptor is the outermost layer: it sees the request first and the response last. That's why a timing interceptor belongs at the global level.
+- **Guards run before pipes.** A guard sees the raw, *unvalidated* request. If a guard needs to read the `body` (rarely a good idea), it must check the types itself.
+- **Parameter pipes run in reverse order**: the last parameter is processed first and the first parameter last. Rarely matters unless your pipes have side effects.
+- **Filters are the only component that doesn't resolve global first.** Nest looks for a filter from the lowest level: route, then controller, then global. Whichever filter catches the exception, that's where it stops — the docs are explicit that exceptions can't be passed from filter to filter. To reuse logic, use inheritance between filter classes.
+- **An uncaught exception skips the rest of the lifecycle** and goes straight to the filters. An error you've already caught with `try/catch` never reaches a filter.
+- **Exceptions thrown in middleware only reach global filters**, because when middleware runs, Nest hasn't selected a route handler yet, so it doesn't know about controller- or route-level filters.
+
+### Binding enhancers at three levels
+
+In practice I register global enhancers through DI tokens (`APP_GUARD`, `APP_INTERCEPTOR`, `APP_PIPE`, `APP_FILTER`) rather than `app.useGlobalGuards()` in `main.ts`. The reason: enhancers registered in `main.ts` live outside any module, so they can't inject dependencies, and they're also missing when you build the app in a test with `Test.createTestingModule`.
+
+```ts
+// app.module.ts
+import { MiddlewareConsumer, Module, NestModule, StandardSchemaValidationPipe } from '@nestjs/common';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
+
+@Module({
+  imports: [OrdersModule, InventoryModule, PaymentsModule],
+  providers: [
+    { provide: APP_GUARD, useClass: JwtAuthGuard }, // global guard
+    { provide: APP_INTERCEPTOR, useClass: TimingInterceptor }, // outermost layer
+    { provide: APP_PIPE, useValue: new StandardSchemaValidationPipe() }, // global pipe
+    { provide: APP_FILTER, useClass: ProblemDetailsFilter }, // global filter, last line of defense
+  ],
+})
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Express 5: wildcards must be named; '{*splat}' also matches the root path
+    consumer.apply(RequestLoggerMiddleware).forRoutes('{*splat}');
+  }
+}
+
+// orders.controller.ts
+@Controller('orders')
+@UseGuards(ScopesGuard) // runs after JwtAuthGuard
+@UseInterceptors(IdempotencyInterceptor) // sits inside TimingInterceptor
+export class OrdersController {
+  constructor(private readonly orders: OrdersService) {}
+
+  @Post()
+  @RequireScopes(['orders:write'])
+  @UseInterceptors(AuditInterceptor) // innermost layer, closest to the handler
+  place(@Body({ schema: placeOrderSchema }) input: PlaceOrderInput) {
+    return this.orders.placeOrder(input);
+  }
+}
+```
+
+For `POST /orders`, the order is: `RequestLoggerMiddleware` → `JwtAuthGuard` → `ScopesGuard` → `TimingInterceptor` (in) → `IdempotencyInterceptor` (in) → `AuditInterceptor` (in) → `StandardSchemaValidationPipe` → `place()` → `AuditInterceptor` (out) → `IdempotencyInterceptor` (out) → `TimingInterceptor` (out). If `place()` throws, the interceptors still see the error in the RxJS stream (and can map it), and then `ProblemDetailsFilter` receives it.
+
+One detail about `APP_*`: whichever module you declare it in, the enhancer is global. Declare it in the module that defines the enhancer (usually `AppModule` or a `CoreModule`) rather than scattering them around.
+
+## Middleware, guard, interceptor, pipe, filter: which one for what
+
+These five overlap enough that people new to Nest regularly pick the wrong one. The question I use to sort them is: *what does this component need to see, and what is it allowed to decide?*
+
+| | What it can see | What it can decide | Typical use | Don't use it for |
+| --- | --- | --- | --- | --- |
+| **Middleware** | Raw `req`, `res`, `next`; doesn't know which handler will run | Call `next()` or not, set headers, end the response early | Request logging, CORS, security headers, attaching a correlation ID, body parsing | Authorization (no handler, no metadata) |
+| **Guard** | `ExecutionContext`: handler, class, metadata via `Reflector` | Return `true`/`false` (or throw) — proceed or not | Authentication, role/scope checks, per-route feature flags | Transforming data, business logic |
+| **Interceptor** | `ExecutionContext` + the handler's result stream (RxJS) | Run logic before/after, transform the result or error, replace the result entirely (cache) | Timing, contextual logging, response mapping, timeouts, idempotency, caching | Authorization (guards already ran), input validation |
+| **Pipe** | Each argument's value + `ArgumentMetadata` (type, decorator, schema) | Transform or reject an input value | DTO validation, parsing an `id`, type coercion, defaults | Hitting the database for business checks (that's the service's job) |
+| **Exception filter** | The exception + `ArgumentsHost` | Write the error response | A consistent error model, mapping domain errors to HTTP, logging 5xx | Swallowing errors to "let it through", business recovery logic |
+
+Two rules of thumb I repeat in code review:
+
+- **If you need route metadata** (`@RequireScopes`, `@Public`), it's a guard or an interceptor — middleware can't read it.
+- **If you need to run both before and after the handler**, it's an interceptor. Middleware can approximate it by listening to the response's `finish` event, but it never sees the handler's return value or the mapped error, and it doesn't work for non-HTTP transports.
+
+## Dependency injection under the hood
+
+At startup, Nest walks the module tree, reads each provider's metadata (constructor parameter types via `emitDecoratorMetadata`, or tokens declared with `@Inject()`), and builds a dependency graph per module. Every provider is identified by an **injection token** — a class, a string or a symbol. When a class needs a dependency, Nest looks for that token in the module itself, then among the providers *exported* by the modules it imports, then in global modules. If it can't find it, it fails at boot — which is a big plus: wiring errors never wait for a request to surface.
+
+### Tokens and custom providers
+
+TypeScript interfaces are erased at compile time, so they can't be tokens. You have two options: an **abstract class** (both the contract and the token; injecting it needs no `@Inject()`) or a **symbol** (for things that aren't classes, like config or a library client). The docs recommend symbols over strings because symbols never collide by accident. Four kinds of custom provider cover almost every need:
+
+```ts
+// orders/domain/order.repository.ts — a "port": an abstract class as the token
+export abstract class OrderRepository {
+  abstract findById(id: string): Promise<Order | null>;
+  abstract save(order: Order): Promise<void>;
+}
+
+// shared/tokens.ts
+export const CLOCK = Symbol('CLOCK');
+export const REDIS = Symbol('REDIS');
+export interface Clock { now(): Date }
+
+// orders.module.ts
+import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createClient } from 'redis';
+
+@Module({
+  providers: [
+    // useClass: the token is an abstract class, the implementation is chosen here
+    { provide: OrderRepository, useClass: PrismaOrderRepository },
+    // useValue: a constant, an existing object, or a mock in tests
+    { provide: CLOCK, useValue: { now: () => new Date() } satisfies Clock },
+    // useFactory: needs other dependencies or async initialization
+    {
+      provide: REDIS,
+      inject: [ConfigService],
+      useFactory: async (config: ConfigService<Env, true>) => {
+        const client = createClient({ url: config.get('REDIS_URL', { infer: true }) });
+        await client.connect(); // Nest waits for this before creating dependents
+        return client;
+      },
+    },
+    // useExisting: an alias — two tokens, one instance
+    { provide: 'LegacyOrderRepo', useExisting: OrderRepository },
+  ],
+})
+export class OrdersModule {}
+
+// The consumer
+@Injectable()
+export class OrdersService {
+  constructor(
+    private readonly orders: OrderRepository, // abstract class: no @Inject needed
+    @Inject(CLOCK) private readonly clock: Clock, // symbol: @Inject required
+  ) {}
+}
+```
+
+`useFactory` is the only one of the four that can be `async`: Nest awaits the factory before instantiating anything that depends on it. That's the right way to open a database connection or load secrets at boot — instead of kicking it off in a constructor and hoping it finishes before the first request.
+
+### Scopes: DEFAULT, REQUEST, TRANSIENT
+
+From the [injection scopes documentation](https://docs.nestjs.com/fundamentals/injection-scopes):
+
+- **DEFAULT (singleton):** one instance for the whole application, living as long as the application. This is the default and should be the choice for 95% of providers.
+- **REQUEST:** a new instance for each request, garbage-collected once the request is done.
+- **TRANSIENT:** every consumer that injects it gets its own dedicated instance; nothing is shared.
+
+What many people don't realize is that **REQUEST scope bubbles up the dependency chain**. If `OrdersController` → `OrdersService` → `OrderRepository` → `TenantContext`, and only `TenantContext` is REQUEST-scoped, then `OrderRepository`, `OrdersService` and `OrdersController` *also become* REQUEST-scoped — a singleton can't hold a reference to something that changes per request. On every request, Nest rebuilds that whole branch. TRANSIENT doesn't bubble that way: a singleton that injects a transient provider stays a singleton.
+
+The docs say a "properly designed" application using request-scoped providers shouldn't see latency rise by more than about 5%. That holds when the affected branch is small. The problem is that in a real codebase, one REQUEST-scoped provider at the bottom of the tree (a logger that "knows the request ID", a repository that "knows the tenant") drags along almost every controller and service. Beyond the instantiation and GC cost, you lose subtler things: lifecycle hooks like `onModuleInit` aren't called for REQUEST-scoped providers, they can't be used from cron jobs or message consumers that have no request, and debugging "which instance holds which state" gets much harder.
+
+### Durable providers for multi-tenancy
+
+If you genuinely need a dependency that differs per tenant (a connection pool per tenant, say), **durable providers** let requests from the same tenant share a DI sub-tree instead of rebuilding one per request:
+
+```ts
+// tenant-context-id.strategy.ts
+import { ContextId, ContextIdFactory, ContextIdStrategy, HostComponentInfo } from '@nestjs/core';
+import type { Request } from 'express';
+
+const tenantTrees = new Map<string, ContextId>();
+
+export class AggregateByTenantContextIdStrategy implements ContextIdStrategy<Request> {
+  attach(contextId: ContextId, request: Request) {
+    const tenantId = request.headers['x-tenant-id'];
+    if (typeof tenantId !== 'string') return undefined; // no tenant: default behavior
+
+    let tenantSubTreeId = tenantTrees.get(tenantId);
+    if (!tenantSubTreeId) {
+      tenantSubTreeId = ContextIdFactory.create();
+      tenantTrees.set(tenantId, tenantSubTreeId);
+    }
+    return {
+      // durable providers use the tenant's tree; plain REQUEST providers stay per request
+      resolve: (info: HostComponentInfo) => (info.isTreeDurable ? tenantSubTreeId : contextId),
+      payload: { tenantId }, // what @Inject(REQUEST) receives inside the durable tree
+    };
+  }
+}
+
+// main.ts — register before any request arrives
+ContextIdFactory.apply(new AggregateByTenantContextIdStrategy());
+
+// tenant-data-source.ts
+@Injectable({ scope: Scope.REQUEST, durable: true })
+export class TenantDataSource {
+  constructor(@Inject(REQUEST) private readonly ctx: { tenantId: string }) {}
+}
+```
+
+The docs themselves warn that this strategy isn't ideal for applications with many tenants — the map above keeps one DI tree per tenant forever. With thousands of tenants, I'd use a singleton that holds a bounded (LRU) pool cache and reads the current tenant from request context (the AsyncLocalStorage section below), rather than asking DI to do that job.
+
+### Circular dependencies and forwardRef are a design smell
+
+Nest provides `forwardRef()` to break cycles: `OrdersModule` imports `forwardRef(() => PaymentsModule)` and vice versa, or `@Inject(forwardRef(() => PaymentsService))` on both ends. It *works*, but the [docs](https://docs.nestjs.com/fundamentals/circular-dependency) also say the order of instantiation is then indeterminate, so your code must not depend on which constructor runs first; cycles involving REQUEST-scoped providers can even produce `undefined` dependencies.
+
+To me, every `forwardRef` between two feature modules is an unanswered design question: *who actually depends on whom?* The answer is usually one of three:
+
+- **One direction is a command, the other is a reaction.** `orders` calls `payments.authorize()` (a command: synchronous, needs the result). `payments` wants to tell `orders` the money arrived — that's a reaction, so it travels as a domain event, with no reverse import.
+- **A third concept is stuck between the two modules.** Extract it into its own module that both depend on.
+- **The two modules are really one.** If neither can live without the other, merge them.
+
+Another often-missed source of cycles is **barrel files** (`index.ts`). The docs advise against barrels for module and provider classes, and especially against importing a sibling file through its own directory's barrel. I still use one `index.ts` as the "public API" of each feature module (see module boundaries below), but only code *outside* the module imports through it.
+
+## Dynamic modules: forRoot, forRootAsync and ConfigurableModuleBuilder
+
+A static module takes no parameters. When a module needs configuration from the outside — a payment gateway client needs an API key, a cache module needs a TTL — you use a **dynamic module**: a static method that returns a `DynamicModule` object. The `@nestjs/*` packages follow a convention: `register()` configures the module for the calling module only, `forRoot()` configures it once for the whole app, and `forFeature()` adjusts an existing configuration per module; each has an `Async` variant that resolves its configuration through DI.
+
+Hand-writing `forRoot` / `forRootAsync` with all three `useFactory` / `useClass` / `useExisting` variants is long and error-prone. `ConfigurableModuleBuilder` generates it for you:
+
+```ts
+// payments/gateway/payment-gateway.module-definition.ts
+import { ConfigurableModuleBuilder } from '@nestjs/common';
+
+export interface PaymentGatewayOptions {
+  driver: 'stripe' | 'fake';
+  secretKey?: string;
+  timeoutMs: number;
+}
+
+export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN: GATEWAY_OPTIONS } =
+  new ConfigurableModuleBuilder<PaymentGatewayOptions>()
+    .setClassMethodName('forRoot') // generates forRoot()/forRootAsync() instead of register()
+    .build();
+
+// payments/gateway/payment-gateway.module.ts — an infrastructure module with options
+@Module({
+  providers: [
+    {
+      provide: PAYMENT_GATEWAY,
+      inject: [GATEWAY_OPTIONS],
+      useFactory: (opts: PaymentGatewayOptions) =>
+        opts.driver === 'stripe' ? new StripeGateway(opts.secretKey!, opts.timeoutMs) : new FakeGateway(),
+    },
+  ],
+  exports: [PAYMENT_GATEWAY],
+})
+export class PaymentGatewayModule extends ConfigurableModuleClass {}
+
+// payments/payments.module.ts — the feature module uses it internally
+@Module({
+  imports: [
+    PaymentGatewayModule.forRootAsync({
+      inject: [ConfigService], // ConfigModule is global, so no imports needed
+      useFactory: (config: ConfigService<Env, true>) => ({
+        driver: config.get('PAYMENTS_DRIVER', { infer: true }),
+        secretKey: config.get('STRIPE_SECRET_KEY', { infer: true }),
+        timeoutMs: 5_000,
+      }),
+    }),
+  ],
+  providers: [{ provide: PaymentsApi, useClass: PaymentsService }],
+  exports: [PaymentsApi], // export only the port; the gateway is an internal detail of payments
+})
+export class PaymentsModule {}
+```
+
+Besides `ConfigurableModuleClass` and the options token, `build()` also returns `OPTIONS_TYPE` / `ASYNC_OPTIONS_TYPE` so you can override `forRoot` when you need extra logic, and `setExtras()` handles options that control the module itself (such as `isGlobal`) without leaking into the injected options object. The generated `forRootAsync` supports `useFactory` / `useClass` / `useExisting` along with `imports` and `inject`.
+
+A note from NestJS 11 onward: dynamic modules are compared by **object reference**, no longer by a hash of their metadata. If you call `PaymentGatewayModule.forRoot(...)` twice in two places with the same arguments, you get two instances. To share one, assign the result to a variable and import that variable.
+
+## Config validated at boot
+
+A missing or malformed environment variable should make the application **die at startup**, not make the thousandth request fail at 3 a.m. `@nestjs/config` supports this, and since v12, `validationSchema` accepts any Standard Schema (previously only Joi, or a hand-written `validate` function):
+
+```ts
+// config/env.ts
+import { z } from 'zod';
+
+export const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    DATABASE_URL: z.url(),
+    REDIS_URL: z.url(),
+    PAYMENTS_DRIVER: z.enum(['stripe', 'fake']).default('fake'),
+    STRIPE_SECRET_KEY: z.string().startsWith('sk_').optional(),
+    SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).default(10_000),
+  })
+  .refine((env) => env.PAYMENTS_DRIVER !== 'stripe' || !!env.STRIPE_SECRET_KEY, {
+    message: 'STRIPE_SECRET_KEY is required when PAYMENTS_DRIVER=stripe',
+    path: ['STRIPE_SECRET_KEY'],
+  });
+
+export type Env = z.infer<typeof envSchema>;
+
+// app.module.ts
+ConfigModule.forRoot({
+  isGlobal: true, // an infrastructure module: global is fine here
+  cache: true,
+  validationSchema: envSchema, // v12; on v11 use: validate: (raw) => envSchema.parse(raw)
+});
+
+// Anywhere: types inferred from the schema, PORT is already a number
+constructor(private readonly config: ConfigService<Env, true>) {}
+const port = this.config.get('PORT', { infer: true });
+```
+
+Three habits go with this: never read `process.env` directly outside this file (so every variable goes through the schema); no defaults for secrets (missing means die); and for interdependent settings like `PAYMENTS_DRIVER`/`STRIPE_SECRET_KEY`, put the constraint in the schema rather than in `if`s scattered across the code.
+
+## Validation: ValidationPipe + class-validator or Standard Schema
+
+NestJS 12 gives you two official paths. Here is the same order payload written both ways:
+
+```ts
+// Option 1: class-validator + ValidationPipe — the DTO is a class
+import { Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsInt, IsString, IsUUID, Min, ValidateNested } from 'class-validator';
+
+class OrderLineDto {
+  @IsString() sku!: string;
+  @IsInt() @Min(1) quantity!: number;
+}
+
+export class PlaceOrderDto {
+  @IsUUID() customerId!: string;
+  @IsString() paymentMethodId!: string;
+  @ValidateNested({ each: true }) @Type(() => OrderLineDto)
+  @ArrayMinSize(1) @ArrayMaxSize(50)
+  lines!: OrderLineDto[];
+}
+
+// { provide: APP_PIPE, useValue: new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }) }
+
+// Option 2: Standard Schema (Zod) — the schema is a value, the type is inferred
+import { z } from 'zod';
+
+export const placeOrderSchema = z.strictObject({
+  customerId: z.uuid(),
+  paymentMethodId: z.string().min(1),
+  lines: z
+    .array(z.strictObject({ sku: z.string().min(1), quantity: z.number().int().min(1) }))
+    .min(1)
+    .max(50),
+});
+export type PlaceOrderInput = z.infer<typeof placeOrderSchema>;
+
+// Controller: @Body({ schema: placeOrderSchema }) input: PlaceOrderInput
+// Global:     { provide: APP_PIPE, useValue: new StandardSchemaValidationPipe() }
+```
+
+| | class-validator + `ValidationPipe` | Standard Schema (`schema` + `StandardSchemaValidationPipe`) |
+| --- | --- | --- |
+| Source of the TypeScript type | The class, declared alongside the decorators | Inferred from the schema, a single source |
+| Unknown properties | `whitelist` / `forbidNonWhitelisted` on the pipe | Decided by the schema (`z.object` strips, `z.strictObject` rejects) |
+| Type coercion | `transform: true` + class-transformer | Declared in the schema (`z.coerce`) |
+| Sharing with the frontend | Drags in decorators and `reflect-metadata` | Easy to share the schema in a monorepo |
+| OpenAPI | Long-standing integration via `@nestjs/swagger` | Needs a schema-to-OpenAPI step — check the `@nestjs/swagger` version you use |
+| Depends on `emitDecoratorMetadata` | Yes | Not for validation |
+
+How do I choose? A codebase with hundreds of working class-validator DTOs has no reason to tear them out — the NestJS docs still treat class-validator as the default. For a new project in a monorepo with a TypeScript frontend, I lean toward Zod, because one schema serves the client-side form, server-side validation and the inferred types on both ends. The good news is that both pipes can run side by side during a migration: `StandardSchemaValidationPipe` passes through parameters without a `schema`, and `ValidationPipe` skips parameters whose type isn't a class.
+
+## A consistent error model: RFC 9457 problem details
+
+By default NestJS returns `{ "statusCode": 404, "message": "...", "error": "Not Found" }` for an `HttpException`, and `{ "statusCode": 500, "message": "Internal server error" }` for everything else. Safe, but not enough: clients have no stable code to branch on, validation errors are sometimes a string and sometimes an array, and every team invents its own format for business errors.
+
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) (which obsoleted RFC 7807 in 2023) already defines one: the `application/problem+json` media type, with `type` (a URI identifying the problem type, defaulting to `about:blank`), `title` (a short summary that *doesn't change* between occurrences), `status`, `detail` (an explanation of this occurrence, meant for humans, not for clients to parse), `instance`, plus any extension members you like. The RFC's security section is blunt too: don't expose implementation details such as stack traces.
+
+My approach: business errors are their own classes that *know nothing about HTTP*; a single global filter translates everything into problem details.
+
+```ts
+// common/errors/domain-error.ts
+export abstract class DomainError extends Error {
+  abstract readonly code: string; // stable, machine-readable: 'OUT_OF_STOCK'
+  abstract readonly title: string; // short, the same across occurrences
+  constructor(detail: string, readonly extensions: Record<string, unknown> = {}) {
+    super(detail);
+    this.name = new.target.name;
+  }
+}
+
+export class OutOfStockError extends DomainError {
+  readonly code = 'OUT_OF_STOCK';
+  readonly title = 'Insufficient stock';
+  constructor(sku: string, requested: number, available: number) {
+    super(`Only ${available} unit(s) of ${sku} left, ${requested} requested.`, { sku, available });
+  }
+}
+
+// common/http/problem-details.filter.ts
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { HttpAdapterHost } from '@nestjs/core';
+import { STATUS_CODES } from 'node:http';
+import { ClsService } from 'nestjs-cls';
+
+type Problem = { type: string; title: string; status: number; detail?: string } & Record<string, unknown>;
+
+// Mapping business errors to HTTP lives in the HTTP layer, not in the domain
+const STATUS_BY_CODE: Record<string, number> = {
+  OUT_OF_STOCK: HttpStatus.CONFLICT,
+  PAYMENT_DECLINED: HttpStatus.UNPROCESSABLE_ENTITY,
+  ORDER_NOT_FOUND: HttpStatus.NOT_FOUND,
+};
+
+@Catch() // catch everything
+export class ProblemDetailsFilter implements ExceptionFilter {
+  private readonly logger = new Logger(ProblemDetailsFilter.name);
+
+  constructor(
+    private readonly adapterHost: HttpAdapterHost,
+    private readonly cls: ClsService,
+  ) {}
+
+  catch(exception: unknown, host: ArgumentsHost) {
+    const { httpAdapter } = this.adapterHost; // works with Express or Fastify
+    const ctx = host.switchToHttp();
+    const problem: Problem = {
+      ...this.toProblem(exception),
+      instance: httpAdapter.getRequestUrl(ctx.getRequest()),
+      traceId: this.cls.getId(), // clients quote this traceId when reporting a bug
+    };
+
+    if (problem.status >= 500) {
+      const stack = exception instanceof Error ? exception.stack : String(exception);
+      this.logger.error(`Unhandled error traceId=${problem.traceId}`, stack);
+    }
+
+    httpAdapter.setHeader(ctx.getResponse(), 'Content-Type', 'application/problem+json');
+    httpAdapter.reply(ctx.getResponse(), problem, problem.status);
+  }
+
+  private toProblem(exception: unknown): Problem {
+    if (exception instanceof DomainError) {
+      return {
+        type: `https://api.shop.example/problems/${exception.code.toLowerCase()}`,
+        title: exception.title,
+        status: STATUS_BY_CODE[exception.code] ?? HttpStatus.UNPROCESSABLE_ENTITY,
+        detail: exception.message,
+        code: exception.code,
+        ...exception.extensions,
+      };
+    }
+    if (exception instanceof HttpException) {
+      const status = exception.getStatus();
+      const body = exception.getResponse();
+      const message = typeof body === 'string' ? body : (body as { message?: unknown }).message;
+      return {
+        type: 'about:blank',
+        title: STATUS_CODES[status] ?? 'Error',
+        status,
+        detail: typeof message === 'string' ? message : undefined,
+        errors: Array.isArray(message) ? message : undefined, // validation errors: a list
+        code: exception.errorCode, // v12: HttpException accepts an errorCode option
+      };
+    }
+    // Unexpected errors (Prisma, TypeError...): never return the original message
+    return { type: 'about:blank', title: STATUS_CODES[500]!, status: 500, detail: 'An unexpected error occurred.' };
+  }
+}
+```
+
+The client gets something like this, for every kind of error:
+
+```json
+{
+  "type": "https://api.shop.example/problems/out_of_stock",
+  "title": "Insufficient stock",
+  "status": 409,
+  "detail": "Only 2 unit(s) of SKU-RED-42 left, 3 requested.",
+  "code": "OUT_OF_STOCK",
+  "sku": "SKU-RED-42",
+  "available": 2,
+  "instance": "/orders",
+  "traceId": "8f0c2a6e-1d1b-4a8e-9f57-3c2a1b0e9d41"
+}
+```
+
+The filter is registered via `APP_FILTER` so it can inject `HttpAdapterHost` and `ClsService`. Nest's Express adapter keeps a `+json` `Content-Type` that you've set, so `application/problem+json` reaches the client as intended. And because it's a global filter, it's also the only one that can catch errors thrown from middleware.
+
+## Request context with AsyncLocalStorage instead of REQUEST scope
+
+The most common reason people turn on REQUEST scope is: "a deep service needs the current request ID / user / tenant". Passing parameters through five layers is ugly; injecting `REQUEST` drags the whole branch into REQUEST scope, as we saw.
+
+Node's `AsyncLocalStorage` solves exactly this: a store bound to an async execution chain, so every `await` inside sees the same store. The [official recipe](https://docs.nestjs.com/recipes/async-local-storage) calls it an alternative to REQUEST-scoped providers. Rather than hand-writing an `als.run()` middleware, I use [nestjs-cls](https://papooch.github.io/nestjs-cls/) (version 7 supports NestJS 12 and ships both ESM and CommonJS) — a third-party package not maintained by the NestJS team, but one the official docs point to:
+
+```ts
+// app.module.ts
+import { randomUUID } from 'node:crypto';
+import { ClsModule, ClsService, ClsStore } from 'nestjs-cls';
+import type { Request } from 'express';
+
+export interface AppClsStore extends ClsStore {
+  userId?: string;
+  tenantId?: string;
+}
+
+ClsModule.forRoot({
+  global: true,
+  middleware: {
+    mount: true, // mount the middleware on every route, before guards run
+    generateId: true,
+    // Honour a correlation ID from the gateway/upstream if present, otherwise generate one
+    idGenerator: (req: Request) => {
+      const incoming = req.headers['x-request-id'];
+      return typeof incoming === 'string' && incoming.length <= 128 ? incoming : randomUUID();
+    },
+    setup: (cls, req: Request) => {
+      cls.set('tenantId', req.headers['x-tenant-id'] as string | undefined);
+    },
+  },
+});
+
+// jwt-auth.guard.ts — after authenticating, write the user into the context
+this.cls.set('userId', payload.sub);
+
+// In any singleton service, however deep
+@Injectable()
+export class AuditLog {
+  constructor(private readonly cls: ClsService<AppClsStore>) {}
+
+  record(action: string) {
+    const entry = { action, userId: this.cls.get('userId'), traceId: this.cls.getId() };
+    // ...write to the audit table; no REQUEST injection, no REQUEST scope bubbling
+  }
+}
+```
+
+For HTTP, nestjs-cls recommends initializing the context in middleware (as above); the guard and interceptor initializers are for other transports. Two caveats: the context only exists within the request's async chain, so background jobs (queues, cron) must open their own context (`cls.run()`); and don't turn CLS into a bag for everything — keep only values that are genuinely "context" (IDs, user, tenant, locale), and keep business data flowing through parameters.
+
+## Module boundaries for a modular monolith
+
+A NestJS module is first and foremost a **DI encapsulation unit**: a provider that isn't exported can't be injected by another module. That's exactly the tool you need for a modular monolith — a single deployable, but internally split into feature modules with boundaries as clear as if they were separate services. You get the architectural discipline of microservices without paying the operational cost of a distributed system; and if one day you really need to pull `payments` out, the seam is already there.
+
+Four rules I apply:
+
+1. **Split by business capability, not by technical layer.** `orders`, `inventory`, `payments` — not `controllers`, `services`, `repositories`. Each feature module owns its data (tables, schema); other modules don't query its tables directly.
+2. **`exports` is the public API.** Each module exports very little: usually one "API" class (a port) for the synchronous operations other modules are allowed to call. Repositories, gateways and internal entities are never exported.
+3. **No deep imports.** Code outside a module only imports from `modules/inventory/index.ts`, never from `modules/inventory/infrastructure/...`. The DI boundary isn't enough on its own: TypeScript will still let you import a class directly and `new` it. I block this on CI with ESLint's `no-restricted-imports` rule (or dependency-cruiser) using a pattern like `@/modules/*/*`.
+4. **Commands go through calls, reactions go through events.** When `orders` *needs a result* right away (reserving stock, authorizing a payment), it calls the other module's synchronous API. When a module only needs to *know* something happened (order placed, order cancelled), it listens for a domain event. Synchronous dependencies always point one way, so `forwardRef` is never needed.
+
+<Figure src="/blog/nestjs-request-lifecycle-architecture-modules.svg" alt="Module map of a modular monolith: Orders calls the exported InventoryApi and PaymentsApi, and publishes order.placed and order.cancelled through an event bus to Inventory and Notifications; global infrastructure modules sit underneath" caption="Synchronous dependencies point one way only, through exported ports. Reactions flow back as domain events, so there is no cycle that needs forwardRef." />
+
+The matching folder structure:
+
+```text
+src/
+  app.module.ts
+  main.ts
+  config/env.ts
+  common/                      # shared infrastructure, no business logic
+    errors/domain-error.ts
+    http/problem-details.filter.ts
+    http/timing.interceptor.ts
+    auth/jwt-auth.guard.ts, scopes.guard.ts
+  contracts/                   # shared events: plain classes, no Nest dependency
+    order-events.ts
+  modules/
+    orders/
+      index.ts                 # public API: OrdersModule (nothing else exported)
+      orders.module.ts
+      http/orders.controller.ts
+      application/orders.service.ts
+      domain/order.ts, order.repository.ts
+      infrastructure/prisma-order.repository.ts
+    inventory/
+      index.ts                 # InventoryModule, InventoryApi
+      inventory.api.ts         # the port: an abstract class
+      ...
+    payments/
+      index.ts                 # PaymentsModule, PaymentsApi
+      ...
+```
+
+Why do events live in `contracts/` rather than in `orders/`? If `inventory` imported the `OrderCancelledEvent` class from `orders`, while `orders` already depends on `inventory` (it calls `InventoryApi`), you'd have a dependency cycle at the code level, even if not at the DI level. Putting contracts in a neutral place keeps the dependency graph acyclic.
+
+What about global modules? They're only for infrastructure that genuinely cuts across everything: `ConfigModule`, `ClsModule`, `EventEmitterModule`, the database module. A feature module is never `@Global()` — a global module is an invisible dependency that nobody sees by reading `imports`.
+
+## A real-world example: the orders module of an e-commerce API
+
+Let's put it all together around the most important flow in a shop: `POST /orders`. The business requirements: reserve the stock, authorize the payment, save the order, then let anyone interested know. If the payment is declined, the reserved stock must be released.
+
+### Ports and wiring
+
+`inventory` and `payments` each export exactly one port. `orders` imports those two modules and only knows about two abstract classes:
+
+```ts
+// modules/inventory/inventory.api.ts — inventory's public port
+export interface StockLine {
+  sku: string;
+  quantity: number;
+}
+
+export abstract class InventoryApi {
+  /** Reserve stock for an order. Throws OutOfStockError when short. */
+  abstract reserve(orderId: string, lines: StockLine[]): Promise<{ reservationId: string }>;
+  abstract release(reservationId: string): Promise<void>;
+}
+
+// modules/inventory/index.ts — the only thing other modules may import
+export { InventoryModule } from './inventory.module';
+export { InventoryApi, type StockLine } from './inventory.api';
+
+// modules/orders/orders.module.ts
+import { Module } from '@nestjs/common';
+import { InventoryModule } from '@/modules/inventory';
+import { PaymentsModule } from '@/modules/payments';
+
+@Module({
+  imports: [InventoryModule, PaymentsModule], // one-way dependencies, declared explicitly
+  controllers: [OrdersController],
+  providers: [
+    OrdersService,
+    { provide: OrderRepository, useClass: PrismaOrderRepository },
+    { provide: CLOCK, useValue: { now: () => new Date() } },
+  ],
+  // exports nothing: no module needs to call orders synchronously yet
+})
+export class OrdersModule {}
+```
+
+### The service: orchestration, no HTTP
+
+`OrdersService` is the one place that holds the use case's logic. It doesn't take a `Request`, doesn't throw `HttpException`, doesn't know what the response looks like — so the same service works for HTTP, a queue consumer or a CLI.
+
+```ts
+// modules/orders/application/orders.service.ts
+import { Inject, Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { randomUUID } from 'node:crypto';
+import { InventoryApi } from '@/modules/inventory';
+import { PaymentsApi } from '@/modules/payments';
+import { OrderPlacedEvent } from '@/contracts/order-events';
+
+@Injectable()
+export class OrdersService {
+  constructor(
+    private readonly orders: OrderRepository,
+    private readonly inventory: InventoryApi,
+    private readonly payments: PaymentsApi,
+    private readonly events: EventEmitter2,
+    @Inject(CLOCK) private readonly clock: Clock,
+  ) {}
+
+  async placeOrder(input: PlaceOrderInput): Promise<OrderView> {
+    const orderId = randomUUID();
+    const total = await this.pricing(input.lines); // price on the server, never trust the client
+
+    // 1. Synchronous command: we need the result now. OutOfStockError goes straight to the filter -> 409
+    const { reservationId } = await this.inventory.reserve(orderId, input.lines);
+
+    // 2. Authorize the payment; on failure, compensate (release stock) and rethrow
+    let authorizationId: string;
+    try {
+      ({ authorizationId } = await this.payments.authorize({
+        orderId,
+        amount: total,
+        paymentMethodId: input.paymentMethodId,
+      }));
+    } catch (error) {
+      await this.inventory.release(reservationId);
+      throw error; // PaymentDeclinedError -> 422 via ProblemDetailsFilter
+    }
+
+    // 3. Save the order
+    const order = Order.place({ id: orderId, ...input, total, reservationId, authorizationId, at: this.clock.now() });
+    await this.orders.save(order);
+
+    // 4. Reaction: whoever cares listens. orders doesn't know who they are.
+    this.events.emit('order.placed', new OrderPlacedEvent(order.id, order.customerId, order.total));
+    return order.toView();
+  }
+}
+
+// modules/notifications/order-placed.listener.ts — another module, doesn't import orders
+@Injectable()
+export class OrderPlacedListener {
+  constructor(private readonly mailer: Mailer) {}
+
+  @OnEvent('order.placed', { async: true })
+  async handle(event: OrderPlacedEvent) {
+    await this.mailer.sendOrderConfirmation(event.customerId, event.orderId);
+  }
+}
+```
+
+I want to be honest about the limits of `@nestjs/event-emitter`: these are **in-process, in-memory** events. If the process dies right after `save()` and before the listener finishes, the confirmation email is lost. By default, errors thrown in a listener are logged rather than rethrown (`suppressErrors` defaults to `true`), so a notifications failure doesn't break the order — which is what I want. But for reactions that *must not be lost* (actually decrementing stock, writing to the ledger), I use a transactional outbox: write the event to an outbox table in the same transaction as the order, and have a worker push it to a queue. The module boundaries don't change, only how events are transported — which is the payoff of communicating only through contracts.
+
+### Controller, guard and interceptor: thin and single-purpose
+
+```ts
+// common/auth/scopes.guard.ts
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+
+export const RequireScopes = Reflector.createDecorator<string[]>();
+
+@Injectable()
+export class ScopesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    // Route metadata overrides controller metadata
+    const required = this.reflector.getAllAndOverride(RequireScopes, [ctx.getHandler(), ctx.getClass()]);
+    if (!required?.length) return true;
+    const user = ctx.switchToHttp().getRequest<{ user?: { scopes: string[] } }>().user;
+    const granted = new Set(user?.scopes ?? []);
+    if (required.every((scope) => granted.has(scope))) return true;
+    throw new ForbiddenException('Missing required scope', { errorCode: 'INSUFFICIENT_SCOPE' });
+  }
+}
+
+// common/http/timing.interceptor.ts
+import { CallHandler, ExecutionContext, Injectable, Logger, NestInterceptor } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
+import { Observable, finalize } from 'rxjs';
+
+@Injectable()
+export class TimingInterceptor implements NestInterceptor {
+  private readonly logger = new Logger('HTTP');
+  constructor(private readonly cls: ClsService) {}
+
+  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const start = performance.now();
+    const route = `${ctx.getClass().name}.${ctx.getHandler().name}`;
+    return next.handle().pipe(
+      // finalize runs on success and on error alike
+      finalize(() => {
+        const ms = (performance.now() - start).toFixed(1);
+        this.logger.log(`${route} ${ms}ms traceId=${this.cls.getId()}`);
+      }),
+    );
+  }
+}
+
+// modules/orders/http/orders.controller.ts
+@Controller('orders')
+@UseGuards(ScopesGuard)
+export class OrdersController {
+  constructor(private readonly orders: OrdersService) {}
+
+  @Post()
+  @RequireScopes(['orders:write'])
+  place(@Body({ schema: placeOrderSchema }) input: PlaceOrderInput): Promise<OrderView> {
+    return this.orders.placeOrder(input); // one line: the controller translates HTTP into a use case
+  }
+
+  @Get(':id')
+  @RequireScopes(['orders:read'])
+  findOne(@Param('id', { schema: z.uuid() }) id: string): Promise<OrderView> {
+    return this.orders.findOne(id);
+  }
+}
+```
+
+Now let's walk a real request: `POST /orders` for 3 units of `SKU-RED-42` while only 2 are in stock:
+
+1. **ClsMiddleware** opens the context and takes the gateway's `x-request-id` as the trace ID. `RequestLoggerMiddleware` logs "received".
+2. **JwtAuthGuard** (global) authenticates the token, sets `req.user`, writes `userId` into CLS. **ScopesGuard** (controller) reads `@RequireScopes(['orders:write'])` via `Reflector`, sees the user has the scope — allowed through.
+3. **TimingInterceptor** (global) starts the clock.
+4. **StandardSchemaValidationPipe** (global) validates the body against `placeOrderSchema`. Did the client sneak in a `discount` field? `z.strictObject` rejects it, and the client gets a 400 problem details response with an `errors` list.
+5. **The handler** calls `OrdersService.placeOrder()`. `InventoryApi.reserve()` throws `OutOfStockError` — a pure business error, nothing HTTP about it.
+6. The error flows back through the stream: `finalize` in **TimingInterceptor** still logs the duration.
+7. **ProblemDetailsFilter** (global) maps `OUT_OF_STOCK` to 409, adds `instance` and `traceId`, and returns `application/problem+json` as shown earlier.
+
+If the stock is there but the card is declined, step 5 goes further: the reservation succeeds, `payments.authorize()` throws `PaymentDeclinedError`, the service releases the stock and rethrows, and the client gets a 422. If everything succeeds, the order is saved, `order.placed` is emitted, `notifications` sends the email in the background, and the client gets a 201 without waiting for the email. No module imports `orders`, there's no `forwardRef`, and not a single REQUEST-scoped provider anywhere in the flow.
+
+## Graceful shutdown: don't drop requests on deploy
+
+On every deploy, Kubernetes (or any orchestrator) sends `SIGTERM` to the old pod. If the application doesn't handle it, Node exits immediately: in-flight requests are cut off, transactions are left half-done, messages being processed get redelivered. NestJS does **not** listen for signals by default (listeners consume resources); you opt in with `enableShutdownHooks()`.
+
+The most important thing to know is the order Nest follows when closing the application:
+
+1. The HTTP adapter switches into "closing" mode.
+2. Providers' `onModuleDestroy()`.
+3. `beforeApplicationShutdown(signal)`.
+4. The HTTP server closes: stops accepting new connections and **waits for in-flight requests to finish**.
+5. `onApplicationShutdown(signal)`.
+
+The practical consequence: during steps 2 and 3, requests are still running. If you close the database pool in `onModuleDestroy`, those requests fail. Resources that requests need must be closed in `onApplicationShutdown`.
+
+```ts
+// main.ts
+import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    return503OnClosing: true, // v12: new requests during shutdown get 503, in-flight ones finish
+  });
+  app.enableShutdownHooks(); // listen for SIGTERM, SIGINT... then call app.close()
+  await app.listen(app.get(ConfigService).getOrThrow<number>('PORT'));
+}
+void bootstrap();
+
+// infrastructure/outbox-relay.ts — a background worker tied to the app lifecycle
+@Injectable()
+export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShutdown {
+  private timer?: NodeJS.Timeout;
+  private running?: Promise<void>;
+
+  onApplicationBootstrap() {
+    this.timer = setInterval(() => (this.running ??= this.flush().finally(() => (this.running = undefined))), 1_000);
+  }
+
+  async beforeApplicationShutdown() {
+    clearInterval(this.timer); // stop taking new work
+    await this.running; // finish the batch in progress
+  }
+  // ...
+}
+
+// infrastructure/prisma.service.ts
+@Injectable()
+export class PrismaService extends PrismaClient implements OnApplicationShutdown {
+  async onApplicationShutdown() {
+    await this.$disconnect(); // after every request has finished
+  }
+}
+```
+
+A few operational details: the pod's `terminationGracePeriodSeconds` must be longer than your slowest request, or `SIGKILL` arrives before Nest finishes closing. Load balancers need time to stop routing traffic to a terminating pod, so many teams make the readiness probe report "not ready" (or add a short `preStop` delay) before actually closing. And on Windows, `SIGTERM` doesn't work — the docs say so explicitly — so don't be surprised when hooks don't fire while testing locally on Windows.
+
+## Testing: Test.createTestingModule and overrideProvider
+
+Because everything goes through DI, testing a module means building exactly that module and replacing the ports at its edges. This is where "a port is an abstract class" pays off: no module-path mocking, no `jest.mock`.
+
+```ts
+// orders.e2e-spec.ts
+import { INestApplication, Module, StandardSchemaValidationPipe } from '@nestjs/common';
+import { APP_FILTER, APP_PIPE } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { Test } from '@nestjs/testing';
+import { ClsModule } from 'nestjs-cls';
+import request from 'supertest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+
+let app: INestApplication;
+const inventory = { reserve: vi.fn(), release: vi.fn() };
+const payments = { authorize: vi.fn() };
+
+// A fake neighbour module: exports exactly the port orders needs
+function stubModule(token: abstract new (...args: never[]) => unknown, value: object) {
+  @Module({ providers: [{ provide: token, useValue: value }], exports: [token] })
+  class StubModule {}
+  return StubModule;
+}
+
+beforeAll(async () => {
+  const moduleRef = await Test.createTestingModule({
+    imports: [
+      ClsModule.forRoot({ global: true, middleware: { mount: true, generateId: true } }),
+      EventEmitterModule.forRoot(),
+      OrdersModule,
+    ],
+    providers: [
+      { provide: APP_PIPE, useValue: new StandardSchemaValidationPipe() },
+      { provide: APP_FILTER, useClass: ProblemDetailsFilter },
+    ],
+  })
+    .overrideModule(InventoryModule).useModule(stubModule(InventoryApi, inventory))
+    .overrideModule(PaymentsModule).useModule(stubModule(PaymentsApi, payments))
+    .overrideProvider(OrderRepository).useClass(InMemoryOrderRepository)
+    .overrideGuard(ScopesGuard).useValue({ canActivate: () => true })
+    .compile();
+
+  app = moduleRef.createNestApplication();
+  await app.init();
+});
+
+afterAll(() => app.close());
+
+it('returns a 409 problem details response when out of stock', async () => {
+  inventory.reserve.mockRejectedValueOnce(new OutOfStockError('SKU-RED-42', 3, 2));
+
+  const res = await request(app.getHttpServer())
+    .post('/orders')
+    .send({ customerId: crypto.randomUUID(), paymentMethodId: 'pm_1', lines: [{ sku: 'SKU-RED-42', quantity: 3 }] })
+    .expect(409);
+
+  expect(res.headers['content-type']).toMatch(/application\/problem\+json/);
+  expect(res.body).toMatchObject({ code: 'OUT_OF_STOCK', available: 2 });
+  expect(payments.authorize).not.toHaveBeenCalled(); // never charge before stock is reserved
+});
+```
+
+Why `overrideModule` for the two neighbour modules instead of just `overrideProvider(InventoryApi)`? Because `overrideProvider` replaces a single provider; the rest of `PaymentsModule` (a gateway that needs `ConfigService`, a client that needs a secret) would still have to be constructible. Replacing the whole module with a stub that exports only the port is the cleanest cut, and it's only possible because `orders` knows nothing about `payments` beyond that port. `OrderRepository`, on the other hand, is an internal provider of `orders`, so `overrideProvider` is enough.
+
+Three more notes: global enhancers registered with `app.useGlobal*()` in `main.ts` are **not** present in tests — one more reason to use `APP_*`. Conversely, enhancers registered via `APP_GUARD` can't be overridden directly; the docs suggest switching to `useExisting` pointing at a class that's also declared as a provider, then calling `overrideProvider` on that class. And if your project is an ESM project generated by CLI v12, Vitest is the default; with Jest, swap `vi.fn()` for `jest.fn()` — the `@nestjs/testing` API is the same.
+
+## Common mistakes
+
+**Business logic in controllers.** The controller checks stock, computes prices, calls Prisma, then wraps it all in `try/catch` to send `res.status(409).json(...)`. The result: none of it can be reused by a queue consumer or a CLI, tests have to go through HTTP, and using `@Res()` means Nest no longer manages the response — interceptors can't map the result, and filters don't run for errors you caught yourself. A controller should be a translation layer: take the validated input, call one service method, return the result.
+
+**REQUEST-scoped providers everywhere.** It usually starts with a logger that "knows the request ID" or a repository that "knows the tenant", and then bubbles up the whole tree. The tell: `@Inject(REQUEST)` in low-level services. Replace it with AsyncLocalStorage (nestjs-cls) for context, and durable providers for the rare case that genuinely needs a per-tenant instance.
+
+**Global modules as a dumping ground.** A `SharedModule` marked `@Global()` that exports thirty services, from `MailerService` to `OrderPriceCalculator`. Every module can "use" everything without declaring it, so nobody knows which module depends on which anymore — and when you want to extract a module into its own service, you can't. Global is for genuinely cross-cutting infrastructure; business capabilities are imported explicitly.
+
+**Circular imports between feature modules.** `orders` imports `payments` to charge, `payments` imports `orders` to update the order status, and someone adds `forwardRef` to make it boot. Beyond indeterminate instantiation order, you lose the ability to understand the system by reading `imports`. Fix it by finding the real direction of dependency (commands one way, reactions via events), as in the module boundaries section.
+
+**Throwing raw errors that leak internals.** `throw new Error('duplicate key value violates unique constraint "orders_pkey"')`, or letting Prisma errors fly straight out. Nest's default filter returns a generic 500 — safe but useless to the client. Worse is a hand-written filter that returns `exception.message` for every error: table names, SQL and file paths end up on the wire. Keep three kinds clearly apart: business errors (their own classes, messages safe to show), `HttpException` (deliberate), and everything else (500, a generic message, full logging with a trace ID).
+
+**Relying on instantiation or lifecycle hook order.** Code like "service A opens a connection in its constructor, service B uses it in B's constructor" works until a refactor changes the order. NestJS 12 even changed lifecycle hook ordering to follow the component hierarchy. Use async `useFactory` for things that must be ready first, and `onModuleInit` / `onApplicationBootstrap` for startup work — don't lean on constructors.
+
+## Further reading
+
+- [Request lifecycle](https://docs.nestjs.com/faq/request-lifecycle) — the official docs and the source for every ordering in this post.
+- [Injection scopes](https://docs.nestjs.com/fundamentals/injection-scopes) and [custom providers](https://docs.nestjs.com/fundamentals/custom-providers).
+- [Dynamic modules](https://docs.nestjs.com/fundamentals/dynamic-modules) — `ConfigurableModuleBuilder` in detail.
+- [Migration guide v11 → v12](https://docs.nestjs.com/migration-guide) and [v10 → v11](https://docs.nestjs.com/v11/migration-guide) (Express 5, the new route syntax).
+- [Lifecycle events](https://docs.nestjs.com/fundamentals/lifecycle-events) and [testing](https://docs.nestjs.com/fundamentals/testing).
+- [RFC 9457: Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457.html).
+- [nestjs-cls](https://papooch.github.io/nestjs-cls/) and the [AsyncLocalStorage recipe](https://docs.nestjs.com/recipes/async-local-storage).
+
+## Summary
+
+<Checklist>
+
+- Lifecycle order: middleware → guards → interceptors (before) → pipes → handler → interceptors (after, reversed) → filters (route → controller → global). Errors from middleware only reach global filters.
+- Register global enhancers with `APP_GUARD` / `APP_INTERCEPTOR` / `APP_PIPE` / `APP_FILTER` so they can inject dependencies and so tests see them.
+- Use abstract classes as ports and symbols for non-class tokens; async `useFactory` for resources that must be ready at boot.
+- Keep providers in DEFAULT scope. REQUEST scope bubbles up the whole dependency chain — use nestjs-cls for request context, durable providers for a small number of tenants.
+- Treat every `forwardRef` between feature modules as a design bug: commands go one way through exported ports, reactions travel as domain events.
+- Build configurable infrastructure modules with `ConfigurableModuleBuilder`; since NestJS 11, dynamic modules are compared by reference.
+- Validate env at boot with a schema; pick class-validator or Standard Schema (v12) for input — they can run side by side during a migration.
+- One global filter returns `application/problem+json` with a stable error code and a trace ID, and never leaks the message of an unexpected error.
+- Turn on `enableShutdownHooks()`, close resources in `onApplicationShutdown`, and give the orchestrator a grace period longer than your slowest request.
+- Test with `Test.createTestingModule`: `overrideProvider` for internal dependencies, stub whole neighbour modules through their port.
+
+</Checklist>

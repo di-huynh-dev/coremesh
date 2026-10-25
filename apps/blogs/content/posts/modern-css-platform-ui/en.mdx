@@ -1,0 +1,591 @@
+---
+title: "Platform First: Popover API, CSS Anchor Positioning and View Transitions Replace a Lot of UI JavaScript"
+excerpt: "In 2026 the browser ships primitives that used to require Floating UI, Radix or an animation library. This post covers popover, invoker commands, anchor positioning and View Transitions: what they do, how to combine them, where support really stands, and where a library is still the right call."
+---
+
+<Lead>A few years ago, every dropdown menu I built meant installing Floating UI to compute coordinates, a headless library to handle click-outside and Escape, and Framer Motion if I wanted smooth page transitions. By October 2026 the browser does most of that itself: popovers live in the top layer and close when you click away, CSS anchor positioning attaches them to their button and flips them when space runs out, and View Transitions animate between two DOM states. This post covers what each primitive does, how they fit together, where support stands today, and where a library is still the right choice.</Lead>
+
+## The October 2026 picture: what you can actually ship
+
+Before any code, it's worth being precise about what "shippable" means. I lean on [Baseline](https://web.dev/baseline) (data from the web-features project and MDN's browser-compat-data): *Newly available* means the feature is in the latest Chrome, Edge, Firefox and Safari; *Widely available* means 30 months have passed since then. The numbers below come from [webstatus.dev](https://webstatus.dev) and MDN as of late October 2026:
+
+| Feature | Chrome | Firefox | Safari | Status |
+| --- | --- | --- | --- | --- |
+| `popover` (auto / manual), `popovertarget` | 114 | 125 | 17 | In all three engines since April 2024; core APIs became *Widely available* on 16 October 2026 |
+| `popover="hint"` | 133 (older spec), complete from 151 | 149 (older spec), complete from 153 | Technology Preview only | Not Baseline |
+| Invoker commands (`command`, `commandfor`) | 135 | 144 | 26.2 | Newly available since December 2025 |
+| `<dialog closedby>` | 134 | 141 | Technology Preview only | Not Baseline |
+| Core anchor positioning (`anchor-name`, `position-area`, `anchor()`, `position-try-fallbacks`) | 125–129 | 147 | 26 | Newly available since 13 January 2026 |
+| Same-document View Transitions | 111 | 144 | 18 | Newly available since 14 October 2025 |
+| `view-transition-class`, transition types | 125 | 144 / 147 | 18.2 | Newly available (types since January 2026) |
+| Cross-document View Transitions (`@view-transition`) | 126 | Not yet | 18.2 | Not Baseline |
+| Interest invokers (`interestfor`) | 142 | Not yet | Not yet | Chromium only |
+| `overlay` property (keeps an element in the top layer during its exit animation) | 117 | Not yet | Not yet | Chromium only |
+
+My reading: popover and same-document View Transitions are solid enough to be the main path. Anchor positioning only became Baseline in early 2026, so it still needs a fallback if many of your users run older Firefox or Safari. And `hint`, `interestfor` and cross-document transitions remain progressive enhancement: nicer when present, never required.
+
+<Callout>
+  **Property names changed a few times.** Chrome 125 shipped with `inset-area` and `position-try-options`; the spec later renamed them to `position-area` (Chrome 129) and `position-try-fallbacks` (Chrome 128). The initial value of `position-anchor` has also changed across versions, and `anchors-visible` is being renamed to `anchor-visible`. If you copy code from a 2024 article, check the names first.
+</Callout>
+
+## Popover API: top layer, light dismiss and invokers
+
+The `popover` attribute turns any element into an overlay: hidden by default, and when shown it is promoted to the **top layer**, a rendering layer above the entire page that ignores `z-index` and the `overflow: hidden` of its ancestors. That's why I dropped portals: we used to render menus at the end of `body` just to escape `overflow: hidden` or a `transform` stacking context, and the top layer solves that while the element stays put in the DOM.
+
+### Three values: auto, manual, hint
+
+| | `auto` (default) | `hint` | `manual` |
+| --- | --- | --- | --- |
+| Light dismiss (click outside, Esc) | Yes | Yes | No |
+| Closes other `auto` popovers when shown | Yes, except nested ones | No | No |
+| Closes other `hint` popovers | – | Yes, except ancestors | No |
+| Use it for | Menus, pickers | Tooltips, hover previews | Toasts, self-managed panels |
+
+`auto` suits menus: one open at a time (unless nested, like a submenu), closed by clicking outside or Esc. `manual` never closes on its own and several can be open at once, which suits toasts. `hint` exists for tooltips: opening one doesn't close the menu that's already open. But as the table above shows, `hint` isn't Baseline, and per [MDN](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using) browsers that don't understand `hint` treat it as `manual`, because the HTML spec makes invalid values fall back to the manual state. In current Safari, that means your tooltip won't light-dismiss; you have to close it yourself.
+
+### Opening a popover without JavaScript
+
+```html
+<button popovertarget="project-menu" aria-haspopup="menu">Options</button>
+
+<div id="project-menu" popover role="menu" aria-label="Project options">
+  <button role="menuitem" type="button">Rename</button>
+  <button role="menuitem" type="button">Duplicate</button>
+  <button role="menuitem" type="button">Archive</button>
+</div>
+```
+
+That's all it takes: click to open, click again to close, click outside or press Esc to close, and closing with Esc returns focus to the button. The `popovertarget` relationship gives you three more things for free: the browser wires up `aria-expanded` and an `aria-details` relationship between button and popover, places the popover right after the button in Tab order, and creates an **implicit anchor** that CSS anchor positioning can use (more on that later).
+
+### Invoker commands: `command` and `commandfor`
+
+`popovertarget` only controls popovers. Invoker commands are the general version: a `<button>` with `commandfor` pointing at the target's id and `command` naming the action. Built-in values are `show-modal`, `close` and `request-close` for `<dialog>`, and `show-popover`, `hide-popover` and `toggle-popover` for popovers. Values starting with `--` are custom commands; the browser dispatches a `CommandEvent` on the target.
+
+```html
+<button commandfor="archive-dialog" command="show-modal">Archive project</button>
+
+<dialog id="archive-dialog" aria-labelledby="archive-title">
+  <h2 id="archive-title">Archive this project?</h2>
+  <form method="dialog">
+    <button commandfor="archive-dialog" command="request-close">Cancel</button>
+    <button value="confirm">Archive</button>
+  </form>
+</dialog>
+
+<button commandfor="gallery" command="--next">Next image</button>
+```
+
+On the JavaScript side, the `--next` command arrives as a `CommandEvent` on `#gallery` whose `command` property is `"--next"`, so a single `command` listener replaces a handler per button. What I like most is deleting piles of `onClick={() => dialogRef.current?.showModal()}` whose only job was opening a dialog. `request-close` differs from `close` in that it fires a `cancel` event first, so you can `preventDefault()` when the form has unsaved changes. Invoker commands became Baseline when Safari 26.2 shipped (December 2025); for older browsers there's a polyfill, or simply keep a click handler as a fallback.
+
+### Animating open and close
+
+A popover is hidden with `display: none`, and going from `none` to `block` used to be impossible to animate. Three CSS pieces fix that: `@starting-style` declares the starting state when the element first appears, `transition-behavior: allow-discrete` lets discrete properties like `display` take part in a transition, and `overlay` keeps the element in the top layer until the closing animation finishes.
+
+```css
+[popover] {
+  opacity: 0;
+  translate: 0 -4px;
+  transition:
+    opacity 150ms ease-out,
+    translate 150ms ease-out,
+    display 150ms allow-discrete,
+    overlay 150ms allow-discrete;
+}
+
+[popover]:popover-open {
+  opacity: 1;
+  translate: 0 0;
+}
+
+/* The "before open" state, so the entry animation has a starting point */
+@starting-style {
+  [popover]:popover-open {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}
+```
+
+`@starting-style` and `allow-discrete` have been Baseline since 2024, but `overlay` is Chromium-only. In Firefox and Safari the closing animation still runs, but the element leaves the top layer immediately, so for those 150ms something else may paint over it. With short animations almost nobody notices; with long ones, this is where you'll see the difference.
+
+From JavaScript you get `showPopover()`, `hidePopover()`, `togglePopover()` and the `beforetoggle`/`toggle` events; `showPopover({ source })` also sets up the implicit anchor and focus order that `popovertarget` gives you.
+
+## `<dialog>` or popover?
+
+Both live in the top layer and both have a `::backdrop`, so it's easy to assume they're interchangeable. The difference is **modality**:
+
+| | `dialog.showModal()` | `popover` |
+| --- | --- | --- |
+| Rest of the page | Made `inert`: no clicks, no Tab, screen readers can't reach it | Still fully interactive |
+| Implicit role | `dialog` | None, you add it |
+| Focus on open | Moves into the dialog | Only moves with `autofocus`; otherwise it's simply next in Tab order |
+| Focus on close | Returns to the previously focused element | Returns when closed via Esc, `hidePopover()` or the invoker; not on click-outside |
+| Esc | Fires `cancel`, then closes | Closes (`auto`, `hint`) |
+| Click outside to close | Needs `closedby="any"` (not Baseline) or your own code | Built in with `auto` |
+| `::backdrop` blocks interaction | Yes | No, it's decoration |
+
+My rule: **if the user must deal with this content before doing anything else** (confirm a delete, a create form, a session-expired warning), use `<dialog>` with `showModal()`. Everything else, including menus, tooltips, small date pickers and notification panels, is a popover. A popover is never modal, even if you paint its `::backdrop` dark: the page behind is still clickable and still reachable with Tab. I've reviewed code where someone built a "modal" from a popover plus a dimmed backdrop; it looked identical, but keyboard users tabbed right out of it without ever knowing.
+
+The `<dialog>` element's `closedby` attribute lets you choose `any` (light dismiss like a popover), `closerequest` (Esc only) or `none`. Safari only has it in preview, so I treat it as a bonus and keep an explicit close button.
+
+## CSS anchor positioning: Floating UI, written in CSS
+
+Popover solves "float above everything", but by default it sits in the middle of the viewport. To attach it to its button you used to need JavaScript: measure the button with `getBoundingClientRect()`, compute coordinates, listen to `scroll` and `resize` to recompute, check for viewport overflow to flip. That's exactly Floating UI's job. [CSS anchor positioning](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_anchor_positioning) moves all of it into the layout engine, computed together with layout, so no frame is ever out of sync.
+
+### Three core concepts
+
+- **`anchor-name`** names the reference element, using a dashed ident such as `--avatar`.
+- **`position-anchor`** on the positioned element (which must be `position: absolute` or `fixed`; popovers are already `fixed`) picks its default anchor.
+- **`position-area`** places the element into one cell of an imaginary 3×3 grid around the anchor. The middle row and column are exactly the anchor's size; the outer ones stretch to the edges of the containing block.
+
+```css
+.avatar-button {
+  anchor-name: --avatar;
+}
+
+.account-menu {
+  position: fixed;
+  position-anchor: --avatar;
+  /* the row below the anchor, starting at the center column and spanning right */
+  position-area: bottom span-right;
+  margin: 0;
+  margin-block-start: 6px;
+}
+```
+
+<Figure src="/blog/modern-css-platform-ui-position-area.svg" alt="The 3x3 position-area grid around an anchor: the popover sits at bottom span-right, and when it overflows the bottom of the viewport the browser tries flip-block, flip-inline and both combined" caption="position-area splits the space around the anchor into nine cells. The base position is tried first, then each fallback in order; the first option that fits wins." />
+
+A single keyword like `bottom` means `bottom span-all`, covering all three columns. `span-right` covers the center and right columns, so the menu's left edge lines up with the button and it grows to the right, the classic dropdown. One underrated property of `position-area`: the chosen area becomes the element's containing block, so `max-height: 100%` and `overflow: auto` work against the space that's actually left. A long menu scrolls instead of running off the screen.
+
+### `anchor()` when you need precision
+
+`position-area` covers 90% of cases. When you need edge-by-edge control, use the `anchor()` function in inset properties, and `anchor-size()` for dimensions:
+
+```css
+.combobox-listbox {
+  position: fixed;
+  position-anchor: --search-input;
+  top: anchor(bottom);
+  left: anchor(left);
+  /* the listbox matches the input's width, no JS measuring */
+  width: anchor-size(width);
+  margin: 4px 0 0;
+}
+```
+
+`justify-self: anchor-center` (or `align-self`) centers the element on its anchor, which is handy for a tooltip centered above a button.
+
+### Fallbacks when space runs out: `position-try-fallbacks`
+
+This is the replacement for Floating UI's `flip()` middleware. You declare a list of fallback options; if the base position makes the element overflow its containing block (usually the viewport), the browser tries each option in turn and uses the first one that fits:
+
+```css
+.account-menu {
+  position-area: bottom span-right;
+  position-try-fallbacks:
+    flip-block,               /* flip upward: top span-right */
+    flip-inline,              /* flip left: bottom span-left */
+    flip-block flip-inline;   /* both: top span-left */
+  /* prefer the option with the most height instead of declaration order */
+  position-try-order: most-height;
+}
+
+/* When an option needs to change several properties at once, name it */
+@position-try --compact-above {
+  position-area: top;
+  max-height: 40vh;
+}
+
+.notifications-panel {
+  position-area: bottom;
+  position-try-fallbacks: --compact-above, flip-inline;
+}
+```
+
+`flip-block` swaps along the block axis (top/bottom), `flip-inline` along the inline axis (left/right), and `flip-start` mirrors across the diagonal. Because they're logical, they do the right thing in RTL layouts. If no option fits, the element is still shown overflowing, unless you use `position-visibility: no-overflow` to hide it.
+
+### `position-visibility`: what if the anchor scrolls away?
+
+When the button scrolls out of a scroll container, the menu shouldn't float there alone. The spec's default, `anchor-visible`, hides the element when its anchor is clipped. Browsers shipped that value as `anchors-visible` and the spec has since renamed it, so I only ever write `no-overflow` or `always`, spelled the same everywhere, and let the default do the rest.
+
+### Implicit anchors and `anchor-scope`
+
+For a popover opened via `popovertarget` (or `commandfor`, or `showPopover({ source })`), the button automatically becomes its **implicit anchor**, no name needed. That matters a lot for lists: a page with 50 project cards, each with a "⋯" button, using `anchor-name: --card-menu` on all of them makes every menu attach to the *last* card with that name, because anchor names are document-scoped by default.
+
+There are two fixes. The first is to use the implicit anchor and write `position-anchor: auto` explicitly. I always write that line, because the initial value of `position-anchor` has changed across browser versions (`implicit`, then `auto`, now `normal`), and being explicit behaves the same everywhere. The second, when the anchor isn't the invoker, is to limit the name's scope with `anchor-scope`:
+
+```css
+.project-card {
+  /* --card is only visible inside each card's subtree */
+  anchor-scope: --card;
+}
+
+.project-card .cover {
+  anchor-name: --card;
+}
+
+.project-card .badge {
+  position: absolute;
+  position-anchor: --card;
+  position-area: top right;
+}
+```
+
+## View Transitions: animating between two DOM states
+
+The classic problem: going from a list to a detail page, the card's cover image "flies" up to become the large image at the top. We used to reach for Framer Motion's (now Motion's) layout animations or hand-roll FLIP. View Transitions do FLIP at the browser level, and how they do it is worth understanding, because every pitfall comes from here.
+
+<Figure src="/blog/modern-css-platform-ui-view-transition-lifecycle.svg" alt="The View Transition lifecycle: capture the old state, run the DOM update callback, capture the new state, animate the pseudo-element tree; with the updateCallbackDone, ready and finished promises" caption="The browser snapshots the old state, pauses rendering while your callback changes the DOM, captures the new state, then animates a pseudo-element tree layered over the page." />
+
+```ts
+const transition = document.startViewTransition({
+  update: () => renderDetail(projectId), // change the DOM here; may be async
+  types: ["forward"],
+});
+
+await transition.updateCallbackDone; // the new DOM is ready
+await transition.ready;              // pseudo-element tree built, animation about to start
+await transition.finished;           // animation done, pseudo-elements removed
+```
+
+Step by step:
+
+1. **Capture the old state.** Every element with a `view-transition-name` (and the whole page, under the name `root`) is captured as a static image.
+2. **Run the callback.** Rendering is frozen while it changes the DOM. If it returns a promise the browser waits, and aborts with a `TimeoutError` if that takes too long (the limit is up to the browser), so fetch data before, not inside.
+3. **Capture the new state.** This time it's not a static image but a live rendering of the element.
+4. **Animate.** The browser builds a pseudo-element tree and runs CSS animations on it; when they finish, the tree is removed and the real page shows through.
+
+The pseudo-element tree (the bottom half of the figure above) is rooted at `::view-transition`, layered over the whole page. Each name gets its own `::view-transition-group(name)` branch, containing a `::view-transition-image-pair(name)` with two children: `::view-transition-old(name)`, a static image of the old state, and `::view-transition-new(name)`, a live rendering of the new one.
+
+By default, the `group` animates position and size from the old spot to the new one, while `old` and `new` cross-fade. It's all ordinary CSS animation, so you customize it with selectors:
+
+```css
+.project-card .cover {
+  view-transition-class: cover;
+}
+
+::view-transition-group(.cover) {
+  animation-duration: 280ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Only applies when the transition carries the "back" type */
+html:active-view-transition-type(back) {
+  &::view-transition-old(root) { animation-name: slide-out-right; }
+  &::view-transition-new(root) { animation-name: slide-in-left; }
+}
+```
+
+A `view-transition-name` must be unique per capture, while `view-transition-class` can be shared, which is how you style 50 cards without writing 50 selectors. Transition types (passed as `types` to `startViewTransition`, matched with `:active-view-transition-type()`) separate "forward" from "back" without toggling classes on `html` the way we used to. There's also `view-transition-name: match-element` (Chrome 137, Firefox 144, Safari 18.4), which lets the browser generate a name from the element's identity, handy when animating a list reorder.
+
+### Across pages: `@view-transition`
+
+A multi-page site has no callback to call. Instead, both the old and the new page opt in with CSS:
+
+```css
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+}
+
+/* The same name on both pages pairs the elements up.
+   Each card sets its own --cover-name inline, e.g. cover-42. */
+.post-card__cover,
+.post-hero__cover {
+  view-transition-name: var(--cover-name);
+}
+```
+
+The conditions: both pages are same-origin, and the navigation is a link click, `history.back()` or similar (typing a URL, bookmarks and reloads don't count). The new page gets a `pagereveal` event and the old page a `pageswap` event, both with `event.viewTransition`, so you can set names dynamically or add types based on the destination URL. Chrome skips the transition if navigation takes more than four seconds. It's in Chrome 126 and Safari 18.2 but not Firefox, and browsers that don't understand `@view-transition` simply ignore it, which makes it the lowest-risk progressive enhancement I know.
+
+### React: `<ViewTransition>` is stable as of React 19.3
+
+Calling `document.startViewTransition` directly in React is awkward, because you don't control when React commits the DOM. React 19.3 (released 9 September 2026) made the [`<ViewTransition>`](https://react.dev/reference/react/ViewTransition) component stable after more than a year in the canary/experimental channels. It wraps the browser API and only activates for updates inside a Transition: `startTransition`, a `<Suspense>` reveal, or `useDeferredValue`. A plain `setState` won't animate.
+
+```tsx
+import { ViewTransition, addTransitionType, startTransition, useState } from "react";
+
+type Project = { id: string; name: string; cover: string };
+
+export function ProjectsPage({ projects }: { projects: Project[] }) {
+  const [selected, setSelected] = useState<Project | null>(null);
+
+  const open = (project: Project) =>
+    startTransition(() => {
+      addTransitionType("forward");
+      setSelected(project);
+    });
+
+  const back = () =>
+    startTransition(() => {
+      addTransitionType("back");
+      setSelected(null);
+    });
+
+  if (selected) return <ProjectDetail project={selected} onBack={back} />;
+
+  return (
+    <ul className="project-grid">
+      {projects.map((project) => (
+        <li key={project.id}>
+          <button type="button" onClick={() => open(project)}>
+            {/* Same name in the list and the detail view: React creates a shared element transition */}
+            <ViewTransition name={`cover-${project.id}`} share="morph">
+              <img src={project.cover} alt="" />
+            </ViewTransition>
+            {project.name}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+In `ProjectDetail`, the large image is wrapped in a `<ViewTransition>` with the same `name` and `share`. The `share="morph"` value becomes a `view-transition-class`, so you style it with `::view-transition-group(.morph)` like any other CSS. Three things from the [docs](https://react.dev/reference/react/ViewTransition) to remember: each `name` may only be mounted once in the whole app (duplicates are an error); `<ViewTransition>` must come before any DOM node for enter/exit to work; and React does **not** disable animations when the user has `prefers-reduced-motion` turned on. That part is on you.
+
+## A real-world example: menu, tooltip and a list → detail transition
+
+A "Projects" screen I built recently: a grid of cards, each with a "⋯" button that opens an actions menu and has a tooltip, and clicking a card flies its cover up into the detail page. The old version used Floating UI, a headless menu library and Motion; the new one has no JavaScript that computes a position.
+
+### Step 1: markup
+
+```html
+<article class="project-card" data-id="42">
+  <a class="project-card__link" href="/projects/42">
+    <img class="project-card__cover" src="/covers/42.webp" alt="" />
+    <h3>Online store</h3>
+  </a>
+
+  <button class="icon-button" type="button" popovertarget="menu-42" aria-haspopup="menu"
+          aria-label="Options for Online store" aria-describedby="tip-42">⋯</button>
+  <span id="tip-42" class="tooltip" popover="hint" role="tooltip">Rename, duplicate, archive</span>
+
+  <div id="menu-42" class="menu" popover role="menu" aria-label="Project options">
+    <button role="menuitem" type="button" data-action="rename">Rename</button>
+    <button role="menuitem" type="button" data-action="duplicate">Duplicate</button>
+    <button role="menuitem" type="button" data-action="archive">Archive…</button>
+  </div>
+</article>
+```
+
+There's no `anchor-name` anywhere: the menu is opened with `popovertarget`, so the "⋯" button is its implicit anchor; the tooltip will be opened with `showPopover({ source })`, so the same applies. Fifty cards on the same page don't step on each other.
+
+### Step 2: CSS, fallback first, then enhance
+
+```css
+/* Default (no anchor positioning): the menu becomes a bottom sheet, still fine on mobile */
+.menu {
+  inset: auto 0 0 0;
+  width: 100%;
+  margin: 0;
+  border-radius: 16px 16px 0 0;
+}
+
+.tooltip {
+  display: none; /* if it can't be positioned, don't show it; aria-describedby still works */
+}
+
+@supports (position-area: bottom) {
+  .menu {
+    inset: auto;
+    width: max-content;
+    min-width: 12rem;
+    max-height: 100%;          /* = the height of the remaining position-area cell */
+    overflow-y: auto;
+    border-radius: 8px;
+    margin: 4px 0 0;            /* overrides the UA stylesheet's margin: auto */
+    position-anchor: auto;      /* implicit anchor: the popovertarget button */
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+
+  .tooltip:popover-open {
+    display: block;
+    margin: 0 0 6px;
+    position-anchor: auto;
+    position-area: top;         /* top span-all: centered above the button */
+    position-try-fallbacks: flip-block;
+    pointer-events: none;
+  }
+}
+```
+
+`span-left` because the "⋯" button sits in the card's right corner: the menu aligns its right edge with the button and grows to the left. The `margin` line matters: the UA stylesheet gives popovers `margin: auto`, which in early anchor-positioning releases centers the menu inside the `position-area` cell instead of next to the button. Chrome 143, Firefox 148 and Safari 26.2 treat it as 0 when `position-area` is set, but an explicit reset is cheaper than debugging.
+
+### Step 3: the JavaScript that's left
+
+JavaScript now only handles two things the platform doesn't do yet: arrow-key navigation inside `role="menu"`, and opening the tooltip on hover or focus.
+
+```ts
+// enhance.ts: not a single line computes coordinates
+const supportsPopover = HTMLElement.prototype.hasOwnProperty("popover");
+
+export function enhanceMenu(menu: HTMLElement): void {
+  const items = () =>
+    Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'));
+
+  // Focus the first item when the menu opens (per the ARIA APG menu button pattern)
+  menu.addEventListener("toggle", (event) => {
+    if ((event as ToggleEvent).newState === "open") items()[0]?.focus();
+  });
+
+  menu.addEventListener("keydown", (event) => {
+    const list = items();
+    const current = list.indexOf(document.activeElement as HTMLElement);
+    const focusAt = (index: number) => {
+      event.preventDefault();
+      list.at(index % list.length)?.focus(); // at(-1) is the last item
+    };
+    if (event.key === "ArrowDown") focusAt(current + 1);
+    else if (event.key === "ArrowUp") focusAt(current - 1);
+    else if (event.key === "Home") focusAt(0);
+    else if (event.key === "End") focusAt(-1);
+    else if (event.key === "Tab") menu.hidePopover(); // tabbing out closes the menu
+  });
+
+  // Picking an item closes the menu; focus returns to the "⋯" button on its own
+  menu.addEventListener("click", (event) => {
+    if ((event.target as Element).closest('[role="menuitem"]')) menu.hidePopover();
+  });
+}
+
+export function enhanceTooltip(trigger: HTMLElement, tip: HTMLElement): void {
+  if (!supportsPopover) return;
+  let timer: number | undefined;
+
+  const show = () => {
+    clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      if (!tip.matches(":popover-open")) tip.showPopover({ source: trigger });
+    }, 300);
+  };
+  const hide = () => {
+    clearTimeout(timer);
+    if (tip.matches(":popover-open")) tip.hidePopover();
+  };
+
+  trigger.addEventListener("pointerenter", show);
+  trigger.addEventListener("pointerleave", hide);
+  trigger.addEventListener("focus", show);
+  trigger.addEventListener("blur", hide);
+  // Where "hint" isn't supported the popover falls back to "manual" and ignores Esc
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hide();
+  });
+}
+```
+
+Since Chrome 142 there are also [interest invokers](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using_interest_invokers): put `interestfor="tip-42"` on the button and the browser opens the tooltip on hover or focus, with a delay you can tune via `interest-delay`. Once Firefox and Safari catch up, `enhanceTooltip` goes away. For now it's Chromium-only, so I keep the function.
+
+### Step 4: list → detail with View Transitions
+
+This app is a hand-written SPA (the React version uses `<ViewTransition>` as shown earlier). The key is giving a `view-transition-name` to **exactly one** card, the one that was clicked, right before the capture. The large image on the detail page already has `view-transition-name: cover` in CSS.
+
+```ts
+// navigate.ts
+import { loadDetail, loadList, render, type View } from "./views";
+
+type Direction = "forward" | "back";
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+const coverOf = (projectId: string) =>
+  document.querySelector<HTMLElement>(`.project-card[data-id="${projectId}"] .project-card__cover`);
+
+export async function go(projectId: string, direction: Direction): Promise<void> {
+  // 1. Fetch data FIRST: rendering is frozen while the callback runs
+  const view: View = direction === "forward" ? await loadDetail(projectId) : await loadList();
+
+  if (!("startViewTransition" in document) || reduceMotion.matches) {
+    render(view); // fallback path: update the DOM immediately, no animation
+    return;
+  }
+
+  // 2. Going forward: the card is on screen, name it before the old state is captured
+  if (direction === "forward") coverOf(projectId)?.style.setProperty("view-transition-name", "cover");
+
+  const transition = document.startViewTransition({
+    update: () => {
+      render(view);
+      // 3. Going back: the card only exists after rendering, so name it here
+      if (direction === "back") coverOf(projectId)?.style.setProperty("view-transition-name", "cover");
+    },
+    types: [direction],
+  });
+
+  // 4. Clear the name so the next navigation doesn't hit a duplicate
+  transition.finished.finally(() => coverOf(projectId)?.style.removeProperty("view-transition-name"));
+}
+```
+
+Why not put `view-transition-name: cover` on every card in CSS? Because names must be unique: if two rendered elements share a name in one capture, the browser skips the transition, `ready` rejects, and the DOM updates with no animation at all. It's the number one View Transitions bug I run into.
+
+### The fallback path, in short
+
+Every enhancement layer has its own way back, and none of them breaks functionality:
+
+- **No anchor positioning** (Firefox before 147, Safari before 26): `@supports` doesn't match, the menu becomes a bottom sheet, the tooltip doesn't show but its description still reaches screen reader users through `aria-describedby`. If you must keep a correctly positioned dropdown on older browsers, there's the `@oddbird/css-anchor-positioning` polyfill, or load Floating UI conditionally when `CSS.supports("position-area: bottom")` returns `false`.
+- **No `popover="hint"`**: the tooltip runs as `manual` and `enhanceTooltip` takes care of closing it.
+- **No View Transitions**: `go()` updates the DOM immediately. Users lose the animation and nothing else.
+- **Reduced motion turned on**: the SPA skips `startViewTransition`, and the MPA's `@view-transition` sits inside `@media (prefers-reduced-motion: no-preference)`. For popovers I keep a short fade and drop the movement: reduced motion doesn't mean no motion, it means dropping large movement like zooms and full-page slides.
+
+## Accessibility: what the browser won't do for you
+
+Popover handles light dismiss, Esc, the top layer, Tab order and `aria-expanded`. It does **not** know what's inside it, so semantics are still your job:
+
+- **Popovers have no role.** A menu needs `role="menu"` and `role="menuitem"`, a tooltip needs `role="tooltip"` plus `aria-describedby` on its trigger. But don't put `role="menu"` on every dropdown: a list of navigation links should be a disclosure (a button with `aria-expanded` plus a normal list of links), because `role="menu"` promises screen reader users that arrow keys work, and you have to keep that promise with code like Step 3.
+- **A popover is not a modal.** No focus trap, no `inert`. Anything that must block interaction is a `<dialog>` opened with `showModal()`.
+- **Focus return is conditional.** Closing via Esc, the invoker or `hidePopover()` returns focus to the button if focus was inside the popover; light dismiss by clicking outside doesn't (focus follows where the user clicked, which is correct). If a menu item opens a dialog, decide yourself where focus goes when the dialog closes, because the element that had focus is now inside a hidden popover.
+- **Tooltips only describe.** Don't put links or buttons in a tooltip; interactive content belongs in an `auto` popover opened by click. WCAG 1.4.13 requires content shown on hover to be dismissible with Esc without moving the pointer, which is why Step 3 has the `Escape` listener.
+- **View Transitions can cause motion sickness.** Images flying across the screen and full-page slides are exactly the motion people with `prefers-reduced-motion` want to avoid. Check that media query everywhere you start a transition.
+
+## Native or library?
+
+I don't think libraries are obsolete. The right question is "does this case still need one?":
+
+| Need | Native primitive | Library | When the library is still right |
+| --- | --- | --- | --- |
+| Position a floating element next to its trigger, flip when out of space | Anchor positioning + `position-try-fallbacks` | Floating UI | You support browsers from before 2026; you need `shift()` to slide along an edge instead of flipping; virtual anchors (cursor position, a text selection); an arrow that follows the chosen fallback (anchored container queries are Chrome 143 only) |
+| Overlay, click outside, Esc, top layer | `popover` | Radix Popover, Dropdown Menu | You need a complete menu: keyboard navigation, typeahead, submenus with a pointer safe area, `aria-activedescendant`, all tested with screen readers |
+| Modal dialog | `<dialog>` + `showModal()`, `commandfor` | Radix Dialog | You need scroll locking, stacked dialogs, identical behavior on old browsers |
+| Enter/exit animation of one element | `@starting-style` + `allow-discrete` | Motion (`AnimatePresence`) | The exit animation must stay in the top layer on Firefox/Safari (no `overlay`), complex sequences, staggering |
+| Page transitions, shared elements | View Transitions, React `<ViewTransition>` | Motion layout animations | You need smooth interruption and reversal, gesture-driven dragging, spring physics, several animations in parallel (only one view transition runs at a time; a new one skips the old one to its end) |
+
+In practice: a design system that needs accessible menus, comboboxes and date pickers still uses Radix or an equivalent headless library, because the hard part there is keyboard and screen reader behavior, not positioning. Simple popovers, tooltips and page transitions in application code go straight to the platform, with a lighter bundle and no JavaScript running on every scroll.
+
+## Common mistakes
+
+**Bringing `z-index` habits to the top layer.** Popovers and modal dialogs live in the top layer, so `z-index: 9999` on them means nothing; order within the top layer is the order things were opened. Conversely, a homemade toast with `position: fixed; z-index: 10000` will always sit *below* a popover, however large the z-index. The fix is to make the toast a `popover="manual"` too. Another consequence: a popover's `::backdrop` doesn't block clicks, so don't use it to fake a modal.
+
+**Global anchor names.** As mentioned, `anchor-name` is document-scoped; with several elements sharing a name, the *last* one wins and every popover attaches to it. Use implicit anchors via `popovertarget`/`commandfor`, or `anchor-scope` on each card's container. One more condition few people read: the anchor must be laid out *before* the positioned element (same containing block and earlier in the DOM, or in a lower top-layer entry), otherwise the browser treats it as if no anchor was found.
+
+**Duplicated `view-transition-name`.** A static name in CSS on a repeated element, like `.card .cover { view-transition-name: cover }`, kills the transition immediately. Use `view-transition-class` for shared styling, set names dynamically on exactly the elements you want to pair, or use `match-element` when each element just needs to be itself.
+
+**Layout shift during the transition.** The new state is captured as soon as the callback finishes. If the detail page renders an empty shell and loads its image and data afterwards, you animate the empty shell, and the layout keeps jumping after the transition ends. Fetch data before calling `startViewTransition`, give images `width`/`height` or `aspect-ratio`, and don't let web fonts swap sizes mid-flight. For MPAs, `<link rel="expect" blocking="render">` can hold rendering until a key element exists, but it's Chromium-only and delays first paint.
+
+**Animating huge snapshots.** Every named element becomes a GPU texture. Name a long list, or an element ten screens tall, and mid-range phones will jank. And `::view-transition-group` animates `width` and `height`, which means layout on every frame. I limit names to the few elements that really need pairing, let everything else cross-fade as part of `root`, and keep durations under roughly 300ms.
+
+## Further reading
+
+- [MDN: Popover API](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API) and the [usage guide](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using)
+- [MDN: CSS anchor positioning](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_anchor_positioning) and the [CSS Anchor Positioning spec](https://drafts.csswg.org/css-anchor-position-1/)
+- [Chrome for Developers: same-document view transitions](https://developer.chrome.com/docs/web-platform/view-transitions/same-document) and [cross-document view transitions](https://developer.chrome.com/docs/web-platform/view-transitions/cross-document)
+- [React 19.3](https://react.dev/blog/2026/09/09/react-19-3) and the [`<ViewTransition>` reference](https://react.dev/reference/react/ViewTransition)
+- [WAI-ARIA APG: Menu Button pattern](https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/)
+- [webstatus.dev](https://webstatus.dev) for the latest Baseline status
+
+## Summary
+
+<Checklist>
+
+- Popover puts an element in the top layer with light dismiss and Esc, and wires `aria-expanded` through `popovertarget`: use it for menus, tooltips and panels instead of portals and click-outside listeners.
+- A `popover` is not a modal: anything that must block interaction is a `<dialog>` with `showModal()`, opened declaratively with `commandfor` and `command="show-modal"`.
+- Anchor positioning has been Baseline since January 2026: `position-area` covers 90% of cases, `position-try-fallbacks` replaces `flip()`, and implicit anchors or `anchor-scope` handle lists.
+- Always reset a popover's `margin` and write `position-anchor` explicitly, because the defaults have changed across versions.
+- `popover="hint"` and `interestfor` aren't Baseline: tooltips still need a few lines of JS for hover, focus and Esc.
+- Same-document View Transitions are Baseline: fetch first, give a unique `view-transition-name` to exactly the elements you want to pair, and style the rest with `view-transition-class` and transition types.
+- Cross-document `@view-transition` isn't in Firefox yet but is safe to add; React 19.3 ships a stable `<ViewTransition>` for React apps.
+- Every enhancement layer has a fallback through `@supports` and feature detection, and every animation respects `prefers-reduced-motion`.
+
+</Checklist>

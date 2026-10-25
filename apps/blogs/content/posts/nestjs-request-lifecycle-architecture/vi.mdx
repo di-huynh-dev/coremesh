@@ -1,0 +1,949 @@
+---
+title: "NestJS trong production: request lifecycle, dependency injection và ranh giới module cho một modular monolith"
+excerpt: "Hiểu NestJS làm gì bên dưới — thứ tự middleware, guard, interceptor, pipe, filter; DI, scope và durable provider; dynamic module — để tổ chức một API lớn thành modular monolith sạch sẽ, có error model nhất quán, request context và graceful shutdown."
+---
+
+<Lead>NestJS rất dễ bắt đầu: generate một module, thêm controller, inject service, chạy. Cái khó đến sau khoảng một năm, khi codebase có ba mươi module, controller nào cũng gọi chéo service của module khác, `forwardRef` xuất hiện ở khắp nơi, một provider `REQUEST` scope làm nửa ứng dụng bị khởi tạo lại mỗi request, và lỗi trả về cho client lúc thì là JSON của Nest, lúc thì là stack trace của Prisma. Bài này đi vào những gì NestJS thực sự làm bên dưới — request lifecycle, dependency injection, scope, dynamic module — rồi dùng chúng để dựng một API thương mại điện tử theo kiểu modular monolith: ranh giới module rõ ràng, error model nhất quán, request context không cần REQUEST scope, và shutdown không làm rơi request.</Lead>
+
+## Bối cảnh phiên bản: NestJS 12 và Express 5
+
+Mọi thứ trong bài được kiểm tra với NestJS 12.2 (bản mới nhất trên npm lúc viết). Vài thay đổi gần đây ảnh hưởng trực tiếp đến nội dung bên dưới:
+
+- **NestJS 12 ra mắt cuối tháng 8/2026.** Các package core chuyển sang ESM; project CommonJS vẫn chạy được nhờ `require(esm)` của Node, nên bạn không bị ép đổi format. Yêu cầu Node.js 20.19+ hoặc 22.12+. `nest new` giờ hỏi bạn chọn CommonJS hay ESM; project ESM mới mặc định dùng Vitest. Chi tiết trong [migration guide](https://docs.nestjs.com/migration-guide).
+- **Express 5 là adapter mặc định từ NestJS 11** (đầu năm 2025), và `@nestjs/platform-express` 12 vẫn dùng Express 5. Thay đổi đáng nhớ nhất là cú pháp route: wildcard phải có tên (`@Get('files/*path')`), wildcard tuỳ chọn dùng ngoặc nhọn (`'docs/{*path}'`), middleware toàn cục viết `forRoutes('{*splat}')`. Query parser mặc định chuyển sang `simple`, nên `?items[]=1` không còn tự thành mảng — cần `app.set('query parser', 'extended')` trên `NestExpressApplication` nếu bạn phụ thuộc vào nó.
+- **Validation theo Standard Schema (v12).** `@Body()`, `@Query()`, `@Param()` nhận option `schema` với bất kỳ thư viện nào theo chuẩn [Standard Schema](https://standardschema.dev/) (Zod, Valibot, ArkType), đi kèm `StandardSchemaValidationPipe` có sẵn trong `@nestjs/common`. `ValidationPipe` + class-validator vẫn được hỗ trợ đầy đủ.
+- **`errorCode` trong `HttpException` (v12)**: mã lỗi máy đọc được, serialize vào response body.
+- **Lifecycle hook gọi theo cấp bậc component (v12)**: thứ tự `onModuleInit` / shutdown hook giữa các provider liên quan có thể khác v11. Nếu bạn có logic phụ thuộc thứ tự khởi tạo, hãy test lại khi nâng cấp.
+
+<Callout>
+  **Về ESM:** nếu project của bạn là ESM, mọi import tương đối cần đuôi `.js` (`./orders.service.js`). Code trong bài lược phần đuôi cho gọn — với project CommonJS thì viết y như vậy.
+</Callout>
+
+## Request lifecycle: một request đi qua những đâu
+
+Đây là thứ tự chính xác theo [tài liệu request lifecycle](https://docs.nestjs.com/faq/request-lifecycle) của NestJS. Mình khuyên bạn thuộc lòng nó, vì gần như mọi câu hỏi kiểu "sao guard không thấy body đã validate?" hay "sao filter không bắt được lỗi này?" đều trả lời được từ danh sách này:
+
+1. **Middleware** — middleware toàn cục trước, rồi middleware gắn theo module. Middleware của module `@Global()` chạy trước, sau đó đến root module, rồi các module khác theo khoảng cách từ root.
+2. **Guard** — global → controller → route.
+3. **Interceptor (phần trước handler)** — global → controller → route.
+4. **Pipe** — global → controller → route → pipe gắn trên từng tham số.
+5. **Controller (handler)** → service.
+6. **Interceptor (phần sau handler)** — ngược lại: route → controller → global.
+7. **Exception filter** — route → controller → global.
+8. Response.
+
+<Figure src="/blog/nestjs-request-lifecycle-architecture-lifecycle.svg" alt="Sơ đồ request lifecycle của NestJS: middleware, guard, interceptor trước handler, pipe, handler, interceptor sau handler; lỗi ở bất kỳ bước nào đi thẳng tới exception filter" caption="Request đi qua từng lớp enhancer theo thứ tự cố định. Interceptor bọc quanh handler nên chạy hai lần; lỗi chưa bắt ở bất kỳ đâu đi tắt tới exception filter." />
+
+Vài điểm quan trọng nằm giữa các dòng:
+
+- **Interceptor bọc quanh handler** theo kiểu "vào trước, ra sau" (first-in, last-out), giống các lớp hành tây. Interceptor global là lớp ngoài cùng: thấy request đầu tiên và thấy response cuối cùng. Đó là lý do interceptor đo thời gian nên là global.
+- **Guard chạy trước pipe.** Guard thấy request thô, *chưa* validate. Nếu guard cần đọc `body` (hiếm khi nên), nó phải tự kiểm tra kiểu dữ liệu.
+- **Pipe trên tham số chạy theo thứ tự ngược**: tham số cuối được xử lý trước, tham số đầu xử lý sau. Hiếm khi quan trọng, trừ khi pipe của bạn có side effect.
+- **Filter là thành phần duy nhất không "global trước".** Nest tìm filter từ cấp thấp nhất: route, rồi controller, rồi global. Filter nào bắt được lỗi thì lỗi dừng ở đó — tài liệu nói rõ exception không thể chuyển từ filter này sang filter khác. Muốn tái sử dụng logic, dùng kế thừa giữa các class filter.
+- **Lỗi chưa bắt sẽ bỏ qua toàn bộ phần còn lại** của lifecycle và đi thẳng tới filter. Lỗi bạn đã `try/catch` thì filter không bao giờ thấy.
+- **Lỗi ném ra từ middleware chỉ tới được filter global**, vì lúc middleware chạy, Nest chưa chọn route handler nào nên chưa biết filter cấp controller hay route.
+
+### Gắn enhancer ở ba cấp
+
+Trong thực tế, mình đăng ký enhancer global qua DI token (`APP_GUARD`, `APP_INTERCEPTOR`, `APP_PIPE`, `APP_FILTER`) thay vì `app.useGlobalGuards()` trong `main.ts`. Lý do: enhancer đăng ký trong `main.ts` nằm ngoài mọi module nên không inject được dependency, và còn bị bỏ qua khi bạn dựng app trong test bằng `Test.createTestingModule`.
+
+```ts
+// app.module.ts
+import { MiddlewareConsumer, Module, NestModule, StandardSchemaValidationPipe } from '@nestjs/common';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
+
+@Module({
+  imports: [OrdersModule, InventoryModule, PaymentsModule],
+  providers: [
+    { provide: APP_GUARD, useClass: JwtAuthGuard }, // guard global
+    { provide: APP_INTERCEPTOR, useClass: TimingInterceptor }, // lớp ngoài cùng
+    { provide: APP_PIPE, useValue: new StandardSchemaValidationPipe() }, // pipe global
+    { provide: APP_FILTER, useClass: ProblemDetailsFilter }, // filter global, chốt chặn cuối
+  ],
+})
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Express 5: wildcard phải có tên; '{*splat}' khớp cả đường dẫn gốc
+    consumer.apply(RequestLoggerMiddleware).forRoutes('{*splat}');
+  }
+}
+
+// orders.controller.ts
+@Controller('orders')
+@UseGuards(ScopesGuard) // chạy sau JwtAuthGuard
+@UseInterceptors(IdempotencyInterceptor) // nằm trong TimingInterceptor
+export class OrdersController {
+  constructor(private readonly orders: OrdersService) {}
+
+  @Post()
+  @RequireScopes(['orders:write'])
+  @UseInterceptors(AuditInterceptor) // lớp trong cùng, sát handler
+  place(@Body({ schema: placeOrderSchema }) input: PlaceOrderInput) {
+    return this.orders.placeOrder(input);
+  }
+}
+```
+
+Với `POST /orders`, thứ tự sẽ là: `RequestLoggerMiddleware` → `JwtAuthGuard` → `ScopesGuard` → `TimingInterceptor` (vào) → `IdempotencyInterceptor` (vào) → `AuditInterceptor` (vào) → `StandardSchemaValidationPipe` → `place()` → `AuditInterceptor` (ra) → `IdempotencyInterceptor` (ra) → `TimingInterceptor` (ra). Nếu `place()` ném lỗi, interceptor vẫn thấy lỗi đó trong stream RxJS (và có thể map nó), sau đó `ProblemDetailsFilter` nhận.
+
+Một chi tiết về `APP_*`: dù bạn khai báo trong module nào, enhancer vẫn là global. Hãy khai báo nó ở module định nghĩa enhancer đó (thường là `AppModule` hoặc một `CoreModule`), đừng rải rác.
+
+## Middleware, guard, interceptor, pipe, filter: cái nào cho việc gì
+
+Năm loại này chồng lấn nhau đủ để người mới chọn sai. Câu hỏi mình dùng để phân loại là: *thành phần này cần thấy gì, và nó được phép quyết định gì?*
+
+| | Thấy được gì | Quyết định được gì | Dùng điển hình | Không nên dùng cho |
+| --- | --- | --- | --- | --- |
+| **Middleware** | `req`, `res`, `next` thô; chưa biết route handler nào sẽ chạy | Gọi hoặc không gọi `next()`, ghi header, kết thúc response sớm | Request logging, CORS, security header, gắn correlation ID, body parser | Phân quyền (không biết handler, không đọc được metadata) |
+| **Guard** | `ExecutionContext`: handler, class, metadata qua `Reflector` | Trả `true`/`false` (hoặc ném lỗi) — cho đi tiếp hay không | Xác thực, phân quyền theo role/scope, feature flag theo route | Biến đổi dữ liệu, logic nghiệp vụ |
+| **Interceptor** | `ExecutionContext` + stream kết quả của handler (RxJS) | Chạy logic trước/sau, biến đổi kết quả hoặc lỗi, thay thế hẳn kết quả (cache) | Đo thời gian, logging có ngữ cảnh, map response, timeout, idempotency, cache | Phân quyền (guard đã chạy trước), validate input |
+| **Pipe** | Giá trị của từng tham số + `ArgumentMetadata` (kiểu, decorator, schema) | Biến đổi hoặc từ chối giá trị đầu vào | Validate DTO, parse `id`, chuyển kiểu, giá trị mặc định | Gọi DB để kiểm tra nghiệp vụ (đó là việc của service) |
+| **Exception filter** | Exception + `ArgumentsHost` | Viết response lỗi | Chuẩn hoá error model, map lỗi domain sang HTTP, log lỗi 5xx | Nuốt lỗi để "cho qua", logic khôi phục nghiệp vụ |
+
+Hai quy tắc ngón tay cái mình hay nhắc trong code review:
+
+- **Nếu cần metadata của route** (`@RequireScopes`, `@Public`), đó là guard hoặc interceptor — middleware không đọc được.
+- **Nếu cần chạy cả trước lẫn sau handler**, đó là interceptor. Middleware có thể làm việc này bằng cách nghe sự kiện `finish` của response, nhưng nó không thấy giá trị handler trả về, không thấy lỗi đã được map, và không hoạt động với transport khác HTTP.
+
+## Dependency injection bên dưới
+
+Khi ứng dụng khởi động, Nest quét cây module, đọc metadata của từng provider (kiểu tham số constructor qua `emitDecoratorMetadata`, hoặc token khai báo bằng `@Inject()`), rồi dựng một đồ thị phụ thuộc cho mỗi module. Mỗi provider được định danh bằng một **injection token** — có thể là class, string, symbol. Khi một class cần dependency, Nest tìm token đó trong chính module, rồi trong các provider mà module được import *export* ra, rồi trong các module global. Không thấy thì báo lỗi ngay lúc boot — đây là điểm cộng lớn: lỗi wiring không bao giờ đợi tới lúc có request mới lộ ra.
+
+### Token và custom provider
+
+Interface của TypeScript bị xoá khi compile, nên không thể làm token. Có hai lựa chọn: **abstract class** (vừa là contract, vừa là token, inject không cần `@Inject()`) hoặc **symbol** (cho những thứ không phải class, như config hay client của thư viện). Tài liệu khuyên dùng symbol thay vì string vì symbol không bao giờ trùng nhau ngoài ý muốn. Bốn kiểu custom provider phủ gần hết nhu cầu:
+
+```ts
+// orders/domain/order.repository.ts — "port": abstract class làm token
+export abstract class OrderRepository {
+  abstract findById(id: string): Promise<Order | null>;
+  abstract save(order: Order): Promise<void>;
+}
+
+// shared/tokens.ts
+export const CLOCK = Symbol('CLOCK');
+export const REDIS = Symbol('REDIS');
+export interface Clock { now(): Date }
+
+// orders.module.ts
+import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createClient } from 'redis';
+
+@Module({
+  providers: [
+    // useClass: token là abstract class, implementation chọn ở đây
+    { provide: OrderRepository, useClass: PrismaOrderRepository },
+    // useValue: hằng số, object có sẵn, hoặc mock trong test
+    { provide: CLOCK, useValue: { now: () => new Date() } satisfies Clock },
+    // useFactory: cần dependency khác hoặc khởi tạo bất đồng bộ
+    {
+      provide: REDIS,
+      inject: [ConfigService],
+      useFactory: async (config: ConfigService<Env, true>) => {
+        const client = createClient({ url: config.get('REDIS_URL', { infer: true }) });
+        await client.connect(); // Nest đợi xong mới khởi tạo provider phụ thuộc
+        return client;
+      },
+    },
+    // useExisting: alias — hai token, cùng một instance
+    { provide: 'LegacyOrderRepo', useExisting: OrderRepository },
+  ],
+})
+export class OrdersModule {}
+
+// Bên tiêu thụ
+@Injectable()
+export class OrdersService {
+  constructor(
+    private readonly orders: OrderRepository, // abstract class: không cần @Inject
+    @Inject(CLOCK) private readonly clock: Clock, // symbol: cần @Inject
+  ) {}
+}
+```
+
+`useFactory` là chỗ duy nhất trong bốn kiểu cho phép `async`: Nest sẽ `await` factory trước khi khởi tạo bất kỳ provider nào phụ thuộc vào nó. Đây là cách đúng để mở kết nối DB hay nạp secret lúc boot — thay vì gọi trong constructor rồi hy vọng nó xong trước request đầu tiên.
+
+### Scope: DEFAULT, REQUEST, TRANSIENT
+
+Theo [tài liệu injection scopes](https://docs.nestjs.com/fundamentals/injection-scopes):
+
+- **DEFAULT (singleton):** một instance cho cả ứng dụng, sống cùng ứng dụng. Đây là mặc định và nên là lựa chọn cho 95% provider.
+- **REQUEST:** một instance mới cho mỗi request, bị thu gom sau khi request xong.
+- **TRANSIENT:** mỗi bên inject nhận một instance riêng, không chia sẻ.
+
+Điều nhiều người không biết là **REQUEST scope lan ngược lên chuỗi phụ thuộc**. Nếu `OrdersController` → `OrdersService` → `OrderRepository` → `TenantContext`, và chỉ `TenantContext` là REQUEST scope, thì `OrderRepository`, `OrdersService` và `OrdersController` *cũng thành* REQUEST scope — vì một singleton không thể giữ tham chiếu tới thứ thay đổi theo từng request. Mỗi request, Nest dựng lại cả nhánh đó. TRANSIENT thì không lan như vậy: singleton inject một provider transient vẫn là singleton.
+
+Tài liệu nói một ứng dụng "thiết kế đúng" dùng request-scoped provider không nên chậm hơn quá khoảng 5%. Con số đó đúng khi nhánh bị kéo theo nhỏ. Vấn đề là trong codebase thật, một provider REQUEST scope ở đáy cây (logger "biết request ID", repository "biết tenant") kéo theo gần như toàn bộ controller và service. Ngoài chi phí khởi tạo và GC, bạn còn mất những thứ tinh tế hơn: lifecycle hook như `onModuleInit` không được gọi cho provider REQUEST scope, chúng không dùng được trong cron job hay message consumer không có request, và việc debug "instance nào đang giữ state nào" khó hơn hẳn.
+
+### Durable provider cho multi-tenant
+
+Nếu bạn thực sự cần một dependency khác nhau theo tenant (mỗi tenant một connection pool chẳng hạn), **durable provider** cho phép các request cùng tenant dùng chung một cây con DI thay vì dựng lại mỗi request:
+
+```ts
+// tenant-context-id.strategy.ts
+import { ContextId, ContextIdFactory, ContextIdStrategy, HostComponentInfo } from '@nestjs/core';
+import type { Request } from 'express';
+
+const tenantTrees = new Map<string, ContextId>();
+
+export class AggregateByTenantContextIdStrategy implements ContextIdStrategy<Request> {
+  attach(contextId: ContextId, request: Request) {
+    const tenantId = request.headers['x-tenant-id'];
+    if (typeof tenantId !== 'string') return undefined; // không có tenant: hành vi mặc định
+
+    let tenantSubTreeId = tenantTrees.get(tenantId);
+    if (!tenantSubTreeId) {
+      tenantSubTreeId = ContextIdFactory.create();
+      tenantTrees.set(tenantId, tenantSubTreeId);
+    }
+    return {
+      // provider durable dùng cây của tenant; provider REQUEST thường vẫn theo từng request
+      resolve: (info: HostComponentInfo) => (info.isTreeDurable ? tenantSubTreeId : contextId),
+      payload: { tenantId }, // thứ được inject qua @Inject(REQUEST) trong cây durable
+    };
+  }
+}
+
+// main.ts — đăng ký trước khi nhận request
+ContextIdFactory.apply(new AggregateByTenantContextIdStrategy());
+
+// tenant-data-source.ts
+@Injectable({ scope: Scope.REQUEST, durable: true })
+export class TenantDataSource {
+  constructor(@Inject(REQUEST) private readonly ctx: { tenantId: string }) {}
+}
+```
+
+Tài liệu tự cảnh báo rằng chiến lược này không lý tưởng khi số tenant lớn — map trên giữ một cây DI cho mỗi tenant mãi mãi. Với hàng nghìn tenant, mình sẽ dùng singleton giữ một cache pool có giới hạn (LRU) và đọc tenant hiện tại từ request context (phần AsyncLocalStorage bên dưới), thay vì nhờ DI làm việc đó.
+
+### Circular dependency và forwardRef là một mùi thiết kế
+
+Nest có `forwardRef()` để gỡ vòng tròn: `OrdersModule` import `forwardRef(() => PaymentsModule)` và ngược lại, hoặc `@Inject(forwardRef(() => PaymentsService))` ở cả hai đầu. Nó *chạy*, nhưng [tài liệu](https://docs.nestjs.com/fundamentals/circular-dependency) cũng nói rõ thứ tự khởi tạo khi đó là không xác định, nên code của bạn không được phụ thuộc vào constructor nào chạy trước; vòng tròn có dính provider REQUEST scope còn có thể cho ra dependency `undefined`.
+
+Với mình, mỗi `forwardRef` giữa hai feature module là một câu hỏi thiết kế chưa được trả lời: *ai thực sự phụ thuộc vào ai?* Thường câu trả lời là một trong ba:
+
+- **Một chiều là lệnh, chiều kia là phản ứng.** `orders` gọi `payments.authorize()` (lệnh, đồng bộ, cần kết quả). `payments` muốn báo `orders` khi tiền đã về — đó là phản ứng, nên đi bằng domain event, không cần import ngược.
+- **Có một khái niệm thứ ba bị kẹt giữa hai module.** Tách nó ra thành module riêng mà cả hai cùng phụ thuộc.
+- **Hai module thật ra là một.** Nếu chúng không thể sống thiếu nhau, gộp lại.
+
+Một nguồn vòng tròn khác hay bị bỏ qua là **barrel file** (`index.ts`). Tài liệu khuyên không dùng barrel cho class module và provider, và tuyệt đối không import file cùng thư mục qua barrel của chính thư mục đó. Mình vẫn dùng một `index.ts` làm "public API" cho mỗi feature module (xem phần ranh giới module), nhưng chỉ code *bên ngoài* module mới import qua nó.
+
+## Dynamic module: forRoot, forRootAsync và ConfigurableModuleBuilder
+
+Module tĩnh không nhận tham số. Khi một module cần cấu hình từ bên ngoài — client cổng thanh toán cần API key, module cache cần TTL — bạn dùng **dynamic module**: một static method trả về object `DynamicModule`. Quy ước của các package `@nestjs/*`: `register()` cấu hình riêng cho module gọi nó, `forRoot()` cấu hình một lần cho cả app, `forFeature()` tinh chỉnh cấu hình đã có cho từng module; mỗi cái có bản `Async` để lấy cấu hình qua DI.
+
+Viết tay `forRoot` / `forRootAsync` với đủ ba biến thể `useFactory` / `useClass` / `useExisting` khá dài và dễ sai. `ConfigurableModuleBuilder` sinh phần đó cho bạn:
+
+```ts
+// payments/gateway/payment-gateway.module-definition.ts
+import { ConfigurableModuleBuilder } from '@nestjs/common';
+
+export interface PaymentGatewayOptions {
+  driver: 'stripe' | 'fake';
+  secretKey?: string;
+  timeoutMs: number;
+}
+
+export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN: GATEWAY_OPTIONS } =
+  new ConfigurableModuleBuilder<PaymentGatewayOptions>()
+    .setClassMethodName('forRoot') // sinh forRoot()/forRootAsync() thay vì register()
+    .build();
+
+// payments/gateway/payment-gateway.module.ts — module hạ tầng, có cấu hình
+@Module({
+  providers: [
+    {
+      provide: PAYMENT_GATEWAY,
+      inject: [GATEWAY_OPTIONS],
+      useFactory: (opts: PaymentGatewayOptions) =>
+        opts.driver === 'stripe' ? new StripeGateway(opts.secretKey!, opts.timeoutMs) : new FakeGateway(),
+    },
+  ],
+  exports: [PAYMENT_GATEWAY],
+})
+export class PaymentGatewayModule extends ConfigurableModuleClass {}
+
+// payments/payments.module.ts — feature module dùng nó bên trong
+@Module({
+  imports: [
+    PaymentGatewayModule.forRootAsync({
+      inject: [ConfigService], // ConfigModule là global nên không cần imports
+      useFactory: (config: ConfigService<Env, true>) => ({
+        driver: config.get('PAYMENTS_DRIVER', { infer: true }),
+        secretKey: config.get('STRIPE_SECRET_KEY', { infer: true }),
+        timeoutMs: 5_000,
+      }),
+    }),
+  ],
+  providers: [{ provide: PaymentsApi, useClass: PaymentsService }],
+  exports: [PaymentsApi], // chỉ export port; gateway là chi tiết nội bộ của payments
+})
+export class PaymentsModule {}
+```
+
+Ngoài `ConfigurableModuleClass` và token options, `build()` còn trả về `OPTIONS_TYPE` / `ASYNC_OPTIONS_TYPE` để bạn override `forRoot` khi cần thêm logic, và `setExtras()` cho những option điều khiển chính module (như `isGlobal`) mà không lọt vào object options được inject. `forRootAsync` sinh ra hỗ trợ đủ `useFactory` / `useClass` / `useExisting` cùng `imports` và `inject`.
+
+Lưu ý từ NestJS 11: dynamic module được so sánh theo **tham chiếu object**, không còn theo hash của metadata. Nếu bạn gọi `PaymentGatewayModule.forRoot(...)` hai lần ở hai nơi với cùng tham số, bạn sẽ có hai instance. Muốn dùng chung, gán kết quả vào một biến rồi import biến đó.
+
+## Cấu hình được validate ngay lúc boot
+
+Một biến môi trường thiếu hay sai định dạng nên làm ứng dụng **chết ngay khi khởi động**, không phải làm request thứ một nghìn lỗi lúc 3 giờ sáng. `@nestjs/config` hỗ trợ việc này, và từ v12, `validationSchema` nhận bất kỳ schema Standard Schema nào (trước đó chỉ Joi, hoặc bạn tự viết hàm `validate`):
+
+```ts
+// config/env.ts
+import { z } from 'zod';
+
+export const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    DATABASE_URL: z.url(),
+    REDIS_URL: z.url(),
+    PAYMENTS_DRIVER: z.enum(['stripe', 'fake']).default('fake'),
+    STRIPE_SECRET_KEY: z.string().startsWith('sk_').optional(),
+    SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).default(10_000),
+  })
+  .refine((env) => env.PAYMENTS_DRIVER !== 'stripe' || !!env.STRIPE_SECRET_KEY, {
+    message: 'STRIPE_SECRET_KEY is required when PAYMENTS_DRIVER=stripe',
+    path: ['STRIPE_SECRET_KEY'],
+  });
+
+export type Env = z.infer<typeof envSchema>;
+
+// app.module.ts
+ConfigModule.forRoot({
+  isGlobal: true, // module hạ tầng: global là hợp lý
+  cache: true,
+  validationSchema: envSchema, // v12; với v11 dùng: validate: (raw) => envSchema.parse(raw)
+});
+
+// Ở bất kỳ đâu: kiểu được suy ra từ schema, PORT đã là number
+constructor(private readonly config: ConfigService<Env, true>) {}
+const port = this.config.get('PORT', { infer: true });
+```
+
+Ba thói quen đi kèm: không đọc `process.env` trực tiếp ngoài file này (để mọi biến đều qua schema); không có giá trị mặc định cho secret (thiếu là phải chết); và với cấu hình phụ thuộc lẫn nhau như `PAYMENTS_DRIVER`/`STRIPE_SECRET_KEY`, viết luật ràng buộc ngay trong schema thay vì `if` rải rác trong code.
+
+## Validation: ValidationPipe + class-validator hay Standard Schema
+
+NestJS 12 cho bạn hai con đường chính thức. Cùng một payload đặt hàng, viết theo hai cách:
+
+```ts
+// Cách 1: class-validator + ValidationPipe — DTO là class
+import { Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsInt, IsString, IsUUID, Min, ValidateNested } from 'class-validator';
+
+class OrderLineDto {
+  @IsString() sku!: string;
+  @IsInt() @Min(1) quantity!: number;
+}
+
+export class PlaceOrderDto {
+  @IsUUID() customerId!: string;
+  @IsString() paymentMethodId!: string;
+  @ValidateNested({ each: true }) @Type(() => OrderLineDto)
+  @ArrayMinSize(1) @ArrayMaxSize(50)
+  lines!: OrderLineDto[];
+}
+
+// { provide: APP_PIPE, useValue: new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }) }
+
+// Cách 2: Standard Schema (Zod) — schema là giá trị, kiểu được suy ra
+import { z } from 'zod';
+
+export const placeOrderSchema = z.strictObject({
+  customerId: z.uuid(),
+  paymentMethodId: z.string().min(1),
+  lines: z
+    .array(z.strictObject({ sku: z.string().min(1), quantity: z.number().int().min(1) }))
+    .min(1)
+    .max(50),
+});
+export type PlaceOrderInput = z.infer<typeof placeOrderSchema>;
+
+// Controller: @Body({ schema: placeOrderSchema }) input: PlaceOrderInput
+// Global:     { provide: APP_PIPE, useValue: new StandardSchemaValidationPipe() }
+```
+
+| | class-validator + `ValidationPipe` | Standard Schema (`schema` + `StandardSchemaValidationPipe`) |
+| --- | --- | --- |
+| Nguồn của kiểu TypeScript | Class, khai báo song song với decorator | Suy ra từ schema, một nguồn duy nhất |
+| Thuộc tính lạ | `whitelist` / `forbidNonWhitelisted` trên pipe | Do schema quyết định (`z.object` bỏ đi, `z.strictObject` từ chối) |
+| Chuyển kiểu | `transform: true` + class-transformer | Coercion khai báo trong schema (`z.coerce`) |
+| Chia sẻ với frontend | Kéo theo decorator và `reflect-metadata` | Dùng chung schema dễ dàng trong monorepo |
+| OpenAPI | Tích hợp lâu năm qua `@nestjs/swagger` | Cần bước chuyển schema sang OpenAPI — kiểm tra bản `@nestjs/swagger` bạn dùng |
+| Phụ thuộc vào `emitDecoratorMetadata` | Có | Không cho phần validate |
+
+Mình chọn thế nào? Codebase đã có hàng trăm DTO class-validator chạy ổn thì không có lý do đập đi — tài liệu NestJS vẫn coi class-validator là lựa chọn mặc định. Với dự án mới trong monorepo có frontend TypeScript, mình nghiêng về Zod vì một schema dùng được cho form phía client, validate phía server và suy ra kiểu ở cả hai đầu. Tin tốt là hai pipe có thể chạy song song khi migrate: `StandardSchemaValidationPipe` bỏ qua tham số không gắn `schema`, còn `ValidationPipe` bỏ qua tham số không có kiểu là class.
+
+## Một error model nhất quán: problem details theo RFC 9457
+
+Mặc định, NestJS trả `{ "statusCode": 404, "message": "...", "error": "Not Found" }` cho `HttpException`, và `{ "statusCode": 500, "message": "Internal server error" }` cho mọi thứ khác. An toàn, nhưng không đủ: client không có mã lỗi ổn định để rẽ nhánh, lỗi validate lúc là chuỗi lúc là mảng, và mỗi team tự chế format riêng cho lỗi nghiệp vụ.
+
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) (thay thế RFC 7807 từ năm 2023) định nghĩa sẵn một format: media type `application/problem+json`, các trường `type` (URI định danh loại lỗi, mặc định `about:blank`), `title` (tóm tắt ngắn, *không đổi* giữa các lần xảy ra), `status`, `detail` (giải thích cho lần xảy ra này, dành cho người đọc chứ không phải để client parse), `instance`, cộng với các trường mở rộng tuỳ ý. RFC cũng nhắc thẳng trong phần bảo mật: đừng để lộ chi tiết triển khai như stack trace.
+
+Cách mình làm: lỗi nghiệp vụ là class riêng, *không biết gì về HTTP*; một filter global duy nhất dịch mọi thứ sang problem details.
+
+```ts
+// common/errors/domain-error.ts
+export abstract class DomainError extends Error {
+  abstract readonly code: string; // ổn định, máy đọc được: 'OUT_OF_STOCK'
+  abstract readonly title: string; // ngắn, giống nhau giữa các lần xảy ra
+  constructor(detail: string, readonly extensions: Record<string, unknown> = {}) {
+    super(detail);
+    this.name = new.target.name;
+  }
+}
+
+export class OutOfStockError extends DomainError {
+  readonly code = 'OUT_OF_STOCK';
+  readonly title = 'Insufficient stock';
+  constructor(sku: string, requested: number, available: number) {
+    super(`Only ${available} unit(s) of ${sku} left, ${requested} requested.`, { sku, available });
+  }
+}
+
+// common/http/problem-details.filter.ts
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { HttpAdapterHost } from '@nestjs/core';
+import { STATUS_CODES } from 'node:http';
+import { ClsService } from 'nestjs-cls';
+
+type Problem = { type: string; title: string; status: number; detail?: string } & Record<string, unknown>;
+
+// Ánh xạ lỗi nghiệp vụ sang HTTP nằm ở tầng HTTP, không nằm trong domain
+const STATUS_BY_CODE: Record<string, number> = {
+  OUT_OF_STOCK: HttpStatus.CONFLICT,
+  PAYMENT_DECLINED: HttpStatus.UNPROCESSABLE_ENTITY,
+  ORDER_NOT_FOUND: HttpStatus.NOT_FOUND,
+};
+
+@Catch() // bắt mọi thứ
+export class ProblemDetailsFilter implements ExceptionFilter {
+  private readonly logger = new Logger(ProblemDetailsFilter.name);
+
+  constructor(
+    private readonly adapterHost: HttpAdapterHost,
+    private readonly cls: ClsService,
+  ) {}
+
+  catch(exception: unknown, host: ArgumentsHost) {
+    const { httpAdapter } = this.adapterHost; // không phụ thuộc Express hay Fastify
+    const ctx = host.switchToHttp();
+    const problem: Problem = {
+      ...this.toProblem(exception),
+      instance: httpAdapter.getRequestUrl(ctx.getRequest()),
+      traceId: this.cls.getId(), // client gửi traceId này khi báo lỗi
+    };
+
+    if (problem.status >= 500) {
+      const stack = exception instanceof Error ? exception.stack : String(exception);
+      this.logger.error(`Unhandled error traceId=${problem.traceId}`, stack);
+    }
+
+    httpAdapter.setHeader(ctx.getResponse(), 'Content-Type', 'application/problem+json');
+    httpAdapter.reply(ctx.getResponse(), problem, problem.status);
+  }
+
+  private toProblem(exception: unknown): Problem {
+    if (exception instanceof DomainError) {
+      return {
+        type: `https://api.shop.example/problems/${exception.code.toLowerCase()}`,
+        title: exception.title,
+        status: STATUS_BY_CODE[exception.code] ?? HttpStatus.UNPROCESSABLE_ENTITY,
+        detail: exception.message,
+        code: exception.code,
+        ...exception.extensions,
+      };
+    }
+    if (exception instanceof HttpException) {
+      const status = exception.getStatus();
+      const body = exception.getResponse();
+      const message = typeof body === 'string' ? body : (body as { message?: unknown }).message;
+      return {
+        type: 'about:blank',
+        title: STATUS_CODES[status] ?? 'Error',
+        status,
+        detail: typeof message === 'string' ? message : undefined,
+        errors: Array.isArray(message) ? message : undefined, // lỗi validate: danh sách
+        code: exception.errorCode, // v12: HttpException nhận option errorCode
+      };
+    }
+    // Lỗi không lường trước (Prisma, TypeError...): không bao giờ trả message gốc
+    return { type: 'about:blank', title: STATUS_CODES[500]!, status: 500, detail: 'An unexpected error occurred.' };
+  }
+}
+```
+
+Client nhận được thứ như sau, với mọi loại lỗi:
+
+```json
+{
+  "type": "https://api.shop.example/problems/out_of_stock",
+  "title": "Insufficient stock",
+  "status": 409,
+  "detail": "Only 2 unit(s) of SKU-RED-42 left, 3 requested.",
+  "code": "OUT_OF_STOCK",
+  "sku": "SKU-RED-42",
+  "available": 2,
+  "instance": "/orders",
+  "traceId": "8f0c2a6e-1d1b-4a8e-9f57-3c2a1b0e9d41"
+}
+```
+
+Filter này đặt qua `APP_FILTER` để inject được `HttpAdapterHost` và `ClsService`. Express adapter của Nest giữ nguyên `Content-Type` dạng `+json` mà bạn đặt, nên header `application/problem+json` đi tới client như mong muốn. Vì nó là filter global, nó cũng là filter duy nhất bắt được lỗi ném ra từ middleware.
+
+## Request context với AsyncLocalStorage thay cho REQUEST scope
+
+Nhu cầu phổ biến nhất khiến người ta bật REQUEST scope là: "service ở tầng sâu cần biết request ID / user / tenant hiện tại". Truyền tham số qua năm tầng thì xấu; inject `REQUEST` thì kéo cả nhánh thành REQUEST scope như đã nói.
+
+`AsyncLocalStorage` của Node giải quyết đúng chuyện này: một "kho" gắn với chuỗi thực thi bất đồng bộ, mọi `await` bên trong đều thấy cùng một store. [Recipe chính thức](https://docs.nestjs.com/recipes/async-local-storage) gọi nó là một lựa chọn thay thế cho REQUEST-scoped provider. Thay vì tự viết middleware `als.run()`, mình dùng [nestjs-cls](https://papooch.github.io/nestjs-cls/) (bản 7 hỗ trợ NestJS 12, ship cả ESM lẫn CommonJS) — package bên thứ ba, không do team NestJS duy trì, nhưng được tài liệu chính thức giới thiệu:
+
+```ts
+// app.module.ts
+import { randomUUID } from 'node:crypto';
+import { ClsModule, ClsService, ClsStore } from 'nestjs-cls';
+import type { Request } from 'express';
+
+export interface AppClsStore extends ClsStore {
+  userId?: string;
+  tenantId?: string;
+}
+
+ClsModule.forRoot({
+  global: true,
+  middleware: {
+    mount: true, // gắn middleware cho mọi route, chạy trước guard
+    generateId: true,
+    // Tôn trọng correlation ID từ gateway/upstream nếu có, không thì tự sinh
+    idGenerator: (req: Request) => {
+      const incoming = req.headers['x-request-id'];
+      return typeof incoming === 'string' && incoming.length <= 128 ? incoming : randomUUID();
+    },
+    setup: (cls, req: Request) => {
+      cls.set('tenantId', req.headers['x-tenant-id'] as string | undefined);
+    },
+  },
+});
+
+// jwt-auth.guard.ts — sau khi xác thực, ghi user vào context
+this.cls.set('userId', payload.sub);
+
+// Ở bất kỳ service singleton nào, sâu bao nhiêu cũng được
+@Injectable()
+export class AuditLog {
+  constructor(private readonly cls: ClsService<AppClsStore>) {}
+
+  record(action: string) {
+    const entry = { action, userId: this.cls.get('userId'), traceId: this.cls.getId() };
+    // ...ghi vào bảng audit; không cần inject REQUEST, không bị kéo thành REQUEST scope
+  }
+}
+```
+
+Với HTTP, nestjs-cls khuyên khởi tạo context bằng middleware (như trên); guard và interceptor là phương án cho transport khác. Hai lưu ý: context chỉ tồn tại trong chuỗi async của request, nên job chạy nền (queue, cron) phải tự mở context của riêng nó (`cls.run()`), và đừng biến CLS thành túi đựng mọi thứ — chỉ để những giá trị thật sự là "ngữ cảnh" (ID, user, tenant, locale), còn dữ liệu nghiệp vụ vẫn đi qua tham số.
+
+## Ranh giới module cho một modular monolith
+
+Module trong NestJS trước hết là một **đơn vị đóng gói DI**: provider không được export thì module khác không inject được. Đây chính là công cụ bạn cần để dựng modular monolith — một deployable duy nhất, nhưng bên trong chia thành các feature module có ranh giới rõ như thể chúng là service riêng. Lợi ích là bạn có kỷ luật kiến trúc của microservice mà không phải trả giá vận hành của hệ phân tán; và nếu một ngày cần tách `payments` ra thật, đường cắt đã có sẵn.
+
+Bốn quy tắc mình áp dụng:
+
+1. **Chia theo nghiệp vụ, không theo tầng kỹ thuật.** `orders`, `inventory`, `payments` — không phải `controllers`, `services`, `repositories`. Mỗi feature module sở hữu dữ liệu của nó (bảng, schema); module khác không query thẳng vào bảng của nó.
+2. **`exports` là public API.** Mỗi module export rất ít: thường là một class "API" (port) cho những thao tác đồng bộ mà module khác được phép gọi. Repository, gateway, entity nội bộ không bao giờ được export.
+3. **Không deep import.** Code ngoài module chỉ import từ `modules/inventory/index.ts`, không bao giờ từ `modules/inventory/infrastructure/...`. Ranh giới DI không đủ: TypeScript vẫn cho bạn import thẳng một class rồi `new` nó. Mình chặn bằng rule `no-restricted-imports` của ESLint (hoặc dependency-cruiser) với pattern `@/modules/*/*` trên CI.
+4. **Lệnh đi bằng lời gọi, phản ứng đi bằng event.** Khi `orders` *cần kết quả* ngay (giữ hàng, uỷ quyền thanh toán), nó gọi API đồng bộ của module kia. Khi một module chỉ cần *biết* điều gì đó đã xảy ra (đơn đã đặt, đơn đã huỷ), nó nghe domain event. Phụ thuộc đồng bộ luôn đi một chiều, nên không bao giờ cần `forwardRef`.
+
+<Figure src="/blog/nestjs-request-lifecycle-architecture-modules.svg" alt="Bản đồ module của modular monolith: Orders gọi InventoryApi và PaymentsApi được export, phát event order.placed và order.cancelled qua event bus tới Inventory và Notifications; các module hạ tầng global nằm bên dưới" caption="Phụ thuộc đồng bộ chỉ đi một chiều qua port được export. Phản ứng ngược lại đi qua domain event, nên không có vòng tròn nào cần forwardRef." />
+
+Cấu trúc thư mục tương ứng:
+
+```text
+src/
+  app.module.ts
+  main.ts
+  config/env.ts
+  common/                      # hạ tầng dùng chung, không có nghiệp vụ
+    errors/domain-error.ts
+    http/problem-details.filter.ts
+    http/timing.interceptor.ts
+    auth/jwt-auth.guard.ts, scopes.guard.ts
+  contracts/                   # event dùng chung: class thuần, không phụ thuộc Nest
+    order-events.ts
+  modules/
+    orders/
+      index.ts                 # public API: OrdersModule (+ không export gì khác)
+      orders.module.ts
+      http/orders.controller.ts
+      application/orders.service.ts
+      domain/order.ts, order.repository.ts
+      infrastructure/prisma-order.repository.ts
+    inventory/
+      index.ts                 # InventoryModule, InventoryApi
+      inventory.api.ts         # port: abstract class
+      ...
+    payments/
+      index.ts                 # PaymentsModule, PaymentsApi
+      ...
+```
+
+Vì sao event nằm trong `contracts/` thay vì trong `orders/`? Nếu `inventory` import class `OrderCancelledEvent` từ `orders`, thì trong khi `orders` đã phụ thuộc `inventory` (gọi `InventoryApi`), ta lại có một vòng phụ thuộc ở cấp code, dù không ở cấp DI. Đặt contract ở một nơi trung lập giữ cho đồ thị phụ thuộc là đồ thị không có chu trình.
+
+Còn module global? Chỉ dành cho hạ tầng thật sự xuyên suốt: `ConfigModule`, `ClsModule`, `EventEmitterModule`, module database. Feature module không bao giờ là `@Global()` — một module global là một phụ thuộc vô hình mà không ai nhìn `imports` là thấy.
+
+## Ví dụ thực tế: module orders trong một API thương mại điện tử
+
+Ghép mọi thứ lại với luồng quan trọng nhất của một shop: `POST /orders`. Yêu cầu nghiệp vụ: giữ hàng trong kho, uỷ quyền thanh toán, lưu đơn, rồi thông báo cho những ai quan tâm. Nếu thanh toán bị từ chối, phải trả lại hàng đã giữ.
+
+### Port và wiring
+
+`inventory` và `payments` mỗi bên export đúng một port. `orders` import hai module đó và chỉ biết tới hai abstract class:
+
+```ts
+// modules/inventory/inventory.api.ts — port công khai của inventory
+export interface StockLine {
+  sku: string;
+  quantity: number;
+}
+
+export abstract class InventoryApi {
+  /** Giữ hàng cho một đơn. Ném OutOfStockError nếu thiếu. */
+  abstract reserve(orderId: string, lines: StockLine[]): Promise<{ reservationId: string }>;
+  abstract release(reservationId: string): Promise<void>;
+}
+
+// modules/inventory/index.ts — thứ duy nhất module khác được import
+export { InventoryModule } from './inventory.module';
+export { InventoryApi, type StockLine } from './inventory.api';
+
+// modules/orders/orders.module.ts
+import { Module } from '@nestjs/common';
+import { InventoryModule } from '@/modules/inventory';
+import { PaymentsModule } from '@/modules/payments';
+
+@Module({
+  imports: [InventoryModule, PaymentsModule], // phụ thuộc một chiều, khai báo tường minh
+  controllers: [OrdersController],
+  providers: [
+    OrdersService,
+    { provide: OrderRepository, useClass: PrismaOrderRepository },
+    { provide: CLOCK, useValue: { now: () => new Date() } },
+  ],
+  // không export gì: chưa module nào cần gọi orders đồng bộ
+})
+export class OrdersModule {}
+```
+
+### Service: điều phối, không biết gì về HTTP
+
+`OrdersService` là nơi duy nhất chứa logic của use case. Nó không nhận `Request`, không ném `HttpException`, không biết response trông thế nào — nhờ vậy cùng một service dùng được cho HTTP, queue consumer hay CLI.
+
+```ts
+// modules/orders/application/orders.service.ts
+import { Inject, Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { randomUUID } from 'node:crypto';
+import { InventoryApi } from '@/modules/inventory';
+import { PaymentsApi } from '@/modules/payments';
+import { OrderPlacedEvent } from '@/contracts/order-events';
+
+@Injectable()
+export class OrdersService {
+  constructor(
+    private readonly orders: OrderRepository,
+    private readonly inventory: InventoryApi,
+    private readonly payments: PaymentsApi,
+    private readonly events: EventEmitter2,
+    @Inject(CLOCK) private readonly clock: Clock,
+  ) {}
+
+  async placeOrder(input: PlaceOrderInput): Promise<OrderView> {
+    const orderId = randomUUID();
+    const total = await this.pricing(input.lines); // tính giá ở server, không tin client
+
+    // 1. Lệnh đồng bộ: cần kết quả ngay. OutOfStockError đi thẳng tới filter -> 409
+    const { reservationId } = await this.inventory.reserve(orderId, input.lines);
+
+    // 2. Uỷ quyền thanh toán; thất bại thì bù trừ (trả hàng) rồi ném tiếp
+    let authorizationId: string;
+    try {
+      ({ authorizationId } = await this.payments.authorize({
+        orderId,
+        amount: total,
+        paymentMethodId: input.paymentMethodId,
+      }));
+    } catch (error) {
+      await this.inventory.release(reservationId);
+      throw error; // PaymentDeclinedError -> 422 qua ProblemDetailsFilter
+    }
+
+    // 3. Lưu đơn
+    const order = Order.place({ id: orderId, ...input, total, reservationId, authorizationId, at: this.clock.now() });
+    await this.orders.save(order);
+
+    // 4. Phản ứng: ai quan tâm thì tự nghe. orders không biết họ là ai.
+    this.events.emit('order.placed', new OrderPlacedEvent(order.id, order.customerId, order.total));
+    return order.toView();
+  }
+}
+
+// modules/notifications/order-placed.listener.ts — module khác, không import orders
+@Injectable()
+export class OrderPlacedListener {
+  constructor(private readonly mailer: Mailer) {}
+
+  @OnEvent('order.placed', { async: true })
+  async handle(event: OrderPlacedEvent) {
+    await this.mailer.sendOrderConfirmation(event.customerId, event.orderId);
+  }
+}
+```
+
+Cần thành thật về giới hạn của `@nestjs/event-emitter`: đây là event **trong bộ nhớ của tiến trình**. Nếu tiến trình chết ngay sau `save()` mà trước khi listener chạy xong, email xác nhận mất. Với listener mặc định, lỗi bị log thay vì ném lại (`suppressErrors` mặc định là `true`), nên lỗi của notifications không làm hỏng đơn hàng — đó là điều mình muốn. Nhưng với phản ứng *không được phép mất* (trừ kho thật, ghi sổ kế toán), mình dùng transactional outbox: ghi event vào bảng outbox trong cùng transaction với đơn hàng, rồi một worker đẩy sang queue. Ranh giới module không đổi, chỉ đổi cách vận chuyển event — đó là lợi ích của việc chỉ giao tiếp qua contract.
+
+### Controller, guard và interceptor: mỏng và chuyên một việc
+
+```ts
+// common/auth/scopes.guard.ts
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+
+export const RequireScopes = Reflector.createDecorator<string[]>();
+
+@Injectable()
+export class ScopesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    // Metadata ở route ghi đè metadata ở controller
+    const required = this.reflector.getAllAndOverride(RequireScopes, [ctx.getHandler(), ctx.getClass()]);
+    if (!required?.length) return true;
+    const user = ctx.switchToHttp().getRequest<{ user?: { scopes: string[] } }>().user;
+    const granted = new Set(user?.scopes ?? []);
+    if (required.every((scope) => granted.has(scope))) return true;
+    throw new ForbiddenException('Missing required scope', { errorCode: 'INSUFFICIENT_SCOPE' });
+  }
+}
+
+// common/http/timing.interceptor.ts
+import { CallHandler, ExecutionContext, Injectable, Logger, NestInterceptor } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
+import { Observable, finalize } from 'rxjs';
+
+@Injectable()
+export class TimingInterceptor implements NestInterceptor {
+  private readonly logger = new Logger('HTTP');
+  constructor(private readonly cls: ClsService) {}
+
+  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const start = performance.now();
+    const route = `${ctx.getClass().name}.${ctx.getHandler().name}`;
+    return next.handle().pipe(
+      // finalize chạy cả khi thành công lẫn khi lỗi
+      finalize(() => {
+        const ms = (performance.now() - start).toFixed(1);
+        this.logger.log(`${route} ${ms}ms traceId=${this.cls.getId()}`);
+      }),
+    );
+  }
+}
+
+// modules/orders/http/orders.controller.ts
+@Controller('orders')
+@UseGuards(ScopesGuard)
+export class OrdersController {
+  constructor(private readonly orders: OrdersService) {}
+
+  @Post()
+  @RequireScopes(['orders:write'])
+  place(@Body({ schema: placeOrderSchema }) input: PlaceOrderInput): Promise<OrderView> {
+    return this.orders.placeOrder(input); // một dòng: controller chỉ dịch HTTP sang use case
+  }
+
+  @Get(':id')
+  @RequireScopes(['orders:read'])
+  findOne(@Param('id', { schema: z.uuid() }) id: string): Promise<OrderView> {
+    return this.orders.findOne(id);
+  }
+}
+```
+
+Giờ đi lại một request thật, `POST /orders` với 3 chiếc áo `SKU-RED-42` trong khi kho còn 2:
+
+1. **ClsMiddleware** mở context, lấy `x-request-id` từ gateway làm trace ID. `RequestLoggerMiddleware` ghi dòng log "đã nhận".
+2. **JwtAuthGuard** (global) xác thực token, gắn `req.user`, ghi `userId` vào CLS. **ScopesGuard** (controller) đọc `@RequireScopes(['orders:write'])` qua `Reflector`, thấy user có scope — cho qua.
+3. **TimingInterceptor** (global) bấm giờ.
+4. **StandardSchemaValidationPipe** (global) validate body với `placeOrderSchema`. Body có thêm trường `discount` mà client tự chế? `z.strictObject` từ chối, client nhận 400 dạng problem details với danh sách `errors`.
+5. **Handler** gọi `OrdersService.placeOrder()`. `InventoryApi.reserve()` ném `OutOfStockError` — một lỗi nghiệp vụ thuần, không dính HTTP.
+6. Lỗi chảy ngược qua stream: `finalize` trong **TimingInterceptor** vẫn log thời gian xử lý.
+7. **ProblemDetailsFilter** (global) map `OUT_OF_STOCK` sang 409, gắn `instance` và `traceId`, trả `application/problem+json` như ví dụ ở trên.
+
+Nếu kho đủ nhưng thẻ bị từ chối, bước 5 đi xa hơn: giữ hàng thành công, `payments.authorize()` ném `PaymentDeclinedError`, service trả lại hàng rồi ném tiếp, client nhận 422. Nếu mọi thứ ổn, đơn được lưu, event `order.placed` được phát, `notifications` gửi email ở phía sau, và client nhận 201 mà không phải đợi email. Không có module nào import `orders`, không có `forwardRef`, không có provider REQUEST scope nào trong cả luồng.
+
+## Graceful shutdown: đừng làm rơi request khi deploy
+
+Mỗi lần deploy, Kubernetes (hay bất kỳ orchestrator nào) gửi `SIGTERM` cho pod cũ. Nếu ứng dụng không xử lý, Node thoát ngay: request đang chạy bị cắt ngang, transaction dở dang, message đang xử lý bị nhận lại. NestJS mặc định **không** nghe signal (vì listener tốn tài nguyên), bạn phải bật bằng `enableShutdownHooks()`.
+
+Điều quan trọng nhất cần biết là thứ tự Nest thực hiện khi đóng ứng dụng:
+
+1. Adapter HTTP chuyển sang trạng thái "đang đóng".
+2. `onModuleDestroy()` của các provider.
+3. `beforeApplicationShutdown(signal)`.
+4. Đóng HTTP server: ngừng nhận kết nối mới, **đợi request đang chạy xong**.
+5. `onApplicationShutdown(signal)`.
+
+Hệ quả thực tế: ở bước 2 và 3, request vẫn còn đang chạy. Nếu bạn đóng connection pool của database trong `onModuleDestroy`, những request đó sẽ lỗi. Tài nguyên mà request cần phải được đóng ở `onApplicationShutdown`.
+
+```ts
+// main.ts
+import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    return503OnClosing: true, // v12: request mới lúc đang đóng nhận 503, request cũ được làm nốt
+  });
+  app.enableShutdownHooks(); // nghe SIGTERM, SIGINT... rồi gọi app.close()
+  await app.listen(app.get(ConfigService).getOrThrow<number>('PORT'));
+}
+void bootstrap();
+
+// infrastructure/outbox-relay.ts — worker nền đi theo vòng đời ứng dụng
+@Injectable()
+export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShutdown {
+  private timer?: NodeJS.Timeout;
+  private running?: Promise<void>;
+
+  onApplicationBootstrap() {
+    this.timer = setInterval(() => (this.running ??= this.flush().finally(() => (this.running = undefined))), 1_000);
+  }
+
+  async beforeApplicationShutdown() {
+    clearInterval(this.timer); // ngừng nhận việc mới
+    await this.running; // làm nốt mẻ đang chạy
+  }
+  // ...
+}
+
+// infrastructure/prisma.service.ts
+@Injectable()
+export class PrismaService extends PrismaClient implements OnApplicationShutdown {
+  async onApplicationShutdown() {
+    await this.$disconnect(); // sau khi mọi request đã xong
+  }
+}
+```
+
+Vài chi tiết vận hành: `terminationGracePeriodSeconds` của pod phải dài hơn request chậm nhất của bạn, nếu không `SIGKILL` sẽ đến trước khi Nest đóng xong. Load balancer cần thời gian để ngừng gửi traffic tới pod đang tắt, nên nhiều team cho readiness probe báo "not ready" (hoặc thêm một khoảng `preStop` ngắn) trước khi thực sự đóng. Và trên Windows, `SIGTERM` không hoạt động — tài liệu ghi rõ điều này, nên đừng ngạc nhiên khi test local trên Windows thấy hook không chạy.
+
+## Testing: Test.createTestingModule và overrideProvider
+
+Vì mọi thứ đi qua DI, test một module là dựng đúng module đó rồi thay những port nằm ở biên. Đây là chỗ thiết kế "port là abstract class" trả công: không cần mock module path, không cần `jest.mock`.
+
+```ts
+// orders.e2e-spec.ts
+import { INestApplication, Module, StandardSchemaValidationPipe } from '@nestjs/common';
+import { APP_FILTER, APP_PIPE } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { Test } from '@nestjs/testing';
+import { ClsModule } from 'nestjs-cls';
+import request from 'supertest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+
+let app: INestApplication;
+const inventory = { reserve: vi.fn(), release: vi.fn() };
+const payments = { authorize: vi.fn() };
+
+// Module giả cho hàng xóm: chỉ export đúng port mà orders cần
+function stubModule(token: abstract new (...args: never[]) => unknown, value: object) {
+  @Module({ providers: [{ provide: token, useValue: value }], exports: [token] })
+  class StubModule {}
+  return StubModule;
+}
+
+beforeAll(async () => {
+  const moduleRef = await Test.createTestingModule({
+    imports: [
+      ClsModule.forRoot({ global: true, middleware: { mount: true, generateId: true } }),
+      EventEmitterModule.forRoot(),
+      OrdersModule,
+    ],
+    providers: [
+      { provide: APP_PIPE, useValue: new StandardSchemaValidationPipe() },
+      { provide: APP_FILTER, useClass: ProblemDetailsFilter },
+    ],
+  })
+    .overrideModule(InventoryModule).useModule(stubModule(InventoryApi, inventory))
+    .overrideModule(PaymentsModule).useModule(stubModule(PaymentsApi, payments))
+    .overrideProvider(OrderRepository).useClass(InMemoryOrderRepository)
+    .overrideGuard(ScopesGuard).useValue({ canActivate: () => true })
+    .compile();
+
+  app = moduleRef.createNestApplication();
+  await app.init();
+});
+
+afterAll(() => app.close());
+
+it('trả 409 problem details khi hết hàng', async () => {
+  inventory.reserve.mockRejectedValueOnce(new OutOfStockError('SKU-RED-42', 3, 2));
+
+  const res = await request(app.getHttpServer())
+    .post('/orders')
+    .send({ customerId: crypto.randomUUID(), paymentMethodId: 'pm_1', lines: [{ sku: 'SKU-RED-42', quantity: 3 }] })
+    .expect(409);
+
+  expect(res.headers['content-type']).toMatch(/application\/problem\+json/);
+  expect(res.body).toMatchObject({ code: 'OUT_OF_STOCK', available: 2 });
+  expect(payments.authorize).not.toHaveBeenCalled(); // không thu tiền khi chưa giữ được hàng
+});
+```
+
+Vì sao `overrideModule` cho hai module hàng xóm thay vì chỉ `overrideProvider(InventoryApi)`? Vì `overrideProvider` chỉ thay một provider; phần còn lại của `PaymentsModule` (gateway cần `ConfigService`, client cần secret) vẫn phải dựng được. Thay cả module bằng một stub chỉ export port là cách cắt biên gọn nhất, và nó chỉ khả thi vì `orders` không biết gì về `payments` ngoài port đó. Còn `OrderRepository` là provider nội bộ của `orders`, nên `overrideProvider` là đủ.
+
+Ba lưu ý khác: enhancer global đăng ký bằng `app.useGlobal*()` trong `main.ts` sẽ **không** có trong test — thêm lý do để dùng `APP_*`. Ngược lại, enhancer đăng ký qua `APP_GUARD` không override trực tiếp được; tài liệu gợi ý đổi sang `useExisting` trỏ tới class được khai báo làm provider, rồi `overrideProvider` class đó. Và nếu project của bạn là ESM tạo bởi CLI v12 thì Vitest là mặc định; với Jest, thay `vi.fn()` bằng `jest.fn()`, API của `@nestjs/testing` không đổi.
+
+## Những lỗi hay gặp
+
+**Logic nghiệp vụ trong controller.** Controller kiểm tra tồn kho, tính giá, gọi Prisma, rồi tự `try/catch` để trả `res.status(409).json(...)`. Hệ quả: không dùng lại được cho queue consumer hay CLI, test phải dựng HTTP, và việc dùng `@Res()` khiến Nest không còn quản lý response — interceptor không map được kết quả, filter không chạy cho lỗi bạn đã tự bắt. Controller nên là một lớp dịch: lấy input đã validate, gọi một method của service, trả kết quả.
+
+**Provider REQUEST scope ở khắp nơi.** Thường bắt đầu từ một logger "biết request ID" hoặc một repository "biết tenant", rồi lan ngược lên cả cây. Dấu hiệu nhận biết: `@Inject(REQUEST)` xuất hiện trong service tầng thấp. Thay bằng AsyncLocalStorage (nestjs-cls) cho ngữ cảnh, và durable provider cho trường hợp hiếm hoi thật sự cần instance theo tenant.
+
+**Module global làm bãi rác.** Một `SharedModule` được đánh `@Global()`, export ba mươi service, từ `MailerService` đến `OrderPriceCalculator`. Mọi module đều "dùng được" mọi thứ mà không phải khai báo, nên không ai còn biết module nào phụ thuộc vào module nào — và đến lúc muốn tách một module ra service riêng thì không thể. Global chỉ dành cho hạ tầng thật sự xuyên suốt; nghiệp vụ thì import tường minh.
+
+**Import vòng giữa các feature module.** `orders` import `payments` để thanh toán, `payments` import `orders` để cập nhật trạng thái đơn, và ai đó thêm `forwardRef` cho chạy được. Ngoài thứ tự khởi tạo không xác định, bạn mất khả năng hiểu hệ thống bằng cách đọc `imports`. Sửa bằng cách xác định chiều phụ thuộc thật (lệnh đi một chiều, phản ứng đi bằng event) như phần ranh giới module.
+
+**Ném lỗi thô làm lộ chi tiết bên trong.** `throw new Error('duplicate key value violates unique constraint "orders_pkey"')` hay để lỗi Prisma bay thẳng ra ngoài. Filter mặc định của Nest sẽ trả 500 chung chung — an toàn nhưng vô dụng với client. Tệ hơn là filter tự viết trả `exception.message` cho mọi lỗi: tên bảng, câu SQL, đường dẫn file lộ ra ngoài. Phân biệt rõ ba loại: lỗi nghiệp vụ (class riêng, message an toàn để hiển thị), `HttpException` (chủ động), và mọi thứ khác (500, message chung chung, log đầy đủ kèm trace ID).
+
+**Tin vào thứ tự instantiate hoặc lifecycle hook.** Code kiểu "service A khởi tạo kết nối trong constructor, service B dùng nó trong constructor của B" chạy được cho đến khi một refactor đổi thứ tự. NestJS 12 còn đổi thứ tự gọi lifecycle hook theo cấp bậc component. Dùng async `useFactory` cho những thứ cần sẵn sàng trước, và `onModuleInit` / `onApplicationBootstrap` cho việc khởi động, đừng dựa vào constructor.
+
+## Đọc thêm
+
+- [Request lifecycle](https://docs.nestjs.com/faq/request-lifecycle) — tài liệu chính thức, nguồn của mọi thứ tự trong bài.
+- [Injection scopes](https://docs.nestjs.com/fundamentals/injection-scopes) và [custom providers](https://docs.nestjs.com/fundamentals/custom-providers).
+- [Dynamic modules](https://docs.nestjs.com/fundamentals/dynamic-modules) — `ConfigurableModuleBuilder` chi tiết.
+- [Migration guide v11 → v12](https://docs.nestjs.com/migration-guide) và [v10 → v11](https://docs.nestjs.com/v11/migration-guide) (Express 5, cú pháp route mới).
+- [Lifecycle events](https://docs.nestjs.com/fundamentals/lifecycle-events) và [testing](https://docs.nestjs.com/fundamentals/testing).
+- [RFC 9457: Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457.html).
+- [nestjs-cls](https://papooch.github.io/nestjs-cls/) và recipe [AsyncLocalStorage](https://docs.nestjs.com/recipes/async-local-storage).
+
+## Tóm tắt
+
+<Checklist>
+
+- Thứ tự lifecycle: middleware → guard → interceptor (trước) → pipe → handler → interceptor (sau, ngược chiều) → filter (route → controller → global). Lỗi từ middleware chỉ tới filter global.
+- Đăng ký enhancer global bằng `APP_GUARD` / `APP_INTERCEPTOR` / `APP_PIPE` / `APP_FILTER` để inject được dependency và để test thấy chúng.
+- Dùng abstract class làm port, symbol cho token không phải class; `useFactory` async cho tài nguyên cần sẵn sàng lúc boot.
+- Giữ provider ở DEFAULT scope. REQUEST scope lan ngược lên cả chuỗi phụ thuộc — dùng nestjs-cls cho request context, durable provider cho số ít tenant.
+- Coi mỗi `forwardRef` giữa hai feature module là lỗi thiết kế: lệnh đi một chiều qua port được export, phản ứng đi bằng domain event.
+- Dynamic module hạ tầng dựng bằng `ConfigurableModuleBuilder`; từ NestJS 11 dynamic module so sánh theo tham chiếu.
+- Validate env ngay lúc boot bằng schema; chọn class-validator hoặc Standard Schema (v12) cho input — có thể chạy song song khi migrate.
+- Một filter global duy nhất trả `application/problem+json`, có mã lỗi ổn định và trace ID, không bao giờ lộ message của lỗi không lường trước.
+- Bật `enableShutdownHooks()`, đóng tài nguyên trong `onApplicationShutdown`, và để grace period của orchestrator dài hơn request chậm nhất.
+- Test bằng `Test.createTestingModule`: `overrideProvider` cho phụ thuộc nội bộ, stub cả module hàng xóm qua port của nó.
+
+</Checklist>

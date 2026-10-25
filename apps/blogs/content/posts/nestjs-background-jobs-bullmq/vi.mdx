@@ -1,0 +1,22 @@
+---
+title: "Background job đáng tin cậy trong NestJS với BullMQ: retry, idempotency và transactional outbox"
+excerpt: "Cách dựng background job trong NestJS 12 với BullMQ 6 sao cho không bao giờ lặng lẽ mất việc và không bao giờ trừ tiền khách hai lần: at-least-once và idempotency, transactional outbox, retry có phân loại lỗi, dead-letter, rate limit, graceful shutdown và observability."
+---
+
+<Lead>Background job là nơi những bug lặng lẽ nhất của backend trú ngụ. Request trả về 201, khách thấy "Đặt hàng thành công", nhưng email xác nhận không bao giờ tới — hoặc tệ hơn, thẻ của khách bị trừ tiền hai lần vì job capture payment được chạy lại sau một lần deploy. BullMQ cho bạn retry, backoff, rate limit gần như miễn phí, nhưng nó không tự biến hệ thống thành đáng tin. Bài này là cách mình dựng background job trong NestJS để không bao giờ mất việc mà không ai hay, và không bao giờ làm một việc có hậu quả hai lần: at-least-once và idempotency, transactional outbox, retry có phân loại lỗi, dead-letter, rate limit với API bên thứ ba, graceful shutdown và observability — tất cả xoay quanh một ví dụ "đặt hàng" xuyên suốt, viết cho NestJS 12 và BullMQ 6.</Lead>
+
+## Hai cách một background job thất bại
+
+Khi một job "hỏng", nó hỏng theo một trong hai hướng ngược nhau:
+
+- **Mất việc.** Job không bao giờ được đưa vào queue, hoặc đã vào nhưng biến mất: process bị kill giữa chừng, Redis tự xoá key khi hết bộ nhớ, job failed bị dọn trước khi ai kịp nhìn thấy. Đặc điểm chung là *không có dấu vết* — không lỗi, không log, chỉ có một khách hàng gửi ticket ba ngày sau.
+- **Làm hai lần.** Job chạy, gây ra side effect (gửi email, gọi API thanh toán), rồi worker chết trước khi kịp báo "xong". Queue không biết việc đã được làm nên giao lại cho worker khác. Kết quả: hai email, hai lần capture, hai hoá đơn với hai số khác nhau.
+
+BullMQ, giống hầu hết các hệ thống queue nghiêm túc, chọn đứng về phía thứ hai: nó giao job theo kiểu **at-least-once**. Một job có thể chạy nhiều hơn một lần trong rất nhiều tình huống bình thường: retry sau lỗi, worker crash sau khi đã gọi API bên ngoài, lock của job hết hạn vì event loop bị chặn và job bị coi là *stalled* trong khi worker gốc vẫn đang chạy, hay một request timeout mà thực ra phía bên kia đã xử lý thành công.
+
+"Exactly-once delivery" qua ranh giới mạng là không tồn tại. Thứ bạn đạt được là **exactly-once effect**: giao ít nhất một lần, và handler được viết sao cho chạy lần thứ hai không gây thêm hậu quả. Từ đó mình có hai quy tắc cho mọi job quan trọng:
+
+1. **Không bao giờ mất ý định.** Việc "cần làm X" phải được ghi bền vững *trong cùng một commit* với thay đổi nghiệp vụ sinh ra nó. Đây là việc của transactional outbox.
+2. **Không bao giờ làm hai lần.** Mọi handler phải an toàn khi chạy lại. Đây là việc của idempotency — unique constraint, bảng processed message, và idempotency key gửi cho bên thứ ba.
+
+Phần còn lại của bài là cách hiện thực hai quy tắc đó, cộng với những thứ giữ cho hệ thống vận hành được: retry đúng cách, dead-letter, rate limit, shutdown và quan sát.

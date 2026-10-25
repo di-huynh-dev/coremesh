@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="av" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#7C3AED"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#2F5BFF"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.4" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="60" y="66" fill="#111827" font-size="34" font-weight="800">Two pipelines, one database</text>
+
+  <!-- Ingestion row -->
+  <text x="60" y="122" fill="#7C3AED" font-size="20" font-weight="700" letter-spacing="1">INGESTION · OFFLINE</text>
+  <g filter="url(#shadow)">
+    <rect x="60" y="140" width="150" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="244" y="140" width="150" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="428" y="140" width="150" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="612" y="140" width="200" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="846" y="140" width="180" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+  </g>
+  <g font-weight="700" font-size="22" fill="#111827" text-anchor="middle">
+    <text x="135" y="182">Docs</text>
+    <text x="319" y="182">Parse</text>
+    <text x="503" y="182">Chunk</text>
+    <text x="712" y="182">Contextualize</text>
+    <text x="936" y="182">Embed</text>
+  </g>
+  <g font-size="18" fill="#4B5563" text-anchor="middle">
+    <text x="135" y="212">Markdown</text>
+    <text x="319" y="212">keep tables</text>
+    <text x="503" y="212">by heading</text>
+    <text x="712" y="212">LLM header</text>
+    <text x="936" y="212">document mode</text>
+  </g>
+  <g stroke="#7C3AED" stroke-width="3" marker-end="url(#av)">
+    <path d="M212 188H238"/>
+    <path d="M396 188H422"/>
+    <path d="M580 188H606"/>
+    <path d="M814 188H840"/>
+    <path d="M936 238V286"/>
+  </g>
+
+  <!-- Postgres -->
+  <g filter="url(#shadow)">
+    <rect x="60" y="294" width="1080" height="92" rx="24" fill="white" stroke="#16A34A" stroke-width="2"/>
+  </g>
+  <text x="600" y="332" text-anchor="middle" fill="#111827" font-size="24" font-weight="800">PostgreSQL + pgvector</text>
+  <text x="600" y="364" text-anchor="middle" fill="#4B5563" font-size="18">documents · chunks · halfvec + HNSW · tsvector + GIN · allowed_groups</text>
+
+  <!-- Query row -->
+  <text x="60" y="440" fill="#2F5BFF" font-size="20" font-weight="700" letter-spacing="1">QUERY · ONLINE</text>
+  <g filter="url(#shadow)">
+    <rect x="60" y="458" width="150" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="244" y="458" width="190" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="468" y="458" width="110" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="612" y="458" width="140" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="786" y="458" width="170" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+    <rect x="990" y="458" width="150" height="96" rx="22" fill="white" stroke="#E5E7EF"/>
+  </g>
+  <g font-weight="700" font-size="22" fill="#111827" text-anchor="middle">
+    <text x="135" y="500">Question</text>
+    <text x="339" y="500">Hybrid search</text>
+    <text x="523" y="500">RRF</text>
+    <text x="682" y="500">Rerank</text>
+    <text x="871" y="500">LLM</text>
+    <text x="1065" y="500">Answer</text>
+  </g>
+  <g font-size="18" fill="#4B5563" text-anchor="middle">
+    <text x="135" y="530">+ user ACL</text>
+    <text x="339" y="530">ACL-filtered</text>
+    <text x="523" y="530">fuse</text>
+    <text x="682" y="530">top 8</text>
+    <text x="871" y="530">search_result</text>
+    <text x="1065" y="530">+ citations</text>
+  </g>
+  <g stroke="#2F5BFF" stroke-width="3" marker-end="url(#ab)">
+    <path d="M212 506H238"/>
+    <path d="M436 506H462"/>
+    <path d="M580 506H606"/>
+    <path d="M754 506H780"/>
+    <path d="M958 506H984"/>
+    <path d="M325 452V392" marker-start="url(#ab)"/>
+  </g>
+
+  <circle cx="72" cy="612" r="8" fill="#DC2626"/>
+  <text x="92" y="619" fill="#111827" font-size="20" font-weight="600">Tenant and permission filters run inside the SQL, before any ranking step</text>
+</svg>
