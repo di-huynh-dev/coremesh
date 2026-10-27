@@ -115,7 +115,6 @@ export function renderSiteOgImage({
     <div style={{ display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", fontSize: 104, fontWeight: 700, letterSpacing: -4, lineHeight: 1 }}>
         {SITE_NAME}
-        <span style={{ color: cobalt }}>.</span>
       </div>
       <div style={{ display: "flex", fontSize: 36, fontWeight: 500, color: soft, marginTop: 28, maxWidth: 940, lineHeight: 1.35 }}>
         {description}
@@ -182,7 +181,7 @@ export function renderPostOgImage({
           fontSize: titleSize(title),
           fontWeight: 700,
           lineHeight: 1.18,
-          letterSpacing: -1.5,
+          letterSpacing: -1,
           marginTop: 22,
         }}
       >
