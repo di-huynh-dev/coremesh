@@ -438,7 +438,7 @@ export const chapters: Chapter[] = [
     period: "10.2023 - hiện tại",
     title: "Làm sản phẩm.\nNghĩ về con người.",
     story:
-      "Ở Estuary Solutions, mình phát triển nền tảng CRM phục vụ hơn 30.000 người dùng mỗi tháng. Công việc mở rộng sang kiến trúc frontend, hiệu năng và quốc tế hóa, đưa sản phẩm đến hơn 11 quốc gia.",
+      "Ở Estuary Solutions, mình phát triển nền tảng CRM phục vụ hơn 30.000 người dùng mỗi tháng. Công việc mở rộng sang kiến trúc frontend, hiệu năng và quốc tế hóa, đưa sản phẩm đến hơn 10 quốc gia.",
     trait: "Hiền lành trong cách sống. Chỉn chu trong công việc.",
     sky: "#e0e6df",
     ground: "#adb9a8",
@@ -456,7 +456,7 @@ export const chapters: Chapter[] = [
       {
         name: "Thành phố",
         description:
-          "Từ một ngôi làng đến những sản phẩm dùng ở hơn 11 quốc gia. Khoảng cách lớn dần, gốc rễ vẫn ở đó.",
+          "Từ một ngôi làng đến những sản phẩm dùng ở hơn 10 quốc gia. Khoảng cách lớn dần, gốc rễ vẫn ở đó.",
       },
     ],
   },

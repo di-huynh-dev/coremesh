@@ -4,6 +4,7 @@ import { MotionController } from "@/components/motion/motion-controller";
 import { ToolCard } from "@/components/tools/tool-card";
 import { isBlogLocale } from "@/lib/content/text";
 import { TOOL_CATEGORIES, TOOLS } from "@/lib/content/tools";
+import { pageMetadata } from "@/lib/seo";
 import { ShieldCheck } from "lucide-react";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -14,9 +15,10 @@ interface ToolsPageProps {
 }
 
 export async function generateMetadata({ params }: ToolsPageProps): Promise<Metadata> {
-  const { locale } = await params;
+  const { locale: rawLocale } = await params;
+  const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const t = await getTranslations({ locale, namespace: "tools" });
-  return { title: t("title"), description: t("lead") };
+  return pageMetadata({ locale, path: "/tools", title: t("title"), description: t("lead") });
 }
 
 export default async function ToolsPage({ params }: ToolsPageProps) {

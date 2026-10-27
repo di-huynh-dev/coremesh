@@ -2,6 +2,8 @@ import { GuidesIndex } from "@/components/guides/guides-index";
 import { SourceNote } from "@/components/guides/source-note";
 import { MotionController } from "@/components/motion/motion-controller";
 import { getGuideCategories, getGuides } from "@/lib/content/guides";
+import { isBlogLocale } from "@/lib/content/text";
+import { pageMetadata } from "@/lib/seo";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import Link from "next/link";
@@ -11,9 +13,10 @@ interface GuidesPageProps {
 }
 
 export async function generateMetadata({ params }: GuidesPageProps): Promise<Metadata> {
-  const { locale } = await params;
+  const { locale: rawLocale } = await params;
+  const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const t = await getTranslations({ locale, namespace: "guides" });
-  return { title: t("title"), description: t("lead") };
+  return pageMetadata({ locale, path: "/guides", title: t("title"), description: t("lead") });
 }
 
 export default async function GuidesPage({ params }: GuidesPageProps) {

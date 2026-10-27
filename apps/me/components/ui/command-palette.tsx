@@ -1,11 +1,14 @@
 "use client";
 
+import { useI18n } from "@/components/i18n-provider";
+import { blogUrl, profile, socials } from "@/lib/data/profile";
+import { homePath } from "@/lib/i18n";
 import { AnimatePresence, motion } from "framer-motion";
 import { CornerDownLeft, Search } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const EMAIL = "dihuynhdev.contact@gmail.com";
+const EMAIL = profile.email;
 
 type Command = {
   id: string;
@@ -16,7 +19,8 @@ type Command = {
   run: () => void;
 };
 
-export function CommandPalette({ blogsBaseUrl }: { blogsBaseUrl: string }) {
+export function CommandPalette() {
+  const { locale, t } = useI18n();
   const { setTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -43,41 +47,48 @@ export function CommandPalette({ blogsBaseUrl }: { blogsBaseUrl: string }) {
       document.querySelector(hash)?.scrollIntoView({ behavior: "smooth" });
     const openUrl = (url: string) => () =>
       window.open(url, "_blank", "noopener,noreferrer");
-    const blog = blogsBaseUrl.replace(/\/$/, "");
+
+    const p = t.palette;
+    const g = p.groups;
+    const h = t.headings;
+    const otherLocale = locale === "en" ? "vi" : "en";
 
     return [
-      { id: "n-about", group: "Navigate", label: "Summary", hint: "Tóm tắt", run: go("#about") },
-      { id: "n-story", group: "Navigate", label: "Story", hint: "Câu chuyện", run: () => window.location.assign("/story") },
-      { id: "n-stack", group: "Navigate", label: "Stack", hint: "Công cụ", run: go("#techstack") },
-      { id: "n-exp", group: "Navigate", label: "Experience", hint: "Hành trình", run: go("#experience") },
-      { id: "n-blog", group: "Navigate", label: "Blog", hint: "Ghi chép", run: go("#blog") },
-      { id: "n-contact", group: "Navigate", label: "Contact", hint: "Liên hệ", run: go("#contact") },
-      { id: "n-top", group: "Navigate", label: "Back to top", run: () => window.scrollTo({ top: 0, behavior: "smooth" }) },
-      { id: "t-light", group: "Theme", label: "Light", hint: "Giấy dó", keywords: "sáng", run: () => setTheme("light") },
-      { id: "t-dark", group: "Theme", label: "Dark", hint: "Mực tàu", keywords: "tối", run: () => setTheme("dark") },
-      { id: "t-night", group: "Theme", label: "Đêm Sài Gòn", hint: "Neon", keywords: "night neon", run: () => setTheme("night") },
+      { id: "n-about", group: g.navigate, label: h.summary.title, hint: h.summary.alt, run: go("#about") },
+      { id: "n-story", group: g.navigate, label: t.nav.story, keywords: "story 3d câu chuyện", run: () => window.location.assign("/story") },
+      { id: "n-stack", group: g.navigate, label: h.stack.title, hint: h.stack.alt, run: go("#techstack") },
+      { id: "n-exp", group: g.navigate, label: h.experience.title, hint: h.experience.alt, run: go("#experience") },
+      { id: "n-projects", group: g.navigate, label: h.projects.title, hint: h.projects.alt, keywords: "case study work", run: go("#projects") },
+      { id: "n-blog", group: g.navigate, label: h.blog.title, hint: h.blog.alt, run: go("#blog") },
+      { id: "n-contact", group: g.navigate, label: h.contact.title, hint: h.contact.alt, run: go("#contact") },
+      { id: "n-top", group: g.navigate, label: p.backToTop, run: () => window.scrollTo({ top: 0, behavior: "smooth" }) },
+      { id: "n-lang", group: g.navigate, label: p.switchLanguage, keywords: "language ngôn ngữ english tiếng việt", run: () => window.location.assign(homePath(otherLocale)) },
+      { id: "t-light", group: g.theme, label: "Light", hint: "Giấy dó", keywords: "sáng", run: () => setTheme("light") },
+      { id: "t-dark", group: g.theme, label: "Dark", hint: "Mực tàu", keywords: "tối", run: () => setTheme("dark") },
+      { id: "t-night", group: g.theme, label: "Đêm Sài Gòn", hint: "Neon", keywords: "night neon", run: () => setTheme("night") },
       {
         id: "a-copy",
-        group: "Actions",
-        label: "Copy email",
+        group: g.actions,
+        label: p.copyEmail,
         hint: EMAIL,
         run: () => {
           navigator.clipboard
             .writeText(EMAIL)
-            .then(() => say("Đã copy email ✓"))
+            .then(() => say(p.copied))
             .catch(() => say(EMAIL));
         },
       },
-      { id: "a-mail", group: "Actions", label: "Send an email", run: () => (window.location.href = `mailto:${EMAIL}`) },
-      { id: "a-gh", group: "Actions", label: "Open GitHub", hint: "di-huynh-dev", run: openUrl("https://github.com/di-huynh-dev") },
-      { id: "a-in", group: "Actions", label: "Open LinkedIn", hint: "huynhtiendi", run: openUrl("https://www.linkedin.com/in/huynhtiendi/") },
-      { id: "a-blog", group: "Actions", label: "Open all blog posts", run: openUrl(`${blog}/blog`) },
-      { id: "f-drum", group: "Fun", label: "Drum frenzy", hint: "🥁", keywords: "trống konami easter", run: () => window.dispatchEvent(new Event("easter:run")) },
-      { id: "f-hello", group: "Fun", label: "/hello", run: () => say("Xin chào! 👋 Cảm ơn bạn đã ghé thăm.") },
-      { id: "f-coffee", group: "Fun", label: "/coffee", run: () => say("☕ Cà phê sữa đá, ít đường nhé.") },
-      { id: "f-vn", group: "Fun", label: "/vietnam", run: () => say("🇻🇳 Việt Nam ơi, tự hào lắm!") },
+      { id: "a-mail", group: g.actions, label: p.sendEmail, run: () => (window.location.href = `mailto:${EMAIL}`) },
+      { id: "a-gh", group: g.actions, label: p.openGithub, hint: socials.github.handle, run: openUrl(socials.github.href) },
+      { id: "a-in", group: g.actions, label: p.openLinkedin, hint: socials.linkedin.handle, run: openUrl(socials.linkedin.href) },
+      { id: "a-blog", group: g.actions, label: p.openBlog, run: openUrl(blogUrl(locale, "/blog")) },
+      { id: "f-game", group: g.fun, label: p.drumGame, hint: "Tùng · Cắc", keywords: "game trống drum rhythm nhịp play chơi", run: () => window.dispatchEvent(new Event("drumgame:open")) },
+      { id: "f-drum", group: g.fun, label: "Drum frenzy", hint: "🥁", keywords: "trống konami easter", run: () => window.dispatchEvent(new Event("easter:run")) },
+      { id: "f-hello", group: g.fun, label: "/hello", run: () => say(p.hello) },
+      { id: "f-coffee", group: g.fun, label: "/coffee", run: () => say(p.coffee) },
+      { id: "f-vn", group: g.fun, label: "/vietnam", run: () => say(p.vietnam) },
     ];
-  }, [blogsBaseUrl, say, setTheme]);
+  }, [locale, say, setTheme, t]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -179,8 +190,8 @@ export function CommandPalette({ blogsBaseUrl }: { blogsBaseUrl: string }) {
                     setActive(0);
                   }}
                   onKeyDown={onInputKey}
-                  placeholder="Gõ để tìm… (sections, theme, /hello)"
-                  aria-label="Search commands"
+                  placeholder={t.palette.placeholder}
+                  aria-label={t.palette.search}
                   className="h-12 flex-1 bg-transparent font-mono text-sm outline-none placeholder:text-muted-foreground/70"
                 />
                 <kbd className="rounded border border-edge px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
@@ -191,7 +202,7 @@ export function CommandPalette({ blogsBaseUrl }: { blogsBaseUrl: string }) {
               <ul ref={listRef} role="listbox" className="max-h-80 overflow-y-auto p-1.5">
                 {results.length === 0 ? (
                   <li className="px-3 py-6 text-center font-mono text-sm text-muted-foreground">
-                    Không tìm thấy lệnh nào.
+                    {t.palette.empty}
                   </li>
                 ) : null}
                 {results.map((command, index) => {

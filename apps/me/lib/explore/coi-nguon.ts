@@ -3,7 +3,7 @@ import type { ExploreMapData, Vec2 } from "./types";
 /**
  * Map "Cội nguồn" — chiều muộn, Dĩ đã lớn trở về quê nhà ở Cát Nhơn.
  * LỜI THOẠI LÀ MINH HỌA. Sửa tên gọi và lời nói theo kỷ niệm thật.
- * Chi tiết công việc chỉ lấy từ lib/story.ts (CRM, hơn 11 quốc gia).
+ * Chi tiết công việc chỉ lấy từ lib/story.ts (CRM, hơn 10 quốc gia).
  *
  * The chapter diorama sits at the origin (house at -2,-1.7; desk + laptop at
  * -2.6,0.5; suitcase at -3.3,3.5; rice paddy at 3.4,-0.55; walking lane
@@ -143,7 +143,7 @@ export const coiNguonMap: ExploreMapData = {
         },
         {
           who: "Dĩ",
-          text: "Dạ ổn cha. Con làm phần mềm CRM, giúp người ta quản lý khách hàng. Giờ có người dùng ở hơn 11 quốc gia rồi.",
+          text: "Dạ ổn cha. Con làm phần mềm CRM, giúp người ta quản lý khách hàng. Giờ có người dùng ở hơn 10 quốc gia rồi.",
         },
         {
           who: "Cha",

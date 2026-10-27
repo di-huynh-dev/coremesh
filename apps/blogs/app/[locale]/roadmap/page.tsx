@@ -3,6 +3,7 @@ import { MotionController } from "@/components/motion/motion-controller";
 import { RoadmapCard } from "@/components/roadmap/roadmap-card";
 import { isBlogLocale } from "@/lib/content/text";
 import { getRoadmaps } from "@/lib/content/roadmaps";
+import { pageMetadata } from "@/lib/seo";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import Link from "next/link";
@@ -12,9 +13,10 @@ interface RoadmapIndexProps {
 }
 
 export async function generateMetadata({ params }: RoadmapIndexProps): Promise<Metadata> {
-  const { locale } = await params;
+  const { locale: rawLocale } = await params;
+  const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const t = await getTranslations({ locale, namespace: "roadmap" });
-  return { title: t("title"), description: t("lead") };
+  return pageMetadata({ locale, path: "/roadmap", title: t("title"), description: t("lead") });
 }
 
 export default async function RoadmapIndexPage({ params }: RoadmapIndexProps) {

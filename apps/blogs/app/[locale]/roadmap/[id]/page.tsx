@@ -7,6 +7,7 @@ import { RoadmapJourney } from "@/components/roadmap/roadmap-journey";
 import { isBlogLocale } from "@/lib/content/text";
 import { ROADMAP_ECOSYSTEMS } from "@/lib/library-icons";
 import { ROADMAP_IDS, getRoadmap, getRoadmapPhases, getRoadmapPosts, isRoadmapId } from "@/lib/content/roadmaps";
+import { pageMetadata } from "@/lib/seo";
 import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
 import type { Metadata } from "next";
@@ -30,9 +31,15 @@ async function resolve(params: RoadmapPageProps["params"]) {
 }
 
 export async function generateMetadata({ params }: RoadmapPageProps): Promise<Metadata> {
-  const { roadmap } = await resolve(params);
+  const { locale, roadmap } = await resolve(params);
   if (!roadmap) return { title: "Not found" };
-  return { title: roadmap.name, description: roadmap.summary };
+  return pageMetadata({
+    locale,
+    path: `/roadmap/${roadmap.id}`,
+    title: roadmap.name,
+    description: roadmap.summary,
+    keywords: roadmap.skills,
+  });
 }
 
 export default async function RoadmapPage({ params }: RoadmapPageProps) {

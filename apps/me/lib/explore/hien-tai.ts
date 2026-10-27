@@ -131,7 +131,7 @@ export const hienTaiMap: ExploreMapData = {
     { id: "review-pr", label: "Review PR cho đồng đội" },
     { id: "pagespeed", label: "Đưa PageSpeed từ 30+ lên 98+" },
     { id: "chat", label: "Làm chat real-time với WebSockets" },
-    { id: "i18n", label: "Đa ngôn ngữ cho Engage X" },
+    { id: "i18n", label: "Đa ngôn ngữ cho nền tảng CRM" },
   ],
 
   interactions: [
@@ -265,11 +265,11 @@ export const hienTaiMap: ExploreMapData = {
       radius: 1.9,
       quest: "i18n",
       effect: "i18n",
-      reward: "Engage X sẵn sàng cho hơn 10 quốc gia",
+      reward: "Nền tảng sẵn sàng cho hơn 10 quốc gia",
       lines: [
         {
           who: "",
-          text: "Engage X chuẩn bị mở rộng ra Đông Nam Á, châu Á - Thái Bình Dương, Bắc Mỹ và Mỹ Latinh.",
+          text: "Nền tảng chuẩn bị mở rộng ra Đông Nam Á, châu Á - Thái Bình Dương, Bắc Mỹ và Mỹ Latinh.",
         },
         {
           who: "Dĩ",
@@ -277,7 +277,7 @@ export const hienTaiMap: ExploreMapData = {
         },
         {
           who: "",
-          text: "Quả địa cầu sáng lên từng vùng. Engage X sẵn sàng cho hơn 10 quốc gia.",
+          text: "Quả địa cầu sáng lên từng vùng. Nền tảng sẵn sàng cho hơn 10 quốc gia.",
         },
       ],
     },
@@ -323,7 +323,7 @@ export const hienTaiMap: ExploreMapData = {
     },
     {
       who: "",
-      text: "Từ một ngôi làng ở Cát Nhơn, những dòng code của Dĩ giờ đến với người dùng ở hơn 11 quốc gia.",
+      text: "Từ một ngôi làng ở Cát Nhơn, những dòng code của Dĩ giờ đến với người dùng ở hơn 10 quốc gia.",
     },
   ],
 

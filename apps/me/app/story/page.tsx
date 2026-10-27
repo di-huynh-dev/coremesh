@@ -23,7 +23,7 @@ export default function StoryPage() {
     >
       <StoryHeader />
       <StorySection />
-      <Footer />
+      <Footer locale="vi" />
     </main>
   );
 }

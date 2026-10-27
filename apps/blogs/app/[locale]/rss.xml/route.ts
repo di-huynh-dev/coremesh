@@ -1,5 +1,5 @@
-import { AUTHOR } from "@/lib/site";
-import { getAllPosts } from "@/lib/content/posts";
+import { AUTHOR, SITE_URL } from "@/lib/site";
+import { getAllPosts } from "@repo/content/posts";
 import { isBlogLocale } from "@/lib/content/text";
 import { getTranslations } from "next-intl/server";
 
@@ -13,14 +13,13 @@ function escapeXml(value: string) {
 }
 
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ locale: string }> },
 ) {
   const { locale: rawLocale } = await params;
   const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const t = await getTranslations({ locale, namespace: "footer" });
-  const origin = process.env.NEXT_PUBLIC_SITE_URL ?? new URL(request.url).origin;
-  const siteUrl = `${origin}/${locale}`;
+  const siteUrl = `${SITE_URL}/${locale}`;
 
   const items = getAllPosts(locale)
     .map((post) => {

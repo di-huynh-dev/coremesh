@@ -1,8 +1,9 @@
 import { ExploreView } from "@/components/blog/explore-view";
 import { PostRow } from "@/components/blog/post-row";
 import { MotionController } from "@/components/motion/motion-controller";
-import { getPostSummaries } from "@/lib/content/posts";
+import { getPostSummaries } from "@repo/content/posts";
 import { isBlogLocale } from "@/lib/content/text";
+import { pageMetadata } from "@/lib/seo";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import Link from "next/link";
@@ -15,10 +16,11 @@ interface BlogPageProps {
 export async function generateMetadata({
   params,
 }: BlogPageProps): Promise<Metadata> {
-  const { locale } = await params;
+  const { locale: rawLocale } = await params;
+  const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const t = await getTranslations({ locale, namespace: "explore" });
 
-  return { title: t("title"), description: t("subtitle") };
+  return pageMetadata({ locale, path: "/blog", title: t("title"), description: t("subtitle") });
 }
 
 export default async function BlogPage({ params }: BlogPageProps) {

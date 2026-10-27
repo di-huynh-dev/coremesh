@@ -1,6 +1,6 @@
 import { AUTHOR } from "@/lib/site";
 import { BLOG_TOPICS } from "@/lib/content/types";
-import { type WritingMonth } from "@/lib/content/posts";
+import { type WritingMonth } from "@repo/content/posts";
 import { topicStyles } from "@/lib/topic-style";
 import { cn } from "@/lib/utils";
 import { useLocale, useTranslations } from "next-intl";

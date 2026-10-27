@@ -12,7 +12,7 @@ export default function NotFound() {
             aria-hidden="true"
           />
           <Image
-            src="/round-avatar.svg"
+            src="/round-avatar.webp"
             alt=""
             width={64}
             height={64}

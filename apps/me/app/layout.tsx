@@ -1,6 +1,9 @@
+import { Analytics } from "@vercel/analytics/next";
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Playfair_Display } from "next/font/google";
 import "./globals.css";
+import { profile, SITE_URL, socials } from "@/lib/data/profile";
+import { siteTitle } from "@/lib/metadata";
 import { Providers } from "./providers";
 
 const ibmPlexSans = IBM_Plex_Sans({
@@ -22,35 +25,32 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Steven Huynh | Software Engineer",
-  description:
-    "Love to work and build anything with Js <3. Software Engineer at Estuary Solutions. Based in Ho Chi Minh, Viet Nam.",
+  metadataBase: new URL(SITE_URL),
+  title: siteTitle,
+  description: profile.description.en,
+  applicationName: `${profile.englishName} | ${profile.title}`,
   keywords: [
-    "Steven Huynh",
-    "Software Engineer",
-    "JavaScript",
-    "TypeScript",
-    "Next.js",
+    profile.englishName,
+    profile.name,
+    profile.title,
+    "Frontend Developer",
     "React",
-    "Full Stack",
+    "Next.js",
+    "TypeScript",
   ],
-  authors: [{ name: "Steven Huynh", url: "https://github.com/di-huynh-dev" }],
-  icons: {
-    icon: "/round-avatar.svg",
-    apple: "/round-avatar.svg",
-  },
+  authors: [{ name: profile.name, url: socials.github.href }],
+  creator: profile.name,
   openGraph: {
-    title: "Steven Huynh — Software Engineer",
-    description:
-      "Love to work and build anything with Js <3. Software Engineer at Estuary Solutions.",
+    title: siteTitle,
+    description: profile.description.en,
     type: "website",
-    url: "https://me.nextdi.io.vn",
+    siteName: profile.name,
+    url: SITE_URL,
   },
   twitter: {
     card: "summary_large_image",
-    title: "Steven Huynh — Software Engineer",
-    description: "Love to work and build anything with Js <3.",
-    creator: "@di-huynh-dev",
+    title: siteTitle,
+    description: profile.description.en,
   },
 };
 
@@ -65,6 +65,7 @@ export default function RootLayout({
         className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} ${displaySerif.variable} antialiased font-sans`}
       >
         <Providers>{children}</Providers>
+        <Analytics />
       </body>
     </html>
   );

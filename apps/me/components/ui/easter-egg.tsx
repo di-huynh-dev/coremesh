@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/components/i18n-provider";
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 
@@ -44,6 +45,7 @@ function makePieces(): Piece[] {
 
 /** Konami code (or the palette's "Drum frenzy") → confetti + fast-spinning drum. */
 export function EasterEgg() {
+  const { t } = useI18n();
   const [run, setRun] = useState(0);
   const pieces = useMemo(() => (run ? makePieces() : []), [run]);
 
@@ -108,7 +110,7 @@ export function EasterEgg() {
             transition={{ type: "spring", stiffness: 300, damping: 20 }}
             className="font-display absolute left-1/2 top-24 -translate-x-1/2 rounded-full bg-foreground px-5 py-2 text-lg whitespace-nowrap text-background italic shadow-xl"
           >
-            Bạn tìm ra rồi! 🥁
+            {t.egg}
           </motion.p>
         </motion.div>
       ) : null}

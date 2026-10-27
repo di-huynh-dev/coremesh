@@ -42,6 +42,7 @@ Config-only packages may expose only the scripts they need.
   - `@repo/typescript-config`
 - Buildable shared libraries in this repo:
   - `@repo/auth`
+  - `@repo/content`
   - `@repo/ui`
   - `@repo/utils`
 

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { readYaml, splitFrontmatter, toIsoDate } from "./frontmatter";
+import { readYaml, splitFrontmatter, toIsoDate } from "./frontmatter.js";
 import {
   BLOG_TOPICS,
   type BlogLocale,
@@ -8,14 +8,14 @@ import {
   type BlogPostMeta,
   type BlogPostSummary,
   type BlogTopic,
-} from "./types";
+} from "./types.js";
 
 /*
  * Posts live in content/posts/<slug>/:
  *   meta.yaml   shared fields (topic, date, level, tags, image)
  *   en.mdx      English title/excerpt frontmatter + body
  *   vi.mdx      Vietnamese; falls back to en.mdx when missing
- * Server-only (reads the filesystem). Client components import from ./types and ./text.
+ * Server-only (reads the filesystem). Client components import from @repo/content/types and /text.
  */
 
 export type {
@@ -25,11 +25,11 @@ export type {
   BlogPost,
   BlogPostSummary,
   BlogTopic,
-} from "./types";
-export { BLOG_TOPICS } from "./types";
-export { formatPostDate, isBlogLocale, slugify } from "./text";
+} from "./types.js";
+export { BLOG_TOPICS } from "./types.js";
+export { formatPostDate, isBlogLocale, slugify } from "./text.js";
 
-/** Default location when running inside apps/blogs. Other apps pass their own path. */
+/** Default location when running inside apps/blogs. Other apps pass their own path (see `postsDir`). */
 export const POSTS_DIR = path.join(process.cwd(), "content", "posts");
 const WORDS_PER_MINUTE = 220;
 

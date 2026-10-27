@@ -1,19 +1,8 @@
 // Client-safe text helpers (no filesystem access): usable from client components.
-import type { BlogHeading, BlogLocale } from "./types";
+import { slugify } from "@repo/content/text";
+import type { BlogHeading } from "./types";
 
-export function isBlogLocale(value: string): value is BlogLocale {
-  return value === "en" || value === "vi";
-}
-
-export function slugify(text: string) {
-  return text
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/đ/gi, "d")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
+export { formatPostDate, isBlogLocale, slugify } from "@repo/content/text";
 
 /** Hands out unique heading ids within one document ("setup", "setup-2", ...). */
 export function createHeadingIds() {
@@ -62,25 +51,6 @@ export function withHeadingIds(html: string) {
   );
 
   return { contentHtml, headings };
-}
-
-export function formatPostDate(
-  date: string,
-  locale: string,
-  style: "short" | "long" | "numeric" = "short",
-) {
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return date;
-
-  const options: Intl.DateTimeFormatOptions =
-    style === "numeric"
-      ? { day: "2-digit", month: "2-digit", year: "numeric" }
-      : { day: "numeric", month: style, year: "numeric" };
-
-  return new Intl.DateTimeFormat(locale === "vi" ? "vi-VN" : "en-US", {
-    ...options,
-    timeZone: "UTC",
-  }).format(parsed);
 }
 
 /** Accent-insensitive lowercase, so "ghi chep" matches "Ghi chép". */

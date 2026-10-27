@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/components/i18n-provider";
+import { socials } from "@/lib/data/profile";
 import type { Contributions } from "@/lib/github";
 import { useMemo, useState } from "react";
 
@@ -33,8 +35,8 @@ function sampleDays() {
   return days;
 }
 
-function formatDate(iso: string) {
-  return new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", {
+function formatDate(iso: string, dateLocale: string) {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(dateLocale, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -42,7 +44,11 @@ function formatDate(iso: string) {
   });
 }
 
-function buildWeeks(days: { date: string; count: number; level: number }[]) {
+function buildWeeks(
+  days: { date: string; count: number; level: number }[],
+  dayLabel: (count: number, date: string) => string,
+  dateLocale: string,
+) {
   const weeks: Day[][] = [];
   let week: Day[] = [];
   const firstDow = new Date(`${days[0].date}T00:00:00Z`).getUTCDay();
@@ -52,7 +58,7 @@ function buildWeeks(days: { date: string; count: number; level: number }[]) {
     week.push({
       level: d.level,
       count: d.count,
-      label: `${d.count} contribution${d.count === 1 ? "" : "s"} on ${formatDate(d.date)}`,
+      label: dayLabel(d.count, formatDate(d.date, dateLocale)),
     });
     if (week.length === 7) {
       weeks.push(week);
@@ -66,7 +72,7 @@ function buildWeeks(days: { date: string; count: number; level: number }[]) {
   return weeks;
 }
 
-function monthLabels(days: { date: string }[], weekCount: number) {
+function monthLabels(days: { date: string }[], weekCount: number, dateLocale: string) {
   const labels: { month: string; week: number }[] = [];
   const firstDow = new Date(`${days[0].date}T00:00:00Z`).getUTCDay();
   let lastMonth = -1;
@@ -76,7 +82,7 @@ function monthLabels(days: { date: string }[], weekCount: number) {
     const week = Math.floor((i + firstDow) / 7);
     if (month !== lastMonth && date.getUTCDate() <= 7 && week < weekCount - 1) {
       labels.push({
-        month: date.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
+        month: date.toLocaleDateString(dateLocale, { month: "short", timeZone: "UTC" }),
         week,
       });
       lastMonth = month;
@@ -86,11 +92,19 @@ function monthLabels(days: { date: string }[], weekCount: number) {
 }
 
 export function GithubCalendarSection({ data }: { data?: Contributions | null }) {
+  const { locale, t } = useI18n();
+  const numberLocale = locale === "vi" ? "vi-VN" : "en-US";
   const live = Boolean(data && data.days.length > 0);
 
   const days = useMemo(() => (live ? data!.days : sampleDays()), [live, data]);
-  const weeks = useMemo(() => buildWeeks(days), [days]);
-  const labels = useMemo(() => monthLabels(days, weeks.length), [days, weeks.length]);
+  const weeks = useMemo(
+    () => buildWeeks(days, t.calendar.day, numberLocale),
+    [days, t, numberLocale],
+  );
+  const labels = useMemo(
+    () => monthLabels(days, weeks.length, numberLocale),
+    [days, weeks.length, numberLocale],
+  );
   const total = useMemo(
     () => (live ? data!.total : days.reduce((sum, d) => sum + d.count, 0)),
     [live, data, days],
@@ -125,7 +139,7 @@ export function GithubCalendarSection({ data }: { data?: Contributions | null })
             <div
               className="grid w-max grid-flow-col grid-rows-7 gap-[3px] px-1"
               role="img"
-              aria-label={`GitHub contribution heatmap, ${total} contributions`}
+              aria-label={t.calendar.aria(total)}
               onMouseLeave={() => setTooltip(null)}
             >
               {weeks.map((week, weekIndex) =>
@@ -167,15 +181,12 @@ export function GithubCalendarSection({ data }: { data?: Contributions | null })
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-sm text-muted-foreground">
             <p>
               {live ? (
-                <>
-                  {new Intl.NumberFormat("en-US").format(total)} contributions
-                  in the last year on{" "}
-                </>
+                <>{t.calendar.live(new Intl.NumberFormat(numberLocale).format(total))}</>
               ) : (
-                <>Sample activity (live data unavailable) · see </>
+                <>{t.calendar.sample}</>
               )}
               <a
-                href="https://github.com/di-huynh-dev"
+                href={socials.github.href}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="font-medium text-foreground underline decoration-brand/60 underline-offset-4 hover:text-brand"
@@ -185,14 +196,14 @@ export function GithubCalendarSection({ data }: { data?: Contributions | null })
               .
             </p>
             <div className="flex items-center gap-2">
-              <span>Less</span>
+              <span>{t.calendar.less}</span>
               {[0, 1, 2, 3, 4].map((level) => (
                 <div
                   key={level}
                   className={`gh-level-${level} size-3 rounded-[2px]`}
                 />
               ))}
-              <span>More</span>
+              <span>{t.calendar.more}</span>
             </div>
           </div>
         </div>

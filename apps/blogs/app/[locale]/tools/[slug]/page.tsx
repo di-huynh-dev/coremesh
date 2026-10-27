@@ -6,6 +6,7 @@ import { TOOL_ICON_COMPONENTS } from "@/components/tools/tool-icons";
 import { ToolLoader } from "@/components/tools/tool-loader";
 import { isBlogLocale } from "@/lib/content/text";
 import { TOOLS, getTool } from "@/lib/content/tools";
+import { pageMetadata } from "@/lib/seo";
 import { ShieldCheck } from "lucide-react";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -21,11 +22,18 @@ export function generateStaticParams() {
 }
 
 export async function generateMetadata({ params }: ToolPageProps): Promise<Metadata> {
-  const { locale, slug } = await params;
+  const { locale: rawLocale, slug } = await params;
+  const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const tool = getTool(slug);
   if (!tool) return { title: "Not found" };
-  const copy = tool.copy[isBlogLocale(locale) ? locale : "en"];
-  return { title: copy.title, description: copy.description, keywords: tool.keywords };
+  const copy = tool.copy[locale];
+  return pageMetadata({
+    locale,
+    path: `/tools/${tool.slug}`,
+    title: copy.title,
+    description: copy.description,
+    keywords: [...tool.keywords],
+  });
 }
 
 export default async function ToolPage({ params }: ToolPageProps) {

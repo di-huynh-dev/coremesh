@@ -1,48 +1,22 @@
 "use client";
 
+import { useI18n } from "@/components/i18n-provider";
 import { LocalClock } from "@/components/ui/local-clock";
+import { thump } from "@/lib/drum-audio";
 import {
   AnimatePresence,
   motion,
   useMotionValue,
   useSpring,
 } from "framer-motion";
-import { Volume2, VolumeX } from "lucide-react";
+import { Gamepad2, Volume2, VolumeX } from "lucide-react";
 import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Ripple = { id: number; x: number; y: number };
 
-let audioCtx: AudioContext | undefined;
-
-/** Synthesised drum thump — no audio asset, only runs after a user click. */
-function thump() {
-  try {
-    const Ctor =
-      window.AudioContext ??
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
-    audioCtx ??= new Ctor();
-    const ctx = audioCtx;
-    const now = ctx.currentTime;
-
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(190, now);
-    osc.frequency.exponentialRampToValueAtTime(58, now + 0.35);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.28, now + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.7);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.72);
-  } catch {
-    // Audio is a nicety; ignore unsupported/blocked contexts.
-  }
-}
-
 export function DrumBanner() {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const idRef = useRef(0);
   const [ripples, setRipples] = useState<Ripple[]>([]);
@@ -97,7 +71,7 @@ export function DrumBanner() {
   return (
     <div
       ref={containerRef}
-      data-cursor="Gõ trống"
+      data-cursor={t.overview.drum}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
@@ -147,7 +121,7 @@ export function DrumBanner() {
           style={{ animationDelay: "3s" }}
         />
         <Image
-          src="/round-avatar.svg"
+          src="/round-avatar.webp"
           alt="Huynh Tien Di monogram"
           width={64}
           height={64}
@@ -167,20 +141,33 @@ export function DrumBanner() {
         est. 2022
       </p>
 
-      <button
-        type="button"
-        aria-pressed={sound}
-        aria-label={sound ? "Mute drum sound" : "Enable drum sound"}
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={() => setSound((on) => !on)}
-        className="absolute bottom-2.5 left-1/2 inline-flex size-8 -translate-x-1/2 items-center justify-center rounded-full border border-edge bg-background/80 text-muted-foreground backdrop-blur transition-colors hover:text-foreground max-sm:hidden"
-      >
-        {sound ? (
-          <Volume2 className="size-3 text-brand" />
-        ) : (
-          <VolumeX className="size-3" />
-        )}
-      </button>
+      <div className="absolute bottom-2.5 left-1/2 flex -translate-x-1/2 items-center gap-1.5">
+        <button
+          type="button"
+          aria-pressed={sound}
+          aria-label={sound ? "Mute drum sound" : "Enable drum sound"}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => setSound((on) => !on)}
+          className="inline-flex size-8 items-center justify-center rounded-full border border-edge bg-background/80 text-muted-foreground backdrop-blur transition-colors hover:text-foreground max-sm:hidden"
+        >
+          {sound ? (
+            <Volume2 className="size-3 text-brand" />
+          ) : (
+            <VolumeX className="size-3" />
+          )}
+        </button>
+        <button
+          type="button"
+          aria-label={t.game.playLabel}
+          data-cursor={t.game.playLabel}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => window.dispatchEvent(new Event("drumgame:open"))}
+          className="inline-flex h-8 items-center gap-1.5 rounded-full border border-edge bg-background/80 px-3 font-mono text-[11px] text-muted-foreground backdrop-blur transition-colors hover:border-brand/50 hover:text-brand"
+        >
+          <Gamepad2 className="size-3.5" />
+          {t.game.play}
+        </button>
+      </div>
     </div>
   );
 }

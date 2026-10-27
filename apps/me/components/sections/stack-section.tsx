@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/components/i18n-provider";
 import { AntDesignDarkTheme } from "@/components/ui/svgs/antDesignDarkTheme";
 import { Cloudflare } from "@/components/ui/svgs/cloudflare";
 import { CssOld } from "@/components/ui/svgs/cssOld";
@@ -28,7 +29,8 @@ import { Vite } from "@/components/ui/svgs/vite";
 import { Vue } from "@/components/ui/svgs/vue";
 import { Reveal } from "@/components/ui/reveal";
 import { SectionHeading } from "@/components/ui/section-heading";
-import { BadgeCheck, Bug, FlaskConical, Zap } from "lucide-react";
+import type { Dictionary } from "@/lib/dictionary";
+import { BadgeCheck, Bot, Bug, FlaskConical, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -41,13 +43,13 @@ type TechnologyItem = {
 };
 
 type TechnologyGroup = {
-  label: string;
+  key: keyof Dictionary["stack"]["groups"];
   technologies: TechnologyItem[];
 };
 
 const technologyGroups: TechnologyGroup[] = [
   {
-    label: "Core Frontend",
+    key: "core",
     technologies: [
       { name: "HTML5", Icon: Html5, className: "bg-[#f16529] text-white" },
       { name: "CSS3", Icon: CssOld, className: "bg-[#2965f1] text-white" },
@@ -76,7 +78,7 @@ const technologyGroups: TechnologyGroup[] = [
     ],
   },
   {
-    label: "UI & Styling",
+    key: "ui",
     technologies: [
       { name: "SASS", Icon: Sass, className: "bg-[#d7aec3] text-white" },
       { name: "LESS", className: "bg-[#1d365d] text-white" },
@@ -109,8 +111,13 @@ const technologyGroups: TechnologyGroup[] = [
   },
 
   {
-    label: "App & Data",
+    key: "data",
     technologies: [
+      { name: "TanStack Query", className: "bg-[#ff4154] text-white" },
+      { name: "Zustand", className: "bg-[#433e38] text-white" },
+      { name: "Redux", className: "bg-[#764abc] text-white" },
+      { name: "React Router", className: "bg-[#ca4245] text-white" },
+      { name: "WebSocket", className: "bg-[#111827] text-white" },
       { name: "Nodejs", Icon: Nodejs, className: "bg-[#5fa04e] text-white" },
       {
         name: "Expressjs",
@@ -137,7 +144,16 @@ const technologyGroups: TechnologyGroup[] = [
     ],
   },
   {
-    label: "Build & Infra",
+    key: "ai",
+    technologies: [
+      { name: "AI Agents", Icon: Bot, className: "bg-[#0f766e] text-white" },
+      { name: "Claude Code", className: "bg-[#d97757] text-white" },
+      { name: "Codex", className: "bg-[#10a37f] text-white" },
+      { name: "AI Code Review", className: "bg-[#334155] text-white" },
+    ],
+  },
+  {
+    key: "build",
     technologies: [
       { name: "Vitejs", Icon: Vite, className: "bg-[#7c3aed] text-white" },
       { name: "Webpack", className: "bg-[#1e88e5] text-white" },
@@ -149,10 +165,11 @@ const technologyGroups: TechnologyGroup[] = [
       { name: "Docker", Icon: Docker, className: "bg-[#2496ed] text-white" },
       { name: "Nginx", Icon: Nginx, className: "bg-[#5aae47] text-white" },
       { name: "Git", Icon: Git, className: "bg-[#f05133] text-white" },
+      { name: "GitHub/GitLab CI/CD", className: "bg-[#fc6d26] text-white" },
     ],
   },
   {
-    label: "Testing & Code Quality",
+    key: "testing",
     technologies: [
       {
         name: "Jest",
@@ -173,7 +190,7 @@ const technologyGroups: TechnologyGroup[] = [
     ],
   },
   {
-    label: "Motion & Rendering",
+    key: "motion",
     technologies: [
       {
         name: "Three.js",
@@ -201,6 +218,10 @@ const RELATION_PAIRS: Array<[string, string[]]> = [
   ["Jest", ["Unit Testing"]],
   ["Cypress", ["E2E Testing"]],
   ["Three.js", ["GSAP"]],
+  ["Reactjs", ["TanStack Query", "Zustand", "Redux", "React Router"]],
+  ["TanStack Query", ["WebSocket"]],
+  ["AI Agents", ["Claude Code", "Codex", "AI Code Review"]],
+  ["Git", ["GitHub/GitLab CI/CD", "AI Code Review"]],
 ];
 
 const RELATED = new Map<string, Set<string>>();
@@ -214,6 +235,7 @@ for (const [name, others] of RELATION_PAIRS) {
 }
 
 export function StackSection() {
+  const { t } = useI18n();
   const [focused, setFocused] = useState<string | null>(null);
   const related = useMemo(
     () => (focused ? (RELATED.get(focused) ?? new Set<string>()) : null),
@@ -225,7 +247,7 @@ export function StackSection() {
       id="techstack"
       className="profile-rail rail-box screen-line-after scroll-mt-16 px-4 py-8"
     >
-      <SectionHeading index="02" title="Stack" vi="Công cụ" />
+      <SectionHeading index="02" title={t.headings.stack.title} alt={t.headings.stack.alt} />
       <p
         className="mt-3 min-h-8 font-mono text-xs leading-5 text-muted-foreground"
         aria-live="polite"
@@ -242,7 +264,7 @@ export function StackSection() {
             ) : null}
           </>
         ) : (
-          "Hover a chip to light up its constellation."
+          t.stack.hint
         )}
       </p>
 
@@ -251,7 +273,7 @@ export function StackSection() {
         onMouseLeave={() => setFocused(null)}
       >
         {technologyGroups.map((group, groupIndex) => (
-          <Reveal key={group.label} delay={groupIndex * 0.04}>
+          <Reveal key={group.key} delay={groupIndex * 0.04}>
             <div
               className={`grid gap-3 px-4 py-4 sm:grid-cols-[150px_1fr] ${
                 groupIndex > 0 ? "border-t border-edge" : ""
@@ -261,7 +283,7 @@ export function StackSection() {
                 <span className="mr-2 text-brand">
                   {String(groupIndex + 1).padStart(2, "0")}
                 </span>
-                {group.label}
+                {t.stack.groups[group.key]}
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {group.technologies.map((tech) => {

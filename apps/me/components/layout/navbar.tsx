@@ -1,6 +1,10 @@
 "use client";
 
+import { useI18n } from "@/components/i18n-provider";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { socials } from "@/lib/data/profile";
+import { homePath } from "@/lib/i18n";
+import { trackEvent } from "@/lib/track";
 import { GithubDark } from "@/components/ui/svgs/githubDark";
 import { GithubLight } from "@/components/ui/svgs/githubLight";
 import { AnimatePresence, motion } from "framer-motion";
@@ -10,13 +14,14 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 const navLinks = [
-  { href: "#about", label: "Summary" },
-  { href: "#techstack", label: "Stack" },
-  { href: "#experience", label: "Experience" },
-  { href: "#blog", label: "Blog" },
-  { href: "#contact", label: "Contact" },
-  { href: "/story", label: "Story ✦" },
-];
+  { href: "#about", key: "summary" },
+  { href: "#techstack", key: "stack" },
+  { href: "#experience", key: "experience" },
+  { href: "#projects", key: "projects" },
+  { href: "#blog", key: "blog" },
+  { href: "#contact", key: "contact" },
+  { href: "/story", key: "story" },
+] as const;
 
 const ease = [0.22, 1, 0.36, 1] as const;
 
@@ -56,6 +61,8 @@ function useActiveSection() {
 }
 
 export function Navbar() {
+  const { locale, t } = useI18n();
+  const otherLocale = locale === "en" ? "vi" : "en";
   const [affixed, setAffixed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -94,12 +101,12 @@ export function Navbar() {
     >
       <div className="profile-rail rail-box screen-line-after flex h-12 items-center justify-between gap-2 bg-background px-4">
         <Link
-          href="/"
-          aria-label="Home"
+          href={homePath(locale)}
+          aria-label={t.nav.home}
           className="group inline-flex shrink-0 items-center gap-2.5 whitespace-nowrap"
         >
           <Image
-            src="/round-avatar.svg"
+            src="/round-avatar.webp"
             alt=""
             width={40}
             height={40}
@@ -113,7 +120,7 @@ export function Navbar() {
 
         <div className="flex min-w-0 items-center gap-2 md:gap-3">
           <nav
-            aria-label="Main navigation"
+            aria-label={t.nav.main}
             className="hidden shrink-0 items-center md:flex"
           >
             {navLinks.map((link) => {
@@ -129,7 +136,7 @@ export function Navbar() {
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {link.label}
+                  {t.nav[link.key]}
                   {isActive ? (
                     <motion.span
                       layoutId="nav-active"
@@ -143,8 +150,19 @@ export function Navbar() {
           </nav>
 
           <div className="flex shrink-0 items-center gap-2">
+            <Link
+              href={homePath(otherLocale)}
+              hrefLang={otherLocale}
+              onClick={() => trackEvent("language_switch", { to: otherLocale })}
+              aria-label={t.nav.switchLanguage}
+              title={t.nav.switchLanguage}
+              data-cursor={t.nav.switchLanguage}
+              className="inline-flex size-10 items-center justify-center rounded-full border border-edge bg-background font-mono text-xs font-medium text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted"
+            >
+              {t.nav.languageShort}
+            </Link>
             <a
-              href="https://github.com/di-huynh-dev"
+              href={socials.github.href}
               target="_blank"
               rel="noopener noreferrer"
               aria-label="GitHub"
@@ -155,7 +173,7 @@ export function Navbar() {
             </a>
             <button
               type="button"
-              aria-label="Open command palette"
+              aria-label={t.nav.openPalette}
               data-cursor="Ctrl K"
               onClick={() => window.dispatchEvent(new Event("palette:open"))}
               className="inline-flex size-10 items-center justify-center rounded-full border border-edge bg-background text-foreground transition-all duration-300 hover:border-brand/50 hover:bg-muted"
@@ -166,7 +184,7 @@ export function Navbar() {
             <motion.button
               ref={menuButtonRef}
               type="button"
-              aria-label="Toggle menu"
+              aria-label={t.nav.toggleMenu}
               aria-controls="mobile-navigation"
               aria-expanded={mobileOpen}
               onClick={() => setMobileOpen((open) => !open)}
@@ -200,7 +218,7 @@ export function Navbar() {
           >
             <nav
               id="mobile-navigation"
-              aria-label="Mobile navigation"
+              aria-label={t.nav.mobile}
               className="dot-pattern relative max-h-[calc(100dvh-4.5rem)] overflow-y-auto overscroll-contain rounded-2xl border border-edge bg-card p-2 shadow-[0_18px_40px_rgba(40,20,0,0.14)]"
             >
               {navLinks.map((link, i) => (
@@ -211,7 +229,7 @@ export function Navbar() {
                   className="group flex items-center gap-3 rounded-xl px-4 py-3 font-mono text-sm text-foreground/85 transition-colors hover:bg-brand/10 hover:text-foreground"
                 >
                   <span className="text-xs text-brand">0{i + 1}</span>
-                  {link.label}
+                  {t.nav[link.key]}
                 </Link>
               ))}
             </nav>

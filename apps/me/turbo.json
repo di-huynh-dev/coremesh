@@ -2,10 +2,12 @@
   "extends": ["//"],
   "tasks": {
     "build": {
-      "env": ["NEXT_PUBLIC_BLOGS_URL"]
+      "env": ["NEXT_PUBLIC_BLOGS_URL", "NEXT_PUBLIC_TURNSTILE_SITE_KEY"],
+      "passThroughEnv": ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "CONTACT_TO", "TURNSTILE_SECRET_KEY"]
     },
     "dev": {
-      "env": ["NEXT_PUBLIC_BLOGS_URL"]
+      "env": ["NEXT_PUBLIC_BLOGS_URL", "NEXT_PUBLIC_TURNSTILE_SITE_KEY"],
+      "passThroughEnv": ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "CONTACT_TO", "TURNSTILE_SECRET_KEY"]
     }
   }
 }

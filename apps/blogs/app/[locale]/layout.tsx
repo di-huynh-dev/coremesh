@@ -3,6 +3,8 @@ import { Navbar } from "@/components/layout/navbar";
 import { motionPreScript } from "@/components/motion/motion-controller";
 import { buildSearchIndex } from "@/lib/content/search";
 import { isBlogLocale } from "@/lib/content/text";
+import { ogLocale } from "@/lib/seo";
+import { AUTHOR, SITE_NAME, SITE_TITLE, SITE_URL, TWITTER_HANDLE } from "@/lib/site";
 import type { Metadata } from "next";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages, getTranslations, setRequestLocale } from "next-intl/server";
@@ -33,8 +35,6 @@ const jetBrainsMono = localFont({
   adjustFontFallback: false,
 });
 
-const siteTitle = "DiCodeWeb | Engineering Notes & Systems Thinking";
-
 export async function generateMetadata({
   params,
 }: {
@@ -43,10 +43,12 @@ export async function generateMetadata({
   const { locale } = await params;
   const t = await getTranslations({ locale, namespace: "footer" });
 
+  // Page-level metadata (lib/seo.ts) adds canonical, hreflang and per-page Open Graph.
   return {
+    metadataBase: new URL(SITE_URL),
     title: {
-      default: siteTitle,
-      template: "%s | DiCodeWeb",
+      default: SITE_TITLE,
+      template: `%s | ${SITE_NAME}`,
     },
     description: t("description"),
     keywords: [
@@ -58,26 +60,28 @@ export async function generateMetadata({
       "Monorepo",
       "Developer Blog",
     ],
-    authors: [{ name: "Huỳnh Tiến Dĩ", url: "https://github.com/di-huynh-dev" }],
+    authors: [{ name: AUTHOR.name, url: AUTHOR.url }],
     icons: {
       icon: [{ url: "/round-avatar.svg", type: "image/svg+xml" }],
       apple: "/round-avatar.svg",
     },
+    // Fallbacks for routes without their own metadata (e.g. 404): no hreflang, since the
+    // locale homes are not translations of an arbitrary page.
     alternates: {
-      languages: { en: "/en", vi: "/vi" },
       types: { "application/rss+xml": `/${locale}/rss.xml` },
     },
     openGraph: {
-      title: siteTitle,
+      title: SITE_TITLE,
       description: t("description"),
       type: "website",
-      locale: locale === "vi" ? "vi_VN" : "en_US",
+      siteName: SITE_NAME,
+      locale: isBlogLocale(locale) ? ogLocale[locale] : ogLocale.en,
     },
     twitter: {
       card: "summary_large_image",
-      title: "DiCodeWeb | Engineering Notes",
+      title: SITE_TITLE,
       description: t("description"),
-      creator: "@DiCodeWeb",
+      creator: TWITTER_HANDLE,
     },
   };
 }

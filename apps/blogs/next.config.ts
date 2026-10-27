@@ -12,10 +12,10 @@ const nextConfig: NextConfig = {
   },
   // Guides are read from disk at request time; ship the markdown with the server build.
   // Content is read from disk at request time (ISR home page, RSS, fallback renders):
-  // ship it with every server function under /[locale].
+  // ship it with every server function under /[locale]. assets/og holds the social-card fonts.
   outputFileTracingIncludes: {
-    "/[locale]": ["./content/**/*"],
-    "/[locale]/**": ["./content/**/*"],
+    "/[locale]": ["./content/**/*", "./assets/og/**/*"],
+    "/[locale]/**": ["./content/**/*", "./assets/og/**/*"],
   },
   turbopack: {
     root: path.join(configDir, "..", ".."),

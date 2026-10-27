@@ -1,8 +1,9 @@
 import { CodeCopy } from "@/components/blog/code-copy";
 import { SourceNote } from "@/components/guides/source-note";
 import { MotionController } from "@/components/motion/motion-controller";
-import { formatPostDate } from "@/lib/content/text";
+import { formatPostDate, isBlogLocale } from "@/lib/content/text";
 import { GUIDES_SOURCE, getGuide, getGuides } from "@/lib/content/guides";
+import { pageMetadata } from "@/lib/seo";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import Link from "next/link";
@@ -20,13 +21,15 @@ export async function generateMetadata({ params }: GuidePageProps): Promise<Meta
   const { locale, slug } = await params;
   const guide = getGuide(slug, locale);
   if (!guide) return { title: "Not found" };
-  return {
+  return pageMetadata({
+    locale: isBlogLocale(locale) ? locale : "en",
+    path: `/guides/${guide.slug}`,
     title: guide.title,
     description: guide.description,
     keywords: guide.tags,
     // Republished content: point search engines at the original to avoid duplicate-content issues.
-    alternates: { canonical: `${GUIDES_SOURCE.url}/${guide.slug}` },
-  };
+    canonical: `${GUIDES_SOURCE.url}/${guide.slug}`,
+  });
 }
 
 export default async function GuidePage({ params }: GuidePageProps) {

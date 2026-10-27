@@ -7,17 +7,32 @@ import { SectionHeading } from "@/components/home/section-heading";
 import { TopicsSection } from "@/components/home/topics-section";
 import { MotionController } from "@/components/motion/motion-controller";
 import { RoadmapCard } from "@/components/roadmap/roadmap-card";
-import { AUTHOR } from "@/lib/site";
-import { getBlogStats, getPostSummaries, getWritingRhythm } from "@/lib/content/posts";
+import { JsonLd } from "@/components/seo/json-ld";
+import { authorJsonLd, contentLanguage, pageMetadata } from "@/lib/seo";
+import { AUTHOR, SITE_NAME, SITE_URL } from "@/lib/site";
+import { getBlogStats, getPostSummaries, getWritingRhythm } from "@repo/content/posts";
 import { isBlogLocale } from "@/lib/content/text";
 import { getGuides } from "@/lib/content/guides";
 import { getRoadmaps } from "@/lib/content/roadmaps";
-import { Github } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
+import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import Image from "next/image";
 
 // The writing-rhythm chart runs up to the current month: refresh daily.
 export const revalidate = 86400;
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}): Promise<Metadata> {
+  const { locale: rawLocale } = await params;
+  const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
+  const t = await getTranslations({ locale, namespace: "footer" });
+  // ./opengraph-image.tsx sits in this segment.
+  return pageMetadata({ locale, path: "", description: t("description"), ownImage: true });
+}
 
 export default async function Home({
   params,
@@ -30,11 +45,30 @@ export default async function Home({
   const t = await getTranslations({ locale, namespace: "home" });
   const tCommon = await getTranslations({ locale, namespace: "common" });
   const tRoadmap = await getTranslations({ locale, namespace: "roadmap" });
+  const tFooter = await getTranslations({ locale, namespace: "footer" });
 
   const posts = getPostSummaries(locale);
+  const homeUrl = `${SITE_URL}/${locale}`;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": `${homeUrl}#website`,
+        url: homeUrl,
+        name: SITE_NAME,
+        description: tFooter("description"),
+        inLanguage: contentLanguage[locale],
+        author: { "@id": authorJsonLd["@id"] },
+        publisher: { "@id": authorJsonLd["@id"] },
+      },
+      authorJsonLd,
+    ],
+  };
 
   return (
     <>
+      <JsonLd data={jsonLd} />
       <Hero stats={getBlogStats(locale)} months={getWritingRhythm(locale)} />
 
       <section aria-labelledby="latest-title" className="wrap pt-20 md:pt-28">
@@ -109,13 +143,13 @@ export default async function Home({
               {t("aboutBody")}
             </p>
             <a
-              href="https://github.com/di-huynh-dev"
+              href={AUTHOR.url}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-ink mt-6"
               data-fx="item"
             >
-              <Github className="size-4" />
+              <ArrowUpRight className="size-4" />
               {t("aboutCta")}
             </a>
           </div>

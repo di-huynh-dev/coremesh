@@ -1,3 +1,5 @@
+import { socials } from "@/lib/data/profile";
+
 export type ContributionDay = {
   date: string;
   count: number;
@@ -9,7 +11,7 @@ export type Contributions = {
   total: number;
 };
 
-const USERNAME = "di-huynh-dev";
+const USERNAME = socials.github.handle;
 
 /**
  * Real contribution data for the last year, via the public

@@ -1,6 +1,6 @@
 import nestjsRoadmap from "@/content/roadmaps/nestjs.json";
 import reactRoadmap from "@/content/roadmaps/react.json";
-import { getAllPosts, slugify, toSummary, type BlogLocale, type BlogTopic } from "./posts";
+import { getAllPosts, slugify, toSummary, type BlogLocale, type BlogTopic } from "@repo/content/posts";
 
 // Source data is shared with apps/dicodeweb (content/roadmaps); keep the JSON shape identical.
 

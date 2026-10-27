@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
+  // The home pages are ISR and read the blog's posts from disk when they revalidate.
+  outputFileTracingIncludes: {
+    "/": ["../blogs/content/posts/**/*"],
+    "/vi": ["../blogs/content/posts/**/*"],
+  },
   turbopack: {
     root: path.join(configDir, "..", ".."),
   },

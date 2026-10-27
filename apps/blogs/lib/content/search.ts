@@ -1,5 +1,5 @@
 import { getGuides } from "./guides";
-import { getAllPosts } from "./posts";
+import { getAllPosts } from "@repo/content/posts";
 import { getRoadmaps } from "./roadmaps";
 import { TOOLS } from "./tools";
 import type { BlogLocale, SearchEntry } from "./types";

@@ -14,7 +14,7 @@ export function StoryHeader() {
         >
           <ArrowLeft className="size-4 transition-transform group-hover:-translate-x-0.5" />
           <Image
-            src="/round-avatar.svg"
+            src="/round-avatar.webp"
             alt=""
             width={32}
             height={32}

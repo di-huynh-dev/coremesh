@@ -1,5 +1,6 @@
 "use client";
 
+import { useI18n } from "@/components/i18n-provider";
 import { AnimatedName } from "@/components/ui/animated-name";
 import { DrumBanner } from "@/components/ui/drum-banner";
 import { Reveal } from "@/components/ui/reveal";
@@ -7,6 +8,7 @@ import { GithubDark } from "@/components/ui/svgs/githubDark";
 import { Linkedin } from "@/components/ui/svgs/linkedin";
 import { NextjsIconDark } from "@/components/ui/svgs/nextjsIconDark";
 import { TiktokIconDark } from "@/components/ui/svgs/tiktokIconDark";
+import { blogUrl, profile, rotatingTitles, SITE_URL, socials } from "@/lib/data/profile";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUpRight,
@@ -21,117 +23,108 @@ import type { ComponentType, SVGProps } from "react";
 import { useEffect, useState } from "react";
 
 type OverviewSectionProps = {
-  blogsBaseUrl: string;
   latestPost?: { slug: string; title: string };
 };
 
 type SvgIcon = ComponentType<SVGProps<SVGSVGElement>>;
 
-const overviewItems = [
-  {
-    label: "Role",
-    icon: Code2,
-    content: (
-      <>
-        Frontend Developer{" "}
-        <a
-          href="https://estuary.solutions/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="font-medium text-brand underline-offset-4 hover:underline"
-        >
-          @Estuary Solutions
-        </a>
-      </>
-    ),
-  },
-  { label: "Location", icon: MapPin, content: "Ho Chi Minh City, Viet Nam" },
-  {
-    label: "Email",
-    icon: Mail,
-    content: (
-      <a
-        href="mailto:dihuynhdev.contact@gmail.com"
-        className="underline-offset-4 hover:text-brand hover:underline"
-      >
-        dihuynhdev.contact@gmail.com
-      </a>
-    ),
-  },
-  {
-    label: "Website",
-    icon: Globe,
-    content: (
-      <a
-        href="https://me.nextdi.io.vn"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="underline-offset-4 hover:text-brand hover:underline"
-      >
-        me.nextdi.io.vn
-      </a>
-    ),
-  },
-];
-
 const socialItems = [
   {
     label: "LinkedIn",
-    handle: "Huynh Tien Di",
-    href: "https://www.linkedin.com/in/huynhtiendi/",
+    handle: socials.linkedin.handle,
+    href: socials.linkedin.href,
     Icon: Linkedin,
     iconClassName: "bg-white",
   },
   {
     label: "GitHub",
-    handle: "di-huynh-dev",
-    href: "https://github.com/di-huynh-dev",
+    handle: socials.github.handle,
+    href: socials.github.href,
     Icon: GithubDark,
     iconClassName: "bg-zinc-950 p-2.5",
   },
   {
     label: "TikTok",
-    handle: "@dicodeweb",
-    href: "https://www.tiktok.com/@dicodeweb",
+    handle: socials.tiktok.handle,
+    href: socials.tiktok.href,
     Icon: TiktokIconDark,
     iconClassName: "bg-zinc-950 p-2",
   },
   {
     label: "Blog",
-    handle: "nextdi.io.vn",
-    href: "https://nextdi.io.vn",
+    handle: socials.blog.handle,
+    href: null,
     Icon: NextjsIconDark,
     iconClassName: "bg-white p-2",
   },
 ] satisfies Array<{
   label: string;
   handle: string;
-  href: string;
+  /** null: resolved per locale (the blog). */
+  href: string | null;
   Icon: SvgIcon;
   iconClassName: string;
 }>;
 
-const subtitles = [
-  "Frontend Developer",
-  "React / Next.js Engineer",
-  "Performance-minded UI Developer",
-  "Micro-frontend Practitioner",
-];
-
-export function OverviewSection({
-  blogsBaseUrl,
-  latestPost,
-}: OverviewSectionProps) {
-  const blogUrl = blogsBaseUrl.replace(/\/$/, "");
+export function OverviewSection({ latestPost }: OverviewSectionProps) {
+  const { locale, t } = useI18n();
+  const titles = rotatingTitles[locale];
   const [subtitleIndex, setSubtitleIndex] = useState(0);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setSubtitleIndex((index) => (index + 1) % subtitles.length);
+      setSubtitleIndex((index) => (index + 1) % titles.length);
     }, 2600);
 
     return () => window.clearInterval(interval);
-  }, []);
+  }, [titles.length]);
+
+  const overviewItems = [
+    {
+      label: t.overview.role,
+      icon: Code2,
+      content: (
+        <>
+          {profile.role}{" "}
+          <a
+            href={profile.company.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-brand underline-offset-4 hover:underline"
+          >
+            @{profile.company.name}
+          </a>
+        </>
+      ),
+    },
+    { label: t.overview.location, icon: MapPin, content: profile.location[locale] },
+    {
+      label: t.overview.email,
+      icon: Mail,
+      content: (
+        <a
+          href={`mailto:${profile.email}`}
+          className="underline-offset-4 hover:text-brand hover:underline"
+        >
+          {profile.email}
+        </a>
+      ),
+    },
+    {
+      label: t.overview.website,
+      icon: Globe,
+      content: (
+        <a
+          href={SITE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline-offset-4 hover:text-brand hover:underline"
+        >
+          {SITE_URL.replace(/^https?:\/\//, "")}
+        </a>
+      ),
+    },
+  ];
 
   return (
     <>
@@ -144,8 +137,8 @@ export function OverviewSection({
       <section className="profile-rail rail-box screen-line-after flex">
         <div className="relative w-[164px] shrink-0 max-sm:w-[112px]">
           <Image
-            src="https://avatars.githubusercontent.com/u/103420884?v=4"
-            alt="Huỳnh Tiến Dĩ"
+            src={profile.avatar}
+            alt={profile.name}
             width={160}
             height={160}
             className="-mt-px size-32 rounded-full bg-background object-cover ring-1 ring-border ring-offset-2 ring-offset-background sm:size-40"
@@ -169,35 +162,23 @@ export function OverviewSection({
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60" />
                 <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
               </span>
-              Open to collab
+              {t.overview.status}
             </span>
           </div>
 
           <div>
-            <h1 className="font-display flex flex-wrap items-center gap-x-3 pl-4 text-4xl leading-[1.15] font-medium sm:text-5xl">
+            <h1 className="font-display pl-4 text-4xl leading-[1.15] font-medium sm:text-5xl">
               <span>
                 <AnimatedName text="Huỳnh Tiến" />{" "}
                 <em className="pr-1 text-brand">
                   <AnimatedName text="Dĩ" />
                 </em>
               </span>
-              <span className="group/verified relative inline-flex">
-                <span
-                  className="inline-flex size-5 items-center justify-center rounded-full bg-brand text-[13px] font-bold leading-none text-white"
-                  aria-label="Verified"
-                >
-                  ✓
-                </span>
-                <span className="pointer-events-none absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-[calc(100%+10px)] rounded-lg bg-zinc-950 px-3 py-2 font-mono text-sm font-medium leading-5 text-white opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] transition-all duration-150 group-hover/verified:-translate-y-[calc(100%+14px)] group-hover/verified:opacity-100">
-                  Verified
-                  <span className="absolute left-1/2 top-full size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-zinc-950" />
-                </span>
-              </span>
             </h1>
             <div className="h-12 overflow-hidden border-t border-edge py-1.5 pl-4 sm:h-[34px]">
               <AnimatePresence mode="wait" initial={false}>
                 <motion.p
-                  key={subtitles[subtitleIndex]}
+                  key={titles[subtitleIndex]}
                   initial={{ y: 8, opacity: 0 }}
                   animate={{ y: 0, opacity: 1 }}
                   exit={{ y: -8, opacity: 0 }}
@@ -205,7 +186,7 @@ export function OverviewSection({
                   className="caret line-clamp-1 font-mono text-sm leading-5 text-muted-foreground"
                 >
                   <span className="mr-2 text-brand">&gt;</span>
-                  {subtitles[subtitleIndex]}
+                  {titles[subtitleIndex]}
                 </motion.p>
               </AnimatePresence>
             </div>
@@ -235,20 +216,20 @@ export function OverviewSection({
             })}
             {latestPost ? (
               <div className="flex items-center gap-4 font-mono text-sm">
-                <dt className="mini-icon" title="Writing">
+                <dt className="mini-icon" title={t.overview.latestPost}>
                   <PenLine className="size-4" />
-                  <span className="sr-only">Latest post</span>
+                  <span className="sr-only">{t.overview.latestPost}</span>
                 </dt>
                 <dd className="min-w-0">
                   <a
-                    href={`${blogUrl}/blog/${latestPost.slug}`}
+                    href={blogUrl(locale, `/blog/${latestPost.slug}`)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    data-cursor="Đọc bài"
+                    data-cursor={t.overview.readPost}
                     className="group inline-flex max-w-full items-center gap-2 underline-offset-4 hover:text-brand hover:underline"
                   >
                     <span className="shrink-0 text-muted-foreground">
-                      Mới viết:
+                      {t.overview.latestPrefix}
                     </span>
                     <span className="truncate">{latestPost.title}</span>
                   </a>
@@ -264,16 +245,15 @@ export function OverviewSection({
       <section className="profile-rail rail-box screen-line-after">
         <div className="grid grid-cols-1 sm:grid-cols-2">
           {socialItems.map((item, index) => {
-            const href = item.label === "Blog" ? `${blogUrl}/blog` : item.href;
             const SocialIcon = item.Icon;
 
             return (
               <a
                 key={item.label}
-                href={href}
+                href={item.href ?? blogUrl(locale, "/blog")}
                 target="_blank"
                 rel="noopener noreferrer"
-                data-cursor={`Mở ${item.label}`}
+                data-cursor={t.overview.open(item.label)}
                 className={`group relative flex h-20 cursor-pointer items-center gap-4 overflow-hidden p-4 pr-3 transition-colors duration-200 hover:bg-brand/[0.06] ${
                   index % 2 === 0 ? "sm:border-r sm:border-edge" : ""
                 } ${index < socialItems.length - 1 ? "border-b border-edge" : ""} ${
