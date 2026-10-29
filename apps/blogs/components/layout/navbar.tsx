@@ -3,8 +3,9 @@
 import { SearchDialog } from "@/components/layout/search-dialog";
 import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import type { SearchEntry } from "@/lib/content/types";
+import { isInProgress, useReading } from "@/lib/reading-store";
 import { cn } from "@/lib/utils";
-import { Menu, Moon, Search, Sun, X } from "lucide-react";
+import { LibraryBig, Menu, Moon, Search, Sun, X } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { useTheme } from "next-themes";
 import Image from "next/image";
@@ -28,6 +29,33 @@ function ThemeToggle() {
   );
 }
 
+/** Link to the reader's corner; the dot means something is saved or unfinished. */
+function ReadingLink({ active }: { active: boolean }) {
+  const locale = useLocale();
+  const t = useTranslations("navigation");
+  const reading = useReading();
+  const pending = Object.values(reading).some((entry) => entry.savedAt || isInProgress(entry));
+
+  return (
+    <Link
+      href={`/${locale}/reading`}
+      aria-current={active ? "page" : undefined}
+      aria-label={pending ? `${t("reading")} · ${t("readingBadge")}` : t("reading")}
+      title={t("reading")}
+      className={cn(
+        // Below sm the header is full; the mobile menu carries this link instead.
+        "relative hidden size-9 items-center justify-center rounded-full transition-colors hover:bg-paper hover:text-ink sm:flex",
+        active ? "bg-paper text-ink" : "text-ink/75",
+      )}
+    >
+      <LibraryBig className="size-4" />
+      {pending ? (
+        <span aria-hidden className="absolute top-1.5 right-1.5 size-2 rounded-full border-2 border-background bg-cobalt" />
+      ) : null}
+    </Link>
+  );
+}
+
 export function Navbar({ searchIndex }: { searchIndex: SearchEntry[] }) {
   const pathname = usePathname();
   const locale = useLocale();
@@ -37,6 +65,7 @@ export function Navbar({ searchIndex }: { searchIndex: SearchEntry[] }) {
 
   const navLinks = [
     { href: `/${locale}/blog`, label: t("explore"), match: `/${locale}/blog` },
+    { href: `/${locale}/series`, label: t("series"), match: `/${locale}/series` },
     { href: `/${locale}/roadmap`, label: t("roadmaps"), match: `/${locale}/roadmap` },
     { href: `/${locale}/guides`, label: t("guides"), match: `/${locale}/guides` },
     { href: `/${locale}/tools`, label: t("tools"), match: `/${locale}/tools` },
@@ -124,6 +153,7 @@ export function Navbar({ searchIndex }: { searchIndex: SearchEntry[] }) {
           >
             <Search className="size-4" />
           </button>
+          <ReadingLink active={pathname.startsWith(`/${locale}/reading`)} />
           <ThemeToggle />
           <Suspense fallback={<span className="w-15" />}>
             <LanguageSwitcher />
@@ -153,6 +183,14 @@ export function Navbar({ searchIndex }: { searchIndex: SearchEntry[] }) {
                 {link.label}
               </Link>
             ))}
+            <Link
+              href={`/${locale}/reading`}
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex items-center gap-2 rounded-lg py-3 text-base font-medium text-ink sm:hidden"
+            >
+              <LibraryBig className="size-4 text-soft" />
+              {t("reading")}
+            </Link>
           </div>
         </div>
       ) : null}

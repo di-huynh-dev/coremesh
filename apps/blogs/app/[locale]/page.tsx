@@ -7,6 +7,7 @@ import { SectionHeading } from "@/components/home/section-heading";
 import { TopicsSection } from "@/components/home/topics-section";
 import { MotionController } from "@/components/motion/motion-controller";
 import { RoadmapCard } from "@/components/roadmap/roadmap-card";
+import { SeriesCard } from "@/components/series/series-card";
 import { JsonLd } from "@/components/seo/json-ld";
 import { authorJsonLd, contentLanguage, pageMetadata } from "@/lib/seo";
 import { AUTHOR, SITE_NAME, SITE_URL } from "@/lib/site";
@@ -14,6 +15,7 @@ import { getBlogStats, getPostSummaries, getWritingRhythm } from "@repo/content/
 import { isBlogLocale } from "@/lib/content/text";
 import { getGuides } from "@/lib/content/guides";
 import { getRoadmaps } from "@/lib/content/roadmaps";
+import { getAllSeries } from "@/lib/content/series";
 import { ArrowUpRight } from "lucide-react";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -46,8 +48,14 @@ export default async function Home({
   const tCommon = await getTranslations({ locale, namespace: "common" });
   const tRoadmap = await getTranslations({ locale, namespace: "roadmap" });
   const tFooter = await getTranslations({ locale, namespace: "footer" });
+  const tSeries = await getTranslations({ locale, namespace: "series" });
 
   const posts = getPostSummaries(locale);
+  // Freshest series first: the ones that just gained a part.
+  const series = getAllSeries(locale)
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => b.item.updated.localeCompare(a.item.updated))
+    .slice(0, 3);
   const homeUrl = `${SITE_URL}/${locale}`;
   const jsonLd = {
     "@context": "https://schema.org",
@@ -84,6 +92,22 @@ export default async function Home({
           ))}
         </div>
       </section>
+
+      {series.length > 0 ? (
+        <section aria-labelledby="series-title" className="wrap pt-20 md:pt-28">
+          <SectionHeading
+            id="series-title"
+            title={tSeries("home.title")}
+            subtitle={tSeries("home.subtitle")}
+            action={{ href: `/${locale}/series`, label: tCommon("viewAll") }}
+          />
+          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3" data-fx-skip>
+            {series.map(({ item, index }) => (
+              <SeriesCard key={item.id} series={item} index={index} />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section aria-labelledby="roadmaps-title" className="wrap pt-20 md:pt-28">
         <SectionHeading

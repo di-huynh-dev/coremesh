@@ -47,6 +47,9 @@ export default async function BlogPage({ params }: BlogPageProps) {
         <p className="mt-3 max-w-2xl text-lg leading-8 text-soft" data-fx="item">
           {t("subtitle")}
         </p>
+        <Link href={`/${locale}/series`} className="arrow-link mt-5" data-fx="item">
+          {t("seriesLink")}
+        </Link>
       </header>
 
       {/* useSearchParams makes ExploreView client-only under static rendering;

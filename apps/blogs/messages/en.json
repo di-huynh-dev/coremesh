@@ -13,7 +13,10 @@
     "language": "Language",
     "roadmaps": "Roadmaps",
     "guides": "Guides",
-    "tools": "Tools"
+    "tools": "Tools",
+    "series": "Series",
+    "reading": "Reading",
+    "readingBadge": "You have saved or unfinished posts"
   },
   "search": {
     "title": "Search articles",
@@ -29,7 +32,8 @@
       "chapter": "Chapter",
       "roadmap": "Roadmap",
       "stage": "Stage",
-      "tool": "Tool"
+      "tool": "Tool",
+      "series": "Series"
     }
   },
   "topics": {
@@ -112,7 +116,8 @@
     "clear": "Clear filters",
     "results": "{count, plural, =0 {No articles} one {# article} other {# articles}}",
     "empty": "No articles matched your filters.",
-    "emptyHint": "Try a different keyword or clear the filters."
+    "emptyHint": "Try a different keyword or clear the filters.",
+    "seriesLink": "Or read a series"
   },
   "post": {
     "breadcrumbHome": "Home",
@@ -138,6 +143,29 @@
       "voice": "Voice",
       "close": "Close player",
       "applyHint": "Changes apply when you restart"
+    },
+    "save": "Save",
+    "savedState": "Saved",
+    "readMark": "Read",
+    "progressMark": "{percent}% read",
+    "anchor": "Copy link to this section",
+    "anchorCopied": "Link copied",
+    "tocOpen": "Open table of contents",
+    "tocClose": "Close table of contents",
+    "backToTop": "Back to top",
+    "zoom": "Enlarge figure",
+    "closeZoom": "Close enlarged figure",
+    "resume": {
+      "title": "You were partway through this post",
+      "action": "Resume at {percent}%",
+      "dismiss": "Start over"
+    },
+    "series": {
+      "eyebrow": "Series · Part {n} of {total}",
+      "showParts": "Show all parts",
+      "next": "Next in this series",
+      "last": "This is the last part — you've finished the series.",
+      "viewSeries": "View the series"
     }
   },
   "footer": {
@@ -295,5 +323,62 @@
       "title": "Tools",
       "subtitle": "Browser-only utilities for everyday dev work."
     }
+  },
+  "callout": {
+    "note": "Note",
+    "tip": "Tip",
+    "warning": "Careful",
+    "danger": "Danger"
+  },
+  "series": {
+    "title": "Series",
+    "lead": "Posts meant to be read in order: each series goes from fundamentals to production around one theme, and remembers how far you got.",
+    "breadcrumb": "Series",
+    "parts": "{count, plural, one {# part} other {# parts}}",
+    "minutes": "{count} min read",
+    "updated": "Updated {date}",
+    "partLabel": "Part {n}",
+    "start": "Start with part 1",
+    "continue": "Continue with part {n}",
+    "restart": "Read again from the start",
+    "done": "You've read the whole series.",
+    "progress": "{read}/{total} read",
+    "moreParts": "+{count, plural, one {# more part} other {# more parts}}",
+    "partsTitle": "Parts",
+    "others": "Other series",
+    "view": "View series",
+    "home": {
+      "title": "Read a series",
+      "subtitle": "Posts in order, from fundamentals to production."
+    }
+  },
+  "reading": {
+    "title": "Reading",
+    "lead": "Posts you're partway through, saved and finished — remembered right here in this browser, no account needed.",
+    "breadcrumb": "Reading",
+    "stats": {
+      "read": "posts read",
+      "minutes": "minutes read",
+      "saved": "saved",
+      "inProgress": "in progress"
+    },
+    "inProgress": "Continue reading",
+    "saved": "Saved for later",
+    "series": "Series you're following",
+    "finished": "Finished",
+    "resume": "Resume",
+    "nextPart": "Next · Part {n}",
+    "unsave": "Remove from saved",
+    "forget": "Remove from history",
+    "readOn": "Finished {date}",
+    "savedOn": "Saved {date}",
+    "byTopic": "What you read most",
+    "emptyTitle": "Nothing here yet.",
+    "emptyBody": "Open a post and it shows up here. Hit “Save” to keep one for later.",
+    "emptyCta": "Explore posts",
+    "startWith": "Or start a series",
+    "privacy": "Stored only in this browser. No account, nothing is sent anywhere.",
+    "clear": "Clear all history",
+    "clearConfirm": "Clear your reading history and saved posts in this browser?"
   }
 }

@@ -1,7 +1,7 @@
 // Post types live in @repo/content; search types are specific to this app.
 export * from "@repo/content/types";
 
-export type SearchKind = "post" | "guide" | "chapter" | "roadmap" | "stage" | "tool";
+export type SearchKind = "post" | "series" | "guide" | "chapter" | "roadmap" | "stage" | "tool";
 
 /** One row of the site-wide ⌘K index (built on the server, filtered on the client). */
 export interface SearchEntry {

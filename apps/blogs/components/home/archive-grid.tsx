@@ -3,7 +3,9 @@
 import { BLOG_TOPICS, type BlogPostSummary, type BlogTopic } from "@/lib/content/types";
 import { formatPostDate } from "@/lib/content/text";
 import { topicStyles } from "@/lib/topic-style";
+import { useReading } from "@/lib/reading-store";
 import { cn } from "@/lib/utils";
+import { Check } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -15,6 +17,7 @@ export function ArchiveGrid({ posts }: { posts: BlogPostSummary[] }) {
   const tTopics = useTranslations("topics");
   const [topic, setTopic] = useState<BlogTopic | null>(null);
   const [peek, setPeek] = useState<BlogPostSummary | null>(null);
+  const reading = useReading();
   const [phase, setPhase] = useState<"idle" | "pre" | "in">("idle");
   const gridRef = useRef<HTMLUListElement>(null);
 
@@ -108,8 +111,11 @@ export function ArchiveGrid({ posts }: { posts: BlogPostSummary[] }) {
                   shown?.slug === post.slug && "ring-2 ring-ink/70",
                 )}
               >
-                <span className="font-mono text-[0.6rem] text-ink/60">
+                <span className="flex items-start justify-between gap-1 font-mono text-[0.6rem] text-ink/60">
                   {post.date.slice(2, 7).replace("-", "·")}
+                  {reading[post.slug]?.readAt ? (
+                    <Check aria-hidden className="size-3 shrink-0 text-ink/70" strokeWidth={3} />
+                  ) : null}
                 </span>
                 <span className="line-clamp-2 text-[0.62rem] leading-tight font-medium text-ink/70">
                   {post.tags[0] ? `#${post.tags[0]}` : ""}

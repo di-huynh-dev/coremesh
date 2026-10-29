@@ -1,5 +1,8 @@
 import { ClsCalculator } from "@/components/blog/mdx/cls-calculator";
+import { Figure } from "@/components/blog/mdx/figure";
+import { Info, Lightbulb, OctagonAlert, TriangleAlert, type LucideIcon } from "lucide-react";
 import type { MDXComponents } from "mdx/types";
+import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 
 // Components available inside content/posts/**/*.mdx. Styling lives in .article-body (globals.css).
@@ -8,18 +11,37 @@ function Lead({ children }: { children: ReactNode }) {
   return <p className="lead">{children}</p>;
 }
 
-function Callout({ children }: { children: ReactNode }) {
-  return <div className="callout">{children}</div>;
-}
+type CalloutType = "note" | "tip" | "warning" | "danger";
 
-function Figure({ src, alt, caption }: { src: string; alt: string; caption?: string }) {
+const CALLOUT_ICONS: Record<CalloutType, LucideIcon> = {
+  note: Info,
+  tip: Lightbulb,
+  warning: TriangleAlert,
+  danger: OctagonAlert,
+};
+
+/** `<Callout>` stays the plain cobalt box; `type` adds a tone, an icon and a title. */
+function Callout({
+  type,
+  title,
+  children,
+}: {
+  type?: CalloutType;
+  title?: string;
+  children: ReactNode;
+}) {
+  const t = useTranslations("callout");
+  if (!type || !(type in CALLOUT_ICONS)) return <div className="callout">{children}</div>;
+  const Icon = CALLOUT_ICONS[type];
+
   return (
-    <figure>
-      {/* Plain img: post figures are local SVG diagrams with intrinsic sizing. */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt={alt} loading="lazy" />
-      {caption ? <figcaption>{caption}</figcaption> : null}
-    </figure>
+    <div className="callout" data-type={type}>
+      <p className="callout-title">
+        <Icon aria-hidden className="size-4 shrink-0" />
+        {title ?? t(type)}
+      </p>
+      {children}
+    </div>
   );
 }
 

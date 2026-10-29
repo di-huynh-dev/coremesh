@@ -62,7 +62,7 @@ Cache-Control: public, max-age=31536000, immutable
 
 Toàn bộ chiến lược dựa trên một quy tắc: **HTML ngắn hạn, asset có hash dài hạn**. HTML là "bản đồ" trỏ tới các asset; chỉ cần bản đồ luôn mới, mọi thứ còn lại được cache thoải mái. Next.js áp dụng sẵn quy tắc này cho `/_next/static/`.
 
-<Callout>
+<Callout type="warning">
   **Đừng xoá asset cũ ngay khi deploy.** Người dùng đang mở tab từ hôm qua vẫn có HTML cũ trỏ tới chunk cũ. Khi họ chuyển trang và app lazy-load một chunk, nếu file đó đã bị xoá thì bạn nhận lỗi tải chunk. Giữ lại asset của vài bản deploy trước — dung lượng rẻ hơn nhiều so với một app bị trắng màn hình.
 </Callout>
 
@@ -165,7 +165,7 @@ Nguyên tắc: invalidation phải xảy ra ở **mọi tầng** dữ liệu đi
 | Ảnh không version (ví dụ avatar) | `public, max-age=3600` kèm ETag | Chấp nhận chậm cập nhật một chút |
 | Dữ liệu nhạy cảm (thanh toán, token) | `no-store` | Cân nhắc vì `no-store` có thể ảnh hưởng back/forward cache |
 
-<Callout>
+<Callout type="danger">
   **Lỗi nguy hiểm nhất: cache response cá nhân hoá ở CDN.** Một trang "Tài khoản của tôi" được trả về với `public, s-maxage=...` sẽ phục vụ thông tin của người dùng đầu tiên cho mọi người sau. Hãy để mặc định của mọi response có cookie phiên là `private`, và chỉ mở `public` cho route bạn đã chắc chắn là giống nhau với mọi người.
 </Callout>
 

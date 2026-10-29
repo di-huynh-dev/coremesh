@@ -1,3 +1,4 @@
+import { ReadMark } from "@/components/blog/read-mark";
 import { TopicTag } from "@/components/blog/topic-tag";
 import { formatPostDate } from "@/lib/content/text";
 import { type BlogPostSummary } from "@/lib/content/types";
@@ -56,6 +57,7 @@ export function PostRow({
           <span className="font-mono text-xs text-faint">
             {t("minutes", { minutes: post.readingTime })}
           </span>
+          <ReadMark slug={post.slug} />
         </div>
       </div>
 

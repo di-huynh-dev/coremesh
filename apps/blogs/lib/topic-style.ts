@@ -1,4 +1,5 @@
 import type { BlogTopic } from "@/lib/content/types";
+import type { CSSProperties } from "react";
 
 // Literal class names so Tailwind can see them.
 export const topicStyles: Record<
@@ -36,3 +37,8 @@ export const topicStyles: Record<
     border: "border-topic-growth",
   },
 };
+
+/** Sets `--accent` to the topic hue, for components styled with `[var(--accent)]`. */
+export function topicAccent(topic: BlogTopic) {
+  return { "--accent": `var(--topic-${topic})` } as CSSProperties;
+}

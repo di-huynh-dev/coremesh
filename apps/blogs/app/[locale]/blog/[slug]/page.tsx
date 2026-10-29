@@ -1,15 +1,20 @@
+import { HeadingAnchors } from "@/components/blog/heading-anchors";
+import { MobileToc } from "@/components/blog/mobile-toc";
 import { PostActions } from "@/components/blog/post-actions";
 import { PostRow } from "@/components/blog/post-row";
-import { ReadingProgress } from "@/components/blog/reading-progress";
+import { ReadingProgress, ResumePrompt } from "@/components/blog/reading-progress";
 import { TableOfContents } from "@/components/blog/table-of-contents";
 import { TopicTag } from "@/components/blog/topic-tag";
 import { JsonLd } from "@/components/seo/json-ld";
+import { SeriesBox } from "@/components/series/series-box";
 import { authorJsonLd, contentLanguage, pageMetadata, postLocales } from "@/lib/seo";
 import { AUTHOR, SITE_URL } from "@/lib/site";
 import { formatPostDate, isBlogLocale } from "@/lib/content/text";
 import { CodeCopy } from "@/components/blog/code-copy";
 import { mdxComponents } from "@/components/blog/mdx-components";
 import { renderMdx } from "@/lib/content/mdx";
+import { getSeriesForPost } from "@/lib/content/series";
+import { topicAccent } from "@/lib/topic-style";
 import { getAdjacentPosts, getAllPosts, getPostBySlug, getRelatedPosts } from "@repo/content/posts";
 import { type BlogPostSummary } from "@/lib/content/types";
 import { ArrowLeft, ArrowRight } from "lucide-react";
@@ -103,8 +108,12 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
   const tCommon = await getTranslations({ locale, namespace: "common" });
   const tGuides = await getTranslations({ locale, namespace: "guides" });
   const { newer, older } = getAdjacentPosts(post.slug, locale);
-  const { content, headings } = await renderMdx(post.body, mdxComponents);
+  const { content, headings } = await renderMdx(post.body, mdxComponents, {
+    anchorLabel: t("anchor"),
+  });
   const related = getRelatedPosts(post, locale);
+  const inSeries = getSeriesForPost(post.slug, locale);
+  const nextInSeries = inSeries?.series.posts[inSeries.index + 1];
 
   const url = `${SITE_URL}/${locale}/blog/${post.slug}`;
   const topicTitle = tTopics(`${post.topic}.title`);
@@ -145,7 +154,9 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
 
   return (
     <>
-      <ReadingProgress targetId="article-body" />
+      <ReadingProgress targetId="article-body" slug={post.slug} />
+      <ResumePrompt targetId="article-body" slug={post.slug} />
+      <MobileToc headings={headings} targetId="article-body" />
       <JsonLd data={jsonLd} />
 
       <article className="wrap pt-10 md:pt-14">
@@ -205,18 +216,69 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
                 </p>
               </div>
             </div>
-            <PostActions title={post.title} content={post.content} />
+            <PostActions slug={post.slug} title={post.title} content={post.content} />
           </div>
         </header>
 
         <div className="mt-10 grid gap-12 lg:grid-cols-[minmax(0,720px)_minmax(0,1fr)] lg:gap-16">
           <div className="min-w-0">
+            {inSeries ? (
+              <SeriesBox
+                id={inSeries.series.id}
+                title={inSeries.series.title}
+                topic={inSeries.series.topic}
+                posts={inSeries.series.posts}
+                index={inSeries.index}
+              />
+            ) : null}
             <div id="article-body" className="article-body">
               {content}
             </div>
             <CodeCopy targetId="article-body" label={tGuides("copy")} copiedLabel={tGuides("copied")} />
+            <HeadingAnchors targetId="article-body" copiedLabel={t("anchorCopied")} />
 
             <footer className="mt-14 space-y-10">
+              {inSeries ? (
+                <div
+                  className="rounded-2xl border border-line p-6"
+                  style={topicAccent(inSeries.series.topic)}
+                >
+                  <p className="eyebrow before:bg-[var(--accent)]">
+                    {nextInSeries
+                      ? t("series.next")
+                      : t("series.eyebrow", {
+                          n: inSeries.index + 1,
+                          total: inSeries.series.posts.length,
+                        })}
+                  </p>
+                  {nextInSeries ? (
+                    <Link
+                      href={`/${locale}/blog/${nextInSeries.slug}`}
+                      className="group mt-3 flex items-start justify-between gap-4"
+                    >
+                      <span>
+                        <span className="font-mono text-xs text-faint">
+                          {inSeries.index + 2}/{inSeries.series.posts.length} ·{" "}
+                          {tCommon("minRead", { minutes: nextInSeries.readingTime })}
+                        </span>
+                        <span className="mt-1 block text-lg font-semibold tracking-[-0.01em] text-ink transition-colors group-hover:text-[var(--accent)]">
+                          {nextInSeries.title}
+                        </span>
+                      </span>
+                      <ArrowRight className="btn-arrow mt-6 size-5 shrink-0 text-[var(--accent)] transition-transform group-hover:translate-x-1" />
+                    </Link>
+                  ) : (
+                    <p className="mt-3 leading-7 text-soft">{t("series.last")}</p>
+                  )}
+                  <Link
+                    href={`/${locale}/series/${inSeries.series.id}`}
+                    className="arrow-link mt-4 text-[var(--accent)]"
+                  >
+                    {inSeries.series.title}
+                  </Link>
+                </div>
+              ) : null}
+
               {post.tags.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="eyebrow mr-2">{t("tags")}</span>

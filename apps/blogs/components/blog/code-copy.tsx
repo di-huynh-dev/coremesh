@@ -41,7 +41,8 @@ export function CodeCopy({
           // Clipboard blocked (permissions / insecure origin); leave the button as is.
         }
       });
-      pre.append(button);
+      // Titled blocks (lib/content/mdx.tsx) keep the button in their header bar.
+      (pre.closest(".code-block") ?? pre).append(button);
       return button;
     });
 

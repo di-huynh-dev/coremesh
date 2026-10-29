@@ -1,6 +1,7 @@
 import { getGuides } from "./guides";
 import { getAllPosts } from "@repo/content/posts";
 import { getRoadmaps } from "./roadmaps";
+import { getAllSeries } from "./series";
 import { TOOLS } from "./tools";
 import type { BlogLocale, SearchEntry } from "./types";
 
@@ -10,7 +11,7 @@ function clip(text: string) {
   return text.length > MAX_DESCRIPTION ? `${text.slice(0, MAX_DESCRIPTION - 1).trimEnd()}…` : text;
 }
 
-/** Site-wide ⌘K index for one locale: posts, guides + chapters, roadmaps + stages, tools. */
+/** Site-wide ⌘K index for one locale: posts, series, roadmaps + stages, guides + chapters, tools. */
 export function buildSearchIndex(locale: BlogLocale): SearchEntry[] {
   const base = `/${locale}`;
 
@@ -20,6 +21,14 @@ export function buildSearchIndex(locale: BlogLocale): SearchEntry[] {
     description: clip(post.excerpt),
     href: `${base}/blog/${post.slug}`,
     keywords: [post.topic, ...post.tags],
+  }));
+
+  const series: SearchEntry[] = getAllSeries(locale).map((item) => ({
+    kind: "series",
+    title: item.title,
+    description: clip(item.description),
+    href: `${base}/series/${item.id}`,
+    keywords: [item.topic, ...new Set(item.posts.flatMap((post) => post.tags))],
   }));
 
   const guides: SearchEntry[] = getGuides(locale).flatMap((guide) => [
@@ -69,5 +78,5 @@ export function buildSearchIndex(locale: BlogLocale): SearchEntry[] {
     keywords: tool.keywords,
   }));
 
-  return [...posts, ...roadmaps, ...guides, ...tools];
+  return [...posts, ...series, ...roadmaps, ...guides, ...tools];
 }

@@ -62,7 +62,7 @@ Cache-Control: public, max-age=31536000, immutable
 
 The whole strategy rests on one rule: **short-lived HTML, long-lived hashed assets**. HTML is the "map" pointing to the assets; as long as the map is always fresh, everything else can be cached aggressively. Next.js applies this rule to `/_next/static/` out of the box.
 
-<Callout>
+<Callout type="warning">
   **Don't delete old assets on deploy.** A user with a tab open since yesterday still has old HTML pointing at old chunks. When they navigate and the app lazy-loads a chunk that's been deleted, you get a chunk load error. Keep assets from the last few deploys around — storage is much cheaper than a blank screen.
 </Callout>
 
@@ -165,7 +165,7 @@ The principle: invalidation has to happen at **every layer** the data passes thr
 | Unversioned images (e.g. avatars) | `public, max-age=3600` with an ETag | Accept slightly delayed updates |
 | Sensitive data (payments, tokens) | `no-store` | Note that `no-store` may affect the back/forward cache |
 
-<Callout>
+<Callout type="danger">
   **The most dangerous mistake: caching personalized responses at the CDN.** A "My account" page served with `public, s-maxage=...` will hand the first user's information to everyone after them. Make `private` the default for any response tied to a session cookie, and only open up `public` for routes you're sure are identical for everyone.
 </Callout>
 

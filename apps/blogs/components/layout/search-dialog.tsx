@@ -15,6 +15,7 @@ export function matchesQuery(post: BlogPostSummary, query: string, topicLabel: s
 
 const KIND_STYLE: Record<SearchKind, string> = {
   post: "bg-cobalt-soft text-cobalt",
+  series: "bg-topic-growth/12 text-topic-growth",
   guide: "bg-topic-tooling/12 text-topic-tooling",
   chapter: "bg-topic-tooling/12 text-topic-tooling",
   roadmap: "bg-topic-performance/12 text-topic-performance",

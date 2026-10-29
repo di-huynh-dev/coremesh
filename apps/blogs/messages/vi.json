@@ -13,7 +13,10 @@
     "language": "Ngôn ngữ",
     "roadmaps": "Lộ trình",
     "guides": "Guides",
-    "tools": "Công cụ"
+    "tools": "Công cụ",
+    "series": "Chuỗi bài",
+    "reading": "Góc đọc",
+    "readingBadge": "Có bài đã lưu hoặc đang đọc dở"
   },
   "search": {
     "title": "Tìm bài viết",
@@ -29,7 +32,8 @@
       "chapter": "Chương",
       "roadmap": "Lộ trình",
       "stage": "Chặng",
-      "tool": "Công cụ"
+      "tool": "Công cụ",
+      "series": "Chuỗi"
     }
   },
   "topics": {
@@ -112,7 +116,8 @@
     "clear": "Xoá bộ lọc",
     "results": "{count} bài viết",
     "empty": "Không có bài viết nào khớp với bộ lọc.",
-    "emptyHint": "Thử từ khoá khác hoặc xoá bộ lọc."
+    "emptyHint": "Thử từ khoá khác hoặc xoá bộ lọc.",
+    "seriesLink": "Hoặc đọc theo chuỗi"
   },
   "post": {
     "breadcrumbHome": "Trang chủ",
@@ -138,6 +143,29 @@
       "voice": "Giọng đọc",
       "close": "Đóng trình phát",
       "applyHint": "Thay đổi áp dụng khi phát lại"
+    },
+    "save": "Lưu bài",
+    "savedState": "Đã lưu",
+    "readMark": "Đã đọc",
+    "progressMark": "Đang đọc {percent}%",
+    "anchor": "Sao chép link tới mục này",
+    "anchorCopied": "Đã chép link",
+    "tocOpen": "Mở mục lục",
+    "tocClose": "Đóng mục lục",
+    "backToTop": "Lên đầu trang",
+    "zoom": "Phóng to hình",
+    "closeZoom": "Đóng hình phóng to",
+    "resume": {
+      "title": "Bạn đang đọc dở bài này",
+      "action": "Đọc tiếp từ {percent}%",
+      "dismiss": "Đọc từ đầu"
+    },
+    "series": {
+      "eyebrow": "Chuỗi bài · Phần {n}/{total}",
+      "showParts": "Xem các phần",
+      "next": "Phần tiếp theo trong chuỗi",
+      "last": "Đây là phần cuối của chuỗi — bạn đã đi hết hành trình.",
+      "viewSeries": "Xem cả chuỗi"
     }
   },
   "footer": {
@@ -295,5 +323,62 @@
       "title": "Công cụ",
       "subtitle": "Tiện ích chạy trên trình duyệt cho công việc dev hằng ngày."
     }
+  },
+  "callout": {
+    "note": "Ghi chú",
+    "tip": "Mẹo",
+    "warning": "Cẩn thận",
+    "danger": "Nguy hiểm"
+  },
+  "series": {
+    "title": "Chuỗi bài",
+    "lead": "Những bài nên đọc theo thứ tự: mỗi chuỗi đi từ nền tảng đến production quanh một chủ đề, và nhớ giúp bạn đã đọc tới đâu.",
+    "breadcrumb": "Chuỗi bài",
+    "parts": "{count} phần",
+    "minutes": "{count} phút đọc",
+    "updated": "Cập nhật {date}",
+    "partLabel": "Phần {n}",
+    "start": "Bắt đầu từ phần 1",
+    "continue": "Đọc tiếp phần {n}",
+    "restart": "Đọc lại từ đầu",
+    "done": "Bạn đã đọc hết chuỗi này.",
+    "progress": "Đã đọc {read}/{total}",
+    "moreParts": "+{count} phần nữa",
+    "partsTitle": "Các phần",
+    "others": "Chuỗi khác",
+    "view": "Xem chuỗi",
+    "home": {
+      "title": "Đọc theo chuỗi",
+      "subtitle": "Bài viết xếp theo thứ tự, đi từ nền tảng đến production."
+    }
+  },
+  "reading": {
+    "title": "Góc đọc",
+    "lead": "Bài bạn đang đọc dở, đã lưu và đã đọc xong — được nhớ ngay trên trình duyệt này, không cần tài khoản.",
+    "breadcrumb": "Góc đọc",
+    "stats": {
+      "read": "bài đã đọc",
+      "minutes": "phút đã đọc",
+      "saved": "bài đã lưu",
+      "inProgress": "bài đang đọc dở"
+    },
+    "inProgress": "Đang đọc dở",
+    "saved": "Để dành đọc sau",
+    "series": "Chuỗi đang theo",
+    "finished": "Đã đọc xong",
+    "resume": "Đọc tiếp",
+    "nextPart": "Tiếp theo · Phần {n}",
+    "unsave": "Bỏ lưu",
+    "forget": "Xoá khỏi lịch sử",
+    "readOn": "Đọc xong {date}",
+    "savedOn": "Lưu ngày {date}",
+    "byTopic": "Bạn đọc nhiều nhất về",
+    "emptyTitle": "Góc đọc của bạn đang trống.",
+    "emptyBody": "Mở một bài viết là nó sẽ được nhớ ở đây. Bấm “Lưu bài” để để dành đọc sau.",
+    "emptyCta": "Khám phá bài viết",
+    "startWith": "Hoặc bắt đầu một chuỗi",
+    "privacy": "Chỉ lưu trong trình duyệt này. Không tài khoản, không có gì được gửi đi.",
+    "clear": "Xoá toàn bộ lịch sử",
+    "clearConfirm": "Xoá toàn bộ lịch sử đọc và danh sách đã lưu trên trình duyệt này?"
   }
 }

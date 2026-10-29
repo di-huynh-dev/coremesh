@@ -1,0 +1,86 @@
+# Reading series: an ordered path through existing posts.
+# A post belongs to at most one series. Parts that do not exist in a locale
+# (e.g. a Vietnamese-only post on the English site) are skipped there.
+
+- id: ai-engineering
+  posts:
+    - streaming-ai-chat-ui
+    - rag-pipeline-in-practice
+    - mcp-server-typescript
+    - llm-app-security-prompt-injection
+  vi:
+    title: "AI engineering cho web developer"
+    description: "Từ UI chat streaming, RAG trả lời đúng, MCP server cho agent đến bảo mật ứng dụng LLM — những gì một web developer cần để đưa tính năng AI lên production."
+  en:
+    title: "AI engineering for web developers"
+    description: "From a streaming chat UI and RAG that answers correctly to MCP servers for agents and LLM app security — what a web developer needs to ship AI features to production."
+
+- id: nestjs-production
+  posts:
+    - nestjs-request-lifecycle-architecture
+    - nestjs-background-jobs-bullmq
+    - nestjs-auth-passkeys-sessions
+  vi:
+    title: "NestJS trong production"
+    description: "Một modular monolith NestJS đi từ request lifecycle và ranh giới module, qua background job không mất việc, đến xác thực bằng passkey và session đúng cách."
+  en:
+    title: "NestJS in production"
+    description: "One NestJS modular monolith, from the request lifecycle and module boundaries, through background jobs that never lose work, to passkeys and sessions done right."
+
+- id: web-performance
+  posts:
+    - core-web-vitals
+    - image-optimization-end-to-end
+    - web-fonts-done-right
+    - caching-for-frontend-developers
+    - code-splitting-and-lazy-loading-react
+    - react-rendering-performance
+    - list-virtualization
+    - event-loop-and-rendering
+  vi:
+    title: "Hiệu năng web từ gốc"
+    description: "Đo trước bằng Core Web Vitals, rồi đi lần lượt qua ảnh, font, cache, bundle, render React và event loop — mỗi chặng gỡ một nguyên nhân khiến trang chậm."
+  en:
+    title: "Web performance from the ground up"
+    description: "Measure first with Core Web Vitals, then work through images, fonts, caching, bundles, React rendering and the event loop — each stop removes one reason pages are slow."
+
+- id: modern-css
+  posts:
+    - css-layout-mental-model
+    - container-queries-modern-responsive
+    - design-tokens-and-theming
+    - modern-css-platform-ui
+    - accessible-modal-dialogs
+  vi:
+    title: "CSS và nền tảng web hiện đại"
+    description: "Một mô hình tư duy cho layout, container queries, design token, rồi để Popover API, anchor positioning và thẻ dialog native gánh bớt JavaScript."
+  en:
+    title: "Modern CSS and the web platform"
+    description: "A mental model for layout, container queries and design tokens, then letting the Popover API, anchor positioning and native dialogs replace a lot of JavaScript."
+
+- id: frontend-architecture
+  posts:
+    - thinking-in-systems-not-screens
+    - state-machines-for-ui
+    - frontend-error-handling-strategy
+    - offline-first-optimistic-ui
+    - frontend-feature-flags
+  vi:
+    title: "Kiến trúc frontend bền vững"
+    description: "Nhìn ứng dụng như một hệ thống: state machine, chiến lược xử lý lỗi, đồng bộ offline-first và feature flag — những quyết định giữ codebase khoẻ khi nó lớn dần."
+  en:
+    title: "Frontend architecture that lasts"
+    description: "Treat the app as a system: state machines, an error-handling strategy, offline-first sync and feature flags — the decisions that keep a codebase healthy as it grows."
+
+- id: engineering-craft
+  posts:
+    - writing-notes-as-an-engineer
+    - code-review-giving-and-receiving
+    - estimating-frontend-work
+    - mid-to-senior-frontend
+  vi:
+    title: "Nghề kỹ sư"
+    description: "Những kỹ năng không nằm trong framework nào: ghi chép, review code, ước lượng trung thực và những gì thật sự thay đổi trên đường từ mid lên senior."
+  en:
+    title: "The engineering craft"
+    description: "Skills no framework teaches: taking notes, reviewing code, estimating honestly and what actually changes on the way from mid-level to senior."

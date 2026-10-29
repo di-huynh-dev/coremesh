@@ -1,5 +1,6 @@
 import { locales } from "@/intl.config";
 import { ROADMAP_IDS } from "@/lib/content/roadmaps";
+import { getAllSeries, getSeries } from "@/lib/content/series";
 import { TOOLS } from "@/lib/content/tools";
 import type { BlogLocale } from "@/lib/content/types";
 import { localizedAlternates, postLocales } from "@/lib/seo";
@@ -20,6 +21,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     [
       { path: "", changeFrequency: "weekly" as const, priority: 1 },
       { path: "/blog", changeFrequency: "weekly" as const, priority: 0.8 },
+      { path: "/series", changeFrequency: "weekly" as const, priority: 0.8 },
       { path: "/roadmap", changeFrequency: "monthly" as const, priority: 0.8 },
       ...ROADMAP_IDS.map((id) => ({
         path: `/roadmap/${id}`,
@@ -51,5 +53,20 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   );
 
-  return [...pages, ...posts];
+  const series = locales.flatMap((locale) =>
+    getAllSeries(locale).map((item) => ({
+      url: `${SITE_URL}/${locale}/series/${item.id}`,
+      lastModified: new Date(item.updated),
+      changeFrequency: "monthly" as const,
+      priority: 0.7,
+      alternates: {
+        languages: languages(
+          `/series/${item.id}`,
+          locales.filter((l) => getSeries(item.id, l) !== undefined),
+        ),
+      },
+    })),
+  );
+
+  return [...pages, ...series, ...posts];
 }

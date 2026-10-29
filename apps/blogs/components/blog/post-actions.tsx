@@ -1,7 +1,10 @@
 "use client";
 
+import { readingStore, useReadingEntry } from "@/lib/reading-store";
 import { cn } from "@/lib/utils";
 import {
+  Bookmark,
+  BookmarkCheck,
   Check,
   Link2,
   Pause,
@@ -33,6 +36,28 @@ function CopyLinkButton() {
     <button type="button" onClick={copy} className="btn btn-ghost h-9 px-3.5 text-[0.8rem]">
       {copied ? <Check className="size-4 text-topic-performance" /> : <Link2 className="size-4" />}
       <span aria-live="polite">{copied ? t("copied") : t("copyLink")}</span>
+    </button>
+  );
+}
+
+/** Saves the post to the reader's list in the reading store (see /reading). */
+function SaveButton({ slug }: { slug: string }) {
+  const t = useTranslations("post");
+  const saved = Boolean(useReadingEntry(slug)?.savedAt);
+
+  return (
+    <button
+      type="button"
+      onClick={() => readingStore.toggleSaved(slug)}
+      aria-pressed={saved}
+      aria-label={t("save")}
+      title={saved ? t("savedState") : t("save")}
+      className={cn(
+        "btn btn-ghost size-9 px-0",
+        saved && "border-cobalt/40 bg-cobalt-soft text-cobalt hover:bg-cobalt-soft",
+      )}
+    >
+      {saved ? <BookmarkCheck className="size-4" /> : <Bookmark className="size-4" />}
     </button>
   );
 }
@@ -81,6 +106,12 @@ function ListenPlayer({ title, content }: { title: string; content: string }) {
       speechSynthesis.cancel();
     };
   }, [lang]);
+
+  // Lets other fixed UI (the mobile outline pill) move above the docked player.
+  useEffect(() => {
+    document.documentElement.toggleAttribute("data-player-open", showPlayer);
+    return () => document.documentElement.removeAttribute("data-player-open");
+  }, [showPlayer]);
 
   const reset = useCallback(() => {
     setIsPlaying(false);
@@ -250,9 +281,18 @@ function ListenPlayer({ title, content }: { title: string; content: string }) {
   );
 }
 
-export function PostActions({ title, content }: { title: string; content: string }) {
+export function PostActions({
+  slug,
+  title,
+  content,
+}: {
+  slug: string;
+  title: string;
+  content: string;
+}) {
   return (
     <div className="flex flex-wrap items-center gap-2">
+      <SaveButton slug={slug} />
       <CopyLinkButton />
       <ListenPlayer title={title} content={content} />
     </div>

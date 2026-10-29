@@ -473,9 +473,206 @@
 }
 
 .article-body pre:hover .code-copy,
+.code-block:hover .code-copy,
 .code-copy:focus-visible,
 .code-copy[data-copied] {
   opacity: 1;
+}
+
+/* Titled code blocks from lib/content/mdx.tsx: file name (or language) in a header bar */
+.code-block {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--code-bg);
+}
+
+.code-head {
+  overflow: hidden;
+  padding: 0.6rem 5.5rem 0.6rem 1.25rem;
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: rgb(219 227 238 / 0.55);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.code-head::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 10px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: var(--cobalt-on-dark);
+}
+
+.code-block .code-copy {
+  top: 0.4rem;
+}
+
+.article-body .code-block pre {
+  margin: 0;
+  border-radius: 0;
+}
+
+/* Heading "#" links: shown on hover, copy the section URL (components/blog/heading-anchors.tsx) */
+.article-body a.heading-anchor {
+  margin-left: 0.35em;
+  color: var(--faint);
+  font-weight: 500;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.article-body :is(h2, h3):hover a.heading-anchor,
+.article-body a.heading-anchor:focus-visible,
+.article-body a.heading-anchor[data-copied] {
+  opacity: 1;
+}
+
+.article-body a.heading-anchor:hover {
+  color: var(--cobalt);
+}
+
+.article-body a.heading-anchor[data-copied]::after {
+  content: attr(data-copied);
+  margin-left: 0.6em;
+  font-family: var(--font-mono);
+  font-size: 0.55em;
+  letter-spacing: 0;
+  vertical-align: middle;
+  color: var(--topic-performance);
+}
+
+@media (hover: none) {
+  .article-body a.heading-anchor {
+    display: none;
+  }
+}
+
+/* Callout tones: <Callout type="note | tip | warning | danger"> */
+.article-body .callout > * + * {
+  margin-top: 0.75em;
+}
+
+.article-body .callout[data-type] {
+  border-color: color-mix(in srgb, var(--tone) 30%, transparent);
+  border-left-width: 3px;
+  background: color-mix(in srgb, var(--tone) 7%, var(--background));
+}
+
+.callout[data-type="note"] {
+  --tone: var(--cobalt);
+}
+
+.callout[data-type="tip"] {
+  --tone: var(--topic-performance);
+}
+
+.callout[data-type="warning"] {
+  --tone: var(--topic-growth);
+}
+
+.callout[data-type="danger"] {
+  --tone: #be123c;
+}
+
+.dark .callout[data-type="danger"] {
+  --tone: #fb7185;
+}
+
+.article-body .callout-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tone);
+}
+
+/* Figures open full size (components/blog/mdx/figure.tsx) */
+.figure-zoom {
+  position: relative;
+  display: block;
+  width: 100%;
+  cursor: zoom-in;
+  border-radius: 12px;
+}
+
+.figure-zoom-hint {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  padding: 0.45rem;
+  border-radius: 8px;
+  background: rgb(7 24 42 / 0.72);
+  color: #fff;
+  opacity: 0;
+  transform: scale(0.9);
+  transition:
+    opacity 0.2s,
+    transform 0.2s var(--ease-site);
+}
+
+.figure-zoom:hover .figure-zoom-hint,
+.figure-zoom:focus-visible .figure-zoom-hint {
+  opacity: 1;
+  transform: none;
+}
+
+@media (hover: none) {
+  .figure-zoom-hint {
+    opacity: 0.85;
+    transform: none;
+  }
+}
+
+.figure-dialog {
+  width: min(96vw, 1400px);
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  cursor: zoom-out;
+}
+
+.figure-dialog::backdrop {
+  background: rgb(5 13 23 / 0.82);
+  backdrop-filter: blur(3px);
+}
+
+.figure-dialog[open] {
+  animation: fx-in 0.2s ease;
+}
+
+.article-body .figure-dialog img {
+  max-height: 90vh;
+  object-fit: contain;
+}
+
+.figure-dialog-close {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  padding: 0.6rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.12);
+  color: #fff;
+}
+
+.figure-dialog-close:hover {
+  background: rgb(255 255 255 / 0.22);
 }
 
 @media (hover: none) {
