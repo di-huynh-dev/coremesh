@@ -1,0 +1,959 @@
+---
+title: "Building a Streaming AI Chat UI That Stays Smooth: SSE, ReadableStream, Incremental Markdown and a Stop Button"
+excerpt: "The frontend half that AI chat tutorials tend to skip: picking a transport, parsing SSE by hand when events are split across chunks, a Route Handler that keeps the API key safe and propagates cancellation upstream, message-parts state, batching renders with requestAnimationFrame, safe incremental markdown, autoscroll, accessibility and error handling."
+---
+
+<Lead>Every AI chat demo looks fine: you type a question and the text trickles out bit by bit. But once it goes into a real product, you hit all kinds of things the tutorials never mention: text that sits still and then dumps out in one lump because a proxy buffers it, a tab that stutters on long answers because markdown is re-parsed from scratch on every token, a Stop button that stops the UI while the API bill keeps climbing because the upstream request was never cancelled, a screen reader stammering through every fragment. This post walks through the entire frontend pipeline of an LLM chat — transport, parsing, state, rendering, UX — using one running example: a customer support assistant in a Next.js app.</Lead>
+
+## Why stream at all: time to first token
+
+Streaming doesn't make the model answer faster. A 600-token answer takes just as long to generate whether you stream it or not. What changes is **when the user sees the first response**:
+
+- **No streaming:** the user stares at a spinner for the whole generation time, which can be 10–20 seconds for a long answer. It feels like the app has hung.
+- **Streaming:** the first text appears after what's called the **time to first token (TTFT)**, and the rest flows out while the user is already reading. The total time is the same, but the *waiting* time almost disappears.
+
+So the metrics I track for a chat UI aren't "total response time" but these three numbers:
+
+1. **Client-side TTFT:** from the moment the user hits send to the moment the first character is painted. This includes the network, the provider's queue, the route handler's startup time — and any delay from proxy buffering.
+2. **Smoothness while text streams in:** does text arrive evenly or in jerky lumps, and is the main thread blocked (measured with INP while the user types or scrolls during a stream)?
+3. **Time to stop:** from the moment the user hits Stop to the moment the text stops *and* the upstream request is actually cancelled.
+
+One newer detail to watch for: many models now have a reasoning (thinking) phase before they write the answer. For some models that reasoning content isn't returned by default, so the stream can go "silent" for a few seconds before the first text token. The UI needs to know about that state so it can show "Thinking…" instead of letting the user assume the app froze — I'll build it into the protocol from the start.
+
+<Figure src="/blog/streaming-ai-chat-ui-pipeline.svg" alt="Pipeline diagram: the LLM API streams to a Route Handler, the Route Handler sends SSE to the browser, a parser splits events, a reducer updates state, and rendering is batched with requestAnimationFrame; the Stop button cancels backwards through an AbortSignal to the upstream" caption="The whole pipeline: data flows left to right, and the cancel signal flows backwards from the Stop button all the way to the LLM API." />
+
+## Choosing a transport: EventSource, fetch streaming or WebSocket
+
+There are three common ways to push tokens from the server to the browser. All three work, but the trade-offs are very different:
+
+| | `EventSource` (standard SSE) | `fetch` + `ReadableStream` | WebSocket |
+| --- | --- | --- | --- |
+| **Method** | `GET` only | Any, usually `POST` | Upgrade from `GET`, then a two-way channel |
+| **Sending conversation history** | Must be stuffed into the URL or stored on the server first | Lives in the JSON body | Sent as a message after connecting |
+| **Custom headers (Authorization...)** | No — only `withCredentials` | Yes | Not in the browser handshake |
+| **Cancelling** | `close()` | `AbortController` — built in, can be propagated to the server | Define your own "cancel" message |
+| **Auto reconnect** | Yes, with `Last-Event-ID` | No — write it yourself | No — write it yourself |
+| **Runs on serverless / Route Handlers** | Good | Good | Hard — needs a server that holds long connections or a separate service |
+| **Through proxies and CDNs** | Good if buffering is off | Good if buffering is off | Needs a proxy that supports upgrade |
+| **Fits** | One-way notification feeds | Request–response LLM chat | Voice, realtime collaboration, agents that need two-way event push |
+
+For LLM chat I almost always pick **`POST` + `fetch` streaming, but keep the `text/event-stream` format for the body**. My reasons:
+
+- **`EventSource` can only send `GET` and doesn't let you set headers.** The [HTML spec](https://html.spec.whatwg.org/multipage/server-sent-events.html) defines exactly one option, `withCredentials`. A conversation history of a few dozen KB doesn't belong in a query string — it would end up in the logs of every proxy along the way.
+- **Auto reconnect is a double-edged sword.** When the connection drops, `EventSource` re-sends the request on its own. With an LLM, a new request usually means *regenerating from scratch* — the user sees repeated text and you pay twice. I want to decide for myself when to retry.
+- **The connection limit on HTTP/1.1.** [MDN](https://developer.mozilla.org/en-US/docs/Web/API/EventSource) warns that SSE over HTTP/1.1 is limited to 6 connections per browser per domain — open a few chat tabs and you're out.
+- **WebSocket is overkill for request–response.** You have to write your own framing, auth, heartbeat and cancellation, and serverless infrastructure usually doesn't hold WebSockets. I only use it when I truly need continuous two-way traffic, such as voice.
+
+Keeping the SSE format (`event:` / `data:` lines separated by a blank line) has real benefits: it's a standard, it's easy to debug with `curl -N`, and both proxies and DevTools understand the `text/event-stream` content type. We just don't use `EventSource` to read it.
+
+## A small protocol between server and browser
+
+A mistake I often see is forwarding the provider's events straight down to the client. That ties the UI tightly to one provider and forces the client to understand events it doesn't need. I define a small, provider-independent protocol and share the types between server and client:
+
+```ts
+// lib/chat-protocol.ts
+export type ChatEvent =
+  | { type: "status"; value: "thinking" | "writing" }
+  | { type: "text-delta"; text: string }
+  | { type: "tool-call"; id: string; name: string; input: unknown }
+  | { type: "tool-result"; id: string; output: unknown; isError: boolean }
+  | { type: "error"; message: string; retryable: boolean }
+  | { type: "done"; reason: "end_turn" | "max_tokens" | "aborted" | "other" };
+
+const encoder = new TextEncoder();
+
+/** Encodes one event in the text/event-stream format. */
+export function encodeEvent(event: ChatEvent): Uint8Array {
+  // JSON.stringify never emits raw newlines, so a single data: line is enough
+  return encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+/** A comment line — the client ignores it, but it keeps proxies from cutting the connection. */
+export const HEARTBEAT = encoder.encode(": ping\n\n");
+```
+
+Six event types are enough for most chat UIs: status, text, tool call, tool result, error and done. If you switch providers, only the route handler changes; the whole client stays the same.
+
+## Route Handler: keep the API key on the server, cancel upstream
+
+The browser must never call the provider's API directly — an API key that lives in a JS bundle is a public API key. The Next.js Route Handler acts as a proxy: it receives the conversation history, calls the provider with the server-side key, translates the provider's events into the protocol above and streams them back.
+
+The example below uses [Anthropic's official TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript) (`@anthropic-ai/sdk`, the 1.x release from 21 October 2026, which moved to API version `2026-10-21`). The `client.messages.stream()` helper returns a `MessageStream` that is both async-iterable and has `finalMessage()`; the second argument takes request options, including `signal` — that abort signal cancels the HTTP request to Anthropic itself. The model id is read from an environment variable so you can switch models without touching code.
+
+```ts
+// app/api/chat/route.ts
+import Anthropic from "@anthropic-ai/sdk";
+import { encodeEvent, HEARTBEAT, type ChatEvent } from "@/lib/chat-protocol";
+import { SUPPORT_TOOLS, runSupportTool } from "@/lib/support-tools";
+import { requireSession } from "@/lib/auth";
+
+export const maxDuration = 60;
+
+const client = new Anthropic(); // reads ANTHROPIC_API_KEY — only exists on the server
+const MODEL = process.env.CHAT_MODEL;
+const MAX_TOOL_ROUNDS = 3;
+
+type ClientMessage = { role: "user" | "assistant"; text: string };
+
+function isRetryable(err: unknown): boolean {
+  if (!(err instanceof Anthropic.APIError)) return false;
+  // status undefined: connection error or an error event mid-stream (e.g. overloaded)
+  return err.status === undefined || err.status === 429 || err.status >= 500;
+}
+
+export async function POST(req: Request) {
+  const session = await requireSession(req); // throws 401 if not signed in
+  if (!MODEL) return Response.json({ error: "CHAT_MODEL is not set" }, { status: 500 });
+
+  const { messages } = (await req.json()) as { messages: ClientMessage[] };
+  // Only accept user/assistant roles and text — never let the client send a "system" role
+  const history: Anthropic.MessageParam[] = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role, content: String(m.text).slice(0, 8_000) }));
+
+  // Two ways to know the client has left: req.signal, or the response stream being cancelled
+  const upstream = new AbortController();
+  req.signal.addEventListener("abort", () => upstream.abort(), { once: true });
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: ChatEvent) => {
+        if (!upstream.signal.aborted) controller.enqueue(encodeEvent(event));
+      };
+      heartbeat = setInterval(() => {
+        if (!upstream.signal.aborted) controller.enqueue(HEARTBEAT);
+      }, 15_000);
+
+      try {
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          const stream = client.messages.stream(
+            { model: MODEL, max_tokens: 4096, system: SYSTEM_PROMPT, tools: SUPPORT_TOOLS, messages: history },
+            { signal: upstream.signal },
+          );
+
+          for await (const event of stream) {
+            if (event.type === "content_block_start") {
+              if (event.content_block.type === "thinking") send({ type: "status", value: "thinking" });
+              if (event.content_block.type === "text") send({ type: "status", value: "writing" });
+            } else if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+              send({ type: "text-delta", text: event.delta.text });
+            }
+          }
+
+          const message = await stream.finalMessage();
+          const calls = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+          if (message.stop_reason !== "tool_use" || calls.length === 0) {
+            const r = message.stop_reason;
+            send({ type: "done", reason: r === "end_turn" || r === "max_tokens" ? r : "other" });
+            return;
+          }
+
+          history.push({ role: "assistant", content: message.content });
+          const results: Anthropic.ToolResultBlockParam[] = [];
+          for (const call of calls) {
+            send({ type: "tool-call", id: call.id, name: call.name, input: call.input });
+            // The tool runs with the session's permissions; never trust the model's input about "who owns the order"
+            const { output, isError } = await runSupportTool(call, session, upstream.signal);
+            send({ type: "tool-result", id: call.id, output, isError });
+            results.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(output), is_error: isError });
+          }
+          history.push({ role: "user", content: results });
+        }
+        send({ type: "error", message: "Too many tool steps", retryable: false });
+      } catch (err) {
+        if (upstream.signal.aborted) return; // the user hit Stop — not an error
+        send({ type: "error", message: "The assistant is unavailable", retryable: isRetryable(err) });
+      } finally {
+        clearInterval(heartbeat);
+        try { controller.close(); } catch { /* the stream was already cancelled */ }
+      }
+    },
+    cancel() {
+      clearInterval(heartbeat);
+      upstream.abort();
+    },
+  });
+
+  return new Response(body, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+const SYSTEM_PROMPT =
+  "You are the support assistant for our store. Use lookup_order for order questions. Answer in the user's language.";
+```
+
+A few things in this code are deliberate, not accidental:
+
+- **Abort is wired from two sides.** `req.signal` is the standard way, but not every platform fires it at the right moment. The `ReadableStream`'s `cancel()` is called when the reading side cancels the response stream — that's the second safety net. Both abort one single `AbortController`, which is passed to the SDK and to the tools.
+- **Check `aborted` before every `enqueue`.** Calling `enqueue` after the stream has been cancelled throws; inside `setInterval` that becomes an uncaught exception.
+- **Don't forward raw errors.** The provider's error message may contain internal details. The client only needs to know whether a retry is possible.
+- **The client sends text only.** Tool-call history from earlier turns doesn't travel through the client; if you need to keep it, store it on the server keyed by conversation id.
+
+On Vercel, cancelling the function when the client disconnects is a feature you have to turn on ([Node.js runtime only](https://vercel.com/docs/functions/functions-api-reference#cancel-requests)). If it's off, `req.signal` may never fire and the model keeps generating until `max_tokens`:
+
+```json
+{
+  "functions": {
+    "app/api/**/*": { "supportsCancellation": true }
+  }
+}
+```
+
+Turning this flag on also means the function is stopped the moment the client disconnects, so anything that *must* finish — saving the partial answer to the database, logging cost — needs to be wrapped in Next.js's `after()` or `waitUntil`.
+
+## Parsing SSE by hand: events split across chunks
+
+This is the part that almost every "stream chat in 20 lines" snippet gets wrong. They typically do this: read a chunk, `split("\n\n")`, `JSON.parse` each piece. It runs great on localhost, then breaks in production.
+
+The reason: **the chunk boundaries you receive have nothing to do with the event boundaries the server sent**. TCP, TLS, proxies, compression — every layer can merge or split data anywhere. A chunk can end in the middle of a `data:` line, in the middle of a JSON string, even in the middle of a multi-byte character. Vietnamese exposes this last bug very quickly: the character "ệ" takes 3 bytes in UTF-8, and if you decode each chunk with `new TextDecoder().decode(chunk)` without `stream: true`, a split byte becomes the replacement character `�`.
+
+The right approach is a three-stage pipeline, where each stage holds on to its own unfinished remainder:
+
+1. **`TextDecoderStream`** turns bytes into strings and holds back the bytes of an incomplete character on its own. This API has been [Baseline widely available](https://developer.mozilla.org/en-US/docs/Web/API/TextDecoderStream) since September 2022.
+2. **A line splitter** keeps whatever follows the last newline for the next chunk.
+3. **An event assembler** collects `data:` lines until it hits a blank line, following the [spec's rules](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation) exactly: lines end with CRLF, LF or CR; a line starting with `:` is a comment; strip exactly one space after the colon; multiple `data:` lines are joined with `\n`; an event without a terminating blank line when the stream closes is discarded.
+
+```ts
+// lib/sse.ts
+import type { ChatEvent } from "./chat-protocol";
+
+export type SSEMessage = { event: string; data: string };
+
+export function createSSEParser(): TransformStream<string, SSEMessage> {
+  let buffer = "";
+  let pendingCR = false; // the previous chunk ended with \r — the \n may be in the next chunk
+  let eventName = "";
+  let data: string[] = [];
+
+  const processLine = (line: string, out: TransformStreamDefaultController<SSEMessage>) => {
+    if (line === "") {
+      if (data.length > 0) out.enqueue({ event: eventName || "message", data: data.join("\n") });
+      eventName = "";
+      data = [];
+      return;
+    }
+    if (line.startsWith(":")) return; // comment, e.g. a heartbeat
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    else if (field === "data") data.push(value);
+  };
+
+  return new TransformStream({
+    transform(chunk, out) {
+      if (pendingCR && chunk.startsWith("\n")) chunk = chunk.slice(1); // CRLF split in half
+      pendingCR = chunk.endsWith("\r");
+      buffer += chunk;
+      const lines = buffer.split(/\r\n|\r|\n/);
+      buffer = lines.pop() ?? ""; // an incomplete line, wait for the next chunk
+      for (const line of lines) processLine(line, out);
+    },
+    // flush: an unfinished event when the stream closes is discarded, per the spec
+  });
+}
+
+export async function* readChatEvents(response: Response): AsyncGenerator<ChatEvent> {
+  if (!response.body) throw new Error("Response has no body");
+  const reader = response.body
+    .pipeThrough(new TextDecoderStream())
+    .pipeThrough(createSSEParser())
+    .getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      yield JSON.parse(value.data) as ChatEvent;
+    }
+  } finally {
+    reader.cancel().catch(() => {}); // the user broke out early → cancel the whole pipeline
+  }
+}
+```
+
+I use `getReader()` instead of `for await (const chunk of stream)` because async iteration of `ReadableStream` arrived very late on Safari — according to MDN's [browser-compat-data](https://github.com/mdn/browser-compat-data), Safari only supports it from version 27 (released September 2026), while Chrome has had it since 124 and Firefox since 110. Plenty of iOS users haven't updated yet.
+
+The `pendingCR` detail looks superfluous, but it fixes a real bug: if the server (or a proxy) uses CRLF and a chunk is cut exactly between `\r` and `\n`, a naive parser sees an extra blank line and dispatches the event early, cutting a multi-line `data:` event in half. My server only sends `\n`, but a parser is reusable code — it should follow the spec.
+
+## State: every message is a list of "parts"
+
+The `{ role, content: string }` model is only good enough for demos. A real answer from a support assistant might be: an opening sentence, an order lookup, the lookup result, then another paragraph of explanation — and it might end in an error halfway through. If you cram everything into one string, you'll have to parse that string backwards to draw the UI.
+
+I model a message as a list of **typed parts**, and every change goes through a pure reducer:
+
+```ts
+// lib/chat-state.ts
+import type { ChatEvent } from "./chat-protocol";
+
+export type Part =
+  | { type: "text"; text: string }
+  | { type: "tool-call"; id: string; name: string; input: unknown; state: "running" | "done" | "error"; output?: unknown }
+  | { type: "error"; message: string; retryable: boolean };
+
+export type Message = {
+  id: string;
+  role: "user" | "assistant";
+  status: "submitted" | "thinking" | "streaming" | "done" | "stopped" | "error";
+  parts: Part[];
+};
+
+export type Action =
+  | { type: "submit"; user: Message; assistantId: string }
+  | { type: "events"; id: string; events: ChatEvent[] } // a whole frame of events at once
+  | { type: "stopped"; id: string }
+  | { type: "failed"; id: string; message: string; retryable: boolean }
+  | { type: "retry"; id: string };
+
+function applyEvent(msg: Message, e: ChatEvent): Message {
+  switch (e.type) {
+    case "status":
+      return { ...msg, status: e.value === "thinking" ? "thinking" : "streaming" };
+    case "text-delta": {
+      const parts = msg.parts.slice();
+      const last = parts.at(-1);
+      // Append to the last text part; after a tool call, open a new text part
+      if (last?.type === "text") parts[parts.length - 1] = { ...last, text: last.text + e.text };
+      else parts.push({ type: "text", text: e.text });
+      return { ...msg, status: "streaming", parts };
+    }
+    case "tool-call":
+      return { ...msg, parts: [...msg.parts, { type: "tool-call", id: e.id, name: e.name, input: e.input, state: "running" }] };
+    case "tool-result":
+      return {
+        ...msg,
+        parts: msg.parts.map((p) =>
+          p.type === "tool-call" && p.id === e.id ? { ...p, state: e.isError ? "error" : "done", output: e.output } : p,
+        ),
+      };
+    case "error":
+      return { ...msg, status: "error", parts: [...msg.parts, { type: "error", message: e.message, retryable: e.retryable }] };
+    case "done":
+      return { ...msg, status: "done" };
+  }
+}
+
+export function chatReducer(state: Message[], action: Action): Message[] {
+  switch (action.type) {
+    case "submit":
+      return [...state, action.user, { id: action.assistantId, role: "assistant", status: "submitted", parts: [] }];
+    case "events":
+      return state.map((m) => (m.id === action.id ? action.events.reduce(applyEvent, m) : m));
+    case "stopped":
+      return state.map((m) => (m.id === action.id && m.status !== "done" ? { ...m, status: "stopped" } : m));
+    case "failed":
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, status: "error", parts: [...m.parts, { type: "error", message: action.message, retryable: action.retryable }] }
+          : m,
+      );
+    case "retry":
+      return state.map((m) => (m.id === action.id ? { ...m, status: "submitted", parts: [] } : m));
+  }
+}
+
+/** The only thing sent to the server: role + text. */
+export function toWire(messages: Message[]) {
+  return messages
+    .map((m) => ({ role: m.role, text: m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("") }))
+    .filter((m) => m.text.length > 0);
+}
+```
+
+Three decisions worth mentioning:
+
+- **A tool result is merged into the `tool-call` part by `id`**, rather than being a separate part. A tool call has a lifecycle (running → done or error), and the UI draws it as a single card; merging means the component doesn't have to go hunting for the pair.
+- **The message's `status` is separate from its parts.** "Thinking", "writing" and "stopped" are states of the whole answer, not of one piece of content.
+- **Immutable but cheap.** Each update creates new objects only for the message being streamed and its last part. Every older message keeps its reference, so `React.memo` on the message component skips them entirely.
+
+## Batching updates with requestAnimationFrame
+
+Providers send tokens very densely, and after the network each chunk usually carries a few events. Each chunk arrives in its own task, so React's automatic batching doesn't merge them: calling `dispatch` per event means one render per chunk, sometimes several dozen times a second, while the screen only paints 60 times. That wasted rendering is exactly what makes input lag when the user is reading and typing the next message at the same time.
+
+The simple fix: push events into a queue in a ref, and `dispatch` **at most once per frame** with `requestAnimationFrame`. The reducer takes the whole array of events and applies them in order — that's why the `events` action above takes an array.
+
+```ts
+// hooks/useChatStream.ts
+"use client";
+import { useCallback, useEffect, useReducer, useRef } from "react";
+import type { ChatEvent } from "@/lib/chat-protocol";
+import { chatReducer, toWire, type Message } from "@/lib/chat-state";
+import { readChatEvents } from "@/lib/sse";
+
+class HttpError extends Error {
+  constructor(readonly status: number) {
+    super(`HTTP ${status}`);
+  }
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const ACTIVE = new Set<Message["status"]>(["submitted", "thinking", "streaming"]);
+
+export function useChatStream(endpoint = "/api/chat") {
+  const [messages, dispatch] = useReducer(chatReducer, []);
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages; // send/retry read through the ref → stable identity for memo
+  });
+  const abortRef = useRef<AbortController | null>(null);
+  const pending = useRef<{ id: string; events: ChatEvent[] } | null>(null);
+  const frame = useRef<number | null>(null);
+
+  const flush = useCallback(() => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
+    const batch = pending.current;
+    pending.current = null;
+    if (batch) dispatch({ type: "events", id: batch.id, events: batch.events });
+  }, []);
+
+  const enqueue = useCallback(
+    (id: string, event: ChatEvent) => {
+      (pending.current ??= { id, events: [] }).events.push(event);
+      frame.current ??= requestAnimationFrame(flush); // at most one dispatch per frame
+    },
+    [flush],
+  );
+
+  const run = useCallback(
+    async (assistantId: string, history: Message[]) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      let received = 0;
+      let finished = false;
+
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages: toWire(history) }),
+            signal: controller.signal,
+          });
+          if (!res.ok) throw new HttpError(res.status);
+          for await (const event of readChatEvents(res)) {
+            received++;
+            if (event.type === "done" || event.type === "error") finished = true;
+            enqueue(assistantId, event);
+          }
+          // A stream that closes quietly without "done" = cut off midway (proxy timeout, deploy...)
+          if (!finished) throw new Error("Stream ended unexpectedly");
+          break;
+        } catch (err) {
+          if (controller.signal.aborted) break;
+          const retryable = !(err instanceof HttpError) || err.status === 429 || err.status >= 500;
+          // Only auto-retry when the user hasn't seen any text yet — avoids repeated text
+          if (received === 0 && retryable && attempt < 2) {
+            await sleep(500 * 2 ** attempt);
+            continue;
+          }
+          flush();
+          dispatch({ type: "failed", id: assistantId, message: "Connection lost", retryable });
+          break;
+        }
+      }
+      flush(); // when the tab is hidden rAF doesn't run — flush synchronously at the end
+      if (controller.signal.aborted) dispatch({ type: "stopped", id: assistantId });
+      if (abortRef.current === controller) abortRef.current = null;
+    },
+    [endpoint, enqueue, flush],
+  );
+
+  const send = useCallback(
+    (text: string) => {
+      abortRef.current?.abort(); // only one answer at a time
+      const user: Message = { id: crypto.randomUUID(), role: "user", status: "done", parts: [{ type: "text", text }] };
+      const assistantId = crypto.randomUUID();
+      dispatch({ type: "submit", user, assistantId });
+      void run(assistantId, [...messagesRef.current, user]);
+    },
+    [run],
+  );
+
+  const retry = useCallback(
+    (assistantId: string) => {
+      const all = messagesRef.current;
+      const index = all.findIndex((m) => m.id === assistantId);
+      if (index === -1) return;
+      dispatch({ type: "retry", id: assistantId });
+      void run(assistantId, all.slice(0, index));
+    },
+    [run],
+  );
+
+  const stop = useCallback(() => abortRef.current?.abort(), []);
+  const last = messages.at(-1);
+  const isStreaming = last?.role === "assistant" && ACTIVE.has(last.status);
+
+  return { messages, send, stop, retry, isStreaming };
+}
+```
+
+A pleasant side effect of rAF: when the tab is hidden, the browser pauses `requestAnimationFrame` callbacks, so events just pile up in the queue without costing a single render. When the stream ends, `flush()` is called synchronously so the state is still complete; by the time the user comes back to the tab, everything is ready. If you want it smoother still — text flowing out evenly instead of at the network's rhythm — you can "release" text from the queue at a fixed rate per frame, but in most products I find batching per frame is enough.
+
+`stop()` does exactly one thing: abort the controller. From there everything flows on its own: `fetch` cancels the body, `readChatEvents` throws, the loop exits, the message moves to `stopped` — and on the server, the closed connection makes `req.signal` or `cancel()` abort the request to the provider.
+
+## Incremental markdown: finished blocks are memoized, only the tail re-renders
+
+The model returns markdown, and the easiest approach is to hand the whole string to `<Markdown>` every time state changes. For short answers that's fine. For a 3,000-token answer with a few code blocks, every frame you re-parse the entire text, rebuild the entire React tree and re-highlight every code block — the total cost grows quadratically with length, and by the end of the answer each frame can cost tens of milliseconds.
+
+The key observation: **markdown is written block by block** (paragraphs, lists, code blocks, tables), and once the model has started the next block, the blocks before it almost never change again. So we split the text into two parts:
+
+- **Stable blocks:** every block before the last one. Each renders once, wrapped in `memo`, with code highlighting.
+- **The running tail:** the last block. Only this part is re-parsed and re-rendered every frame, without highlighting.
+
+<Figure src="/blog/streaming-ai-chat-ui-markdown-blocks.svg" alt="Incremental markdown diagram: the text is split into a stable prefix and a tail; stable blocks render once and are memoized, while the tail gets a temporary closing fence and re-renders every frame" caption="Each frame only lexes from the last stable block onward; a finished block never re-renders." />
+
+To split blocks I use the lexer from [marked](https://marked.js.org/) — it's fast, and each token keeps its original `raw` string so concatenating them reproduces the original text exactly. The trick is not to re-lex from the start: remember where the last stable block ended, and lex only what comes after it each time.
+
+```ts
+// lib/markdown-blocks.ts
+import { marked } from "marked";
+
+export type BlockState = { source: string; stable: string[]; stableLength: number; tail: string };
+export const EMPTY_BLOCKS: BlockState = { source: "", stable: [], stableLength: 0, tail: "" };
+
+export function splitBlocks(prev: BlockState, text: string): BlockState {
+  // The text no longer continues the already-stable part (retry, edited message) → start over
+  const base = text.startsWith(prev.source.slice(0, prev.stableLength)) ? prev : EMPTY_BLOCKS;
+  const tokens = marked.lexer(text.slice(base.stableLength));
+
+  let last = tokens.length - 1; // the last content token = the running tail
+  while (last >= 0 && tokens[last].type === "space") last--;
+
+  const stable = base.stable.slice();
+  let consumed = 0;
+  for (let i = 0; i < last; i++) {
+    if (tokens[i].type !== "space") stable.push(tokens[i].raw);
+    consumed += tokens[i].raw.length;
+  }
+  const stableLength = base.stableLength + consumed;
+  return { source: text, stable, stableLength, tail: text.slice(stableLength) };
+}
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/gm;
+
+/** Make the tail "look finished" — for rendering only, the data is not modified. */
+export function prepareTail(tail: string): { markdown: string; inCode: boolean } {
+  if ((tail.match(FENCE)?.length ?? 0) % 2 === 1) {
+    return { markdown: tail + "\n" + "`".repeat(3), inCode: true }; // unclosed fence
+  }
+  let md = tail.replace(/!?\[([^\]]*)\]\([^)]*$/, "$1"); // half-written link/image → keep just the text
+  if ((md.match(/\*\*/g)?.length ?? 0) % 2 === 1) md += "**"; // unclosed bold
+  return { markdown: md, inCode: false };
+}
+```
+
+About the unclosed fence: per CommonMark, an unclosed code fence runs to the end of the document, so react-markdown still draws it as a code block. I close it temporarily anyway for two reasons: not every renderer or highlighter handles it the same way, and the `inCode` flag tells the UI the model is writing code — at that point I turn off highlighting and show the cursor at the end of the code block. Half-written links are different: if you don't handle them, the user sees the syntax `[text](https://exa` flicker before it turns into a link. If you want full coverage of the edge cases (italics, strikethrough, half-written tables), Vercel's [streamdown](https://github.com/vercel/streamdown) library does exactly this and can replace react-markdown.
+
+The render component, with a safe configuration for model-generated content:
+
+```tsx
+// components/StreamingMarkdown.tsx
+"use client";
+import { memo, useState } from "react";
+import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import { EMPTY_BLOCKS, prepareTail, splitBlocks } from "@/lib/markdown-blocks";
+
+const REMARK = [remarkGfm];
+const REHYPE = [rehypeHighlight];
+
+function externalHost(href: string): string | null {
+  try {
+    return new URL(href).host; // a relative URL throws → treat as internal
+  } catch {
+    return null;
+  }
+}
+
+const components: Components = {
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow">
+      {children}
+      {href && externalHost(href) && <span className="link-host"> ({externalHost(href)})</span>}
+    </a>
+  ),
+  // Don't auto-load model-generated images: an image URL can carry conversation data out
+  img: ({ alt }) => <span className="img-placeholder">[{alt || "image"}]</span>,
+};
+
+const Block = memo(function Block({ source, live }: { source: string; live: boolean }) {
+  return (
+    <Markdown remarkPlugins={REMARK} rehypePlugins={live ? [] : REHYPE} components={components} skipHtml>
+      {source}
+    </Markdown>
+  );
+});
+
+export function StreamingMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
+  const [blocks, setBlocks] = useState(() => splitBlocks(EMPTY_BLOCKS, text));
+  let current = blocks;
+  if (blocks.source !== text) {
+    current = splitBlocks(blocks, text);
+    setBlocks(current); // React's "store information from previous renders" pattern
+  }
+  const tail = streaming ? prepareTail(current.tail).markdown : current.tail;
+
+  return (
+    <div className="prose">
+      {current.stable.map((source, i) => (
+        <Block key={i} source={source} live={false} />
+      ))}
+      {tail && <Block source={tail} live={streaming} />}
+    </div>
+  );
+}
+```
+
+Keying by index is correct here, because the list of stable blocks is only ever appended to, never inserted into or deleted from in the middle. One limitation to know about: since the tail is lexed separately, reference-style links (`[text][1]` with the definition in another block) won't be joined up — the model rarely writes that way in chat, and I accept the trade-off.
+
+## Autoscroll: stick to the bottom, but respect a user who scrolls up
+
+As text streams in, the chat pane has to scroll along with it. But if the user scrolls up to reread an earlier passage and gets yanked back to the bottom every frame, that's the worst possible experience. The rules I use:
+
+- **When at the bottom (within a few dozen pixels), "pin"**, and follow the content however long it grows.
+- **When the user scrolls *up*, unpin** — and only scrolling up counts. Growing content increases the distance to the bottom, but that isn't the user's intent.
+- **When unpinned, show a "Jump to latest" button**, which pins again when clicked.
+
+```ts
+// hooks/useStickToBottom.ts
+"use client";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+const THRESHOLD = 48; // px
+
+export function useStickToBottom<T extends HTMLElement>() {
+  const scrollRef = useRef<T>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return;
+    let lastTop = scroller.scrollTop;
+
+    const onScroll = () => {
+      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (scroller.scrollTop < lastTop && distance > THRESHOLD) pinned.current = false; // the user scrolled up
+      if (distance <= THRESHOLD) pinned.current = true;
+      lastTop = scroller.scrollTop;
+      setShowJump(!pinned.current);
+    };
+    // Catch every height change: new text, code blocks, tool cards, image placeholders
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) scroller.scrollTop = scroller.scrollHeight;
+    });
+
+    observer.observe(content);
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      observer.disconnect();
+      scroller.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    pinned.current = true;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  return { scrollRef, contentRef, showJump, jumpToBottom };
+}
+```
+
+`ResizeObserver` beats scrolling in a `useEffect` after each messages change, because it also catches height changes that don't go through state: fonts finishing loading, a code block being highlighted after it becomes a stable block. The CSS `overflow-anchor` property in theory solves part of this problem, but according to MDN's browser-compat-data Safari only supports it from version 27, so I don't rely on it yet. If you'd rather not write it yourself, StackBlitz's [use-stick-to-bottom](https://github.com/stackblitz-labs/use-stick-to-bottom) does exactly this, with smoother scroll animation.
+
+## Accessibility: don't make the screen reader read every token
+
+The first reflex is to put `aria-live` on the message pane so screen readers read the answer. The result: every time text is added, the screen reader reads a fragment — or keeps interrupting itself, depending on the software. `role="log"` is the same, since it implies a live region.
+
+The strategy I use:
+
+1. **The message pane is not a live region.** Each message is a labelled `article`; the message being streamed carries `aria-busy="true"` so assistive technology knows the content is still changing.
+2. **A separate, visually hidden live region** that only changes when the *status* changes: "thinking", "answering", "stopped", "error". While streaming, its content stays still so it isn't re-read.
+3. **When finished, the live region holds the whole answer as plain text** — read once, continuously.
+4. **Focus stays in the input.** The Stop button has a clear label and works with the keyboard; clicking it doesn't steal focus.
+
+```tsx
+// components/ChatAnnouncer.tsx
+import type { Message } from "@/lib/chat-state";
+
+const STATUS_TEXT: Partial<Record<Message["status"], string>> = {
+  thinking: "The assistant is thinking",
+  streaming: "The assistant is answering",
+  stopped: "The answer was stopped",
+  error: "The answer ran into an error",
+};
+
+export function ChatAnnouncer({ message }: { message?: Message }) {
+  let text = "";
+  if (message?.role === "assistant") {
+    text =
+      message.status === "done"
+        ? message.parts
+            .flatMap((p) => (p.type === "text" ? [p.text] : []))
+            .join("")
+            .replace(/[*_`#>|]/g, "") // strip markdown symbols so they aren't read aloud
+        : (STATUS_TEXT[message.status] ?? "");
+  }
+  return (
+    <div aria-live="polite" aria-atomic="true" className="sr-only">
+      {text}
+    </div>
+  );
+}
+```
+
+Try it with at least one real screen reader (VoiceOver or NVDA) — live region behavior differs considerably between browser and screen reader combinations, and no unit test will catch this.
+
+## Errors, retry and resume
+
+A streaming request can fail at more points than an ordinary request, and each point needs different handling:
+
+| Situation | What the user has seen | How I handle it |
+| --- | --- | --- |
+| HTTP error or network loss before the first byte | Nothing yet | Auto-retry up to 2 times with backoff; the user just sees "thinking" a little longer |
+| An `error` event mid-stream (provider overloaded...) | Part of the answer | Keep what's there, add an error part with a "Retry" button if `retryable` |
+| The stream closes quietly without `done` | Part of the answer | Treat it as a connection error — proxy timeouts and mid-stream deploys both look like this |
+| The user hits Stop | Part of the answer | Not an error: "Stopped" state, no red message |
+
+The most important rule: **only auto-retry when the user hasn't seen any tokens.** Once text has appeared, a silent retry makes text repeat or the answer change midway — the user has to be the one to decide.
+
+"Retry" means two different things. **Regenerate** discards the partial answer and generates again from the same history — that's the `retry` action in the reducer. **Continue** keeps what's there and asks the model to finish. For Claude models from 4.6 onward, [Anthropic's streaming docs](https://platform.claude.com/docs/en/build-with-claude/streaming) recommend sending a user message containing the partial answer plus an instruction like "continue from where you were cut off", instead of prefilling the assistant message as before.
+
+And **resume** in the transport sense — reloading the page and still reattaching to an answer that's mid-generation — is a completely different architecture: generation has to be decoupled from the lifecycle of the HTTP request, the server writes events to a temporary store (usually Redis), and the client reconnects and reads on from the last event it received. It directly contradicts the "client disconnects → cancel upstream" rule above, because the server can't tell a user hitting Stop from a flaky network. The AI SDK docs say this explicitly: abort and resume can't be used together, and if you want both you need a separate Stop endpoint. For customer support chat I don't build resume: I store messages (including partial ones) on the server, and reloading the page shows the saved version, which is enough.
+
+## Rendering tool calls as UI
+
+When the assistant looks up an order, the user has to wait one more round: the model decides to call a tool, the server calls an internal API, then the model continues writing. If the screen sits still during that time, the feeling of slowness comes right back. The `tool-call` part lets you turn the wait into information:
+
+```tsx
+// components/ToolPart.tsx
+import type { Part } from "@/lib/chat-state";
+
+type ToolCall = Extract<Part, { type: "tool-call" }>;
+type Order = { id: string; status: "processing" | "shipping" | "delivered"; eta?: string };
+
+const ORDER_STATUS: Record<Order["status"], string> = {
+  processing: "Processing",
+  shipping: "Shipping",
+  delivered: "Delivered",
+};
+
+export function ToolPart({ part }: { part: ToolCall }) {
+  if (part.state === "running") {
+    const orderId = (part.input as { orderId?: string }).orderId;
+    return (
+      <div className="tool-card" aria-busy="true">
+        {part.name === "lookup_order" ? `Looking up order ${orderId ?? ""}…` : "Working…"}
+      </div>
+    );
+  }
+  if (part.state === "error") {
+    return <div className="tool-card tool-card--error">The lookup failed — the assistant will explain below.</div>;
+  }
+  if (part.name !== "lookup_order") return null; // a tool with no dedicated UI: let the model explain it in text
+
+  const order = part.output as Order; // in real code: validate with zod before trusting it
+  return (
+    <dl className="order-card">
+      <dt>Order</dt>
+      <dd>{order.id}</dd>
+      <dt>Status</dt>
+      <dd>{ORDER_STATUS[order.status]}</dd>
+      {order.eta && (
+        <>
+          <dt>Estimated delivery</dt>
+          <dd>{order.eta}</dd>
+        </>
+      )}
+    </dl>
+  );
+}
+```
+
+Two principles: a tool result is always rendered with a structured component (React text nodes, never HTML), and for a tool with no dedicated UI, don't try to display raw JSON — let the model explain it in words.
+
+## Or just use Vercel AI SDK's `useChat`?
+
+Everything above — protocol, parser, message parts, stop, throttle, tool UI — is already packaged in the [AI SDK](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot). The current major version is **AI SDK 7** (`ai@7`, `@ai-sdk/react@4`, released in late June 2026), which requires Node.js 22 or later and is ESM-only. The `useChat` API keeps the transport architecture from version 5: messages have a `parts` array, `status` is `submitted` / `streaming` / `ready` / `error`, and there are `stop()`, `regenerate()`, `resumeStream()` and a `throttle` option to batch UI updates. On the server side, version 7 moved to top-level helpers:
+
+```tsx
+// app/api/chat/route.ts — the AI SDK 7 version
+import { anthropic } from "@ai-sdk/anthropic";
+import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream, type UIMessage } from "ai";
+
+export async function POST(req: Request) {
+  const { messages }: { messages: UIMessage[] } = await req.json();
+  const result = streamText({
+    model: anthropic(process.env.CHAT_MODEL!),
+    instructions: "You are the support assistant for our store.",
+    messages: await convertToModelMessages(messages),
+    abortSignal: req.signal, // you still have to wire abort up to the upstream yourself
+  });
+  return createUIMessageStreamResponse({ stream: toUIMessageStream({ stream: result.stream }) });
+}
+
+// components/SupportChat.tsx (client)
+// const { messages, sendMessage, status, stop, regenerate } = useChat({
+//   transport: new DefaultChatTransport({ api: "/api/chat" }),
+//   throttle: 50,
+// });
+```
+
+Here's how I weigh it:
+
+- **Gains:** a battle-tested protocol, typed tool calls, switching providers with one line, a ready-made path for resuming streams, and less code to maintain. For a small team that needs to ship fast, this is a reasonable choice.
+- **Losses:** control over the wire format and the message format — and the message format usually goes straight into your database. The AI SDK has gone through three major versions in about a year (5.0 in July 2025, 6.0 in December 2025, 7.0 in June 2026), each with breaking changes. And it doesn't do the hardest parts of this post for you: safe incremental markdown, autoscroll, accessibility, and turning on cancellation at the infrastructure layer.
+
+Even if you use the AI SDK, I still think it's worth understanding the pipeline underneath: when a stream gets buffered in production, or the bill climbs because an abort never reaches the upstream, you'll be debugging exactly those layers.
+
+## A real example: a customer support assistant in a Next.js app
+
+Let's put all the pieces together. A signed-in customer opens the chat pane and asks: "Where's my order A1023?". Here's what happens:
+
+1. **Hit send.** The reducer immediately adds the customer's message and an empty assistant message in the `submitted` state — the chat pane responds in the same frame, before the request has even left the browser.
+2. **The Route Handler** checks the session, filters the history down to user/assistant roles only, and opens a stream to the provider. The model starts with a reasoning phase, so the server sends `status: thinking`; the live region reads "The assistant is thinking".
+3. **The model calls `lookup_order`.** The server sends `tool-call`, and a "Looking up order A1023…" card appears. The tool runs with the user id taken from the session — if someone prompt-injects the model into looking up another person's order, the internal API still refuses.
+4. **The result arrives.** `tool-result` turns the card into a status table: "Shipping, estimated Friday". The second round begins and text streams out; finished paragraphs are memoized, and only the last paragraph re-renders each frame.
+5. **The customer hits Stop** midway. The `AbortController` cancels the `fetch`, the message moves to "Stopped", and the server — thanks to `req.signal` or `cancel()` — cancels the request to the provider. The tokens already generated are still billed, but the rest aren't.
+
+The main component is now just assembly:
+
+```tsx
+// components/SupportChat.tsx
+"use client";
+import { memo, useState } from "react";
+import { useChatStream } from "@/hooks/useChatStream";
+import { useStickToBottom } from "@/hooks/useStickToBottom";
+import type { Message } from "@/lib/chat-state";
+import { ChatAnnouncer } from "./ChatAnnouncer";
+import { StreamingMarkdown } from "./StreamingMarkdown";
+import { ToolPart } from "./ToolPart";
+
+const MessageItem = memo(function MessageItem({ message, onRetry }: { message: Message; onRetry: (id: string) => void }) {
+  const active = message.status === "submitted" || message.status === "thinking" || message.status === "streaming";
+  return (
+    <article aria-label={message.role === "user" ? "You" : "Assistant"} aria-busy={active} className={`msg msg--${message.role}`}>
+      {message.status === "thinking" && <p className="msg-status">Thinking…</p>}
+      {message.parts.map((part, i) => {
+        if (part.type === "tool-call") return <ToolPart key={part.id} part={part} />;
+        if (part.type === "error")
+          return (
+            <p key={i} className="msg-error">
+              The assistant ran into a problem.{" "}
+              {part.retryable && <button onClick={() => onRetry(message.id)}>Retry</button>}
+            </p>
+          );
+        return message.role === "user" ? (
+          <p key={i}>{part.text}</p>
+        ) : (
+          <StreamingMarkdown key={i} text={part.text} streaming={active && i === message.parts.length - 1} />
+        );
+      })}
+      {message.status === "stopped" && <p className="msg-status">Stopped.</p>}
+    </article>
+  );
+});
+
+export function SupportChat() {
+  const { messages, send, stop, retry, isStreaming } = useChatStream();
+  const { scrollRef, contentRef, showJump, jumpToBottom } = useStickToBottom<HTMLDivElement>();
+  const [input, setInput] = useState("");
+
+  return (
+    <section className="chat" aria-label="Customer support assistant">
+      <div ref={scrollRef} className="chat-scroll">
+        <div ref={contentRef}>
+          {messages.map((m) => (
+            <MessageItem key={m.id} message={m} onRetry={retry} />
+          ))}
+        </div>
+      </div>
+      {showJump && <button className="chat-jump" onClick={jumpToBottom}>Jump to latest</button>}
+      <ChatAnnouncer message={messages.at(-1)} />
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const text = input.trim();
+          if (!text || isStreaming) return;
+          send(text);
+          setInput("");
+        }}
+      >
+        <label htmlFor="chat-input" className="sr-only">Your question</label>
+        <textarea id="chat-input" value={input} onChange={(e) => setInput(e.target.value)} />
+        <button type="submit" disabled={isStreaming}>Send</button>
+        <button type="button" onClick={stop} disabled={!isStreaming}>Stop</button>
+      </form>
+    </section>
+  );
+}
+```
+
+Note that I put the Send and Stop buttons in two separate places instead of one button that changes its label. With a single relabelling button, a user who double-clicks Send accidentally hits Stop on the second click — I've hit this bug in production.
+
+### Testing streaming with a fake ReadableStream
+
+You don't need a real provider to test the hardest part. A `Response` wrapping a hand-built `ReadableStream` lets you cut the bytes at *every* possible position — even in the middle of a 4-byte emoji or a multi-byte character — and check that the parser still reassembles correctly:
+
+```ts
+// lib/sse.test.ts
+import { describe, expect, it } from "vitest";
+import { encodeEvent, HEARTBEAT, type ChatEvent } from "./chat-protocol";
+import { readChatEvents } from "./sse";
+
+const EVENTS: ChatEvent[] = [
+  { type: "status", value: "writing" },
+  { type: "text-delta", text: "Your order is on its way 🚚" },
+  { type: "done", reason: "end_turn" },
+];
+
+/** Fake body: cuts the data at the given byte positions. */
+function fakeResponse(bytes: Uint8Array, cuts: number[]): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let prev = 0;
+      for (const cut of [...cuts, bytes.length]) {
+        controller.enqueue(bytes.slice(prev, cut));
+        prev = cut;
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+}
+
+async function collect(res: Response): Promise<ChatEvent[]> {
+  const out: ChatEvent[] = [];
+  for await (const event of readChatEvents(res)) out.push(event);
+  return out;
+}
+
+describe("readChatEvents", async () => {
+  const parts = [encodeEvent(EVENTS[0]), HEARTBEAT, encodeEvent(EVENTS[1]), encodeEvent(EVENTS[2])];
+  const bytes = new Uint8Array(await new Blob(parts).arrayBuffer());
+
+  it("reassembles events correctly no matter which byte the chunk is cut at", async () => {
+    for (let cut = 1; cut < bytes.length; cut++) {
+      expect(await collect(fakeResponse(bytes, [cut]))).toEqual(EVENTS);
+    }
+  });
+
+  it("survives chunks that are a single byte each", async () => {
+    const cuts = Array.from({ length: bytes.length - 1 }, (_, i) => i + 1);
+    expect(await collect(fakeResponse(bytes, cuts))).toEqual(EVENTS);
+  });
+});
+```
+
+The same technique works for the hook: mock `fetch` to return a `fakeResponse`, then check that the reducer receives every event, that `stop()` moves the message to `stopped`, and that a stream that closes without `done` produces an error part. For the route handler, I create a `Request` whose `signal` comes from an `AbortController`, abort midway, and assert that the fake provider client received the abort — that's the test that catches the most expensive bug in this post.

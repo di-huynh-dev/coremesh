@@ -20,3 +20,1029 @@ BullMQ, giống hầu hết các hệ thống queue nghiêm túc, chọn đứng
 2. **Không bao giờ làm hai lần.** Mọi handler phải an toàn khi chạy lại. Đây là việc của idempotency — unique constraint, bảng processed message, và idempotency key gửi cho bên thứ ba.
 
 Phần còn lại của bài là cách hiện thực hai quy tắc đó, cộng với những thứ giữ cho hệ thống vận hành được: retry đúng cách, dead-letter, rate limit, shutdown và quan sát.
+
+## Bối cảnh: NestJS 12, BullMQ 6 và luồng đặt hàng
+
+Code trong bài viết cho NestJS 12 với `@nestjs/bullmq` 12 — bản này khai báo peer dependency cho NestJS 10 đến 12 và BullMQ 3 đến 6, nên nếu bạn còn ở BullMQ 5 thì phần lớn nội dung vẫn áp dụng. BullMQ 6 ra mắt cuối tháng 7/2026, và vài thay đổi của nó chạm trực tiếp vào những gì bên dưới:
+
+- **Repeatable job kiểu cũ bị xoá.** `Queue.add(..., { repeat })`, `getRepeatableJobs()`, `removeRepeatable()` không còn; thay bằng job scheduler: `upsertJobScheduler()`, `getJobSchedulers()`, `removeJobScheduler()`. [Hướng dẫn migrate](https://docs.bullmq.io/guide/migrations/migrate-from-v5-to-v6) khuyên chuyển sang job scheduler khi *vẫn còn* chạy v5, vì v6 báo lỗi nếu thấy metadata repeatable cũ trong Redis.
+- **`debounce` bị xoá**, thay bằng `deduplication` (với các mode `ttl`, `extend`, `replace`, `keepLastIfActive`).
+- **`Job#discard()` bị xoá.** Muốn nói "đừng thử lại nữa", bạn ném `UnrecoverableError` — đúng thứ bài này dùng để phân loại lỗi.
+- **`ioredis` thành optional peer dependency**, nên bạn tự cài nó cạnh `bullmq`.
+- **Backend thay thế được.** Redis vẫn là mặc định; BullMQ 6 thêm một backend PostgreSQL chạy cùng API `Queue` / `Worker`.
+
+```bash
+npm install @nestjs/bullmq bullmq ioredis
+```
+
+<Callout>
+  **Backend PostgreSQL có thay được outbox không?** Queue nằm ngay trong database thì thêm job trong cùng transaction với đơn hàng là xong? Tại thời điểm viết, tài liệu không mô tả cách để `queue.add()` tham gia transaction của ứng dụng — backend tự giữ pool kết nối riêng — và vẫn coi Redis là lựa chọn được kiểm chứng nhiều nhất. Bài này dùng Redis và giữ outbox. Nếu một ngày điều đó được hỗ trợ, relay có thể biến mất; idempotency thì không.
+</Callout>
+
+Ví dụ xuyên suốt là luồng `POST /orders` trong bài về request lifecycle và modular monolith: `OrdersService.placeOrder()` giữ hàng qua `InventoryApi`, uỷ quyền thanh toán qua `PaymentsApi`, lưu đơn, rồi phát `order.placed` bằng `EventEmitter2` — event trong bộ nhớ, chết cùng tiến trình, như bài đó đã tự thừa nhận. Bài này thay đúng mảnh đó. Sau khi đơn được ghi nhận, bốn việc phải xảy ra ở phía sau:
+
+| Job | Queue | Side effect | Làm hai lần thì sao | Mất thì sao |
+| --- | --- | --- | --- | --- |
+| `capture-payment` | `payments` | Thu khoản tiền đã uỷ quyền qua cổng thanh toán | Khách bị trừ tiền hai lần | Giao hàng mà không thu tiền; uỷ quyền hết hạn sau vài ngày |
+| `order-confirmation` | `notifications` | Gửi email xác nhận | Khách nhận hai email — phiền, không nguy hiểm | Khách tưởng đặt hàng thất bại và đặt lại |
+| `create-shipment` | `shipping` | Tạo vận đơn ở hãng vận chuyển (API giới hạn 10 request/giây) | Hai vận đơn, hai lần đến lấy hàng | Đơn nằm im trong kho |
+| `award-points` | `loyalty` | Cộng điểm thưởng trong database của mình | Điểm bị cộng gấp đôi | Khách mất điểm và không ai biết |
+
+Hai cột cuối là lý do mỗi job cần chiến lược riêng: cái giá của "làm hai lần" và "mất" khác nhau, nên công sức bỏ ra để chống từng thứ cũng khác nhau.
+
+## Dựng BullMQ trong NestJS
+
+### Kết nối và cấu hình chung
+
+```ts
+// infrastructure/queue/queues.ts — tên queue là hằng số, không gõ tay chuỗi ở nhiều nơi
+export const PAYMENTS_QUEUE = 'payments';
+export const NOTIFICATIONS_QUEUE = 'notifications';
+export const SHIPPING_QUEUE = 'shipping';
+export const LOYALTY_QUEUE = 'loyalty';
+export const MAINTENANCE_QUEUE = 'maintenance';
+
+/** Mọi job sinh ra từ outbox đều mang cùng một "phong bì". */
+export interface JobEnvelope<T = Record<string, unknown>> {
+  eventId: string; // id của dòng outbox: khoá chống trùng cho consumer
+  traceId?: string; // trace ID của request gốc, để log của job nối được với log HTTP
+  payload: T; // ID và vài giá trị nhỏ, không phải snapshot của cả đơn hàng
+}
+
+// infrastructure/queue/queue.module.ts
+import { BullModule } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { BullMQOtel } from 'bullmq-otel';
+
+const DAY = 24 * 3600; // removeOnComplete/removeOnFail tính age bằng GIÂY
+
+@Module({
+  imports: [
+    BullModule.forRootAsync({
+      inject: [ConfigService], // ConfigModule là global
+      useFactory: (config: ConfigService<Env, true>) => {
+        const url = new URL(config.get('REDIS_URL', { infer: true }));
+        return {
+          // Truyền options thay vì một instance ioredis: BullMQ tự mở kết nối cho từng
+          // Queue/Worker và tự đặt maxRetriesPerRequest: null cho kết nối blocking của worker
+          connection: {
+            host: url.hostname,
+            port: Number(url.port || 6379),
+            username: url.username || undefined,
+            password: url.password ? decodeURIComponent(url.password) : undefined,
+            tls: url.protocol === 'rediss:' ? {} : undefined,
+          },
+          prefix: 'shop', // mọi key trong Redis bắt đầu bằng "shop:"
+          telemetry: new BullMQOtel({ tracerName: 'shop', meterName: 'shop', enableMetrics: true }),
+          defaultJobOptions: {
+            attempts: 8,
+            backoff: { type: 'exponential', delay: 2_000, jitter: 0.5 },
+            removeOnComplete: { age: DAY, count: 10_000 },
+            removeOnFail: { age: 14 * DAY }, // giữ job hỏng 14 ngày để điều tra
+          },
+        };
+      },
+    }),
+    BullModule.registerQueue(
+      {
+        name: PAYMENTS_QUEUE,
+        // Thay thế TOÀN BỘ defaultJobOptions chung (trộn nông), nên phải viết lại đủ
+        defaultJobOptions: {
+          attempts: 12,
+          backoff: { type: 'capped' }, // chiến lược tự viết, khai báo ở worker
+          removeOnComplete: { age: 7 * DAY },
+          removeOnFail: false, // job thanh toán hỏng: hiếm và đắt, giữ lại mãi
+        },
+      },
+      { name: NOTIFICATIONS_QUEUE },
+      { name: SHIPPING_QUEUE },
+      { name: LOYALTY_QUEUE },
+      { name: MAINTENANCE_QUEUE },
+    ),
+  ],
+  exports: [BullModule], // module nào import QueueModule cũng @InjectQueue() được
+})
+export class QueueModule {}
+```
+
+Vài chi tiết đáng để ý:
+
+- **Options, không phải instance.** Worker dùng lệnh blocking để chờ job, nên kết nối của nó cần `maxRetriesPerRequest: null`; nếu không, ioredis bỏ cuộc sau 20 lần thử lại (mặc định) và worker chết ở lần Redis failover đầu tiên. Truyền options thì BullMQ tự đặt giá trị này; tự tạo instance ioredis cho worker mà quên thì BullMQ ném lỗi. Với producer nằm trong request HTTP, [Going to production](https://docs.bullmq.io/guide/going-to-production) khuyên ngược lại (tắt `enableOfflineQueue`) để request lỗi nhanh — nhưng với outbox bên dưới, request HTTP không còn chạm vào Redis.
+- **Job đã xong không tự biến mất.** Mặc định BullMQ giữ *mọi* job completed và failed mãi mãi. Với `age` / `count`, việc dọn là "best effort" mỗi khi có job khác kết thúc; không có timer dọn nền.
+- **Cấu hình chung và theo queue được trộn nông** (`{ ...shared, ...perQueue }`), nên `defaultJobOptions` của `payments` thay thế cả object chung — vì vậy phải viết lại `removeOnComplete`.
+- **`telemetry`** chỉ xuất được gì khi OpenTelemetry SDK đã khởi tạo trước lúc Nest boot.
+
+### Redis cho queue không phải Redis cho cache
+
+Phần lớn sự cố "job biến mất" mình từng gặp nằm ở cấu hình Redis, không phải ở code:
+
+- **`maxmemory-policy noeviction`** — tài liệu BullMQ gọi đây là thiết lập *duy nhất* đảm bảo queue chạy đúng. Với `allkeys-lru` hay `volatile-lru`, Redis đầy bộ nhớ sẽ lặng lẽ xoá key: một job, một phần cấu trúc queue, một lock. Với `noeviction`, Redis từ chối ghi và bạn nhận lỗi ngay. BullMQ in `IMPORTANT! Eviction policy is ...` ra console khi thấy policy khác; đừng bỏ qua dòng đó.
+- **Bật AOF** (`appendonly yes`). Không có persistence, Redis restart là queue trống trơn.
+- **Đừng dùng chung instance với cache.** Cache cần eviction, queue cấm eviction.
+
+Một quyết định nữa: **worker chạy ở process riêng**, cùng codebase nhưng entrypoint khác (`worker.ts`). API scale theo traffic, worker scale theo độ sâu queue, và job nặng CPU không làm chậm request HTTP. Chi tiết ở phần graceful shutdown.
+
+## Quy tắc 1: không bao giờ mất ý định — transactional outbox
+
+### Dual write: vì sao "lưu xong rồi add job" là sai
+
+Phiên bản ai cũng viết đầu tiên:
+
+```ts
+// ĐỪNG: hai lần ghi vào hai hệ thống, không có gì nối chúng lại
+await this.orders.save(order); // Postgres
+await this.paymentsQueue.add('capture-payment', { orderId: order.id }); // Redis
+```
+
+Nó hỏng theo ba cách, và cả ba đều xảy ra thật:
+
+1. **Process chết giữa hai dòng** (deploy, OOM): đơn đã lưu, job không bao giờ tồn tại. Không lỗi, không log.
+2. **Redis lỗi ở dòng thứ hai**: request trả 500 dù đơn *đã* lưu. Client retry, và nếu tầng HTTP không có idempotency key, bạn có hai đơn.
+3. **Đảo thứ tự cũng không cứu được**: add job trước thì worker có thể chạy *trước khi* đơn được commit, hoặc transaction rollback sau khi job đã nằm trong queue — email xác nhận cho một đơn không tồn tại. Gọi `queue.add()` *bên trong* callback của `$transaction` gặp đúng hai vấn đề này.
+
+Gốc rễ là hai hệ thống lưu trữ không chung transaction. Transactional outbox giải quyết bằng cách không ghi vào hệ thống thứ hai trong request nữa: ý định "cần capture tiền cho đơn này" được ghi thành một dòng, vào *cùng database, cùng transaction* với đơn hàng. Hoặc cả hai cùng tồn tại, hoặc không cái nào. Chuyển dòng đó sang BullMQ là việc của một tiến trình khác, chạy lại bao nhiêu lần cũng được.
+
+### Bảng outbox
+
+```sql
+CREATE TABLE outbox_events (
+  id            uuid PRIMARY KEY,
+  topic         text        NOT NULL,          -- 'order.placed', 'payment.captured'...
+  aggregate_id  uuid        NOT NULL,
+  payload       jsonb       NOT NULL,
+  trace_id      text,                          -- nối log của job với request gốc
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  published_at  timestamptz                    -- NULL = chưa đẩy sang queue
+);
+
+-- Relay chỉ quan tâm dòng chưa publish: partial index giữ index nhỏ dù bảng lớn
+CREATE INDEX outbox_unpublished ON outbox_events (created_at) WHERE published_at IS NULL;
+```
+
+Model Prisma tương ứng (`OutboxEvent`) map vào bảng này bằng `@@map("outbox_events")` và `@map` cho từng cột.
+
+### Ghi outbox trong cùng transaction với đơn hàng
+
+Thay vì service tự gọi `events.emit()`, aggregate `Order` tự ghi lại điều đã xảy ra, và repository lưu cả hai trong một transaction. Port `OrderRepository` giữ nguyên chữ ký `save(order)` — service không biết outbox tồn tại.
+
+```ts
+// contracts/domain-event.ts — contract trung lập, không phụ thuộc Nest
+export type OutboxTopic = 'order.placed' | 'order.cancelled' | 'payment.captured';
+export type DomainEvent = { topic: OutboxTopic; aggregateId: string; payload: Record<string, unknown> };
+
+// modules/orders/domain/order.ts (trích)
+export class Order {
+  private readonly pending: DomainEvent[] = [];
+
+  static place(props: PlaceOrderProps): Order {
+    const order = new Order({ ...props, status: 'placed' });
+    order.pending.push({
+      topic: 'order.placed',
+      aggregateId: order.id,
+      payload: { orderId: order.id, customerId: order.customerId, total: order.total },
+    });
+    return order;
+  }
+
+  /** Lấy và xoá các event chưa lưu. Chỉ repository gọi hàm này, bên trong save(). */
+  pullEvents(): DomainEvent[] {
+    return this.pending.splice(0);
+  }
+}
+
+// modules/orders/application/orders.service.ts — bước 3 và 4 của placeOrder()
+const order = Order.place({ id: orderId, ...input, total, reservationId, authorizationId, at: this.clock.now() });
+await this.orders.save(order); // đơn hàng + order.placed: một commit
+return order.toView(); // không còn this.events.emit(...)
+
+// modules/orders/infrastructure/prisma-order.repository.ts
+@Injectable()
+export class PrismaOrderRepository extends OrderRepository {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cls: ClsService,
+  ) {
+    super();
+  }
+
+  async save(order: Order): Promise<void> {
+    const events = order.pullEvents();
+    const traceId = this.cls.isActive() ? this.cls.getId() : undefined;
+
+    await this.prisma.$transaction(async (tx) => {
+      const row = toOrderRow(order);
+      await tx.order.upsert({ where: { id: row.id }, create: row, update: row });
+      if (events.length > 0) {
+        await tx.outboxEvent.createMany({
+          data: events.map((event) => ({
+            id: randomUUID(),
+            topic: event.topic,
+            aggregateId: event.aggregateId,
+            payload: event.payload,
+            traceId,
+          })),
+        });
+      }
+    });
+  }
+}
+```
+
+Hai lựa chọn có chủ đích: **payload chỉ chứa ID và vài con số** — consumer đọc trạng thái *hiện tại* lúc xử lý, nên đơn bị huỷ trong lúc job nằm chờ thì consumer thấy ngay; và **outbox nằm sau port**. Khi một use case cần ghi nhiều repository trong một transaction, mình dùng [`@nestjs-cls/transactional`](https://papooch.github.io/nestjs-cls/plugins/available-plugins/transactional) để chia sẻ transaction qua CLS thay vì truyền `tx` qua mọi chữ ký.
+
+### Relay: từ bảng outbox sang BullMQ
+
+`OutboxRelay` đã xuất hiện trong phần graceful shutdown của bài về request lifecycle. Đây là phần ruột của nó:
+
+```ts
+// infrastructure/outbox/outbox-relay.ts
+import { InjectQueue } from '@nestjs/bullmq';
+import { BeforeApplicationShutdown, Injectable, Logger } from '@nestjs/common';
+import type { Queue } from 'bullmq';
+
+interface OutboxRow {
+  id: string;
+  topic: OutboxTopic;
+  payload: Record<string, unknown>;
+  trace_id: string | null;
+}
+
+interface Route {
+  queue: Queue;
+  jobName: string;
+}
+
+type BulkJob = Parameters<Queue['addBulk']>[0][number];
+
+const BATCH_SIZE = 100;
+
+@Injectable()
+export class OutboxRelay implements BeforeApplicationShutdown {
+  private readonly logger = new Logger(OutboxRelay.name);
+  private readonly routes: Record<OutboxTopic, Route[]>;
+  private timer?: NodeJS.Timeout;
+  private running?: Promise<void>;
+  private stopping = false;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @InjectQueue(PAYMENTS_QUEUE) payments: Queue,
+    @InjectQueue(NOTIFICATIONS_QUEUE) notifications: Queue,
+    @InjectQueue(SHIPPING_QUEUE) shipping: Queue,
+    @InjectQueue(LOYALTY_QUEUE) loyalty: Queue,
+  ) {
+    // Một event, nhiều phản ứng. Record<OutboxTopic, ...>: quên một topic là lỗi compile.
+    this.routes = {
+      'order.placed': [
+        { queue: payments, jobName: 'capture-payment' },
+        { queue: notifications, jobName: 'order-confirmation' },
+      ],
+      'payment.captured': [
+        { queue: shipping, jobName: 'create-shipment' },
+        { queue: loyalty, jobName: 'award-points' },
+      ],
+      'order.cancelled': [{ queue: payments, jobName: 'void-authorization' }],
+    };
+  }
+
+  /** Gọi từ worker.ts. API process không chạy relay. */
+  start() {
+    this.timer = setInterval(() => {
+      this.running ??= this.drain()
+        .catch((error) => this.logger.error('Outbox relay failed', error))
+        .finally(() => (this.running = undefined));
+    }, 500);
+  }
+
+  async beforeApplicationShutdown() {
+    this.stopping = true;
+    clearInterval(this.timer); // ngừng nhận việc mới
+    await this.running; // làm nốt mẻ đang chạy
+  }
+
+  private async drain(): Promise<void> {
+    // Mẻ đầy nghĩa là có thể còn nữa: chạy tiếp ngay, không đợi tick sau
+    while (!this.stopping && (await this.publishBatch()) === BATCH_SIZE) {}
+  }
+
+  private publishBatch(): Promise<number> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        // Khoá các dòng chưa publish. Relay ở pod khác bỏ qua chúng thay vì đứng chờ.
+        const rows = await tx.$queryRaw<OutboxRow[]>`
+          SELECT id, topic, payload, trace_id
+          FROM outbox_events
+          WHERE published_at IS NULL
+          ORDER BY created_at
+          LIMIT ${BATCH_SIZE}
+          FOR UPDATE SKIP LOCKED`;
+        if (rows.length === 0) return 0;
+
+        // Topic chưa biết (API bản mới deploy trước worker): để nguyên, relay bản mới sẽ đẩy.
+        // Đánh dấu published cho nó ở đây là âm thầm làm mất event.
+        const known = rows.filter((row) => row.topic in this.routes);
+        if (known.length < rows.length) this.logger.warn(`${rows.length - known.length} outbox row(s) with unknown topic`);
+
+        // Gom theo queue: mỗi queue một lệnh addBulk (nguyên tử trong phạm vi queue đó)
+        const byQueue = new Map<Queue, BulkJob[]>();
+        for (const row of known) {
+          for (const { queue, jobName } of this.routes[row.topic]) {
+            const data: JobEnvelope = { eventId: row.id, traceId: row.trace_id ?? undefined, payload: row.payload };
+            const jobs = byQueue.get(queue) ?? [];
+            jobs.push({ name: jobName, data, opts: { jobId: row.id } }); // cùng event -> cùng jobId
+            byQueue.set(queue, jobs);
+          }
+        }
+        await Promise.all([...byQueue].map(([queue, jobs]) => queue.addBulk(jobs)));
+
+        const ids = known.map((row) => row.id);
+        await tx.$executeRaw`UPDATE outbox_events SET published_at = now() WHERE id = ANY(${ids}::uuid[])`;
+        return rows.length;
+      },
+      { timeout: 15_000 }, // mặc định của Prisma là 5 giây; mẻ này có gọi Redis bên trong
+    );
+  }
+}
+```
+
+<Figure src="/blog/nestjs-background-jobs-bullmq-outbox.svg" alt="Sơ đồ transactional outbox: request HTTP gọi OrdersService, một transaction Postgres ghi cả bảng orders lẫn outbox_events; relay đọc các dòng đã commit, đẩy vào BullMQ với jobId bằng id của event; worker idempotent thực hiện side effect với idempotency key; dải dưới cùng mô tả điều gì xảy ra khi crash ở từng bước" caption="Đơn hàng và ý định commit cùng nhau. Mọi thứ sau COMMIT đều có thể chạy lại: relay gửi lại thì jobId trùng bị bỏ qua, worker chạy lại thì idempotency key biến lần thứ hai thành no-op." />
+
+Những quyết định trong relay, và cái giá của chúng:
+
+- **`FOR UPDATE SKIP LOCKED`** cho phép chạy nhiều relay song song, mỗi pod worker một cái, mà không cần bầu leader.
+- **`jobId` bằng id của event.** Crash sau `addBulk` nhưng trước `UPDATE` thì mẻ đó được gửi lại, và BullMQ bỏ qua job có id đã tồn tại — *chừng nào job cũ còn trong Redis*. Khi `removeOnComplete` đã dọn nó, cùng jobId sẽ tạo job mới. Chống trùng ở queue chỉ là lớp ngoài; lớp thật nằm ở consumer. Custom jobId không được là số nguyên hay chứa dấu `:` — UUID thoả cả hai; nếu một event sinh hai job trong *cùng* một queue, ghép tên job vào jobId.
+- **Giữ transaction trong lúc gọi Redis.** Đơn giản và đúng; transaction chỉ dài thêm vài mili giây của `addBulk`. Redis treo thì transaction chạm timeout rồi rollback: không mất gì, chỉ chậm. Phương án "claim" bằng cột `locked_until` rồi publish ngoài transaction phức tạp hơn, và mình chưa cần.
+- **Polling 500 ms** là đủ cho email hay capture. Cần nhanh hơn thì thêm `LISTEN/NOTIFY` để đánh thức relay, vẫn giữ polling làm lưới an toàn; lớn hơn nữa thì CDC (Debezium), đổi lại là thêm một hệ thống phải vận hành.
+- **Thứ tự không được đảm bảo.** Retry, concurrency và nhiều worker xáo trộn thứ tự xử lý. Consumer phải kiểm tra trạng thái hiện tại — capture chỉ chạy khi payment còn `authorized` — thay vì dựa vào thứ tự.
+- **Thêm topic mới thì deploy worker trước API.** Relay bản cũ để nguyên dòng có topic lạ, nên không mất gì, nhưng event chỉ đi khi relay bản mới lên.
+- **Dọn bảng** sau vài ngày — việc định kỳ hợp với job scheduler của BullMQ 6:
+
+```ts
+// Gọi lúc worker khởi động; là upsert nên mỗi lần deploy gọi lại cũng không tạo bản trùng
+await maintenanceQueue.upsertJobScheduler(
+  'outbox-cleanup',
+  { pattern: '0 3 * * *', tz: 'Asia/Ho_Chi_Minh' }, // 3 giờ sáng mỗi ngày
+  { name: 'outbox-cleanup', data: { olderThanDays: 7 } },
+);
+```
+
+## Quy tắc 2: không bao giờ làm hai lần — handler idempotent
+
+Outbox đảm bảo ý định không mất, nhưng chính nó *sinh ra* bản trùng: relay gửi lại, job retry, job stalled chạy song song với bản gốc. Mọi handler phải trả lời được câu hỏi "nếu việc này đã được làm rồi thì sao?". Có ba tầng, và chúng chặn những thứ khác nhau:
+
+| Tầng | Cơ chế | Chặn được | Không chặn được |
+| --- | --- | --- | --- |
+| Queue | `jobId` cố định, option `deduplication` | Relay gửi lại cùng event khi job cũ còn trong Redis | Job đã bị dọn; job chạy lại do retry hay stalled |
+| Database của mình | Unique constraint, compare-and-set, bảng `processed_messages` | Ghi trùng vào dữ liệu của chính mình | Side effect ở hệ thống khác |
+| Hệ thống bên ngoài | Idempotency key, tra theo mã tham chiếu của mình | Gọi API hai lần cho cùng một ý định | API không hỗ trợ; key đã hết hạn |
+
+### Khi side effect là ghi vào database của mình
+
+Cộng điểm thưởng là ví dụ điển hình của thao tác *không* tự nhiên idempotent: `points = points + 120` chạy hai lần là 240. Cách sửa là ghi lại "đã xử lý event này" **trong cùng transaction** với chính thay đổi đó:
+
+```sql
+CREATE TABLE processed_messages (
+  consumer     text        NOT NULL,   -- 'loyalty.award-points'
+  message_id   uuid        NOT NULL,   -- id của dòng outbox
+  processed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (consumer, message_id)
+);
+```
+
+```ts
+// modules/loyalty/application/loyalty.service.ts (trích)
+async awardPoints(eventId: string, customerId: string, amount: number): Promise<void> {
+  const points = Math.floor(amount / 10_000); // 1 điểm cho mỗi 10.000đ
+
+  await this.prisma.$transaction(async (tx) => {
+    // Đánh dấu trước, trong cùng transaction với hiệu ứng
+    const inserted = await tx.$executeRaw`
+      INSERT INTO processed_messages (consumer, message_id)
+      VALUES ('loyalty.award-points', ${eventId}::uuid)
+      ON CONFLICT DO NOTHING`;
+    if (inserted === 0) return; // event này đã được xử lý: không làm gì
+
+    await tx.$executeRaw`
+      UPDATE loyalty_accounts SET points = points + ${points}
+      WHERE customer_id = ${customerId}::uuid`;
+  });
+}
+```
+
+Vì sao `ON CONFLICT DO NOTHING` mà không bắt lỗi unique violation? Trong Postgres, một câu lệnh lỗi làm hỏng cả transaction đang mở; `ON CONFLICT` biến "đã tồn tại" thành kết quả bình thường (0 dòng). Bảng này cần dọn định kỳ, nhưng chỉ dọn dòng cũ hơn mọi nguồn trùng có thể có — thời gian giữ outbox, giữ failed job, cửa sổ redrive. Mình giữ 30 ngày.
+
+### Khi side effect nằm ở hệ thống khác: capture payment
+
+Không transaction nào bao được cả Postgres lẫn cổng thanh toán. Kịch bản cần chống: capture thành công, rồi worker chết trước khi ghi kết quả. Lần chạy lại không thể biết điều đó — trừ khi nó *hỏi*.
+
+```ts
+// modules/payments/gateway/payment-gateway.ts — port, Stripe hay cổng nào khác nằm sau nó
+export interface PaymentGateway {
+  capture(input: { authorizationId: string; amount: number; idempotencyKey: string }): Promise<{ captureId: string }>;
+  getAuthorization(
+    authorizationId: string,
+  ): Promise<{ status: 'captured'; captureId: string } | { status: 'authorized' | 'voided' | 'expired' }>;
+}
+
+// modules/payments/application/payments.service.ts (trích)
+@Injectable()
+export class PaymentsService implements PaymentsApi {
+  constructor(
+    private readonly payments: PaymentRepository,
+    @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGateway,
+  ) {}
+
+  async captureForOrder(orderId: string): Promise<{ captureId: string }> {
+    const payment = await this.payments.findByOrderId(orderId);
+    if (!payment) throw new PermanentError(`No payment for order ${orderId}`);
+
+    // 1. Lần chạy trước đã làm xong và ghi lại? Trả về kết quả cũ.
+    if (payment.status === 'captured' && payment.captureId) return { captureId: payment.captureId };
+    if (payment.status !== 'authorized') {
+      throw new PermanentError(`Cannot capture a payment in status "${payment.status}"`);
+    }
+
+    // 2. Hỏi cổng thanh toán: lần trước có thể đã capture rồi chết trước bước 4
+    const remote = await this.gateway.getAuthorization(payment.authorizationId);
+    if (remote.status === 'voided' || remote.status === 'expired') {
+      throw new PermanentError(`Authorization is ${remote.status}`); // cần người quyết định
+    }
+
+    // 3. Key suy ra từ ý định nghiệp vụ: không phải job id, không phải số lần thử
+    const { captureId } =
+      remote.status === 'captured'
+        ? remote
+        : await this.gateway.capture({
+            authorizationId: payment.authorizationId,
+            amount: payment.amount,
+            idempotencyKey: `capture-${orderId}`,
+          });
+
+    // 4. Ghi kết quả và event tiếp theo trong một transaction — lại là outbox
+    await this.payments.markCaptured(payment, captureId);
+    return { captureId };
+  }
+}
+
+// modules/payments/infrastructure/prisma-payment.repository.ts (trích)
+async markCaptured(payment: Payment, captureId: string): Promise<void> {
+  await this.prisma.$transaction(async (tx) => {
+    // Compare-and-set: chỉ một lần chạy chuyển được authorized -> captured
+    const changed = await tx.$executeRaw`
+      UPDATE payments SET status = 'captured', capture_id = ${captureId}, captured_at = now()
+      WHERE order_id = ${payment.orderId}::uuid AND status = 'authorized'`;
+    if (changed === 0) return; // lần chạy khác đã ghi trước: không phát event lần hai
+
+    await tx.outboxEvent.create({
+      data: {
+        id: randomUUID(),
+        topic: 'payment.captured',
+        aggregateId: payment.orderId,
+        payload: { orderId: payment.orderId, customerId: payment.customerId, amount: payment.amount },
+        traceId: this.cls.getId(),
+      },
+    });
+  });
+}
+```
+
+Mỗi bước có lý do:
+
+- **Bước 1** là đường nhanh: phần lớn bản trùng dừng ở đây mà không gọi ra ngoài.
+- **Bước 2** tồn tại vì idempotency key có hạn sử dụng. Với API v1 của Stripe, request lặp lại cùng `Idempotency-Key` nhận về đúng response đã lưu của lần đầu (kể cả lỗi 500), và cùng key mà khác tham số thì bị từ chối. Nhưng [tài liệu](https://docs.stripe.com/api/idempotent_requests) cũng nói key có thể bị dọn sau 24 giờ — job retry qua đêm hay được redrive tuần sau không còn được key bảo vệ.
+- **Bước 3**: key `capture-${orderId}` giống nhau qua mọi lần retry, gửi lại, redrive. Sinh `randomUUID()` trong handler là lỗi phổ biến nhất: mỗi lần chạy một key, tức là không có idempotency gì cả. Hai bản job chạy *đồng thời* cũng an toàn: Stripe không thực thi song song hai request cùng key, bên thua nhận lỗi, retry, rồi dừng ở bước 1 hoặc 2.
+- **Bước 4** là compare-and-set, cùng kỹ thuật với `UPDATE ... WHERE used_at IS NULL` khi xoay refresh token trong bài về xác thực: database làm trọng tài, nên chỉ một event `payment.captured` được ghi.
+
+### Khi không có cách nào làm exactly-once: email
+
+Nhiều dịch vụ email không nhận idempotency key; SMTP thì chắc chắn không. Giữa "gửi xong" và "ghi lại là đã gửi" luôn có một khe hở, và bạn phải *chọn* điều gì xảy ra khi crash rơi đúng vào đó:
+
+| Chiến lược | Thứ tự | Crash giữa hai bước thì | Hợp với |
+| --- | --- | --- | --- |
+| At-least-once | Gửi, rồi ghi "đã gửi" | Gửi lại: khách nhận hai email | Email xác nhận, thông báo giao hàng |
+| At-most-once | Ghi "đã gửi", rồi gửi | Không gửi: khách không nhận được gì | Thông báo marketing, nhắc nhở không quan trọng |
+
+Với email xác nhận, mình chọn at-least-once: `NotificationsService` kiểm tra bảng `sent_emails`, gửi, rồi mới ghi `(order-confirmation, orderId)`. Hai email là phiền; không email là một ticket hỗ trợ và có khi là một đơn đặt trùng. Nếu provider nhận idempotency key, truyền `order-confirmation-${orderId}` để thu hẹp khe hở. Điều quan trọng là lựa chọn được đưa ra có chủ đích và viết thành comment ngay cạnh hai dòng đó.
+
+## Retry có phân loại lỗi
+
+Retry là công cụ cho đúng một loại lỗi: lỗi *tạm thời*. Retry một request sai định dạng mười lần chỉ làm nó sai mười lần và đẩy job vào dead-letter muộn hơn cần thiết. Mình chia lỗi thành bốn loại:
+
+| Loại | Ví dụ | Cách xử lý trong BullMQ |
+| --- | --- | --- |
+| Tạm thời | Timeout, `ECONNRESET`, HTTP 502/503/504, deadlock, failover của DB | Ném lỗi bình thường: retry theo backoff, tốn một attempt |
+| Bị bảo "chưa phải lúc" | HTTP 503 kèm `Retry-After`, thanh toán còn đang xử lý ở phía cổng | `job.moveToDelayed()` + `DelayedError`: đợi đúng khoảng đó, không tốn attempt |
+| Bị giới hạn cả tài khoản | HTTP 429 từ API dùng chung hạn mức | `queue.rateLimit()` + `Worker.RateLimitError()`: hãm cả queue, job quay về `waiting` |
+| Vĩnh viễn | HTTP 400/422, thẻ bị từ chối, đơn không tồn tại, payload sai schema | `UnrecoverableError`: vào `failed` ngay, bất kể còn bao nhiêu attempt |
+
+<Figure src="/blog/nestjs-background-jobs-bullmq-retries.svg" alt="Sơ đồ trạng thái job trong BullMQ: waiting sang active; active sang completed khi thành công; lỗi tạm thời đưa job sang delayed rồi quay về waiting khi hết backoff; RateLimitError hoặc job stalled đưa job về waiting mà không tính attempt; UnrecoverableError hoặc hết attempt đưa job sang failed, rồi vào bảng dead_letters kèm cảnh báo, và có thể redrive về waiting với jobId mới" caption="Lỗi đã phân loại quyết định đường đi của job. Chỉ lỗi tạm thời mới tốn một attempt; giới hạn tốc độ, DelayedError và stall đưa job quay lại mà không tính lần thử." />
+
+### Dịch lỗi nghiệp vụ sang ngữ nghĩa của BullMQ
+
+Service không nên biết BullMQ tồn tại — `captureForOrder()` cũng có thể được gọi từ một endpoint admin. Nên service ném lỗi theo *ý nghĩa*, và lớp nền của processor dịch sang ngôn ngữ của BullMQ:
+
+```ts
+// common/errors/job-errors.ts — lỗi theo ý nghĩa, không import gì từ BullMQ
+export class PermanentError extends Error {
+  override name = 'PermanentError'; // thử lại bao nhiêu lần cũng vậy
+}
+
+export class RetryLaterError extends Error {
+  override name = 'RetryLaterError'; // "chưa phải lúc": đợi delayMs, không tính là thất bại
+  constructor(readonly delayMs: number, reason: string) {
+    super(reason);
+  }
+}
+
+export class ThrottledError extends Error {
+  // Hạn mức của cả tài khoản đã cạn: cả queue phải chậm lại, không chỉ job này
+  override name = 'ThrottledError';
+  constructor(readonly retryAfterMs: number) {
+    super(`Throttled for ${retryAfterMs}ms`);
+  }
+}
+
+/** Phân loại response lỗi từ API bên thứ ba. */
+export function errorFromResponse(res: Response, context: string): Error {
+  const retryAfterMs = parseRetryAfter(res.headers.get('retry-after'));
+  if (res.status === 429) return new ThrottledError(retryAfterMs ?? 10_000);
+  if (res.status === 408 || res.status >= 500) {
+    return retryAfterMs !== undefined
+      ? new RetryLaterError(retryAfterMs, `${context}: HTTP ${res.status}`)
+      : new Error(`${context}: HTTP ${res.status}`); // tạm thời: để backoff lo
+  }
+  // 4xx còn lại: request của mình sai, gửi lại y hệt vẫn sai
+  return new PermanentError(`${context}: HTTP ${res.status}`);
+}
+
+/** Retry-After là số giây hoặc một HTTP-date (RFC 9110). */
+export function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+```
+
+Mặc định là *tạm thời*: lỗi vĩnh viễn bị retry nhầm chỉ tốn vài phút trước khi vào dead-letter, còn lỗi tạm thời bị coi nhầm là vĩnh viễn thì mất việc ngay. 401/403 là vùng xám — thường là API key bị xoay, retry không giúp nhưng sửa xong thì mọi job chạy được. Mình để chúng là vĩnh viễn, cảnh báo theo *tốc độ* job vào dead-letter, rồi redrive cả loạt sau khi sửa cấu hình.
+
+Lớp nền cho mọi processor:
+
+```ts
+// jobs/app-worker-host.ts
+import { OnWorkerEvent, WorkerHost } from '@nestjs/bullmq';
+import { BeforeApplicationShutdown, Injectable, Logger } from '@nestjs/common';
+import { DelayedError, Job, Queue, UnrecoverableError, Worker } from 'bullmq';
+import { CLS_ID, ClsService } from 'nestjs-cls';
+
+/** Dependency dùng chung: processor con chỉ truyền một thứ vào super(). */
+@Injectable()
+export class JobRuntime {
+  constructor(
+    readonly cls: ClsService,
+    readonly deadLetters: DeadLetterService,
+  ) {}
+}
+
+export abstract class AppWorkerHost extends WorkerHost implements BeforeApplicationShutdown {
+  protected readonly logger = new Logger(this.constructor.name);
+
+  constructor(
+    protected readonly runtime: JobRuntime,
+    private readonly rateLimitQueue?: Queue, // có thì ThrottledError hãm cả queue
+  ) {
+    super();
+  }
+
+  /** Logic của job: đọc job, gọi use case. Lỗi ném ra phải là lỗi đã phân loại. */
+  protected abstract handle(job: Job<JobEnvelope>, token?: string): Promise<unknown>;
+
+  async process(job: Job<JobEnvelope>, token?: string): Promise<unknown> {
+    const { cls } = this.runtime;
+    // Mỗi job một context CLS riêng, mang trace ID của request đã sinh ra nó
+    return cls.run(async () => {
+      cls.set(CLS_ID, job.data.traceId ?? `job-${job.queueName}-${job.id}`);
+      const meta = `${job.name} id=${job.id} attempt=${job.attemptsMade + 1} trace=${cls.getId()}`;
+      const started = performance.now();
+      try {
+        const result = await this.handle(job, token);
+        const ageMs = Date.now() - job.timestamp; // từ lúc được add tới lúc xong
+        this.logger.log(`${meta} done in ${(performance.now() - started).toFixed(0)}ms, age ${ageMs}ms`);
+        return result;
+      } catch (error) {
+        this.logger.warn(`${meta} error: ${error instanceof Error ? error.message : String(error)}`);
+        throw await this.toBullError(error, job, token);
+      }
+    });
+  }
+
+  private async toBullError(error: unknown, job: Job, token?: string): Promise<Error> {
+    if (error instanceof PermanentError) {
+      return new UnrecoverableError(error.message); // vào failed ngay, không retry
+    }
+    if (error instanceof ThrottledError && this.rateLimitQueue) {
+      // Cả tài khoản bị giới hạn: dừng lấy job mới từ queue, job này quay về waiting
+      await this.rateLimitQueue.rateLimit(error.retryAfterMs);
+      return Worker.RateLimitError();
+    }
+    if (error instanceof RetryLaterError || error instanceof ThrottledError) {
+      const delayMs = error instanceof RetryLaterError ? error.delayMs : error.retryAfterMs;
+      await job.moveToDelayed(Date.now() + delayMs, token); // cần token của lần xử lý này
+      return new DelayedError();
+    }
+    return error instanceof Error ? error : new Error(String(error)); // tạm thời: retry
+  }
+
+  // Event 'failed' bắn cho MỌI lần thất bại, kể cả lần sẽ còn được retry
+  @OnWorkerEvent('failed')
+  onFailed(job: Job | undefined, error: Error) {
+    void this.runtime.deadLetters.recordIfFinal(job, error);
+  }
+
+  @OnWorkerEvent('stalled')
+  onStalled(jobId: string) {
+    this.logger.error(`Job ${jobId} stalled: lock expired, it will run again`);
+  }
+
+  async beforeApplicationShutdown() {
+    await this.worker.close(); // đợi job đang chạy xong — xem phần graceful shutdown
+  }
+}
+```
+
+Vài điểm không hiển nhiên:
+
+- **`@OnWorkerEvent` trên lớp nền vẫn có hiệu lực**, vì `MetadataScanner` của Nest đi ngược lên cả chuỗi prototype khi tìm method có decorator.
+- **`DelayedError` và `RateLimitError` không tốn attempt.** Chờ theo yêu cầu của bên kia không phải thất bại — nhưng nghĩa là job có thể bị hoãn mãi. Lưới an toàn là `maxStartedAttempts` của worker: mọi lần job *bắt đầu* chạy đều được đếm, vượt ngưỡng thì vào `failed` với `UnrecoverableError`. Đặt rộng tay, vì queue bị rate limit nhiều sẽ khiến job bắt đầu lại nhiều lần.
+- **Manual rate limit cần `limiter` trên worker**: BullMQ chỉ kiểm tra TTL của rate limit khi có `limiter`. Tài liệu vẫn minh hoạ bằng `worker.rateLimit()`, nhưng typings của BullMQ 6 đã đánh dấu nó deprecated, khuyên dùng `queue.rateLimit()`.
+
+Processor giờ chỉ còn là adapter — "controller của queue": đọc job, gọi use case qua port. Như bài trước nói về controller, cùng một service dùng được cho HTTP, queue hay CLI:
+
+```ts
+// modules/payments/jobs/payments.processor.ts
+import { Processor } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
+import type { Job } from 'bullmq';
+
+@Processor(PAYMENTS_QUEUE, {
+  concurrency: 10,
+  settings: { backoffStrategy: cappedExponential }, // cho backoff: { type: 'capped' }
+  maxStartedAttempts: 50, // lưới an toàn cho vòng lặp DelayedError
+})
+export class PaymentsProcessor extends AppWorkerHost {
+  constructor(
+    runtime: JobRuntime,
+    private readonly payments: PaymentsApi,
+  ) {
+    super(runtime);
+  }
+
+  protected handle(job: Job<JobEnvelope<{ orderId: string }>>) {
+    const { orderId } = job.data.payload;
+    switch (job.name) {
+      case 'capture-payment':
+        return this.payments.captureForOrder(orderId);
+      case 'void-authorization':
+        return this.payments.voidForOrder(orderId);
+      default:
+        throw new PermanentError(`Unknown job name "${job.name}"`);
+    }
+  }
+}
+
+// Module riêng cho phía worker: chỉ WorkerModule import nó, AppModule (HTTP) thì không
+@Module({
+  imports: [PaymentsModule, JobsCoreModule], // PaymentsApi được PaymentsModule export
+  providers: [PaymentsProcessor],
+})
+export class PaymentsJobsModule {}
+
+// jobs/jobs-core.module.ts — dùng chung cho mọi *JobsModule
+@Module({
+  providers: [JobRuntime, DeadLetterService],
+  exports: [JobRuntime],
+})
+export class JobsCoreModule {}
+```
+
+Vì sao processor không nằm thẳng trong `PaymentsModule`? Vì mọi provider có `@Processor` trong cây module sẽ tạo một `Worker` lúc `onModuleInit` — process API cũng sẽ âm thầm tiêu thụ job. Module riêng, chỉ `WorkerModule` import, giữ ranh giới đó mà không phải export repository hay gateway ra khỏi `payments`.
+
+### Backoff: exponential, jitter và một cái trần
+
+Với `backoff: { type: 'exponential', delay: 2_000 }`, BullMQ đợi `delay × 2^(n−1)` trước lần retry thứ n; `jitter: 0.5` chọn ngẫu nhiên từ 50% đến 100% giá trị đó. Jitter không phải trang trí: dependency sập rồi sống lại, hàng nghìn job hỏng cùng lúc sẽ retry cùng lúc và đánh sập nó lần nữa.
+
+Exponential thuần không có trần: lần thử thứ 12 đợi hơn một tiếng. Với `payments`, mình muốn thử lâu nhưng không đợi quá 15 phút giữa hai lần. Chiến lược riêng khai báo trong `settings.backoffStrategy` của worker, và được dùng khi `backoff.type` không phải `fixed` hay `exponential`:
+
+```ts
+// jobs/backoff.ts
+import type { BackoffStrategy } from 'bullmq';
+
+const BASE_MS = 2_000;
+const CAP_MS = 15 * 60_000;
+
+/** Exponential có trần, jitter trong nửa trên của khoảng. attemptsMade = 1 ở lần retry đầu. */
+export const cappedExponential: BackoffStrategy = (attemptsMade) => {
+  const ceiling = Math.min(CAP_MS, BASE_MS * 2 ** (attemptsMade - 1));
+  return Math.round(ceiling / 2 + Math.random() * (ceiling / 2));
+};
+```
+
+Với `attempts: 12`, các khoảng chờ tối đa là 2s, 4s, 8s... 512s, rồi hai lần 15 phút: tổng tối đa khoảng 47 phút, trung bình khoảng 35 phút nhờ jitter — đủ để vượt qua một sự cố thường gặp của cổng thanh toán.
+
+### Timeout cho mọi lời gọi ra ngoài
+
+BullMQ không có option timeout cho job. Một `fetch` không timeout tới server treo sẽ chờ rất lâu, trong khi lock của job vẫn được gia hạn đều vì process còn sống: job không stalled, không failed, chỉ chiếm một slot concurrency. Đủ nhiều job như vậy thì queue đứng im mà không có dòng log nào. Mọi lời gọi ra ngoài cần `signal: AbortSignal.timeout(10_000)` hoặc tương đương.
+
+Timeout được retry như lỗi tạm thời, nhưng nó là lỗi *mơ hồ*: request có thể đã tới nơi và được xử lý. Với thao tác ghi, chỉ retry sau timeout khi có idempotency key hoặc cách tra lại trạng thái — đúng lý do `captureForOrder()` có bước 2.
+
+## Stalled job, lock và event loop
+
+Khi worker nhận một job, nó giữ một lock trong Redis với thời hạn `lockDuration` (mặc định 30 giây) và gia hạn lock theo chu kỳ (mặc định bằng nửa thời hạn đó). Cứ mỗi `stalledInterval` (mặc định 30 giây), BullMQ kiểm tra job đang `active` nào đã mất lock và đưa nó về `waiting` để worker khác chạy lại. Quá `maxStalledCount` lần (mặc định 1), job vào `failed` với lý do "job stalled more than allowable limit".
+
+Cơ chế này cứu bạn khi worker chết thật. Nhưng lock cũng mất khi worker *chưa chết*: event loop bị chặn đủ lâu để không gia hạn kịp — `JSON.parse` vài trăm MB, sinh PDF đồng bộ. Job bị coi là stalled và chạy lại ở worker khác **trong khi bản gốc vẫn đang chạy**: nguồn "làm hai lần" khó tái hiện nhất. Cách xử lý:
+
+- **Đừng chặn event loop trong worker.** Việc nặng CPU đẩy sang sandboxed processor (`registerQueue({ processors: [{ path, useWorkerThreads: true }] })`), đổi lại không có DI của Nest bên trong.
+- **Chia job dài thành nhiều job ngắn**, mỗi job ghi lại tiến độ.
+- **Chỉ tăng `lockDuration`** khi biết chắc có đoạn chặn không tránh được — nó cũng làm chậm việc phát hiện worker chết thật.
+- **Coi mỗi event `stalled` hay `lockRenewalFailed` là một bug** cần điều tra, không phải nhiễu.
+
+## Dead-letter: nơi job thất bại được nhìn thấy
+
+BullMQ không có dead-letter queue riêng; job thất bại hẳn nằm trong tập `failed` của queue. Về kỹ thuật, đó đã là dead-letter queue. Về vận hành thì chưa: nó nằm trong Redis, bị giới hạn bởi `removeOnFail`, không query được cùng dữ liệu nghiệp vụ, và không ai nhìn vào cho tới khi khách gọi điện. Mình thêm một bảng trong Postgres và một đường redrive:
+
+```sql
+CREATE TABLE dead_letters (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  queue         text        NOT NULL,
+  job_name      text        NOT NULL,
+  job_id        text        NOT NULL,
+  data          jsonb       NOT NULL,
+  error         text        NOT NULL,
+  attempts_made int         NOT NULL,
+  failed_at     timestamptz NOT NULL DEFAULT now(),
+  redriven_at   timestamptz,
+  UNIQUE (queue, job_id)
+);
+```
+
+```ts
+// jobs/dead-letter.service.ts
+import { getQueueToken } from '@nestjs/bullmq';
+import { Injectable, Logger } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { Job, Queue, UnrecoverableError } from 'bullmq';
+
+/** Lần thất bại này có phải lần cuối không? */
+export function isFinalFailure(job: Job, error: Error): boolean {
+  return (
+    error instanceof UnrecoverableError ||
+    error.name === 'UnrecoverableError' || // gồm cả stalled quá giới hạn và maxStartedAttempts
+    job.attemptsMade >= (job.opts.attempts ?? 1) // attemptsMade đã được tăng khi event bắn
+  );
+}
+
+@Injectable()
+export class DeadLetterService {
+  private readonly logger = new Logger(DeadLetterService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
+
+  async recordIfFinal(job: Job | undefined, error: Error): Promise<void> {
+    // job có thể là undefined khi job stalled quá giới hạn và bị removeOnFail xoá
+    if (!job || !isFinalFailure(job, error)) return;
+    try {
+      await this.prisma.$executeRaw`
+        INSERT INTO dead_letters (queue, job_name, job_id, data, error, attempts_made)
+        VALUES (${job.queueName}, ${job.name}, ${job.id}, ${JSON.stringify(job.data)}::jsonb,
+                ${error.message}, ${job.attemptsMade})
+        ON CONFLICT (queue, job_id) DO NOTHING`;
+      this.logger.error(`Dead-lettered ${job.queueName}/${job.name} id=${job.id}: ${error.message}`);
+    } catch (e) {
+      // Không ném ra ngoài: đây là event listener. Job vẫn nằm trong failed set của BullMQ.
+      this.logger.error(`Could not record dead letter for ${job.queueName}/${job.id}`, e);
+    }
+  }
+
+  /** Gọi từ endpoint admin, sau khi đã sửa nguyên nhân. */
+  async redrive(row: DeadLetterRow): Promise<void> {
+    const queue = this.moduleRef.get<Queue>(getQueueToken(row.queue), { strict: false });
+    // jobId mới: id cũ có thể vẫn nằm trong failed set, add trùng id sẽ bị bỏ qua
+    await queue.add(row.jobName, row.data, { jobId: `${row.jobId}-redrive-${Date.now()}` });
+    await this.prisma.$executeRaw`UPDATE dead_letters SET redriven_at = now() WHERE id = ${row.id}::uuid`;
+  }
+}
+```
+
+`isFinalFailure` dựa trên hai điều mình đã kiểm tra trong source của BullMQ 6: event `failed` của worker bắn *sau khi* job đã chuyển trạng thái và `attemptsMade` đã tăng; và các trường hợp chết hẳn không qua attempt — stalled quá `maxStalledCount`, vượt `maxStartedAttempts` — đều được báo bằng `UnrecoverableError`. Một `backoffStrategy` trả về `-1` để ngừng retry thì điều kiện này không bắt được; mình dùng `PermanentError` thay cho cách đó.
+
+Vài điều trung thực về thiết kế này:
+
+- **Bảng `dead_letters` là bản tiện lợi, không phải nguồn sự thật.** Listener chạy trong process; process chết đúng lúc đó thì dòng không được ghi. Tập `failed` (với `removeOnFail` đủ dài) vẫn là nguồn sự thật, và một job đối soát hằng ngày là đủ để yên tâm.
+- **Redrive an toàn vì handler idempotent.** Redrive một job thực ra đã thành công ở phía bên kia chỉ dừng ở bước kiểm tra trạng thái. Job còn trong failed set thì `job.retry()` cũng được, nhưng đi qua bảng để lại dấu vết ai redrive cái gì, khi nào.
+- **Mọi dead letter của `payments` là một sự cố** cần cảnh báo ngay; với `notifications`, cảnh báo theo tốc độ tăng là đủ.
+
+## Rate limit với API bên thứ ba
+
+Hãng vận chuyển cho 10 request mỗi giây trên mỗi API key và trả 429 kèm `Retry-After` khi vượt. Hai cơ chế của BullMQ xử lý hai phần khác nhau của vấn đề:
+
+- **`concurrency`** là số job một worker chạy song song: giới hạn số request *đang bay* từ một process.
+- **`limiter: { max, duration }`** là số job được *bắt đầu* trong mỗi khoảng `duration`, **tính chung cho cả queue** qua Redis. Mười worker cùng cấu hình `max: 4` vẫn chỉ xử lý 4 job mỗi giây tổng cộng; job bị giới hạn nằm lại trong `waiting`.
+
+Chi tiết hay bị bỏ sót: limiter đếm *job*, không đếm *request*. Job `create-shipment` gọi API tối đa hai lần (tra rồi tạo), nên 10 request/giây nghĩa là tối đa 5 job/giây. Mình đặt 4 để chừa chỗ cho hệ thống khác dùng chung key. `CarrierClient` gọi `fetch` với `AbortSignal.timeout()` và ném `errorFromResponse(res, ...)` khi `!res.ok`, nên 429 thành `ThrottledError`:
+
+```ts
+// modules/shipping/application/shipping.service.ts (trích)
+async createForOrder(orderId: string): Promise<void> {
+  if (await this.shipments.existsForOrder(orderId)) return; // đã xong ở lần trước
+
+  // Hãng không nhận idempotency key, nhưng cho tra theo mã tham chiếu của mình.
+  // Tra trước khi tạo: lần chạy trước có thể đã tạo vận đơn rồi chết trước khi ghi DB.
+  const parcel = await this.orders.getParcel(orderId); // port do orders export
+  const shipment =
+    (await this.carrier.findByReference(orderId)) ??
+    (await this.carrier.createShipment({ reference: orderId, ...parcel }));
+
+  await this.shipments.record(orderId, shipment.trackingNumber); // UNIQUE (order_id)
+}
+
+// modules/shipping/jobs/shipping.processor.ts
+@Processor(SHIPPING_QUEUE, {
+  concurrency: 4, // tối đa 4 job đang gọi hãng vận chuyển, mỗi worker
+  limiter: { max: 4, duration: 1_000 }, // chung cả queue: 4 job/giây, mỗi job tối đa 2 request
+})
+export class ShippingProcessor extends AppWorkerHost {
+  constructor(
+    runtime: JobRuntime,
+    @InjectQueue(SHIPPING_QUEUE) queue: Queue,
+    private readonly shipping: ShippingApi,
+  ) {
+    super(runtime, queue); // có queue: 429 sẽ hãm cả queue, không chỉ job này
+  }
+
+  protected handle(job: Job<JobEnvelope<{ orderId: string }>>) {
+    return this.shipping.createForOrder(job.data.payload.orderId);
+  }
+}
+```
+
+Dù limiter đã chừa khoảng trống, 429 vẫn xảy ra — hệ thống khác dùng chung key, hãng giảm hạn mức giờ cao điểm. Khi đó `toBullError()` gọi `queue.rateLimit(retryAfterMs)` để dừng *mọi* worker lấy job mới từ queue này, và `Worker.RateLimitError()` đưa job hiện tại về `waiting` mà không tốn attempt. Nếu xử lý 429 như lỗi tạm thời, mỗi worker tự backoff riêng trong khi worker khác tiếp tục bắn request, và job đốt attempt vì một lỗi không phải của nó.
+
+Tra-rồi-tạo không nguyên tử: hai lần chạy song song vẫn có thể cùng thấy "chưa có" và cùng tạo — nó thu hẹp cửa sổ chứ không đóng hẳn. Nếu API bên kia có ràng buộc unique trên mã tham chiếu và trả 409 khi trùng, coi 409 là thành công rồi tra lại vận đơn: đó mới là idempotency thật.
+
+Hai nguyên tắc đi kèm:
+
+- **Mỗi phụ thuộc bên ngoài một queue.** Đây là bulkhead: hãng vận chuyển sập thì job `shipping` dồn lại, còn `payments` và `notifications` vẫn chạy. Một queue `default` cho mọi thứ nghĩa là sự cố của một API làm nghẽn tất cả.
+- **Hạn mức theo từng tenant** không có trong bản mã nguồn mở. BullMQ Pro có [rate limit theo group](https://docs.bullmq.io/bullmq-pro/groups/rate-limiting); với bản open source, bạn tách queue theo nhóm hoặc tự giới hạn trong handler.
+
+Còn khi một bước cần *kết quả của nhiều job con* — gửi hoá đơn chỉ sau khi mọi kiện hàng đã có vận đơn — BullMQ có [flow](https://docs.bullmq.io/guide/flows): `FlowProducer` (đăng ký bằng `BullModule.registerFlowProducer()`, inject bằng `@InjectFlowProducer()`) thêm cả cây job cha-con một cách nguyên tử, job cha chỉ chạy khi mọi job con xong và đọc kết quả qua `job.getChildrenValues()`. Nhưng cây đó vẫn không nguyên tử với database của bạn, nên `flows.add()` thuộc về một handler chạy từ outbox, không bao giờ nằm trong request HTTP.
+
+## Graceful shutdown cho worker
+
+Deploy worker là lúc dễ sinh "làm hai lần" nhất: SIGTERM tới giữa lúc job đang gọi cổng thanh toán. Ba điều cần đúng.
+
+**Thứ tự đóng.** `@nestjs/bullmq` tự gọi `worker.close()` trong hook `onApplicationShutdown`; `close()` đợi job đang chạy xong và vẫn gia hạn lock trong lúc chờ. Vấn đề là `PrismaService` của bài trước cũng ngắt kết nối ở `onApplicationShutdown`, và thứ tự giữa các provider trong cùng một hook không phải thứ nên dựa vào (NestJS 12 còn đổi cách sắp thứ tự lifecycle hook). Job mất database đúng ở bước ghi kết quả là kịch bản tệ nhất. Vì vậy `AppWorkerHost` đóng worker sớm hơn một nhịp, trong `beforeApplicationShutdown`; `close()` gọi lại trả về cùng một promise, nên lần gọi sau của thư viện không làm gì thêm.
+
+**Entrypoint riêng.** Worker không cần HTTP server, nên dùng application context:
+
+```ts
+// worker.ts
+import { NestFactory } from '@nestjs/core';
+import { WorkerModule } from './worker.module';
+
+async function bootstrap() {
+  const app = await NestFactory.createApplicationContext(WorkerModule, { bufferLogs: true });
+  app.enableShutdownHooks(); // SIGTERM -> beforeApplicationShutdown -> worker.close()
+  app.get(OutboxRelay).start();
+}
+void bootstrap();
+
+// worker.module.ts
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true, cache: true, validationSchema: envSchema }),
+    ClsModule.forRoot({ global: true }), // không mount middleware: mỗi job tự mở context
+    PrismaModule,
+    QueueModule,
+    OutboxModule,
+    PaymentsJobsModule,
+    NotificationsJobsModule,
+    ShippingJobsModule,
+    LoyaltyJobsModule,
+  ],
+})
+export class WorkerModule {}
+```
+
+**Thời gian ân hạn.** Kubernetes mặc định cho 30 giây giữa SIGTERM và SIGKILL. Job chạy lâu hơn sẽ bị giết giữa chừng và chạy lại ở pod khác sau khoảng một chu kỳ stalled check. Đặt `terminationGracePeriodSeconds` dài hơn job chậm nhất cộng timeout của lời gọi ra ngoài chậm nhất; job không ngắn được như vậy thì chia nhỏ, hoặc chấp nhận việc chạy lại — điều handler idempotent đã cho bạn sẵn.
+
+## Observability: thấy được những gì không xảy ra
+
+Lỗi khó phát hiện nhất của background job là *việc không xảy ra*: relay chết, không job nào được tạo, mọi dashboard của BullMQ đều xanh vì không có gì để đếm. Vì vậy tín hiệu đầu tiên mình theo dõi nằm ở database:
+
+| Tín hiệu | Lấy từ đâu | Cảnh báo khi |
+| --- | --- | --- |
+| Tuổi của dòng outbox chưa publish lâu nhất | SQL trên `outbox_events` | Trên 1 phút: relay chết hoặc Redis không nhận |
+| Job `waiting` + `delayed` theo queue | `queue.getJobCounts()` | Tăng đều suốt 15 phút: worker không theo kịp |
+| Tuổi của job khi xong | `job.timestamp` trong log của worker | p95 vượt mức chấp nhận của job đó (email: 1 phút) |
+| Tỷ lệ thất bại theo job name | Event `failed`, metric của `bullmq-otel` | Tăng đột biến so với baseline |
+| Dead letter chưa xử lý | Bảng `dead_letters` | Bất kỳ dòng nào của `payments` |
+| Stalled, mất lock | Event `stalled`, `lockRenewalFailed` | Bất kỳ lần nào |
+| Số worker đang kết nối | `queue.getWorkersCount()` | Bằng 0 trong khi vẫn có job chờ |
+
+```ts
+// Gauge quan trọng nhất không đến từ BullMQ: tuổi của dòng outbox chưa publish lâu nhất
+const [lag] = await this.prisma.$queryRaw<{ seconds: number | null }[]>`
+  SELECT EXTRACT(EPOCH FROM now() - min(created_at))::float8 AS seconds
+  FROM outbox_events WHERE published_at IS NULL`;
+outboxLagGauge.set(lag?.seconds ?? 0); // prom-client hoặc OpenTelemetry, tuỳ stack của bạn
+
+// Số job theo trạng thái, cho từng queue
+const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'failed');
+```
+
+BullMQ có sẵn `queue.exportPrometheusMetrics()`, tiện khi bạn có một queue. Với nhiều queue, mỗi lần gọi trả về `# HELP` / `# TYPE` của riêng nó, nên nối các kết quả lại cho ra định dạng Prometheus không hợp lệ; tự dựng gauge từ `getJobCounts()` tránh được chuyện đó.
+
+Ba mảnh còn lại:
+
+- **Trace.** `bullmq-otel` tạo span cho việc add và xử lý job, và truyền trace context từ lúc `add` sang worker. Nhưng với outbox, người `add` là relay, nên trace của job nối vào relay chứ không vào request HTTP. Đó là lý do outbox lưu `trace_id`; muốn nối cả span, lưu thêm header `traceparent` và dùng nó làm link khi xử lý job.
+- **Log có ngữ cảnh.** `AppWorkerHost` mở context CLS cho từng job với trace ID của request gốc, nên mọi dòng log trong use case, kể cả ở repository sâu nhất, đều mang trace ID đó — y như trong request HTTP.
+- **Giao diện.** Bull Board (`@bull-board/nestjs`, hỗ trợ NestJS 12) cho xem và retry job. Nó cũng xoá được job và cả queue, nên phải nằm sau xác thực; với guard toàn cục như bài về xác thực, đừng đánh dấu nó `@Public()`.
+
+## Test idempotency, không chỉ test đường thành công
+
+Handler chỉ được test đường thành công là handler chưa được test. Hai bài test mình luôn viết cho mỗi use case chạy từ queue:
+
+```ts
+// payments.service.spec.ts — Postgres thật (Testcontainers), cổng thanh toán giả
+it('capture chạy hai lần chỉ thu tiền một lần, chỉ phát một event', async () => {
+  await seedAuthorizedPayment(prisma, { orderId, amount: 250_000 });
+
+  await service.captureForOrder(orderId);
+  await service.captureForOrder(orderId); // job bị giao lại
+
+  expect(gateway.captureCalls).toHaveLength(1);
+  expect(await prisma.outboxEvent.count({ where: { topic: 'payment.captured', aggregateId: orderId } })).toBe(1);
+});
+
+it('chết sau khi capture, trước khi ghi DB: lần chạy lại không capture lần nữa', async () => {
+  await seedAuthorizedPayment(prisma, { orderId, amount: 250_000 });
+  gateway.failAfterCapture = true; // capture thành công ở cổng, rồi ném lỗi mạng
+
+  await expect(service.captureForOrder(orderId)).rejects.toThrow();
+  gateway.failAfterCapture = false;
+  await service.captureForOrder(orderId); // retry
+
+  expect(gateway.captureCalls).toHaveLength(1); // bước 2 thấy "captured" ở phía cổng
+  expect((await payments.findByOrderId(orderId))?.status).toBe('captured');
+});
+```
+
+`FakeGateway` chỉ cần ghi lại các lần gọi và nhớ trạng thái từng authorization — nó chính là driver `fake` trong `PaymentGatewayModule` của bài trước. Test thứ hai quan trọng nhất: nó tái hiện đúng kịch bản ở đầu bài.
+
+## Những lỗi hay gặp
+
+**`queue.add()` ngay sau `save()`, hoặc bên trong transaction.** Process chết hay Redis lỗi giữa hai bước là mất việc không dấu vết; add trong transaction thì job có thể chạy trước khi commit.
+
+**Idempotency key sinh mới ở mỗi lần chạy.** `randomUUID()` trong handler, hay key ghép với `job.attemptsMade`, nghĩa là không có idempotency gì cả.
+
+**Retry mọi lỗi như nhau.** 400 được retry 8 lần; 429 đốt attempt trong khi cả cụm worker tiếp tục bắn request.
+
+**`removeOnFail: true`, hoặc không cấu hình gì.** Cái đầu xoá bằng chứng ngay khi cần nó nhất; cái sau giữ mọi job tới khi Redis đầy.
+
+**Eviction policy khác `noeviction`.** Job và lock biến mất lặng lẽ khi bộ nhớ đầy — kiểm tra mặc định của dịch vụ Redis managed bạn dùng.
+
+**Chặn event loop, hoặc gọi ra ngoài không timeout.** Cái đầu làm job chạy song song hai bản; cái sau làm job treo mãi mà không bao giờ bị coi là stalled.
+
+**Một queue cho mọi thứ, payload là snapshot, hoặc dựa vào thứ tự job.** Một API chậm làm nghẽn cả thanh toán, handler xử lý dữ liệu cũ, và retry xáo trộn mọi thứ tự bạn tưởng là có.
+
+## Đọc thêm
+
+- [NestJS: Queues](https://docs.nestjs.com/techniques/queues) — `@nestjs/bullmq`, `@Processor`, `WorkerHost`, event listener.
+- [BullMQ: Migrate from v5 to v6](https://docs.bullmq.io/guide/migrations/migrate-from-v5-to-v6) và [Going to production](https://docs.bullmq.io/guide/going-to-production).
+- [BullMQ: Retrying failing jobs](https://docs.bullmq.io/guide/retrying-failing-jobs), [Rate limiting](https://docs.bullmq.io/guide/rate-limiting), [Stalled jobs](https://docs.bullmq.io/guide/workers/stalled-jobs), [Flows](https://docs.bullmq.io/guide/flows), [Telemetry](https://docs.bullmq.io/guide/telemetry).
+- [BullMQ: Idempotent jobs](https://docs.bullmq.io/patterns/idempotent-jobs) và [Timeout jobs](https://docs.bullmq.io/patterns/timeout-jobs).
+- [Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html) và [Idempotent consumer](https://microservices.io/patterns/communication-style/idempotent-consumer.html) trên microservices.io.
+- [Stripe: Idempotent requests](https://docs.stripe.com/api/idempotent_requests).
+- [Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) — Amazon Builders' Library.
+
+## Tóm tắt
+
+<Checklist>
+
+- Coi mọi job là at-least-once; mục tiêu là exactly-once effect, không phải exactly-once delivery.
+- Không bao giờ `save()` rồi `queue.add()`: ghi ý định vào outbox trong cùng transaction; relay dùng `FOR UPDATE SKIP LOCKED`, `jobId` bằng id của event, đánh dấu `published_at` sau `addBulk`.
+- Mọi handler idempotent: compare-and-set hoặc `processed_messages` với `ON CONFLICT DO NOTHING` cho dữ liệu của mình; idempotency key suy ra từ ý định nghiệp vụ và tra lại trạng thái cho hệ thống bên ngoài. Khi không thể exactly-once, chọn at-least-once hay at-most-once có chủ đích.
+- Phân loại lỗi: tạm thời thì exponential backoff có jitter và có trần; "chưa phải lúc" thì `DelayedError`; 429 dùng chung hạn mức thì `queue.rateLimit()` + `Worker.RateLimitError()`; vĩnh viễn thì `UnrecoverableError`.
+- Mọi lời gọi ra ngoài có timeout; không chặn event loop trong worker; coi `stalled` là bug.
+- Dead-letter: ghi lần thất bại cuối vào bảng có cảnh báo, giữ failed set làm nguồn sự thật, redrive với jobId mới.
+- Rate limit bằng `limiter` (đếm job, không đếm request) cộng `concurrency`; mỗi phụ thuộc một queue.
+- Redis cho queue: `noeviction`, AOF, không chung với cache; truyền options để BullMQ tự đặt `maxRetriesPerRequest: null`; `removeOnComplete` / `removeOnFail` có `age` tính bằng giây.
+- Worker ở process riêng, đóng trong `beforeApplicationShutdown`, grace period dài hơn job chậm nhất.
+- Quan sát cả những gì không xảy ra: tuổi dòng outbox chưa publish, độ sâu queue, dead letter, stalled; log của job mang trace ID của request gốc.
+
+</Checklist>

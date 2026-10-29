@@ -1,0 +1,1048 @@
+---
+title: "Reliable background jobs in NestJS with BullMQ: retries, idempotency and the transactional outbox"
+excerpt: "How to build background jobs in NestJS 12 with BullMQ 6 that never silently lose work and never charge a customer twice: at-least-once delivery and idempotency, the transactional outbox, retries with error classification, dead letters, rate limiting, graceful shutdown and observability."
+---
+
+<Lead>Background jobs are where a backend's quietest bugs live. The request returns 201, the customer sees "Order placed", but the confirmation email never arrives — or worse, their card is charged twice because the capture-payment job ran again after a deploy. BullMQ gives you retries, backoff and rate limiting almost for free, but it doesn't make your system reliable on its own. This post is how I build background jobs in NestJS so that work is never lost without anyone noticing, and nothing with consequences ever happens twice: at-least-once delivery and idempotency, the transactional outbox, retries with error classification, dead letters, rate limiting against third-party APIs, graceful shutdown and observability — all built around one running "place order" example, written for NestJS 12 and BullMQ 6.</Lead>
+
+## Two ways a background job fails
+
+When a job "breaks", it breaks in one of two opposite directions:
+
+- **Lost work.** The job never makes it into the queue, or it gets in and then vanishes: the process is killed halfway through, Redis evicts keys when it runs out of memory, a failed job is cleaned up before anyone sees it. What these have in common is that they leave *no trace* — no error, no log, just a customer opening a ticket three days later.
+- **Work done twice.** The job runs, causes a side effect (sends an email, calls a payment API), and the worker dies before it can report "done". The queue doesn't know the work happened, so it hands the job to another worker. The result: two emails, two captures, two invoices with two different numbers.
+
+BullMQ, like most serious queueing systems, picks the second side: it delivers jobs **at least once**. A job can run more than once in plenty of perfectly normal situations: a retry after an error, a worker crashing after it already called an external API, a job's lock expiring because the event loop was blocked so the job is treated as *stalled* while the original worker is still running it, or a request timing out when the other side actually processed it successfully.
+
+"Exactly-once delivery" across a network boundary doesn't exist. What you can get is an **exactly-once effect**: deliver at least once, and write the handler so that running it a second time has no additional consequence. That gives me two rules for every job that matters:
+
+1. **Never lose the intent.** "X needs to happen" has to be recorded durably *in the same commit* as the business change that caused it. That's the transactional outbox's job.
+2. **Never do it twice.** Every handler must be safe to run again. That's the job of idempotency — unique constraints, a processed-messages table, and idempotency keys sent to third parties.
+
+The rest of this post is how to implement those two rules, plus the things that keep the system operable: retrying properly, dead letters, rate limiting, shutdown and observability.
+
+## Context: NestJS 12, BullMQ 6 and the order flow
+
+The code in this post targets NestJS 12 with `@nestjs/bullmq` 12 — which declares peer dependencies on NestJS 10 through 12 and BullMQ 3 through 6, so if you're still on BullMQ 5 most of it still applies. BullMQ 6 shipped at the end of July 2026, and a few of its changes touch what follows directly:
+
+- **Legacy repeatable jobs are gone.** `Queue.add(..., { repeat })`, `getRepeatableJobs()` and `removeRepeatable()` no longer exist; they're replaced by job schedulers: `upsertJobScheduler()`, `getJobSchedulers()`, `removeJobScheduler()`. The [migration guide](https://docs.bullmq.io/guide/migrations/migrate-from-v5-to-v6) recommends moving to job schedulers *while still* on v5, because v6 throws if it finds legacy repeatable metadata in Redis.
+- **`debounce` is gone**, replaced by `deduplication` (with `ttl`, `extend`, `replace` and `keepLastIfActive` modes).
+- **`Job#discard()` is gone.** To say "don't try this again", you throw `UnrecoverableError` — exactly what this post uses to classify errors.
+- **`ioredis` is now an optional peer dependency**, so you install it yourself next to `bullmq`.
+- **Pluggable backends.** Redis is still the default; BullMQ 6 adds a PostgreSQL backend that runs the same `Queue` / `Worker` API.
+
+```bash
+npm install @nestjs/bullmq bullmq ioredis
+```
+
+<Callout>
+  **Can the PostgreSQL backend replace the outbox?** If the queue lives in your database, couldn't you just add the job in the same transaction as the order? At the time of writing, the docs don't describe any way for `queue.add()` to join your application's transaction — the backend holds its own connection pool — and they still call Redis the most battle-tested option. This post uses Redis and keeps the outbox. If that ever becomes supported, the relay could go away; idempotency would not.
+</Callout>
+
+The running example is the `POST /orders` flow from my post on the request lifecycle and modular monoliths: `OrdersService.placeOrder()` reserves stock through `InventoryApi`, authorizes payment through `PaymentsApi`, saves the order, then emits `order.placed` with `EventEmitter2` — an in-memory event that dies with the process, as that post admitted. This post replaces exactly that piece. Once an order is recorded, four things have to happen in the background:
+
+| Job | Queue | Side effect | If it runs twice | If it's lost |
+| --- | --- | --- | --- | --- |
+| `capture-payment` | `payments` | Capture the authorized amount through the payment gateway | The customer is charged twice | Goods ship without payment; the authorization expires after a few days |
+| `order-confirmation` | `notifications` | Send the confirmation email | Two emails — annoying, not dangerous | The customer thinks the order failed and orders again |
+| `create-shipment` | `shipping` | Create a shipment with the carrier (API limited to 10 requests/second) | Two shipments, two pickups | The order sits in the warehouse |
+| `award-points` | `loyalty` | Add loyalty points in my own database | Points credited twice | The customer loses points and nobody knows |
+
+Those last two columns are why each job needs its own strategy: the cost of "twice" and of "lost" differs, so the effort worth spending against each differs too.
+
+## Setting up BullMQ in NestJS
+
+### Connection and shared configuration
+
+```ts
+// infrastructure/queue/queues.ts — queue names are constants, never hand-typed strings
+export const PAYMENTS_QUEUE = 'payments';
+export const NOTIFICATIONS_QUEUE = 'notifications';
+export const SHIPPING_QUEUE = 'shipping';
+export const LOYALTY_QUEUE = 'loyalty';
+export const MAINTENANCE_QUEUE = 'maintenance';
+
+/** Every job produced from the outbox carries the same "envelope". */
+export interface JobEnvelope<T = Record<string, unknown>> {
+  eventId: string; // id of the outbox row: the consumer's deduplication key
+  traceId?: string; // trace ID of the originating request, so job logs join up with HTTP logs
+  payload: T; // IDs and a few small values, not a snapshot of the whole order
+}
+
+// infrastructure/queue/queue.module.ts
+import { BullModule } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { BullMQOtel } from 'bullmq-otel';
+
+const DAY = 24 * 3600; // removeOnComplete/removeOnFail take age in SECONDS
+
+@Module({
+  imports: [
+    BullModule.forRootAsync({
+      inject: [ConfigService], // ConfigModule is global
+      useFactory: (config: ConfigService<Env, true>) => {
+        const url = new URL(config.get('REDIS_URL', { infer: true }));
+        return {
+          // Pass options rather than an ioredis instance: BullMQ opens connections for each
+          // Queue/Worker and sets maxRetriesPerRequest: null on the worker's blocking connection
+          connection: {
+            host: url.hostname,
+            port: Number(url.port || 6379),
+            username: url.username || undefined,
+            password: url.password ? decodeURIComponent(url.password) : undefined,
+            tls: url.protocol === 'rediss:' ? {} : undefined,
+          },
+          prefix: 'shop', // every Redis key starts with "shop:"
+          telemetry: new BullMQOtel({ tracerName: 'shop', meterName: 'shop', enableMetrics: true }),
+          defaultJobOptions: {
+            attempts: 8,
+            backoff: { type: 'exponential', delay: 2_000, jitter: 0.5 },
+            removeOnComplete: { age: DAY, count: 10_000 },
+            removeOnFail: { age: 14 * DAY }, // keep failed jobs 14 days for investigation
+          },
+        };
+      },
+    }),
+    BullModule.registerQueue(
+      {
+        name: PAYMENTS_QUEUE,
+        // Replaces the ENTIRE shared defaultJobOptions (shallow merge), so spell it all out
+        defaultJobOptions: {
+          attempts: 12,
+          backoff: { type: 'capped' }, // custom strategy, declared on the worker
+          removeOnComplete: { age: 7 * DAY },
+          removeOnFail: false, // failed payment jobs: rare and expensive, keep them forever
+        },
+      },
+      { name: NOTIFICATIONS_QUEUE },
+      { name: SHIPPING_QUEUE },
+      { name: LOYALTY_QUEUE },
+      { name: MAINTENANCE_QUEUE },
+    ),
+  ],
+  exports: [BullModule], // any module importing QueueModule can @InjectQueue()
+})
+export class QueueModule {}
+```
+
+A few details worth noticing:
+
+- **Options, not an instance.** Workers use blocking commands to wait for jobs, so their connection needs `maxRetriesPerRequest: null`; otherwise ioredis gives up after 20 retries (its default) and the worker dies on the first Redis failover. Pass options and BullMQ sets this for you; build your own ioredis instance for a worker and forget it, and BullMQ throws. For producers inside an HTTP request, [Going to production](https://docs.bullmq.io/guide/going-to-production) recommends the opposite (disable `enableOfflineQueue`) so requests fail fast — but with the outbox below, HTTP requests no longer touch Redis at all.
+- **Finished jobs don't disappear on their own.** By default BullMQ keeps *every* completed and failed job forever. With `age` / `count`, cleanup is "best effort" whenever another job finishes; there's no background timer.
+- **Shared and per-queue config are merged shallowly** (`{ ...shared, ...perQueue }`), so the `payments` `defaultJobOptions` replace the shared object entirely — which is why `removeOnComplete` is repeated.
+- **`telemetry`** only exports anything if the OpenTelemetry SDK is initialized before Nest boots.
+
+### A queue's Redis is not a cache's Redis
+
+Most of the "jobs vanished" incidents I've seen came from Redis configuration, not code:
+
+- **`maxmemory-policy noeviction`** — the BullMQ docs call this the *only* setting that guarantees correct queue behavior. With `allkeys-lru` or `volatile-lru`, a full Redis silently evicts keys: a job, part of the queue's data structures, a lock. With `noeviction`, Redis rejects writes and you get an error immediately. BullMQ prints `IMPORTANT! Eviction policy is ...` to the console when it sees anything else; don't ignore that line.
+- **Enable AOF** (`appendonly yes`). Without persistence, a Redis restart means an empty queue.
+- **Don't share the instance with your cache.** A cache needs eviction; a queue forbids it.
+
+One more decision: **workers run in their own process**, same codebase but a different entrypoint (`worker.ts`). The API scales with traffic, workers scale with queue depth, and CPU-heavy jobs don't slow down HTTP requests. Details in the graceful shutdown section.
+
+## Rule 1: never lose the intent — the transactional outbox
+
+### Dual writes: why "save, then add the job" is wrong
+
+The version everyone writes first:
+
+```ts
+// DON'T: two writes to two systems, with nothing tying them together
+await this.orders.save(order); // Postgres
+await this.paymentsQueue.add('capture-payment', { orderId: order.id }); // Redis
+```
+
+It breaks in three ways, and all three happen for real:
+
+1. **The process dies between the two lines** (deploy, OOM): the order is saved, the job never exists. No error, no log.
+2. **Redis fails on the second line**: the request returns 500 even though the order *was* saved. The client retries, and unless your HTTP layer has idempotency keys, you now have two orders.
+3. **Swapping the order doesn't help**: add the job first and the worker may run *before* the order commits, or the transaction rolls back after the job is already queued — a confirmation email for an order that doesn't exist. Calling `queue.add()` *inside* the `$transaction` callback has exactly these two problems.
+
+The root cause is two storage systems that don't share a transaction. The transactional outbox fixes it by not writing to the second system during the request at all: the intent "this order's payment needs capturing" is written as a row, into the *same database, in the same transaction* as the order. Either both exist or neither does. Moving that row into BullMQ is the job of another process, which can retry as many times as it likes.
+
+### The outbox table
+
+```sql
+CREATE TABLE outbox_events (
+  id            uuid PRIMARY KEY,
+  topic         text        NOT NULL,          -- 'order.placed', 'payment.captured'...
+  aggregate_id  uuid        NOT NULL,
+  payload       jsonb       NOT NULL,
+  trace_id      text,                          -- ties job logs back to the original request
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  published_at  timestamptz                    -- NULL = not yet pushed to a queue
+);
+
+-- The relay only cares about unpublished rows: a partial index stays small however big the table gets
+CREATE INDEX outbox_unpublished ON outbox_events (created_at) WHERE published_at IS NULL;
+```
+
+The matching Prisma model (`OutboxEvent`) maps onto this table with `@@map("outbox_events")` and `@map` on each column.
+
+### Writing the outbox in the same transaction as the order
+
+Instead of the service calling `events.emit()`, the `Order` aggregate records what happened, and the repository saves both in one transaction. The `OrderRepository` port keeps its `save(order)` signature — the service doesn't know the outbox exists.
+
+```ts
+// contracts/domain-event.ts — neutral contract, no Nest dependency
+export type OutboxTopic = 'order.placed' | 'order.cancelled' | 'payment.captured';
+export type DomainEvent = { topic: OutboxTopic; aggregateId: string; payload: Record<string, unknown> };
+
+// modules/orders/domain/order.ts (excerpt)
+export class Order {
+  private readonly pending: DomainEvent[] = [];
+
+  static place(props: PlaceOrderProps): Order {
+    const order = new Order({ ...props, status: 'placed' });
+    order.pending.push({
+      topic: 'order.placed',
+      aggregateId: order.id,
+      payload: { orderId: order.id, customerId: order.customerId, total: order.total },
+    });
+    return order;
+  }
+
+  /** Take and clear the unsaved events. Only the repository calls this, inside save(). */
+  pullEvents(): DomainEvent[] {
+    return this.pending.splice(0);
+  }
+}
+
+// modules/orders/application/orders.service.ts — steps 3 and 4 of placeOrder()
+const order = Order.place({ id: orderId, ...input, total, reservationId, authorizationId, at: this.clock.now() });
+await this.orders.save(order); // order + order.placed: one commit
+return order.toView(); // no more this.events.emit(...)
+
+// modules/orders/infrastructure/prisma-order.repository.ts
+@Injectable()
+export class PrismaOrderRepository extends OrderRepository {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cls: ClsService,
+  ) {
+    super();
+  }
+
+  async save(order: Order): Promise<void> {
+    const events = order.pullEvents();
+    const traceId = this.cls.isActive() ? this.cls.getId() : undefined;
+
+    await this.prisma.$transaction(async (tx) => {
+      const row = toOrderRow(order);
+      await tx.order.upsert({ where: { id: row.id }, create: row, update: row });
+      if (events.length > 0) {
+        await tx.outboxEvent.createMany({
+          data: events.map((event) => ({
+            id: randomUUID(),
+            topic: event.topic,
+            aggregateId: event.aggregateId,
+            payload: event.payload,
+            traceId,
+          })),
+        });
+      }
+    });
+  }
+}
+```
+
+Two deliberate choices: **the payload holds only IDs and a few numbers** — the consumer reads the *current* state when it runs, so if the order was cancelled while the job sat in the queue, the consumer sees it; and **the outbox lives behind the port**. When a use case needs to write several repositories in one transaction, I use [`@nestjs-cls/transactional`](https://papooch.github.io/nestjs-cls/plugins/available-plugins/transactional) to share the transaction through CLS instead of threading `tx` through every signature.
+
+### The relay: from the outbox table to BullMQ
+
+`OutboxRelay` already showed up in the graceful shutdown section of the request lifecycle post. Here are its insides:
+
+```ts
+// infrastructure/outbox/outbox-relay.ts
+import { InjectQueue } from '@nestjs/bullmq';
+import { BeforeApplicationShutdown, Injectable, Logger } from '@nestjs/common';
+import type { Queue } from 'bullmq';
+
+interface OutboxRow {
+  id: string;
+  topic: OutboxTopic;
+  payload: Record<string, unknown>;
+  trace_id: string | null;
+}
+
+interface Route {
+  queue: Queue;
+  jobName: string;
+}
+
+type BulkJob = Parameters<Queue['addBulk']>[0][number];
+
+const BATCH_SIZE = 100;
+
+@Injectable()
+export class OutboxRelay implements BeforeApplicationShutdown {
+  private readonly logger = new Logger(OutboxRelay.name);
+  private readonly routes: Record<OutboxTopic, Route[]>;
+  private timer?: NodeJS.Timeout;
+  private running?: Promise<void>;
+  private stopping = false;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @InjectQueue(PAYMENTS_QUEUE) payments: Queue,
+    @InjectQueue(NOTIFICATIONS_QUEUE) notifications: Queue,
+    @InjectQueue(SHIPPING_QUEUE) shipping: Queue,
+    @InjectQueue(LOYALTY_QUEUE) loyalty: Queue,
+  ) {
+    // One event, many reactions. Record<OutboxTopic, ...>: forgetting a topic is a compile error.
+    this.routes = {
+      'order.placed': [
+        { queue: payments, jobName: 'capture-payment' },
+        { queue: notifications, jobName: 'order-confirmation' },
+      ],
+      'payment.captured': [
+        { queue: shipping, jobName: 'create-shipment' },
+        { queue: loyalty, jobName: 'award-points' },
+      ],
+      'order.cancelled': [{ queue: payments, jobName: 'void-authorization' }],
+    };
+  }
+
+  /** Called from worker.ts. The API process doesn't run the relay. */
+  start() {
+    this.timer = setInterval(() => {
+      this.running ??= this.drain()
+        .catch((error) => this.logger.error('Outbox relay failed', error))
+        .finally(() => (this.running = undefined));
+    }, 500);
+  }
+
+  async beforeApplicationShutdown() {
+    this.stopping = true;
+    clearInterval(this.timer); // stop taking new work
+    await this.running; // finish the batch in flight
+  }
+
+  private async drain(): Promise<void> {
+    // A full batch means there may be more: keep going now instead of waiting for the next tick
+    while (!this.stopping && (await this.publishBatch()) === BATCH_SIZE) {}
+  }
+
+  private publishBatch(): Promise<number> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        // Lock unpublished rows. Relays in other pods skip them instead of waiting.
+        const rows = await tx.$queryRaw<OutboxRow[]>`
+          SELECT id, topic, payload, trace_id
+          FROM outbox_events
+          WHERE published_at IS NULL
+          ORDER BY created_at
+          LIMIT ${BATCH_SIZE}
+          FOR UPDATE SKIP LOCKED`;
+        if (rows.length === 0) return 0;
+
+        // Unknown topic (a newer API deployed before the workers): leave it, the newer relay will push it.
+        // Marking it published here would silently lose the event.
+        const known = rows.filter((row) => row.topic in this.routes);
+        if (known.length < rows.length) this.logger.warn(`${rows.length - known.length} outbox row(s) with unknown topic`);
+
+        // Group by queue: one addBulk per queue (atomic within that queue)
+        const byQueue = new Map<Queue, BulkJob[]>();
+        for (const row of known) {
+          for (const { queue, jobName } of this.routes[row.topic]) {
+            const data: JobEnvelope = { eventId: row.id, traceId: row.trace_id ?? undefined, payload: row.payload };
+            const jobs = byQueue.get(queue) ?? [];
+            jobs.push({ name: jobName, data, opts: { jobId: row.id } }); // same event -> same jobId
+            byQueue.set(queue, jobs);
+          }
+        }
+        await Promise.all([...byQueue].map(([queue, jobs]) => queue.addBulk(jobs)));
+
+        const ids = known.map((row) => row.id);
+        await tx.$executeRaw`UPDATE outbox_events SET published_at = now() WHERE id = ANY(${ids}::uuid[])`;
+        return rows.length;
+      },
+      { timeout: 15_000 }, // Prisma's default is 5 seconds; this batch calls Redis inside
+    );
+  }
+}
+```
+
+<Figure src="/blog/nestjs-background-jobs-bullmq-outbox.svg" alt="Transactional outbox diagram: an HTTP request calls OrdersService, one Postgres transaction writes both the orders table and outbox_events; the relay reads committed rows and pushes them into BullMQ with the event id as jobId; an idempotent worker performs the side effect with an idempotency key; a bottom band describes what happens on a crash at each step" caption="The order and its intent commit together. Everything after COMMIT can run again: a relay resend hits a duplicate jobId and is ignored, and a worker rerun is turned into a no-op by the idempotency key." />
+
+The decisions in the relay, and what they cost:
+
+- **`FOR UPDATE SKIP LOCKED`** lets several relays run in parallel, one per worker pod, with no leader election.
+- **`jobId` equals the event id.** Crash after `addBulk` but before the `UPDATE` and the batch is resent; BullMQ ignores a job whose id already exists — *as long as the old job is still in Redis*. Once `removeOnComplete` has cleaned it up, the same jobId creates a new job. Deduplication at the queue is only the outer layer; the real one is in the consumer. Custom job ids can't be integers or contain `:` — UUIDs satisfy both; if one event produces two jobs in the *same* queue, fold the job name into the jobId.
+- **Holding the transaction while calling Redis.** Simple and correct; the transaction only grows by the few milliseconds of `addBulk`. If Redis hangs, the transaction hits its timeout and rolls back: nothing lost, just slower. Claiming rows with a `locked_until` column and publishing outside the transaction is more complex, and I haven't needed it.
+- **Polling every 500 ms** is plenty for email or capture. If you need faster, add Postgres `LISTEN/NOTIFY` to wake the relay, keeping polling as a safety net; bigger still and you're into CDC (Debezium), at the cost of another system to operate.
+- **Ordering isn't guaranteed.** Retries, concurrency and multiple workers shuffle processing order. Consumers must check current state — capture only runs while the payment is still `authorized` — rather than rely on order.
+- **Adding a topic? Deploy workers before the API.** An older relay leaves rows with an unknown topic alone, so nothing is lost, but the event only goes out once the newer relay is up.
+- **Clean the table** after a few days — a periodic task that suits BullMQ 6's job schedulers:
+
+```ts
+// Called when the worker starts; it's an upsert, so calling it on every deploy creates no duplicates
+await maintenanceQueue.upsertJobScheduler(
+  'outbox-cleanup',
+  { pattern: '0 3 * * *', tz: 'Asia/Ho_Chi_Minh' }, // 3 a.m. every day
+  { name: 'outbox-cleanup', data: { olderThanDays: 7 } },
+);
+```
+
+## Rule 2: never do it twice — idempotent handlers
+
+The outbox guarantees the intent isn't lost, but it also *produces* duplicates: the relay resends, jobs retry, a stalled job runs alongside the original. Every handler has to answer the question "what if this has already been done?". There are three layers, and they block different things:
+
+| Layer | Mechanism | Blocks | Doesn't block |
+| --- | --- | --- | --- |
+| Queue | Fixed `jobId`, the `deduplication` option | The relay resending an event while the old job is still in Redis | Jobs already cleaned up; reruns from retries or stalls |
+| My own database | Unique constraints, compare-and-set, a `processed_messages` table | Duplicate writes to my own data | Side effects in other systems |
+| External systems | Idempotency keys, lookup by my own reference | Calling an API twice for the same intent | APIs that don't support it; expired keys |
+
+### When the side effect is a write to your own database
+
+Adding loyalty points is the textbook example of an operation that is *not* naturally idempotent: `points = points + 120` run twice gives 240. The fix is to record "I've processed this event" **in the same transaction** as the change itself:
+
+```sql
+CREATE TABLE processed_messages (
+  consumer     text        NOT NULL,   -- 'loyalty.award-points'
+  message_id   uuid        NOT NULL,   -- id of the outbox row
+  processed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (consumer, message_id)
+);
+```
+
+```ts
+// modules/loyalty/application/loyalty.service.ts (excerpt)
+async awardPoints(eventId: string, customerId: string, amount: number): Promise<void> {
+  const points = Math.floor(amount / 10_000); // 1 point per 10,000 VND
+
+  await this.prisma.$transaction(async (tx) => {
+    // Mark first, in the same transaction as the effect
+    const inserted = await tx.$executeRaw`
+      INSERT INTO processed_messages (consumer, message_id)
+      VALUES ('loyalty.award-points', ${eventId}::uuid)
+      ON CONFLICT DO NOTHING`;
+    if (inserted === 0) return; // this event was already processed: do nothing
+
+    await tx.$executeRaw`
+      UPDATE loyalty_accounts SET points = points + ${points}
+      WHERE customer_id = ${customerId}::uuid`;
+  });
+}
+```
+
+Why `ON CONFLICT DO NOTHING` rather than catching the unique violation? In Postgres, a failed statement poisons the whole open transaction; `ON CONFLICT` turns "already exists" into a normal result (0 rows). The table needs periodic cleanup, but only of rows older than every possible source of duplicates — outbox retention, failed-job retention, the redrive window. I keep 30 days.
+
+### When the side effect lives in another system: capturing a payment
+
+No transaction spans both Postgres and the payment gateway. The scenario to guard against: the capture succeeds, then the worker dies before recording the result. The rerun has no way of knowing — unless it *asks*.
+
+```ts
+// modules/payments/gateway/payment-gateway.ts — the port; Stripe or any other gateway sits behind it
+export interface PaymentGateway {
+  capture(input: { authorizationId: string; amount: number; idempotencyKey: string }): Promise<{ captureId: string }>;
+  getAuthorization(
+    authorizationId: string,
+  ): Promise<{ status: 'captured'; captureId: string } | { status: 'authorized' | 'voided' | 'expired' }>;
+}
+
+// modules/payments/application/payments.service.ts (excerpt)
+@Injectable()
+export class PaymentsService implements PaymentsApi {
+  constructor(
+    private readonly payments: PaymentRepository,
+    @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGateway,
+  ) {}
+
+  async captureForOrder(orderId: string): Promise<{ captureId: string }> {
+    const payment = await this.payments.findByOrderId(orderId);
+    if (!payment) throw new PermanentError(`No payment for order ${orderId}`);
+
+    // 1. Did a previous run finish and record it? Return the old result.
+    if (payment.status === 'captured' && payment.captureId) return { captureId: payment.captureId };
+    if (payment.status !== 'authorized') {
+      throw new PermanentError(`Cannot capture a payment in status "${payment.status}"`);
+    }
+
+    // 2. Ask the gateway: a previous run may have captured and then died before step 4
+    const remote = await this.gateway.getAuthorization(payment.authorizationId);
+    if (remote.status === 'voided' || remote.status === 'expired') {
+      throw new PermanentError(`Authorization is ${remote.status}`); // needs a human decision
+    }
+
+    // 3. The key comes from the business intent: not the job id, not the attempt number
+    const { captureId } =
+      remote.status === 'captured'
+        ? remote
+        : await this.gateway.capture({
+            authorizationId: payment.authorizationId,
+            amount: payment.amount,
+            idempotencyKey: `capture-${orderId}`,
+          });
+
+    // 4. Record the result and the next event in one transaction — the outbox again
+    await this.payments.markCaptured(payment, captureId);
+    return { captureId };
+  }
+}
+
+// modules/payments/infrastructure/prisma-payment.repository.ts (excerpt)
+async markCaptured(payment: Payment, captureId: string): Promise<void> {
+  await this.prisma.$transaction(async (tx) => {
+    // Compare-and-set: only one run can move authorized -> captured
+    const changed = await tx.$executeRaw`
+      UPDATE payments SET status = 'captured', capture_id = ${captureId}, captured_at = now()
+      WHERE order_id = ${payment.orderId}::uuid AND status = 'authorized'`;
+    if (changed === 0) return; // another run recorded it first: don't emit the event twice
+
+    await tx.outboxEvent.create({
+      data: {
+        id: randomUUID(),
+        topic: 'payment.captured',
+        aggregateId: payment.orderId,
+        payload: { orderId: payment.orderId, customerId: payment.customerId, amount: payment.amount },
+        traceId: this.cls.getId(),
+      },
+    });
+  });
+}
+```
+
+Each step is there for a reason:
+
+- **Step 1** is the fast path: most duplicates stop here without calling out.
+- **Step 2** exists because idempotency keys expire. With Stripe's v1 API, a request repeated with the same `Idempotency-Key` gets back exactly the response saved from the first one (500 errors included), and the same key with different parameters is rejected. But the [docs](https://docs.stripe.com/api/idempotent_requests) also say keys may be pruned after 24 hours — a job retrying overnight, or redriven next week, is no longer protected by the key.
+- **Step 3**: the key `capture-${orderId}` is identical across every retry, resend and redrive. Generating a `randomUUID()` inside the handler is the most common mistake: a new key per run means no idempotency at all. Two copies of the job running *concurrently* are safe too: Stripe won't execute two requests with the same key in parallel, the loser gets an error, retries, and stops at step 1 or 2.
+- **Step 4** is compare-and-set, the same technique as the `UPDATE ... WHERE used_at IS NULL` when rotating refresh tokens in the auth post: the database is the referee, so only one `payment.captured` event gets written.
+
+### When exactly-once is impossible: email
+
+Many email services don't accept idempotency keys; SMTP certainly doesn't. Between "sent" and "recorded as sent" there is always a gap, and you have to *choose* what happens when a crash lands right in it:
+
+| Strategy | Order | Crash between the two steps | Good for |
+| --- | --- | --- | --- |
+| At-least-once | Send, then record "sent" | Resend: the customer gets two emails | Order confirmations, shipping notifications |
+| At-most-once | Record "sent", then send | Not sent: the customer gets nothing | Marketing, low-stakes reminders |
+
+For order confirmations I pick at-least-once: `NotificationsService` checks the `sent_emails` table, sends, and only then records `(order-confirmation, orderId)`. Two emails are annoying; no email is a support ticket and sometimes a duplicate order. If your provider accepts an idempotency key, pass `order-confirmation-${orderId}` to narrow the gap. What matters is that the choice is made on purpose and written down as a comment right next to those two lines.
+
+## Retries with error classification
+
+Retries are a tool for exactly one kind of error: the *transient* one. Retrying a malformed request ten times just makes it fail ten times and pushes the job into the dead letters later than necessary. I sort errors into four kinds:
+
+| Kind | Examples | How BullMQ handles it |
+| --- | --- | --- |
+| Transient | Timeouts, `ECONNRESET`, HTTP 502/503/504, deadlocks, a DB failover | Throw a normal error: retry with backoff, costs an attempt |
+| Told "not yet" | HTTP 503 with `Retry-After`, a payment still processing at the gateway | `job.moveToDelayed()` + `DelayedError`: wait exactly that long, no attempt used |
+| Account-wide limit | HTTP 429 from an API with a shared quota | `queue.rateLimit()` + `Worker.RateLimitError()`: throttle the whole queue, the job goes back to `waiting` |
+| Permanent | HTTP 400/422, card declined, order doesn't exist, payload fails the schema | `UnrecoverableError`: straight to `failed`, however many attempts are left |
+
+<Figure src="/blog/nestjs-background-jobs-bullmq-retries.svg" alt="BullMQ job state diagram: waiting to active; active to completed on success; a transient error moves the job to delayed, then back to waiting when the backoff expires; RateLimitError or a stalled job returns it to waiting without counting an attempt; UnrecoverableError or exhausted attempts move it to failed, then into the dead_letters table with an alert, from where it can be redriven to waiting with a new jobId" caption="Classified errors decide the job's path. Only transient errors cost an attempt; rate limiting, DelayedError and stalls send the job back without counting a try." />
+
+### Translating business errors into BullMQ semantics
+
+Services shouldn't know BullMQ exists — `captureForOrder()` might just as well be called from an admin endpoint. So services throw errors by *meaning*, and the processors' base class translates them into BullMQ's language:
+
+```ts
+// common/errors/job-errors.ts — errors by meaning, nothing imported from BullMQ
+export class PermanentError extends Error {
+  override name = 'PermanentError'; // retrying will give the same result every time
+}
+
+export class RetryLaterError extends Error {
+  override name = 'RetryLaterError'; // "not yet": wait delayMs, doesn't count as a failure
+  constructor(readonly delayMs: number, reason: string) {
+    super(reason);
+  }
+}
+
+export class ThrottledError extends Error {
+  // The whole account's quota is exhausted: the whole queue has to slow down, not just this job
+  override name = 'ThrottledError';
+  constructor(readonly retryAfterMs: number) {
+    super(`Throttled for ${retryAfterMs}ms`);
+  }
+}
+
+/** Classify an error response from a third-party API. */
+export function errorFromResponse(res: Response, context: string): Error {
+  const retryAfterMs = parseRetryAfter(res.headers.get('retry-after'));
+  if (res.status === 429) return new ThrottledError(retryAfterMs ?? 10_000);
+  if (res.status === 408 || res.status >= 500) {
+    return retryAfterMs !== undefined
+      ? new RetryLaterError(retryAfterMs, `${context}: HTTP ${res.status}`)
+      : new Error(`${context}: HTTP ${res.status}`); // transient: let backoff handle it
+  }
+  // Remaining 4xx: my request is wrong, sending it again unchanged is still wrong
+  return new PermanentError(`${context}: HTTP ${res.status}`);
+}
+
+/** Retry-After is either a number of seconds or an HTTP-date (RFC 9110). */
+export function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+```
+
+The default is *transient*: a permanent error retried by mistake only costs a few minutes before it lands in the dead letters, while a transient error mistaken for a permanent one loses work immediately. 401/403 are a grey area — usually a rotated API key, where retrying doesn't help but every job works again once it's fixed. I treat them as permanent, alert on the *rate* of jobs reaching the dead letters, and redrive the whole batch after fixing the configuration.
+
+The base class for every processor:
+
+```ts
+// jobs/app-worker-host.ts
+import { OnWorkerEvent, WorkerHost } from '@nestjs/bullmq';
+import { BeforeApplicationShutdown, Injectable, Logger } from '@nestjs/common';
+import { DelayedError, Job, Queue, UnrecoverableError, Worker } from 'bullmq';
+import { CLS_ID, ClsService } from 'nestjs-cls';
+
+/** Shared dependencies: subclasses pass a single thing to super(). */
+@Injectable()
+export class JobRuntime {
+  constructor(
+    readonly cls: ClsService,
+    readonly deadLetters: DeadLetterService,
+  ) {}
+}
+
+export abstract class AppWorkerHost extends WorkerHost implements BeforeApplicationShutdown {
+  protected readonly logger = new Logger(this.constructor.name);
+
+  constructor(
+    protected readonly runtime: JobRuntime,
+    private readonly rateLimitQueue?: Queue, // if set, ThrottledError throttles the whole queue
+  ) {
+    super();
+  }
+
+  /** The job's logic: read the job, call a use case. Errors thrown must be classified. */
+  protected abstract handle(job: Job<JobEnvelope>, token?: string): Promise<unknown>;
+
+  async process(job: Job<JobEnvelope>, token?: string): Promise<unknown> {
+    const { cls } = this.runtime;
+    // One CLS context per job, carrying the trace ID of the request that produced it
+    return cls.run(async () => {
+      cls.set(CLS_ID, job.data.traceId ?? `job-${job.queueName}-${job.id}`);
+      const meta = `${job.name} id=${job.id} attempt=${job.attemptsMade + 1} trace=${cls.getId()}`;
+      const started = performance.now();
+      try {
+        const result = await this.handle(job, token);
+        const ageMs = Date.now() - job.timestamp; // from being added to being done
+        this.logger.log(`${meta} done in ${(performance.now() - started).toFixed(0)}ms, age ${ageMs}ms`);
+        return result;
+      } catch (error) {
+        this.logger.warn(`${meta} error: ${error instanceof Error ? error.message : String(error)}`);
+        throw await this.toBullError(error, job, token);
+      }
+    });
+  }
+
+  private async toBullError(error: unknown, job: Job, token?: string): Promise<Error> {
+    if (error instanceof PermanentError) {
+      return new UnrecoverableError(error.message); // straight to failed, no retries
+    }
+    if (error instanceof ThrottledError && this.rateLimitQueue) {
+      // The whole account is limited: stop taking new jobs from the queue, this one goes back to waiting
+      await this.rateLimitQueue.rateLimit(error.retryAfterMs);
+      return Worker.RateLimitError();
+    }
+    if (error instanceof RetryLaterError || error instanceof ThrottledError) {
+      const delayMs = error instanceof RetryLaterError ? error.delayMs : error.retryAfterMs;
+      await job.moveToDelayed(Date.now() + delayMs, token); // needs this run's token
+      return new DelayedError();
+    }
+    return error instanceof Error ? error : new Error(String(error)); // transient: retry
+  }
+
+  // 'failed' fires on EVERY failure, including ones that will still be retried
+  @OnWorkerEvent('failed')
+  onFailed(job: Job | undefined, error: Error) {
+    void this.runtime.deadLetters.recordIfFinal(job, error);
+  }
+
+  @OnWorkerEvent('stalled')
+  onStalled(jobId: string) {
+    this.logger.error(`Job ${jobId} stalled: lock expired, it will run again`);
+  }
+
+  async beforeApplicationShutdown() {
+    await this.worker.close(); // wait for running jobs — see the graceful shutdown section
+  }
+}
+```
+
+A few things that aren't obvious:
+
+- **`@OnWorkerEvent` on a base class still works**, because Nest's `MetadataScanner` walks up the whole prototype chain looking for decorated methods.
+- **`DelayedError` and `RateLimitError` don't use up an attempt.** Waiting because the other side asked you to isn't a failure — but it does mean a job could be postponed forever. The safety net is the worker's `maxStartedAttempts`: every time a job *starts* counts, and past the threshold it goes to `failed` with an `UnrecoverableError`. Be generous with it, because a heavily rate-limited queue makes jobs start over many times.
+- **Manual rate limiting needs a `limiter` on the worker**: BullMQ only checks the rate-limit TTL when one is configured. The docs still illustrate this with `worker.rateLimit()`, but BullMQ 6's typings mark it deprecated in favor of `queue.rateLimit()`.
+
+Processors are now just adapters — "controllers for the queue": read the job, call a use case through a port. As the previous post said about controllers, the same service works for HTTP, a queue or a CLI:
+
+```ts
+// modules/payments/jobs/payments.processor.ts
+import { Processor } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
+import type { Job } from 'bullmq';
+
+@Processor(PAYMENTS_QUEUE, {
+  concurrency: 10,
+  settings: { backoffStrategy: cappedExponential }, // for backoff: { type: 'capped' }
+  maxStartedAttempts: 50, // safety net against DelayedError loops
+})
+export class PaymentsProcessor extends AppWorkerHost {
+  constructor(
+    runtime: JobRuntime,
+    private readonly payments: PaymentsApi,
+  ) {
+    super(runtime);
+  }
+
+  protected handle(job: Job<JobEnvelope<{ orderId: string }>>) {
+    const { orderId } = job.data.payload;
+    switch (job.name) {
+      case 'capture-payment':
+        return this.payments.captureForOrder(orderId);
+      case 'void-authorization':
+        return this.payments.voidForOrder(orderId);
+      default:
+        throw new PermanentError(`Unknown job name "${job.name}"`);
+    }
+  }
+}
+
+// A worker-side module: only WorkerModule imports it, AppModule (HTTP) doesn't
+@Module({
+  imports: [PaymentsModule, JobsCoreModule], // PaymentsApi is exported by PaymentsModule
+  providers: [PaymentsProcessor],
+})
+export class PaymentsJobsModule {}
+
+// jobs/jobs-core.module.ts — shared by every *JobsModule
+@Module({
+  providers: [JobRuntime, DeadLetterService],
+  exports: [JobRuntime],
+})
+export class JobsCoreModule {}
+```
+
+Why isn't the processor just part of `PaymentsModule`? Because every `@Processor` provider in the module tree creates a `Worker` during `onModuleInit` — the API process would quietly start consuming jobs too. A separate module that only `WorkerModule` imports keeps that boundary without exporting repositories or the gateway out of `payments`.
+
+### Backoff: exponential, jitter and a ceiling
+
+With `backoff: { type: 'exponential', delay: 2_000 }`, BullMQ waits `delay × 2^(n−1)` before the n-th retry; `jitter: 0.5` picks a random value between 50% and 100% of that. Jitter isn't decoration: when a dependency goes down and comes back, thousands of jobs that failed together will retry together and knock it over again.
+
+Plain exponential has no ceiling: the 12th attempt waits over an hour. For `payments` I want to keep trying for a long time, but never wait more than 15 minutes between attempts. A custom strategy goes in the worker's `settings.backoffStrategy`, and it's used when `backoff.type` is neither `fixed` nor `exponential`:
+
+```ts
+// jobs/backoff.ts
+import type { BackoffStrategy } from 'bullmq';
+
+const BASE_MS = 2_000;
+const CAP_MS = 15 * 60_000;
+
+/** Capped exponential, jittered within the upper half of the range. attemptsMade = 1 on the first retry. */
+export const cappedExponential: BackoffStrategy = (attemptsMade) => {
+  const ceiling = Math.min(CAP_MS, BASE_MS * 2 ** (attemptsMade - 1));
+  return Math.round(ceiling / 2 + Math.random() * (ceiling / 2));
+};
+```
+
+With `attempts: 12`, the maximum waits are 2s, 4s, 8s... 512s, then 15 minutes twice: at most about 47 minutes in total, about 35 on average thanks to jitter — enough to ride out a typical payment-gateway incident.
+
+### A timeout on every outbound call
+
+BullMQ has no timeout option for jobs. A `fetch` with no timeout against a hung server can wait a very long time, while the job's lock keeps being renewed because the process is alive: the job isn't stalled, isn't failed, it just occupies a concurrency slot. Enough of those and the queue grinds to a halt without a single log line. Every outbound call needs `signal: AbortSignal.timeout(10_000)` or equivalent.
+
+Timeouts are retried as transient errors, but they're *ambiguous*: the request may have arrived and been processed. For writes, only retry after a timeout when you have an idempotency key or a way to look the state back up — exactly why `captureForOrder()` has step 2.
+
+## Stalled jobs, locks and the event loop
+
+When a worker picks up a job, it holds a lock in Redis for `lockDuration` (30 seconds by default) and renews it periodically (by default at half that duration). Every `stalledInterval` (30 seconds by default), BullMQ checks for `active` jobs that have lost their lock and moves them back to `waiting` for another worker to run. Past `maxStalledCount` times (1 by default), the job goes to `failed` with the reason "job stalled more than allowable limit".
+
+That mechanism saves you when a worker really dies. But the lock is also lost when the worker *hasn't* died: the event loop is blocked long enough to miss the renewal — a `JSON.parse` of a few hundred MB, synchronous PDF generation. The job is considered stalled and runs again on another worker **while the original is still running**: the hardest "done twice" to reproduce. What to do:
+
+- **Don't block the event loop in a worker.** Push CPU-heavy work to a sandboxed processor (`registerQueue({ processors: [{ path, useWorkerThreads: true }] })`), at the cost of having no Nest DI inside it.
+- **Split long jobs into several short ones**, each recording its progress.
+- **Only raise `lockDuration`** when you know there's an unavoidable blocking section — it also slows down detecting workers that really died.
+- **Treat every `stalled` or `lockRenewalFailed` event as a bug** to investigate, not as noise.
+
+## Dead letters: where failed jobs become visible
+
+BullMQ has no separate dead-letter queue; jobs that fail for good sit in the queue's `failed` set. Technically, that already is a dead-letter queue. Operationally it isn't: it lives in Redis, is bounded by `removeOnFail`, can't be queried alongside business data, and nobody looks at it until a customer calls. I add a Postgres table and a redrive path:
+
+```sql
+CREATE TABLE dead_letters (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  queue         text        NOT NULL,
+  job_name      text        NOT NULL,
+  job_id        text        NOT NULL,
+  data          jsonb       NOT NULL,
+  error         text        NOT NULL,
+  attempts_made int         NOT NULL,
+  failed_at     timestamptz NOT NULL DEFAULT now(),
+  redriven_at   timestamptz,
+  UNIQUE (queue, job_id)
+);
+```
+
+```ts
+// jobs/dead-letter.service.ts
+import { getQueueToken } from '@nestjs/bullmq';
+import { Injectable, Logger } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { Job, Queue, UnrecoverableError } from 'bullmq';
+
+/** Is this failure the final one? */
+export function isFinalFailure(job: Job, error: Error): boolean {
+  return (
+    error instanceof UnrecoverableError ||
+    error.name === 'UnrecoverableError' || // includes stalled-too-often and maxStartedAttempts
+    job.attemptsMade >= (job.opts.attempts ?? 1) // attemptsMade is already incremented when the event fires
+  );
+}
+
+@Injectable()
+export class DeadLetterService {
+  private readonly logger = new Logger(DeadLetterService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
+
+  async recordIfFinal(job: Job | undefined, error: Error): Promise<void> {
+    // job can be undefined when a job stalled past the limit and removeOnFail deleted it
+    if (!job || !isFinalFailure(job, error)) return;
+    try {
+      await this.prisma.$executeRaw`
+        INSERT INTO dead_letters (queue, job_name, job_id, data, error, attempts_made)
+        VALUES (${job.queueName}, ${job.name}, ${job.id}, ${JSON.stringify(job.data)}::jsonb,
+                ${error.message}, ${job.attemptsMade})
+        ON CONFLICT (queue, job_id) DO NOTHING`;
+      this.logger.error(`Dead-lettered ${job.queueName}/${job.name} id=${job.id}: ${error.message}`);
+    } catch (e) {
+      // Don't rethrow: this is an event listener. The job is still in BullMQ's failed set.
+      this.logger.error(`Could not record dead letter for ${job.queueName}/${job.id}`, e);
+    }
+  }
+
+  /** Called from an admin endpoint, once the cause has been fixed. */
+  async redrive(row: DeadLetterRow): Promise<void> {
+    const queue = this.moduleRef.get<Queue>(getQueueToken(row.queue), { strict: false });
+    // New jobId: the old id may still be in the failed set, and adding a duplicate id is ignored
+    await queue.add(row.jobName, row.data, { jobId: `${row.jobId}-redrive-${Date.now()}` });
+    await this.prisma.$executeRaw`UPDATE dead_letters SET redriven_at = now() WHERE id = ${row.id}::uuid`;
+  }
+}
+```
+
+`isFinalFailure` relies on two things I checked in the BullMQ 6 source: the worker's `failed` event fires *after* the job has changed state and `attemptsMade` has been incremented; and the ways a job dies for good without going through attempts — stalling past `maxStalledCount`, exceeding `maxStartedAttempts` — are all reported as an `UnrecoverableError`. A `backoffStrategy` that returns `-1` to stop retrying would slip past this check; I use `PermanentError` instead.
+
+A few honest notes about this design:
+
+- **The `dead_letters` table is a convenience, not the source of truth.** The listener runs in-process; if the process dies at that exact moment, the row isn't written. The `failed` set (with a long enough `removeOnFail`) remains the source of truth, and a daily reconciliation job is enough peace of mind.
+- **Redrive is safe because handlers are idempotent.** Redriving a job that actually succeeded on the other side just stops at the state check. While a job is still in the failed set, `job.retry()` works too, but going through the table leaves a trail of who redrove what, and when.
+- **Every `payments` dead letter is an incident** that alerts immediately; for `notifications`, alerting on the growth rate is enough.
+
+## Rate limiting third-party APIs
+
+The carrier allows 10 requests per second per API key and returns 429 with `Retry-After` when you exceed it. Two BullMQ mechanisms handle two different parts of the problem:
+
+- **`concurrency`** is how many jobs one worker runs in parallel: it bounds the requests *in flight* from one process.
+- **`limiter: { max, duration }`** is how many jobs may *start* in each `duration` window, **across the whole queue**, coordinated through Redis. Ten workers all configured with `max: 4` still process 4 jobs per second in total; limited jobs stay in `waiting`.
+
+A detail that's easy to miss: the limiter counts *jobs*, not *requests*. A `create-shipment` job calls the API up to twice (look up, then create), so 10 requests per second means at most 5 jobs per second. I set 4 to leave room for other systems sharing the key. `CarrierClient` calls `fetch` with `AbortSignal.timeout()` and throws `errorFromResponse(res, ...)` when `!res.ok`, so a 429 becomes a `ThrottledError`:
+
+```ts
+// modules/shipping/application/shipping.service.ts (excerpt)
+async createForOrder(orderId: string): Promise<void> {
+  if (await this.shipments.existsForOrder(orderId)) return; // done on a previous run
+
+  // The carrier doesn't accept idempotency keys, but it lets me look up by my own reference.
+  // Look up before creating: a previous run may have created the shipment and died before writing to the DB.
+  const parcel = await this.orders.getParcel(orderId); // port exported by orders
+  const shipment =
+    (await this.carrier.findByReference(orderId)) ??
+    (await this.carrier.createShipment({ reference: orderId, ...parcel }));
+
+  await this.shipments.record(orderId, shipment.trackingNumber); // UNIQUE (order_id)
+}
+
+// modules/shipping/jobs/shipping.processor.ts
+@Processor(SHIPPING_QUEUE, {
+  concurrency: 4, // at most 4 jobs calling the carrier at once, per worker
+  limiter: { max: 4, duration: 1_000 }, // queue-wide: 4 jobs/second, each job makes up to 2 requests
+})
+export class ShippingProcessor extends AppWorkerHost {
+  constructor(
+    runtime: JobRuntime,
+    @InjectQueue(SHIPPING_QUEUE) queue: Queue,
+    private readonly shipping: ShippingApi,
+  ) {
+    super(runtime, queue); // with the queue: a 429 throttles the whole queue, not just this job
+  }
+
+  protected handle(job: Job<JobEnvelope<{ orderId: string }>>) {
+    return this.shipping.createForOrder(job.data.payload.orderId);
+  }
+}
+```
+
+Even with headroom in the limiter, 429s still happen — other systems share the key, the carrier lowers quotas at peak hours. When they do, `toBullError()` calls `queue.rateLimit(retryAfterMs)` to stop *every* worker from taking new jobs from this queue, and `Worker.RateLimitError()` sends the current job back to `waiting` without using an attempt. Handle a 429 as a transient error instead and each worker backs off on its own while the others keep firing requests, and jobs burn attempts on an error that isn't theirs.
+
+Look-up-then-create isn't atomic: two concurrent runs can both see "not there yet" and both create — it narrows the window rather than closing it. If the other API enforces uniqueness on your reference and returns 409 on duplicates, treat that 409 as success and look the shipment up: that's real idempotency.
+
+Two principles go with this:
+
+- **One queue per external dependency.** It's a bulkhead: if the carrier goes down, `shipping` jobs pile up while `payments` and `notifications` keep running. A single `default` queue for everything means one API's incident clogs it all.
+- **Per-tenant quotas** aren't in the open-source edition. BullMQ Pro has [per-group rate limiting](https://docs.bullmq.io/bullmq-pro/groups/rate-limiting); with the open-source version, split queues by group or limit inside the handler.
+
+And when a step needs *the results of several child jobs* — send the invoice only once every parcel has a shipment — BullMQ has [flows](https://docs.bullmq.io/guide/flows): a `FlowProducer` (registered with `BullModule.registerFlowProducer()`, injected with `@InjectFlowProducer()`) adds a whole parent-child tree of jobs atomically, the parent only runs once all children have completed, and it reads their results through `job.getChildrenValues()`. But that tree still isn't atomic with your database, so `flows.add()` belongs in a handler that runs from the outbox, never in the HTTP request.
+
+## Graceful shutdown for workers
+
+Deploying workers is the easiest way to cause "done twice": SIGTERM arrives while a job is mid-call to the payment gateway. Three things need to be right.
+
+**Shutdown order.** `@nestjs/bullmq` calls `worker.close()` itself in the `onApplicationShutdown` hook; `close()` waits for running jobs to finish and keeps renewing their locks while it waits. The problem is that the previous post's `PrismaService` also disconnects in `onApplicationShutdown`, and the order between providers within the same hook isn't something to rely on (NestJS 12 even changed how lifecycle hooks are ordered). A job losing its database right at the step that records the result is the worst case. So `AppWorkerHost` closes the worker one beat earlier, in `beforeApplicationShutdown`; calling `close()` again returns the same promise, so the library's later call does nothing extra.
+
+**A separate entrypoint.** Workers don't need an HTTP server, so use an application context:
+
+```ts
+// worker.ts
+import { NestFactory } from '@nestjs/core';
+import { WorkerModule } from './worker.module';
+
+async function bootstrap() {
+  const app = await NestFactory.createApplicationContext(WorkerModule, { bufferLogs: true });
+  app.enableShutdownHooks(); // SIGTERM -> beforeApplicationShutdown -> worker.close()
+  app.get(OutboxRelay).start();
+}
+void bootstrap();
+
+// worker.module.ts
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true, cache: true, validationSchema: envSchema }),
+    ClsModule.forRoot({ global: true }), // no middleware mounted: each job opens its own context
+    PrismaModule,
+    QueueModule,
+    OutboxModule,
+    PaymentsJobsModule,
+    NotificationsJobsModule,
+    ShippingJobsModule,
+    LoyaltyJobsModule,
+  ],
+})
+export class WorkerModule {}
+```
+
+**The grace period.** Kubernetes gives you 30 seconds between SIGTERM and SIGKILL by default. Jobs running longer than that get killed mid-flight and rerun on another pod after roughly one stalled-check cycle. Set `terminationGracePeriodSeconds` longer than your slowest job plus the timeout of your slowest outbound call; jobs that can't be that short should be split, or accept being rerun — which idempotent handlers already give you.
+
+## Observability: seeing what didn't happen
+
+The hardest background-job failure to spot is *the thing that didn't happen*: the relay dies, no jobs get created, and every BullMQ dashboard stays green because there's nothing to count. That's why the first signal I watch lives in the database:
+
+| Signal | Where it comes from | Alert when |
+| --- | --- | --- |
+| Age of the oldest unpublished outbox row | SQL on `outbox_events` | Over 1 minute: the relay is dead or Redis is refusing writes |
+| `waiting` + `delayed` jobs per queue | `queue.getJobCounts()` | Rising steadily for 15 minutes: workers can't keep up |
+| Job age at completion | `job.timestamp` in the worker's logs | p95 above what that job tolerates (email: 1 minute) |
+| Failure rate per job name | The `failed` event, `bullmq-otel` metrics | A spike against the baseline |
+| Unhandled dead letters | The `dead_letters` table | Any row for `payments` |
+| Stalls, lost locks | The `stalled` and `lockRenewalFailed` events | Any occurrence |
+| Connected workers | `queue.getWorkersCount()` | Zero while jobs are waiting |
+
+```ts
+// The most important gauge doesn't come from BullMQ: age of the oldest unpublished outbox row
+const [lag] = await this.prisma.$queryRaw<{ seconds: number | null }[]>`
+  SELECT EXTRACT(EPOCH FROM now() - min(created_at))::float8 AS seconds
+  FROM outbox_events WHERE published_at IS NULL`;
+outboxLagGauge.set(lag?.seconds ?? 0); // prom-client or OpenTelemetry, depending on your stack
+
+// Job counts by state, for each queue
+const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'failed');
+```
+
+BullMQ ships `queue.exportPrometheusMetrics()`, which is handy when you have one queue. With several, each call returns its own `# HELP` / `# TYPE` lines, so concatenating the results produces invalid Prometheus exposition format; building the gauge yourself from `getJobCounts()` avoids that.
+
+The remaining pieces:
+
+- **Traces.** `bullmq-otel` creates spans for adding and processing jobs, and propagates trace context from `add` to the worker. But with an outbox, the one calling `add` is the relay, so the job's trace hangs off the relay rather than the HTTP request. That's why the outbox stores `trace_id`; to link spans too, also store the `traceparent` header and use it as a link when processing the job.
+- **Contextual logs.** `AppWorkerHost` opens a CLS context per job carrying the original request's trace ID, so every log line in the use case, even in the deepest repository, carries that trace ID — just like inside an HTTP request.
+- **A UI.** Bull Board (`@bull-board/nestjs`, which supports NestJS 12) lets you inspect and retry jobs. It can also delete jobs and entire queues, so it must sit behind authentication; with a global guard like in the auth post, don't mark it `@Public()`.
+
+## Test idempotency, not just the happy path
+
+A handler that's only tested on the happy path hasn't been tested. These are the two tests I always write for every use case that runs from a queue:
+
+```ts
+// payments.service.spec.ts — real Postgres (Testcontainers), fake payment gateway
+it('captures once and emits one event when run twice', async () => {
+  await seedAuthorizedPayment(prisma, { orderId, amount: 250_000 });
+
+  await service.captureForOrder(orderId);
+  await service.captureForOrder(orderId); // the job is delivered again
+
+  expect(gateway.captureCalls).toHaveLength(1);
+  expect(await prisma.outboxEvent.count({ where: { topic: 'payment.captured', aggregateId: orderId } })).toBe(1);
+});
+
+it('does not capture again after dying between the capture and the DB write', async () => {
+  await seedAuthorizedPayment(prisma, { orderId, amount: 250_000 });
+  gateway.failAfterCapture = true; // the capture succeeds at the gateway, then a network error is thrown
+
+  await expect(service.captureForOrder(orderId)).rejects.toThrow();
+  gateway.failAfterCapture = false;
+  await service.captureForOrder(orderId); // retry
+
+  expect(gateway.captureCalls).toHaveLength(1); // step 2 sees "captured" on the gateway side
+  expect((await payments.findByOrderId(orderId))?.status).toBe('captured');
+});
+```
+
+`FakeGateway` only needs to record calls and remember each authorization's state — it's the same `fake` driver as in the previous post's `PaymentGatewayModule`. The second test matters most: it reproduces exactly the scenario from the top of this post.
+
+## Common mistakes
+
+**`queue.add()` right after `save()`, or inside the transaction.** A process death or Redis error between the two steps loses work without a trace; adding inside the transaction lets the job run before the commit.
+
+**A fresh idempotency key on every run.** `randomUUID()` in the handler, or a key that includes `job.attemptsMade`, means no idempotency at all.
+
+**Retrying every error the same way.** A 400 retried 8 times; a 429 burning attempts while the whole fleet of workers keeps firing requests.
+
+**`removeOnFail: true`, or no configuration at all.** The first deletes the evidence exactly when you need it; the second keeps every job until Redis is full.
+
+**An eviction policy other than `noeviction`.** Jobs and locks silently disappear when memory fills up — check the default of whatever managed Redis you use.
+
+**Blocking the event loop, or calling out with no timeout.** The first makes a job run twice in parallel; the second makes a job hang forever without ever being considered stalled.
+
+**One queue for everything, snapshot payloads, or relying on job order.** One slow API clogs payments too, handlers work on stale data, and retries shuffle whatever order you thought you had.
+
+## Further reading
+
+- [NestJS: Queues](https://docs.nestjs.com/techniques/queues) — `@nestjs/bullmq`, `@Processor`, `WorkerHost`, event listeners.
+- [BullMQ: Migrate from v5 to v6](https://docs.bullmq.io/guide/migrations/migrate-from-v5-to-v6) and [Going to production](https://docs.bullmq.io/guide/going-to-production).
+- [BullMQ: Retrying failing jobs](https://docs.bullmq.io/guide/retrying-failing-jobs), [Rate limiting](https://docs.bullmq.io/guide/rate-limiting), [Stalled jobs](https://docs.bullmq.io/guide/workers/stalled-jobs), [Flows](https://docs.bullmq.io/guide/flows), [Telemetry](https://docs.bullmq.io/guide/telemetry).
+- [BullMQ: Idempotent jobs](https://docs.bullmq.io/patterns/idempotent-jobs) and [Timeout jobs](https://docs.bullmq.io/patterns/timeout-jobs).
+- [Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html) and [Idempotent consumer](https://microservices.io/patterns/communication-style/idempotent-consumer.html) on microservices.io.
+- [Stripe: Idempotent requests](https://docs.stripe.com/api/idempotent_requests).
+- [Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) — Amazon Builders' Library.
+
+## Summary
+
+<Checklist>
+
+- Treat every job as at-least-once; the goal is an exactly-once effect, not exactly-once delivery.
+- Never `save()` then `queue.add()`: write the intent to an outbox in the same transaction; the relay uses `FOR UPDATE SKIP LOCKED`, sets `jobId` to the event id, and marks `published_at` after `addBulk`.
+- Make every handler idempotent: compare-and-set or `processed_messages` with `ON CONFLICT DO NOTHING` for your own data; idempotency keys derived from the business intent, plus a state lookup, for external systems. When exactly-once is impossible, choose at-least-once or at-most-once deliberately.
+- Classify errors: transient gets exponential backoff with jitter and a ceiling; "not yet" gets `DelayedError`; a 429 on a shared quota gets `queue.rateLimit()` + `Worker.RateLimitError()`; permanent gets `UnrecoverableError`.
+- Put a timeout on every outbound call; don't block the event loop in workers; treat `stalled` as a bug.
+- Dead letters: record the final failure in a table with alerts, keep the failed set as the source of truth, redrive with a new jobId.
+- Rate-limit with `limiter` (it counts jobs, not requests) plus `concurrency`; one queue per dependency.
+- Redis for queues: `noeviction`, AOF, not shared with a cache; pass options so BullMQ sets `maxRetriesPerRequest: null`; `removeOnComplete` / `removeOnFail` with an `age` in seconds.
+- Workers in their own process, closed in `beforeApplicationShutdown`, with a grace period longer than the slowest job.
+- Observe what didn't happen too: age of the oldest unpublished outbox row, queue depth, dead letters, stalls; job logs carry the original request's trace ID.
+
+</Checklist>

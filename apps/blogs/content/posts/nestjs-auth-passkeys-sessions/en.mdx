@@ -1,0 +1,927 @@
+---
+title: "NestJS Auth Done Right: Passkeys, Sessions vs JWT, and Refresh Token Rotation"
+excerpt: "An honest authentication design for a NestJS API and a Next.js frontend: when to use sessions, when to use JWT, how to rotate refresh tokens with reuse detection, passkey sign-in with SimpleWebAuthn, and the guards, rate limits and CSRF protection that go with it."
+---
+
+<Lead>Almost every NestJS project I've inherited has had the same kind of auth: a JWT that lives for 7 days, stored in `localStorage`, impossible to revoke, behind a login endpoint with no limit on attempts. It works, right up until the day you need to lock a hijacked account, or someone asks "how do I sign out of all devices?". This post is the design I actually use for a NestJS 12 API with a Next.js frontend: an honest comparison of sessions and JWT, short-lived access tokens with rotating refresh tokens and reuse detection, passkey sign-in with SimpleWebAuthn v14, plus the guards, rate limits and CSRF protection needed to make it all hold together.</Lead>
+
+## Session or JWT: looking the trade-off in the eye
+
+The "session or JWT" debate is usually framed wrong. The real question isn't the token format, it's: **where does authentication state live, and how fast do you need to be able to revoke it?**
+
+- **Server-side session:** the browser holds only a random, meaningless (opaque) ID. Everything else — which user, when it expires, whether it's been revoked — lives in the server's store (Redis, Postgres). Each request costs one lookup, and in exchange you can revoke **instantly**: delete the record and you're done.
+- **JWT (access token):** the token carries its own claims and signature. The server verifies the signature with a key and looks nothing up. In exchange, once issued, the token is **valid until `exp`** — you can't "delete" something that isn't in your store.
+
+### The "stateless" myth
+
+JWT is often sold as "stateless". That's only true if you accept that you can't revoke a token before it expires. The moment you need "lock this account now", "sign out everywhere" or "changing the password must kill old sessions", you add a denylist, a `tokenVersion` column to compare against, or a Redis check on every request. At that point you have state again — it just lives somewhere harder to see than a session.
+
+The honest way to use JWT is to **keep its lifetime really short** (5–15 minutes) so that "can't be revoked" shrinks to a small window, and to put revocation into something that has state: the refresh token.
+
+Size matters too. A session ID is about 32 random bytes. A JWT with a few claims, a signature and base64url encoding easily reaches a few hundred bytes to over 1 KB, and it rides along on **every** request. Stuffing roles, permissions, name and avatar into a JWT is the fastest way to bloat headers and keep stale data alive until the token expires.
+
+### When to use which
+
+| | Session cookie (Redis) | Long-lived JWT access token | Short JWT + rotating refresh token |
+| --- | --- | --- | --- |
+| **Revocation** | Instant, delete the record | Not possible before `exp` (unless you add a denylist) | Access token: wait up to a few minutes. Refresh: instant |
+| **Lookup per request** | Yes (one Redis read) | No | None for the access token; yes on refresh |
+| **Size per request** | ~32 bytes | Hundreds of bytes or more | Hundreds of bytes (access) |
+| **If stolen** | Usable until it expires or is deleted | Usable until `exp` — possibly days | Access: a few minutes. A replayed refresh token kills the whole family |
+| **Multiple services verifying on their own** | Must call back to the session store | Easy, just the public key | Easy, just the public key |
+| **Non-browser clients** | Awkward | Easy | Easy |
+| **Complexity** | Low | Low — because it skips the hard part | Medium to high |
+
+My defaults:
+
+- **One web app, one API, same site:** a session in Redis. Simple, revocable, few places to get it wrong. Most internal apps and mid-sized SaaS should stop here.
+- **Several services that need to know who the user is without calling back to an auth service, or a mobile app/CLI sharing the API:** a short JWT access token plus a rotating refresh token.
+- **A JWT that lives for days with no revocation mechanism:** don't use it for real users. Full stop.
+
+The rest of the post follows the second option because it's harder to get right, but I'll point out where sessions are simpler right below.
+
+## Short access token + rotating refresh token
+
+This pattern has three pieces, each covering a weakness of the others:
+
+1. The **access token** is a JWT that lives about 10 minutes and contains only `sub` (user id), `sid` (session id) and a few coarse roles. The frontend keeps it **in memory** and sends it in an `Authorization: Bearer` header. No `localStorage`, no cookie.
+2. The **refresh token** is a random 256-bit string, **not a JWT**. The server stores only its **hash**. It's delivered in a `HttpOnly`, `Secure`, `SameSite=Strict` cookie, with `Path` restricted to the auth routes.
+3. **Rotation with reuse detection:** on every refresh, the old token is marked used and a new one is issued. All tokens descended from the same login belong to one **family**. If a token that's already been used shows up again, the server can't tell the real user from the thief — so it revokes the **entire family**. This is exactly the mechanism described in [RFC 9700 (OAuth 2.0 Security BCP, section 4.14.2)](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14.2): the server can't tell which party sent the invalidated token, so it revokes the active one, accepting that the real user has to sign in again.
+
+<Figure src="/blog/nestjs-auth-passkeys-sessions-rotation.svg" alt="Sequence diagram: the client exchanges refresh token RT1 for RT2, an attacker replays RT1 and the server revokes the whole family, after which the client's RT2 is rejected too" caption="Refresh token rotation: each token can be used only once. A replayed old token is proof that a copy exists, so the whole family is revoked." />
+
+A few small but important decisions:
+
+- **The refresh token is opaque, not a JWT.** A refresh token always has to be looked up in the store (to check whether it's been used and whether the family is still alive), so a JWT signature buys nothing — it only makes the token longer and easy to mistake for "self-verifying".
+- **Hash with SHA-256, not argon2.** Passwords need a slow hash because the password space is small and guessable. A random 256-bit token can't be brute-forced, so SHA-256 is enough — and it allows a direct lookup by hash through a unique index. The point of hashing is that a leaked database dump doesn't mean leaked sessions.
+- **Two levels of expiry.** Each refresh token expires after 14 days of inactivity (idle), while the whole family has an absolute lifetime of 60 days — past that you must sign in again, no matter how regularly you use it.
+- **Keep used tokens.** It sounds backwards, but if you delete the old token the moment you rotate, the next replay just returns "not found" and you lose the ability to detect it. A used token must live until the whole family expires.
+
+The cookie looks like this:
+
+```http
+Set-Cookie: __Secure-rt=Vb9w...Q2k; Path=/api/auth; Expires=Sat, 07 Nov 2026 09:12:44 GMT; HttpOnly; Secure; SameSite=Strict
+Cache-Control: no-store
+```
+
+Note that I use the `__Secure-` prefix rather than `__Host-`. The `__Host-` prefix is stronger (it forbids `Domain`, preventing subdomain overwrites) but requires `Path=/`, meaning the cookie accompanies every request to the API. I chose `Path=/api/auth` so the refresh token only shows up at the auth endpoints; without a `Domain` attribute the cookie is still host-only. Choosing `__Host-` with `Path=/` is also reasonable — as long as it's deliberate.
+
+`SameSite=Strict` is nearly free here: the refresh cookie is only used by `fetch` from your own app and never needs to accompany a navigation from another site, so the usual cost of `Strict` (clicking a link from an email and appearing logged out) doesn't apply.
+
+## The simpler option: sessions in Redis
+
+Before going further, here's the version I recommend for most apps with a single web frontend. No JWT, no refresh, no family — just a random ID in a cookie and a record in Redis:
+
+```ts
+// auth/session.store.ts
+import { Injectable } from "@nestjs/common";
+import { Redis } from "ioredis";
+import { createHash, randomBytes } from "node:crypto";
+
+const IDLE_TTL_S = 30 * 60; // expires after 30 minutes of inactivity
+const ABSOLUTE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours max, regardless of activity
+
+interface SessionData {
+  userId: string;
+  createdAt: number;
+}
+
+const key = (sid: string) => `sess:${createHash("sha256").update(sid).digest("base64url")}`;
+
+@Injectable()
+export class SessionStore {
+  constructor(private readonly redis: Redis) {}
+
+  /** Always create a new ID after login — prevents session fixation. */
+  async create(userId: string): Promise<string> {
+    const sid = randomBytes(32).toString("base64url");
+    const data: SessionData = { userId, createdAt: Date.now() };
+    await this.redis.set(key(sid), JSON.stringify(data), "EX", IDLE_TTL_S);
+    await this.redis.sadd(`user-sess:${userId}`, key(sid)); // for "sign out everywhere"
+    return sid;
+  }
+
+  async touch(sid: string): Promise<SessionData | null> {
+    const raw = await this.redis.get(key(sid));
+    if (!raw) return null;
+    const data = JSON.parse(raw) as SessionData;
+    if (Date.now() - data.createdAt > ABSOLUTE_TTL_MS) {
+      await this.redis.del(key(sid));
+      return null;
+    }
+    await this.redis.expire(key(sid), IDLE_TTL_S); // extend the idle timeout
+    return data;
+  }
+
+  async destroyAll(userId: string): Promise<void> {
+    const keys = await this.redis.smembers(`user-sess:${userId}`);
+    if (keys.length) await this.redis.del(...keys);
+    await this.redis.del(`user-sess:${userId}`);
+  }
+}
+```
+
+The cookie is `__Host-sid` with `HttpOnly; Secure; SameSite=Lax; Path=/`. A guard reads the cookie, calls `touch()` and attaches the user to the request; revocation is deleting the key. The timeout numbers follow the [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): an idle timeout of 15–30 minutes for low-risk apps and much shorter for high-value ones, always an absolute timeout enforced **on the server**, and session IDs from a CSPRNG with at least 64 bits of entropy.
+
+If all you have is one Next.js web app talking to one NestJS API on the same site, stop here.
+
+## Passwords, if you still have them: argon2id
+
+Passkeys are the direction to go, but most systems will still have passwords for a long time — at least for existing users and as a fallback. For passwords, the [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) recommends argon2id with a minimum configuration of **19 MiB of memory (`m=19456`), 2 iterations (`t=2`), parallelism 1** — or equivalent configurations such as 46 MiB with `t=1`. If argon2id isn't available, use scrypt; bcrypt only for legacy systems, with a work factor of 10 or more and its 72-byte input limit.
+
+```ts
+// auth/password.service.ts
+import { Injectable, UnauthorizedException } from "@nestjs/common";
+import * as argon2 from "argon2";
+import { UserRepository } from "../users/user.repository";
+
+const PARAMS = { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
+
+@Injectable()
+export class PasswordService {
+  // Dummy hash so a nonexistent user takes exactly as long as a real one
+  private readonly dummyHash = argon2.hash("not-a-real-password", PARAMS);
+
+  constructor(private readonly users: UserRepository) {}
+
+  hash(plain: string): Promise<string> {
+    return argon2.hash(plain, PARAMS); // yields a PHC string: $argon2id$v=19$m=19456,t=2,p=1$...
+  }
+
+  async verifyLogin(email: string, plain: string): Promise<string> {
+    const user = await this.users.findByEmail(email.trim().toLowerCase());
+    const ok = await argon2.verify(user?.passwordHash ?? (await this.dummyHash), plain);
+    if (!user || !ok) throw new UnauthorizedException("Incorrect email or password");
+
+    // Upgrade an old hash the moment we have the plaintext password in hand
+    if (argon2.needsRehash(user.passwordHash, PARAMS)) {
+      await this.users.updatePasswordHash(user.id, await this.hash(plain));
+    }
+    return user.id;
+  }
+}
+```
+
+Three details in the code above aren't decoration:
+
+- **Identical error messages** for "no such user" and "wrong password", and **nearly identical response times** thanks to the dummy hash. Without that, timing alone tells you which emails are registered.
+- **The PHC string carries its own parameters**, so `needsRehash` allows gradual upgrades: raise `memoryCost` in config, and each user's hash is refreshed as they sign in.
+- **Argon2 is memory-hungry by design.** 19 MiB per hash means 50 concurrent login requests occupy almost 1 GB. That's one more reason to rate limit login — not only to stop password guessing but so the login endpoint doesn't become a DoS tool.
+
+Node.js has had `crypto.argon2()` since v24.7.0, but it's a raw primitive: you generate the salt, encode the parameters and do the comparison yourself. The `argon2` package handles PHC strings and `needsRehash` out of the box, so I still use it.
+
+## Passkeys and WebAuthn: what actually happens
+
+A passkey is a public/private key pair created by an authenticator (Touch ID, Windows Hello, a password manager, a USB security key) **specifically for your website**. The server keeps only the public key. At sign-in, the server sends a random challenge, the authenticator signs it with the private key, and the server checks the signature. There's no shared secret on the server to leak, and nothing for a user to mistakenly type into a fake page. The underlying spec, [WebAuthn Level 3](https://www.w3.org/TR/webauthn-3/), became a W3C Recommendation on 25 August 2026.
+
+<Figure src="/blog/nestjs-auth-passkeys-sessions-ceremony.svg" alt="Diagram of the two WebAuthn ceremonies between browser, authenticator and server: registration returns a public key, authentication returns a signature over the challenge" caption="Registering and signing in with a passkey. The server generates a challenge and stores it briefly; the browser binds the origin into the signed data; the server checks the challenge, origin and RP ID before trusting the signature." />
+
+There are two ceremonies, both following the same mold: "the server sets the question, the authenticator signs, the server grades":
+
+- **Registration:** the server generates options containing the challenge, RP and user info, and the list of existing credentials to avoid duplicate registration. The browser calls `navigator.credentials.create()`, the authenticator creates the key pair and returns the public key. The server verifies and stores the credential.
+- **Authentication:** the server generates a challenge, the browser calls `navigator.credentials.get()`, and the authenticator signs the challenge together with client data. The server looks up the public key by credential ID and verifies the signature.
+
+Concepts you need to have firmly in hand before writing code:
+
+**The challenge** must be random, single-use, short-lived, and **bound to the exact browser session that requested it**. The spec requires a challenge of at least 16 bytes; SimpleWebAuthn generates one for you by default. The easy part to get wrong is storage: I keep the challenge in Redis with a TTL of a few minutes, keyed by a random ceremony ID that lives in an `HttpOnly` cookie, and fetch it with `GETDEL` so each challenge can be used exactly once.
+
+**RP ID and origin** are what make passkeys phishing-resistant. The RP ID is the domain (for example `example.com`) the credential belongs to; the browser won't let a page on another domain use that credential. The origin (`https://app.example.com`) is written by the browser into `clientDataJSON` — the data the authenticator signs — so a fake page can't forge it. But all of that only matters if the **server checks** `expectedOrigin` and `expectedRPID`. Skipping that step means throwing away the reason to use passkeys in the first place.
+
+**The signature counter** is a counter the authenticator increments on every signature. The spec says: if either value is nonzero and the new value is not greater than the stored one, the authenticator may have been cloned — or may just be misbehaving. Synced passkeys usually always return 0, so the counter mostly matters for hardware keys. SimpleWebAuthn throws on its own in this case; your job is to store `newCounter` after each success and investigate when counter errors appear in the logs.
+
+**A discoverable credential** (formerly a resident key) is a passkey that carries the user info itself, so users don't have to type a username: the server sends an empty `allowCredentials` and the authenticator presents a list of accounts itself. This is what enables **conditional UI** — the passkey appears right in the autofill dropdown of the username field, as long as the input has `autocomplete="username webauthn"` and the page calls WebAuthn in conditional mode from load.
+
+**The backup flags** (`credentialDeviceType`, `credentialBackedUp`) tell you whether a passkey is single-device or synced. Store them — they help you decide whether to nudge the user to create a backup passkey.
+
+### Account recovery: where every passkey design gets tested
+
+However strong passkeys are, the system is only as safe as its **weakest recovery path**. If "I lost my passkey" leads to a reset link emailed with no extra step, attackers will go through email rather than attack the passkey. The strategy I use:
+
+- **Encourage multiple passkeys.** After the first passkey is registered on a device that only has one copy (no backup), suggest adding another — on a phone or a synced password manager.
+- **A controlled fallback.** A password (argon2id) or an email magic link still exists for users without a passkey, but a session created through the fallback is marked "lower assurance": adding or removing a passkey, changing the email, or viewing recovery codes all require re-authentication (step-up).
+- **Single-use recovery codes,** stored hashed like passwords and shown exactly once when created.
+- **Recovery is a security event:** send a notification to every known channel, revoke all old sessions, and add a waiting period for sensitive actions if the product allows it.
+
+## The NestJS scaffolding: a global guard, authorization, rate limiting
+
+### Closed by default: a global guard and @Public()
+
+The first rule: **every route requires sign-in unless it's explicitly marked public**. The opposite — remembering to attach `@UseGuards()` to each controller — means that sooner or later a new route gets forgotten.
+
+```ts
+// auth/access-token.guard.ts
+import {
+  CanActivate, ExecutionContext, Injectable, SetMetadata,
+  UnauthorizedException, createParamDecorator,
+} from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import { JwtService } from "@nestjs/jwt";
+import type { Request } from "express";
+
+export interface AccessClaims {
+  sub: string; // user id
+  sid: string; // id of the token family (the login session)
+  roles: string[];
+}
+
+declare module "express-serve-static-core" {
+  interface Request {
+    auth?: AccessClaims;
+  }
+}
+
+export const IS_PUBLIC = "auth:isPublic";
+export const Public = (value = true) => SetMetadata(IS_PUBLIC, value);
+export const Auth = createParamDecorator(
+  (_: unknown, ctx: ExecutionContext) => ctx.switchToHttp().getRequest<Request>().auth,
+);
+
+
+@Injectable()
+export class AccessTokenGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector, private readonly jwt: JwtService) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]);
+    if (isPublic) return true;
+
+    const req = ctx.switchToHttp().getRequest<Request>();
+    const [scheme, token] = req.headers.authorization?.split(" ") ?? [];
+    if (scheme !== "Bearer" || !token) throw new UnauthorizedException();
+
+    try {
+      // Pin the algorithm, issuer and audience — don't trust the token's "alg" header
+      req.auth = await this.jwt.verifyAsync<AccessClaims>(token, {
+        algorithms: ["HS256"],
+        issuer: "https://api.example.com",
+        audience: "web",
+      });
+      return true;
+    } catch {
+      throw new UnauthorizedException();
+    }
+  }
+}
+```
+
+`getAllAndOverride` reads metadata on the handler first, then on the class, so `@Public()` on a controller applies to every method, while on a method it applies only to that method. The guard returns `401` (not authenticated), which differs from the `403` (authenticated but not permitted) of the authorization guard below — distinguishing the two codes tells the frontend when to try a refresh and when not to.
+
+### RBAC with Reflector.createDecorator, and when to move to CASL
+
+```ts
+// auth/roles.guard.ts
+import { CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import type { Request } from "express";
+
+export type Role = "admin" | "editor" | "member";
+export const Roles = Reflector.createDecorator<Role[]>();
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    const required = this.reflector.getAllAndOverride(Roles, [ctx.getHandler(), ctx.getClass()]);
+    if (!required?.length) return true;
+    const { auth } = ctx.switchToHttp().getRequest<Request>();
+    // false -> Nest throws ForbiddenException (403) on its own
+    return !!auth && required.some((role) => auth.roles.includes(role));
+  }
+}
+
+// Usage: @Roles(["admin"]) on a controller or method
+```
+
+Roles live in the access token, so changing a user's role takes effect on the next refresh — at most the lifetime of the access token. That's why access tokens must be short.
+
+RBAC is enough when the question is "does this user have this kind of permission". When the question becomes "may this user edit **this post**" — depending on owner, status, tenant — roles start exploding into `editor-own-draft`, `editor-any-published`... That's when to move to policy-based, for example [CASL](https://casl.js.org/) (currently v7):
+
+```ts
+// auth/ability.ts
+import { AbilityBuilder, createMongoAbility, type InferSubjects, type MongoAbility } from "@casl/ability";
+import type { AccessClaims } from "./access-token.guard";
+
+interface Post { kind: "Post"; id: string; authorId: string; status: "draft" | "published" }
+type Action = "manage" | "read" | "update" | "publish";
+export type AppAbility = MongoAbility<[Action, InferSubjects<Post> | "all"]>;
+
+export function defineAbilityFor(user: AccessClaims): AppAbility {
+  const { can, cannot, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+  can("read", "Post", { status: "published" });
+  can(["read", "update"], "Post", { authorId: user.sub });
+  cannot("update", "Post", { status: "published" }); // authors can only edit drafts
+  if (user.roles.includes("editor")) can("publish", "Post");
+  if (user.roles.includes("admin")) can("manage", "all"); // put last so it wins over the rules above
+  return build({ detectSubjectType: (subject) => subject.kind });
+}
+
+// In a service, after loading the post:
+// if (defineAbilityFor(auth).cannot("update", post)) throw new ForbiddenException();
+```
+
+An important difference: a policy check needs **the resource's data**, so it usually lives in a service after the record is loaded, not in a guard that runs before the handler.
+
+### Rate limiting login and refresh with @nestjs/throttler
+
+```ts
+// app.module.ts (excerpt)
+import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { ThrottlerGuard, ThrottlerModule, minutes } from "@nestjs/throttler";
+import { AccessTokenGuard } from "./auth/access-token.guard";
+import { RolesGuard } from "./auth/roles.guard";
+
+@Module({
+  imports: [
+    ThrottlerModule.forRoot({
+      throttlers: [{ name: "default", ttl: minutes(1), limit: 120 }],
+      // Running multiple instances? Add Redis storage, e.g. @nest-lab/throttler-storage-redis
+    }),
+  ],
+  providers: [
+    // APP_GUARDs run in registration order: block floods first, then authenticate, then authorize
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: AccessTokenGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+  ],
+})
+export class AppModule {}
+```
+
+Since v5, `ttl` is in **milliseconds**, and `@Throttle()` takes an object keyed by throttler name: `@Throttle({ default: { limit: 5, ttl: minutes(1) } })`. In the current 6.x, the decorator also accepts a per-route `blockDuration` and `getTracker`. If the API sits behind a proxy (including a Next.js rewrite), you must enable `trust proxy` on Express, otherwise all users share one IP — which means one bucket.
+
+An IP-based throttler only stops floods from a single source. Credential stuffing from thousands of IPs needs an additional **per-account failure counter** in the service (a Redis `INCR` with a TTL, with gradually increasing delays), and that limit must return the same error message so it doesn't turn into an account-probing tool.
+
+<Callout>
+  **There's an official package now.** Since late September 2026, NestJS has `@nestjs/authentication` (at 0.1.x, requires NestJS 12) with a global guard, `@Public()`, server-side sessions, rotating refresh tokens with reuse detection, TOTP and OIDC. If you're starting a new project, you should evaluate it. This post builds the pieces by hand so you understand what they do — and because, at the time of writing, the package's docs don't mention passkeys.
+</Callout>
+
+## A worked example: refresh token rotation and passkey sign-in, end to end
+
+Context: a SaaS with a Next.js 16 frontend at `app.example.com` and a NestJS 12 API. To keep cookies as simple as possible, the browser talks to **one origin**: Next.js rewrites `/api/*` to NestJS, and NestJS uses `app.setGlobalPrefix("api")` so the paths on both sides match. This detail matters: a cookie with `Path=/api/auth` is matched against the path **the browser sees**, so if the rewrite strips the `/api` prefix, the cookie will never be sent.
+
+```ts
+// next.config.ts (Next.js)
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return [{ source: "/api/:path*", destination: `${process.env.API_INTERNAL_URL}/api/:path*` }];
+  },
+};
+
+export default nextConfig;
+```
+
+### Step 1: an ORM-agnostic schema and repository
+
+The tables (Postgres as the example). The most noteworthy part is the final `UPDATE` — the heart of safe rotation under concurrent requests:
+
+```sql
+CREATE TABLE token_families (
+  id                  uuid PRIMARY KEY,
+  user_id             uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  absolute_expires_at timestamptz NOT NULL,
+  revoked_at          timestamptz,
+  revoke_reason       text,
+  user_agent          text
+);
+CREATE INDEX token_families_active ON token_families (user_id) WHERE revoked_at IS NULL;
+
+CREATE TABLE refresh_tokens (
+  id          uuid PRIMARY KEY,
+  family_id   uuid NOT NULL REFERENCES token_families(id) ON DELETE CASCADE,
+  user_id     uuid NOT NULL,
+  token_hash  text NOT NULL UNIQUE,  -- SHA-256 base64url, never store the raw token
+  expires_at  timestamptz NOT NULL,
+  used_at     timestamptz            -- kept after use so replays can be detected
+);
+
+-- The core of consumeAndReplace(): compare-and-set inside one transaction
+UPDATE refresh_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL;
+-- rowCount = 1: this request won, INSERT the new token in the same transaction
+-- rowCount = 0: the token was already used -> reuse
+```
+
+If you only read `used_at`, check it in code, and then write, two simultaneous requests will both see `NULL` and both receive a new token — a family split in two without anyone knowing. The `used_at IS NULL` condition inside the `UPDATE` itself makes the database the referee.
+
+The service knows nothing about Prisma, Drizzle or TypeORM. It depends only on an abstract class — in Nest an abstract class works directly as a DI token, so switching ORMs is just switching the provider:
+
+```ts
+// auth/refresh-token.repository.ts
+export type RevokeReason = "logout" | "logout_all" | "reuse_detected" | "password_changed";
+
+export interface TokenFamily {
+  id: string;
+  userId: string;
+  absoluteExpiresAt: Date;
+  revokedAt: Date | null;
+  userAgent: string | null;
+}
+
+export interface RefreshTokenRow {
+  id: string;
+  familyId: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: Date;
+  usedAt: Date | null;
+}
+
+export type NewRefreshToken = Omit<RefreshTokenRow, "usedAt">;
+
+export abstract class RefreshTokenRepository {
+  abstract createFamily(input: Omit<TokenFamily, "id" | "revokedAt">): Promise<TokenFamily>;
+  abstract findFamily(id: string): Promise<TokenFamily | null>;
+  abstract findByHash(tokenHash: string): Promise<RefreshTokenRow | null>;
+  abstract insert(token: NewRefreshToken): Promise<void>;
+  /** One transaction: mark the old token as used (if it isn't yet) and insert the new one. */
+  abstract consumeAndReplace(oldId: string, next: NewRefreshToken): Promise<boolean>;
+  abstract revokeFamily(familyId: string, reason: RevokeReason): Promise<void>;
+  abstract revokeAllForUser(userId: string, reason: RevokeReason): Promise<void>;
+}
+```
+
+### Step 2: the rotation service
+
+```ts
+// auth/refresh-token.service.ts
+import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { RefreshTokenRepository, type NewRefreshToken, type RevokeReason } from "./refresh-token.repository";
+import { UserRepository } from "../users/user.repository";
+
+const IDLE_MS = 14 * 24 * 3600 * 1000; // a refresh token unused for 14 days dies
+const ABSOLUTE_MS = 60 * 24 * 3600 * 1000; // the whole family lives 60 days at most
+export const ACCESS_TTL_S = 600; // matches JwtModule's signOptions.expiresIn
+
+export interface IssuedTokens {
+  accessToken: string;
+  refreshToken: string;
+  refreshExpiresAt: Date;
+}
+
+const sha256 = (v: string) => createHash("sha256").update(v).digest("base64url");
+
+@Injectable()
+export class RefreshTokenService {
+  private readonly logger = new Logger(RefreshTokenService.name);
+
+  constructor(
+    private readonly repo: RefreshTokenRepository,
+    private readonly users: UserRepository,
+    private readonly jwt: JwtService,
+  ) {}
+
+  /** After a successful sign-in (password or passkey): open a new family. */
+  async startSession(userId: string, userAgent: string | null): Promise<IssuedTokens> {
+    const family = await this.repo.createFamily({
+      userId,
+      userAgent,
+      absoluteExpiresAt: new Date(Date.now() + ABSOLUTE_MS),
+    });
+    const next = this.mint(userId, family.id, family.absoluteExpiresAt);
+    await this.repo.insert(next.row);
+    return this.issue(userId, family.id, next);
+  }
+
+  async rotate(presented: string): Promise<IssuedTokens> {
+    const now = new Date();
+    const token = await this.repo.findByHash(sha256(presented));
+    if (!token) throw new UnauthorizedException();
+
+    const family = await this.repo.findFamily(token.familyId);
+    if (!family || family.revokedAt || family.absoluteExpiresAt <= now) {
+      throw new UnauthorizedException();
+    }
+    if (token.usedAt) return this.reuseDetected(token.userId, family.id);
+    if (token.expiresAt <= now) throw new UnauthorizedException();
+
+    const next = this.mint(token.userId, family.id, family.absoluteExpiresAt);
+    const won = await this.repo.consumeAndReplace(token.id, next.row);
+    if (!won) return this.reuseDetected(token.userId, family.id); // lost the CAS race
+
+    return this.issue(token.userId, family.id, next);
+  }
+
+  async revokeByToken(presented: string, reason: RevokeReason): Promise<void> {
+    const token = await this.repo.findByHash(sha256(presented));
+    if (token) await this.repo.revokeFamily(token.familyId, reason);
+  }
+
+  revokeAll(userId: string, reason: RevokeReason): Promise<void> {
+    return this.repo.revokeAllForUser(userId, reason);
+  }
+
+  private async reuseDetected(userId: string, familyId: string): Promise<never> {
+    await this.repo.revokeFamily(familyId, "reuse_detected");
+    // A genuine security event: structured log, feed it to alerting, consider notifying the user
+    this.logger.warn({ event: "refresh_token_reuse", userId, familyId });
+    throw new UnauthorizedException();
+  }
+
+  private mint(userId: string, familyId: string, familyExpiresAt: Date) {
+    const value = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Math.min(Date.now() + IDLE_MS, familyExpiresAt.getTime()));
+    const row: NewRefreshToken = { id: randomUUID(), familyId, userId, tokenHash: sha256(value), expiresAt };
+    return { value, row };
+  }
+
+  private async issue(userId: string, familyId: string, next: { value: string; row: NewRefreshToken }) {
+    // Read the latest roles on every refresh: a role change takes effect after ACCESS_TTL_S at most
+    const roles = await this.users.getRoles(userId);
+    const accessToken = await this.jwt.signAsync({ sub: userId, sid: familyId, roles });
+    return { accessToken, refreshToken: next.value, refreshExpiresAt: next.row.expiresAt };
+  }
+}
+```
+
+`JwtModule` is registered with a `secret` from config and `signOptions: { expiresIn: "10m", issuer, audience }` — the same issuer/audience the guard checks. I use HS256 because only one service signs and verifies; when several services need to verify on their own, switch to an asymmetric key pair (ES256 or EdDSA) so only the auth service holds the private key.
+
+A deliberate decision: **no "grace window"**. Some systems let the old token be reused for a few seconds after rotation so that two tabs refreshing at the same time aren't treated as an attack. I don't do that, because that's precisely the window in which a replay goes undetected. Instead I resolve the contention at its source on the client (see step 5). The cost: if the server has rotated but the response is lost on the way back, the next time the client sends the old token and gets signed out. Rare, and safe in the right direction.
+
+### Step 3: the controller and the cookie
+
+```ts
+// auth/auth.controller.ts
+import {
+  Body, Controller, ForbiddenException, HttpCode, Post, Req, Res, UnauthorizedException,
+} from "@nestjs/common";
+import { Throttle, minutes } from "@nestjs/throttler";
+import type { CookieOptions, Request, Response } from "express";
+import { Auth, Public, type AccessClaims } from "./access-token.guard";
+import { PasswordService } from "./password.service";
+import { ACCESS_TTL_S, RefreshTokenService, type IssuedTokens } from "./refresh-token.service";
+import { LoginDto } from "./login.dto";
+
+const RT_COOKIE = "__Secure-rt";
+const rtCookie = (expires?: Date): CookieOptions => ({
+  httpOnly: true,
+  secure: true,
+  sameSite: "strict",
+  path: "/api/auth", // the path the browser sees, not the path after the rewrite
+  ...(expires && { expires }),
+});
+
+/** A request that uses the cookie must come from our own app. */
+export function assertSameOrigin(req: Request): void {
+  const site = req.get("sec-fetch-site");
+  const origin = req.get("origin");
+  if (site ? site !== "same-origin" : origin !== process.env.APP_ORIGIN) {
+    throw new ForbiddenException();
+  }
+}
+
+@Public()
+@Controller("auth")
+export class AuthController {
+  constructor(private readonly passwords: PasswordService, private readonly tokens: RefreshTokenService) {}
+
+  @Post("login")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: minutes(1), blockDuration: minutes(5) } })
+  async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    assertSameOrigin(req);
+    const userId = await this.passwords.verifyLogin(dto.email, dto.password);
+    return this.respond(res, await this.tokens.startSession(userId, req.get("user-agent") ?? null));
+  }
+
+  @Post("refresh")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: minutes(1) } })
+  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    assertSameOrigin(req);
+    const presented: string | undefined = req.cookies?.[RT_COOKIE];
+    if (!presented) throw new UnauthorizedException();
+    try {
+      return this.respond(res, await this.tokens.rotate(presented));
+    } catch (err) {
+      res.clearCookie(RT_COOKIE, rtCookie()); // a dead token means clearing the cookie too
+      throw err;
+    }
+  }
+
+  @Post("logout")
+  @HttpCode(204)
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    assertSameOrigin(req);
+    const presented: string | undefined = req.cookies?.[RT_COOKIE];
+    if (presented) await this.tokens.revokeByToken(presented, "logout");
+    res.clearCookie(RT_COOKIE, rtCookie());
+  }
+
+  @Public(false) // override: this route needs an access token
+  @Post("logout-all")
+  @HttpCode(204)
+  async logoutAll(@Auth() auth: AccessClaims, @Res({ passthrough: true }) res: Response) {
+    await this.tokens.revokeAll(auth.sub, "logout_all");
+    res.clearCookie(RT_COOKIE, rtCookie());
+  }
+
+  private respond(res: Response, t: IssuedTokens) {
+    res.cookie(RT_COOKIE, t.refreshToken, rtCookie(t.refreshExpiresAt));
+    res.setHeader("Cache-Control", "no-store");
+    return { accessToken: t.accessToken, expiresIn: ACCESS_TTL_S };
+  }
+}
+```
+
+`@Public(false)` on the method beats `@Public()` on the class because `getAllAndOverride` reads the handler first. `req.cookies` is available thanks to `app.use(cookieParser())` in `main.ts`, together with `app.set("trust proxy", "loopback")` when sitting behind the Next.js rewrite on the same machine.
+
+`logout-all` uses the access token rather than the cookie, so there's no CSRF risk. An honest caveat: it revokes every refresh token immediately, but access tokens already issued stay alive until they expire — 10 minutes at most. If the product can't accept those 10 minutes (for example when locking a hijacked account), have the guard check `sid` against a "revoked families" set in Redis with a TTL equal to the access token's lifetime. At that point you've added state to the path of every request — exactly as in the "stateless myth" section above.
+
+### Step 4: passkey sign-in with SimpleWebAuthn
+
+SimpleWebAuthn v14 (released September 2026) requires Node 22 or later. The signatures of the main functions are unchanged from v13: `verifyAuthenticationResponse` takes `credential: { id, publicKey, counter, transports }`, and the registration result lives in `registrationInfo.credential`. The challenge is stored in Redis, keyed by a ceremony ID that lives in an `HttpOnly` cookie — that's how you **bind the challenge to the exact browser that requested it**, even when the user isn't signed in yet.
+
+```ts
+// auth/passkey.service.ts
+import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/common";
+import {
+  generateAuthenticationOptions, generateRegistrationOptions,
+  verifyAuthenticationResponse, verifyRegistrationResponse,
+  type AuthenticationResponseJSON, type RegistrationResponseJSON,
+} from "@simplewebauthn/server";
+import { Redis } from "ioredis";
+import { randomBytes } from "node:crypto";
+import { PasskeyRepository } from "./passkey.repository";
+import { UserRepository } from "../users/user.repository";
+
+const RP_ID = "example.com"; // the domain, with no scheme or port
+const ORIGIN = "https://app.example.com"; // the full origin the browser writes into clientDataJSON
+const CHALLENGE_TTL_S = 300;
+
+type Ceremony = { challenge: string; userId?: string };
+
+@Injectable()
+export class PasskeyService {
+  constructor(
+    private readonly redis: Redis,
+    private readonly passkeys: PasskeyRepository,
+    private readonly users: UserRepository,
+  ) {}
+
+  async registrationOptions(userId: string) {
+    const user = await this.users.findById(userId);
+    const existing = await this.passkeys.listByUser(userId);
+    const options = await generateRegistrationOptions({
+      rpName: "Example",
+      rpID: RP_ID,
+      userName: user.email,
+      userDisplayName: user.email,
+      // A random user handle, stable per user — not the email or an internal id
+      userID: new Uint8Array(Buffer.from(user.webauthnUserId, "base64url")),
+      excludeCredentials: existing.map((p) => ({ id: p.id, transports: p.transports })),
+      authenticatorSelection: { residentKey: "required", userVerification: "required" },
+    });
+    return { options, ceremonyId: await this.save("reg", { challenge: options.challenge, userId }) };
+  }
+
+  async verifyRegistration(userId: string, ceremonyId: string | undefined, response: RegistrationResponseJSON) {
+    const ceremony = await this.take("reg", ceremonyId);
+    if (ceremony.userId !== userId) throw new BadRequestException();
+    const result = await verifyRegistrationResponse({
+      response,
+      expectedChallenge: ceremony.challenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+    }).catch(() => null);
+    if (!result?.verified) throw new BadRequestException("Could not verify the passkey");
+
+    const { credential, credentialDeviceType, credentialBackedUp } = result.registrationInfo;
+    await this.passkeys.create({
+      id: credential.id,
+      userId,
+      publicKey: credential.publicKey, // Uint8Array -> bytea column
+      counter: credential.counter,
+      transports: credential.transports ?? [],
+      deviceType: credentialDeviceType,
+      backedUp: credentialBackedUp,
+    });
+  }
+
+  async authenticationOptions() {
+    // Empty allowCredentials: discoverable credential, no username needed, no account leaked
+    const options = await generateAuthenticationOptions({ rpID: RP_ID, userVerification: "required" });
+    return { options, ceremonyId: await this.save("auth", { challenge: options.challenge }) };
+  }
+
+  /** Returns the userId if valid. */
+  async verifyAuthentication(ceremonyId: string | undefined, response: AuthenticationResponseJSON) {
+    const { challenge } = await this.take("auth", ceremonyId);
+    const passkey = await this.passkeys.findById(response.id);
+    if (!passkey) throw new UnauthorizedException();
+
+    const result = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: challenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+      credential: {
+        id: passkey.id,
+        publicKey: new Uint8Array(passkey.publicKey),
+        counter: passkey.counter,
+        transports: passkey.transports,
+      },
+    }).catch(() => null); // bad signature, wrong origin, counter going backwards... all throw
+    if (!result?.verified) throw new UnauthorizedException();
+
+    await this.passkeys.updateUsage(passkey.id, {
+      counter: result.authenticationInfo.newCounter,
+      backedUp: result.authenticationInfo.credentialBackedUp,
+      lastUsedAt: new Date(),
+    });
+    return passkey.userId;
+  }
+
+  private async save(kind: "reg" | "auth", data: Ceremony): Promise<string> {
+    const id = randomBytes(16).toString("base64url");
+    await this.redis.set(`webauthn:${kind}:${id}`, JSON.stringify(data), "EX", CHALLENGE_TTL_S);
+    return id;
+  }
+
+  private async take(kind: "reg" | "auth", id: string | undefined): Promise<Ceremony> {
+    // GETDEL: read and delete in one command — a challenge can be used only once
+    const raw = id ? await this.redis.getdel(`webauthn:${kind}:${id}`) : null;
+    if (!raw) throw new BadRequestException("Challenge does not exist or has expired");
+    return JSON.parse(raw) as Ceremony;
+  }
+}
+```
+
+The controller is now just a thin layer: `POST /auth/passkey/options` calls `authenticationOptions()`, puts the ceremony ID in a `__Secure-wa` cookie (`HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/api/auth`, 5-minute lifetime) and returns `options`; `POST /auth/passkey/verify` reads that cookie, calls `verifyAuthentication()`, and then calls `tokens.startSession()` exactly like a password login. From here on, passkey sessions and password sessions share the same refresh path. The two registration endpoints sit behind `AccessTokenGuard` — only a signed-in user (ideally one who has just re-authenticated) can add a passkey.
+
+### Step 5: the Next.js side
+
+The access token lives only in the tab's memory. Every request goes through an `apiFetch` function that attaches the token and, on a `401`, refreshes **exactly once**, no matter how many requests fail at the same time. The [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API) serializes refreshes across tabs of the same origin — the later tab waits for the earlier one to finish before sending the cookie (which by then holds the new token), so two tabs never present the same refresh token.
+
+```ts
+// lib/auth-client.ts
+let accessToken: string | null = null;
+let inflight: Promise<string | null> | null = null;
+
+export const setAccessToken = (token: string | null) => {
+  accessToken = token;
+};
+
+function refresh(): Promise<string | null> {
+  // Single-flight within a tab + Web Locks across tabs
+  inflight ??= navigator.locks
+    .request("auth-refresh", async () => {
+      const res = await fetch("/api/auth/refresh", { method: "POST" });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { accessToken: string };
+      return body.accessToken;
+    })
+    .then((token) => (accessToken = token))
+    .finally(() => (inflight = null));
+  return inflight;
+}
+
+export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const send = (token: string | null) => {
+    const headers = new Headers(init.headers);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(input, { ...init, headers });
+  };
+
+  const res = await send(accessToken ?? (await refresh()));
+  if (res.status !== 401) return res;
+
+  const token = await refresh();
+  if (!token) {
+    window.location.assign("/login");
+    return res;
+  }
+  return send(token);
+}
+```
+
+The sign-in form turns on conditional UI as soon as it mounts, and still keeps an explicit passkey button and a password field for users who don't have a passkey yet:
+
+```tsx
+// app/login/login-form.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { WebAuthnError, browserSupportsWebAuthnAutofill, startAuthentication } from "@simplewebauthn/browser";
+import { setAccessToken } from "@/lib/auth-client";
+
+async function signInWithPasskey(useBrowserAutofill: boolean): Promise<void> {
+  const optionsJSON = await (await fetch("/api/auth/passkey/options", { method: "POST" })).json();
+  const assertion = await startAuthentication({ optionsJSON, useBrowserAutofill });
+  const res = await fetch("/api/auth/passkey/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(assertion),
+  });
+  if (!res.ok) throw new Error("passkey_failed");
+  setAccessToken((await res.json()).accessToken);
+}
+
+export function LoginForm() {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+
+  const run = (autofill: boolean) =>
+    signInWithPasskey(autofill)
+      .then(() => router.replace("/dashboard"))
+      .catch((err: unknown) => {
+        // A new call aborts the pending conditional call (and Strict Mode runs effects twice)
+        if (err instanceof WebAuthnError && err.code === "ERROR_CEREMONY_ABORTED") return;
+        setError("Couldn't sign in with a passkey. Try again or use your password.");
+      });
+
+  useEffect(() => {
+    browserSupportsWebAuthnAutofill().then((ok) => ok && run(true));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function onSubmit(form: FormData) {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
+    });
+    if (!res.ok) return setError("Incorrect email or password.");
+    setAccessToken((await res.json()).accessToken);
+    router.replace("/dashboard");
+  }
+
+  return (
+    <form action={onSubmit}>
+      <input name="email" type="email" autoComplete="username webauthn" required />
+      <input name="password" type="password" autoComplete="current-password" />
+      <button type="submit">Sign in</button>
+      <button type="button" onClick={() => run(false)}>Use a passkey</button>
+      {error && <p role="alert">{error}</p>}
+    </form>
+  );
+}
+```
+
+An operational detail: a conditional request can wait a very long time (the user opens the page and goes to make coffee), longer than the challenge's 5-minute TTL. When verify returns an expired-challenge error, just call `run(true)` again to fetch fresh options — don't stretch the TTL to hours.
+
+## CSRF when the refresh token lives in a cookie
+
+The refresh token goes in a cookie so that JavaScript (and XSS) can't read it. The price is that cookies ride along with requests automatically, so the endpoints that use cookies — `refresh`, `logout`, `passkey/verify`, `login` — have a CSRF surface. An attacker can't read the response (CORS blocks that), but can still **cause side effects**: force a token rotation to mess up the session, sign the user out, or login CSRF — signing the victim into the attacker's account.
+
+The layers I stack, in order of importance:
+
+1. **`SameSite=Strict`** on the refresh cookie and the ceremony cookie. The browser won't send them on any cross-site request. As I said, for a cookie only used through `fetch`, `Strict` costs nothing in UX.
+2. **Checking `Sec-Fetch-Site` / `Origin`** in `assertSameOrigin()` from step 3. This is necessary because "same-site" is broader than "same-origin": another hijacked subdomain of `example.com` is still same-site, and `SameSite` doesn't block it.
+3. **`POST` only, JSON body.** No auth endpoint changes state via `GET`, and requiring `Content-Type: application/json` forces cross-origin requests through a preflight.
+4. **`Path=/api/auth`** limits where the cookie appears, so other routes are never accidentally "authenticated by cookie".
+
+An access token sent in the `Authorization` header is inherently immune to CSRF: the browser doesn't attach it on its own.
+
+<Callout>
+  **None of these layers survives XSS.** A script running in your origin can call `/api/auth/refresh` just like the app itself — it can't carry the refresh token away, but it can get a fresh access token for as long as the tab is open. An `HttpOnly` cookie limits the **duration and scope** of the damage; it doesn't erase it. A strict CSP and input sanitization remain the main line of defense.
+</Callout>
+
+## Common mistakes
+
+**A long-lived JWT with no revocation path.** A 7- or 30-day access token means a leaked token is usable for that long, and the "sign out" button just deletes the token on the client. Keep access tokens under 15 minutes and put revocation into the refresh token or the session.
+
+**Storing tokens in `localStorage`.** Every script on the origin can read it, and a small XSS hole turns into a long-lasting credential leak. OWASP says it plainly: don't store session IDs, JWTs or refresh tokens in Web Storage.
+
+**Not binding the challenge to a session.** Storing the challenge by `userId`, or accepting any challenge the server ever issued, opens the door to replay and to one browser completing a ceremony that another browser started. The challenge must be tied to the ceremony cookie, short-lived, and deleted the moment it's read.
+
+**Skipping the origin and RP ID checks.** Passing an `expectedOrigin` taken from the request's `Origin` header "for convenience across environments" removes passkeys' phishing resistance. The expected values must come from server-side config; if there are several valid origins, pass a fixed array.
+
+**Revealing whether an account exists.** Three places leak: different error messages for "no such user" and "wrong password"; different response times; and a "username first" passkey flow that returns an empty `allowCredentials` for a nonexistent user. Use discoverable credentials and generic error messages, and on the sign-up page send an "account already exists" email instead of showing an error on screen.
+
+**No rate limiting.** Login, refresh, passkey options/verify, forgot password — all of them need limits. With argon2, a missing rate limit is also a DoS hole.
+
+**Non-atomic rotation, or deleting old tokens.** Read-then-write lets two concurrent requests both win; deleting used tokens means replays are no longer detected. Both give the feeling of "we did rotation" with no security benefit.
+
+## Further reading
+
+- [RFC 9700 — Best Current Practice for OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700.html), section 4.14 on protecting refresh tokens
+- [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
+- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+- [W3C Web Authentication Level 3](https://www.w3.org/TR/webauthn-3/)
+- [SimpleWebAuthn: server](https://simplewebauthn.dev/docs/packages/server) and [browser](https://simplewebauthn.dev/docs/packages/browser)
+- [NestJS: Guards](https://docs.nestjs.com/guards), [Authentication](https://docs.nestjs.com/security/authentication) and [Rate limiting](https://docs.nestjs.com/security/rate-limiting)
+
+## Summary
+
+<Checklist>
+
+- Choose by revocation needs: for a same-site web app, sessions in Redis are enough and the simplest; use JWT only when several services must verify on their own or there are non-browser clients.
+- JWT access tokens live under 15 minutes, stay in memory, and pin the algorithm, issuer and audience on verify.
+- The refresh token is a random 256-bit string, stored as a SHA-256 hash, delivered in a `HttpOnly; Secure; SameSite=Strict` cookie with a restricted `Path`, and rotated on every use with compare-and-set.
+- When a used token reappears, revoke the whole family and log it as a security incident; keep used tokens until the family expires.
+- If passwords remain, use argon2id with at least `m=19456, t=2, p=1`, a dummy hash for nonexistent users, and `needsRehash` for gradual upgrades.
+- Passkeys: the challenge is bound to the ceremony cookie, with a short TTL and `GETDEL`; always check `expectedOrigin` and `expectedRPID` from config; use discoverable credentials with `autocomplete="username webauthn"` for conditional UI.
+- Design account recovery before launching passkeys: multiple passkeys, a fallback with step-up, recovery codes, notifications and session revocation.
+- In NestJS: a global guard with `@Public()`, RBAC via `Reflector.createDecorator`, and a move to CASL when permissions depend on data; `@nestjs/throttler` for login and refresh, plus a per-account failure counter.
+- Cookie-based endpoints need `SameSite=Strict`, a `Sec-Fetch-Site`/`Origin` check, and `POST` with JSON only. Sign-out-everywhere revokes every family; either accept or close the few-minute window of the access token.
+
+</Checklist>

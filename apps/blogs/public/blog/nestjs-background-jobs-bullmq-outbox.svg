@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#9CA3AF"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#D97706"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="66" fill="#111827" font-size="34" font-weight="800">Transactional outbox</text>
+  <text x="40" y="104" fill="#4B5563" font-size="18">The order and its intent commit together. Everything after COMMIT is retried and deduplicated.</text>
+
+  <!-- HTTP request -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="170" width="180" height="140" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="130" y="222" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">HTTP</text>
+  <text x="130" y="256" text-anchor="middle" fill="#4B5563" font-size="18">POST /orders</text>
+  <text x="130" y="288" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">201 on commit</text>
+
+  <!-- OrdersService -->
+  <g filter="url(#shadow)">
+    <rect x="260" y="170" width="200" height="140" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="360" y="222" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">OrdersService</text>
+  <text x="360" y="256" text-anchor="middle" fill="#4B5563" font-size="18">reserve, authorize</text>
+  <text x="360" y="288" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">sync calls</text>
+
+  <!-- Postgres transaction wrapper -->
+  <rect x="500" y="140" width="660" height="200" rx="26" fill="#F5F3FF" stroke="#7C3AED" stroke-width="2.5"/>
+  <text x="524" y="176" fill="#7C3AED" font-size="22" font-weight="700">One Postgres transaction</text>
+  <text x="1136" y="176" text-anchor="end" fill="#4B5563" font-size="18">BEGIN … COMMIT</text>
+
+  <!-- orders table -->
+  <g filter="url(#shadow)">
+    <rect x="524" y="196" width="280" height="124" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="664" y="240" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">orders</text>
+  <text x="664" y="274" text-anchor="middle" fill="#4B5563" font-size="18">INSERT order row</text>
+  <text x="664" y="304" text-anchor="middle" fill="#16A34A" font-size="18" font-weight="600">status = placed</text>
+
+  <!-- outbox table -->
+  <g filter="url(#shadow)">
+    <rect x="836" y="196" width="300" height="124" rx="22" fill="white" stroke="#D97706" stroke-width="2.5"/>
+  </g>
+  <text x="986" y="240" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">outbox_events</text>
+  <text x="986" y="274" text-anchor="middle" fill="#4B5563" font-size="18">topic = order.placed</text>
+  <text x="986" y="304" text-anchor="middle" fill="#D97706" font-size="18" font-weight="600">published_at = NULL</text>
+
+  <!-- top row arrows -->
+  <g stroke="#9CA3AF" stroke-width="4" stroke-linecap="round">
+    <path d="M222 240H254" marker-end="url(#arrow)"/>
+    <path d="M462 240H494" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- relay polls committed rows -->
+  <path d="M986 322V380H170V404" stroke="#D97706" stroke-width="4" stroke-dasharray="8 7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowAmber)"/>
+  <text x="578" y="370" text-anchor="middle" fill="#D97706" font-size="18" font-weight="600">relay reads committed rows only</text>
+
+  <!-- Outbox relay -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="410" width="260" height="160" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="170" y="462" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Outbox relay</text>
+  <text x="170" y="496" text-anchor="middle" fill="#4B5563" font-size="18">SKIP LOCKED batch</text>
+  <text x="170" y="528" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">jobId = event id</text>
+
+  <!-- BullMQ -->
+  <g filter="url(#shadow)">
+    <rect x="340" y="410" width="240" height="160" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="460" y="462" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">BullMQ · Redis</text>
+  <text x="460" y="496" text-anchor="middle" fill="#4B5563" font-size="18">queue per dependency</text>
+  <text x="460" y="528" text-anchor="middle" fill="#D97706" font-size="18" font-weight="600">noeviction · AOF</text>
+
+  <!-- Worker -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="410" width="250" height="160" rx="22" fill="white" stroke="#16A34A" stroke-width="2.5"/>
+  </g>
+  <text x="745" y="462" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Worker</text>
+  <text x="745" y="496" text-anchor="middle" fill="#4B5563" font-size="18">check state, then act</text>
+  <text x="745" y="528" text-anchor="middle" fill="#16A34A" font-size="18" font-weight="600">idempotent handler</text>
+
+  <!-- Side effects -->
+  <g filter="url(#shadow)">
+    <rect x="910" y="410" width="250" height="160" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="1035" y="462" text-anchor="middle" fill="#111827" font-size="22" font-weight="700">Side effects</text>
+  <text x="1035" y="496" text-anchor="middle" fill="#4B5563" font-size="18">Stripe, email, carrier</text>
+  <text x="1035" y="528" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">Idempotency-Key</text>
+
+  <!-- bottom row arrows -->
+  <g stroke="#9CA3AF" stroke-width="4" stroke-linecap="round">
+    <path d="M302 490H334" marker-end="url(#arrow)"/>
+    <path d="M582 490H614" marker-end="url(#arrow)"/>
+    <path d="M872 490H904" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- crash band -->
+  <rect x="36" y="592" width="1128" height="66" rx="20" fill="#FEF2F2" stroke="#DC2626" stroke-width="2"/>
+  <text x="60" y="619" fill="#4B5563" font-size="16"><tspan fill="#DC2626" font-weight="700">Crash before COMMIT:</tspan> no order, no event, nothing to undo.</text>
+  <text x="60" y="644" fill="#4B5563" font-size="16"><tspan fill="#DC2626" font-weight="700">Crash after addBulk:</tspan> same jobId, duplicate ignored.</text>
+  <text x="640" y="619" fill="#4B5563" font-size="16"><tspan fill="#DC2626" font-weight="700">Worker dies after the call:</tspan> the job runs again,</text>
+  <text x="640" y="644" fill="#4B5563" font-size="16">and the same idempotency key turns it into a no-op.</text>
+</svg>
