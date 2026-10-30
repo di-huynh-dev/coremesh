@@ -66,7 +66,7 @@ export function Navbar({ searchIndex }: { searchIndex: SearchEntry[] }) {
   const navLinks = [
     { href: `/${locale}/blog`, label: t("explore"), match: `/${locale}/blog` },
     { href: `/${locale}/series`, label: t("series"), match: `/${locale}/series` },
-    { href: `/${locale}/role-map`, label: t("roleMaps"), match: `/${locale}/role-map` },
+    { href: `/${locale}/roadmap`, label: t("roleMaps"), match: `/${locale}/roadmap` },
     { href: `/${locale}/guides`, label: t("guides"), match: `/${locale}/guides` },
     { href: `/${locale}/tools`, label: t("tools"), match: `/${locale}/tools` },
     { href: `/${locale}#about`, label: t("about") },

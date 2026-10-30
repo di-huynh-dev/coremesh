@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: RoleMapIndexProps): Promise<M
   const { locale: rawLocale } = await params;
   const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const t = await getTranslations({ locale, namespace: "roleMap" });
-  return pageMetadata({ locale, path: "/role-map", title: t("title"), description: t("lead") });
+  return pageMetadata({ locale, path: "/roadmap", title: t("title"), description: t("lead") });
 }
 
 export default async function RoleMapIndexPage({ params }: RoleMapIndexProps) {

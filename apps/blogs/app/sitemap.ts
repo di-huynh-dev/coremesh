@@ -22,9 +22,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
       { path: "", changeFrequency: "weekly" as const, priority: 1 },
       { path: "/blog", changeFrequency: "weekly" as const, priority: 0.8 },
       { path: "/series", changeFrequency: "weekly" as const, priority: 0.8 },
-      { path: "/role-map", changeFrequency: "monthly" as const, priority: 0.8 },
+      { path: "/roadmap", changeFrequency: "monthly" as const, priority: 0.8 },
       ...ROLE_MAP_IDS.map((id) => ({
-        path: `/role-map/${id}`,
+        path: `/roadmap/${id}`,
         changeFrequency: "monthly" as const,
         priority: 0.7,
       })),

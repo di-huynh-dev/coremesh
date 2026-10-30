@@ -44,7 +44,7 @@ export async function generateMetadata({ params }: RoleMapPageProps): Promise<Me
   if (!roleMap) return { title: "Not found" };
   return pageMetadata({
     locale,
-    path: `/role-map/${roleMap.id}`,
+    path: `/roadmap/${roleMap.id}`,
     title: `${roleMap.name} role map`,
     description: roleMap.summary,
     keywords: roleMap.ecosystem,
@@ -107,7 +107,7 @@ export default async function RoleMapPage({ params }: RoleMapPageProps) {
               {tPost("breadcrumbHome")}
             </Link>
             <span className="mx-2">/</span>
-            <Link href={`/${locale}/role-map`} className="hover:text-white">
+            <Link href={`/${locale}/roadmap`} className="hover:text-white">
               {t("breadcrumb")}
             </Link>
             <span className="mx-2">/</span>
@@ -235,7 +235,7 @@ export default async function RoleMapPage({ params }: RoleMapPageProps) {
         <SectionHeading
           id="other-roles"
           title={t("otherRoles")}
-          action={{ href: `/${locale}/role-map`, label: t("title") }}
+          action={{ href: `/${locale}/roadmap`, label: t("title") }}
         />
         <div>
           {otherRoles.map((other) => (

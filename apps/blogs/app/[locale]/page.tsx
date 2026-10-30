@@ -114,7 +114,7 @@ export default async function Home({
           id="role-maps-title"
           title={tRoleMap("home.title")}
           subtitle={tRoleMap("home.subtitle")}
-          action={{ href: `/${locale}/role-map`, label: tCommon("viewAll") }}
+          action={{ href: `/${locale}/roadmap`, label: tCommon("viewAll") }}
         />
         <div>
           {getRoleMaps(locale).map((roleMap) => (

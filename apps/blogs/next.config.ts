@@ -19,10 +19,9 @@ const nextConfig: NextConfig = {
   },
   async redirects() {
     return [
-      { source: "/:locale(vi|en)/roadmap", destination: "/:locale/role-map", permanent: true },
-      { source: "/:locale(vi|en)/roadmap/react", destination: "/:locale/role-map/frontend", permanent: true },
-      { source: "/:locale(vi|en)/roadmap/nestjs", destination: "/:locale/role-map/backend", permanent: true },
-      { source: "/:locale(vi|en)/roadmap/:path*", destination: "/:locale/role-map", permanent: true },
+      { source: "/:locale(vi|en)/roadmap/react", destination: "/:locale/roadmap/frontend", permanent: true },
+      { source: "/:locale(vi|en)/roadmap/nestjs", destination: "/:locale/roadmap/backend", permanent: true },
+      { source: "/:locale(vi|en)/role-map/:path*", destination: "/:locale/roadmap/:path*", permanent: true },
     ];
   },
   turbopack: {

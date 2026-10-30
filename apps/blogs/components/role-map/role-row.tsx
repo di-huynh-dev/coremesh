@@ -17,7 +17,7 @@ export function RoleRow({ roleMap, compact = false }: { roleMap: RoleMap; compac
       <div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h3 className="text-xl font-bold tracking-[-0.025em] text-ink transition-colors group-hover:text-[var(--accent)] md:text-2xl">
-            <Link href={`/${locale}/role-map/${roleMap.id}`} className="after:absolute after:inset-0">
+            <Link href={`/${locale}/roadmap/${roleMap.id}`} className="after:absolute after:inset-0">
               {roleMap.name}
             </Link>
           </h3>
