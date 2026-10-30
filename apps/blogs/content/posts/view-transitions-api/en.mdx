@@ -1,0 +1,265 @@
+---
+title: "The View Transitions API: Page Transitions and Shared Elements Without a Library"
+excerpt: "How View Transitions snapshot the page and build a pseudo-element tree, startViewTransition in an SPA, transitions between documents, view-transition-name, view-transition-class and types, a list-to-detail shared element, reduced motion, performance traps, and using React's ViewTransition component in Next.js 16."
+---
+
+<Lead>A designer sent me a prototype video: tap a product image in the list, the image "flies" up to become the hero of the detail page, and the rest of the page slides in. The last time we built an effect like that, my team spent nearly two weeks on the FLIP technique: measuring positions, cloning elements, keeping the old page alive for a few hundred extra milliseconds, and handling every kind of edge case when the user hit back mid-animation. This time it all fit into a few dozen lines of CSS, because the browser now does the hardest part. This post is what I learned taking the View Transitions API to production: the mechanism underneath, the newer features, and where it's easy to stumble.</Lead>
+
+## The mechanism: snapshot, update the DOM, animate pseudo-elements
+
+Understanding the mechanism properly makes debugging much faster. When you call `document.startViewTransition(update)`, the browser does this in order:
+
+1. **Capture the old state.** Every element with a `view-transition-name` (by default there's `root`, the whole page) is captured as a static image.
+2. **Pause rendering and run `update`.** You change the DOM however you like; the user still sees the old state.
+3. **Capture the new state** as a live representation, meaning it keeps tracking the real DOM.
+4. **Build a pseudo-element tree** over the page and run the animations with CSS.
+
+The pseudo-element tree looks like this, with a separate `group` branch for each name:
+
+```text
+::view-transition
+└─ ::view-transition-group(root)
+   └─ ::view-transition-image-pair(root)
+      ├─ ::view-transition-old(root)
+      └─ ::view-transition-new(root)
+```
+
+By default `old` fades out, `new` fades in, and the `group` animates position and size from the old spot to the new one. Every customization is a normal CSS animation targeting these pseudo-elements. The returned `ViewTransition` object has three promises: `updateCallbackDone`, `ready` (the pseudo tree exists and can be animated with the Web Animations API) and `finished`, plus a `skipTransition()` method.
+
+## Same-document: a safe helper
+
+I don't call `startViewTransition` directly all over the codebase; I wrap it in a helper, because two cases need handling: browsers without support, and browsers that support the API but not **types** yet.
+
+```ts
+type DomUpdate = () => void | Promise<void>;
+
+const supportsTransitionTypes =
+  typeof ViewTransition !== "undefined" && "types" in ViewTransition.prototype;
+
+export async function runViewTransition(update: DomUpdate, types: string[] = []) {
+  if (typeof document.startViewTransition !== "function") {
+    await update();
+    return;
+  }
+
+  const transition = supportsTransitionTypes
+    ? document.startViewTransition({ update, types })
+    : document.startViewTransition(update);
+
+  await transition.updateCallbackDone;
+}
+```
+
+The object form `{ update, types }` came after the callback form. A browser that only knows the callback form throws a `TypeError` when handed an object, which is why the `types` check comes first. The helper only awaits `updateCallbackDone` because most callers just need to know the DOM has been updated, not wait for the animation to finish.
+
+Types let a transition carry meaning, such as navigation direction. CSS reads them through `:active-view-transition-type()`:
+
+```css
+@media (prefers-reduced-motion: no-preference) {
+  html:active-view-transition-type(forward)::view-transition-old(root) {
+    animation: 180ms ease-in both slide-out-to-left;
+  }
+
+  html:active-view-transition-type(forward)::view-transition-new(root) {
+    animation: 260ms ease-out both slide-in-from-right;
+  }
+}
+
+@keyframes slide-out-to-left {
+  to { opacity: 0; translate: -48px 0; }
+}
+
+@keyframes slide-in-from-right {
+  from { opacity: 0; translate: 48px 0; }
+}
+```
+
+<Callout>
+  During `update`, the browser stops rendering the page. If you `await fetch()` inside the callback, the page is frozen for the whole network wait. Always finish loading data before starting the transition; the callback should do synchronous or near-synchronous work: put data you already have into the DOM.
+</Callout>
+
+## `view-transition-name`, `view-transition-class` and `match-element`
+
+`view-transition-name` marks an element to be captured and animated on its own. The most important rule: **names must be unique** among rendered elements at capture time. If two elements share a name, the transition is skipped and the DOM updates as if there were no animation. This is the bug I hit most often, usually from rendering a component with a hard-coded name twice.
+
+When many elements need the same kind of animation, writing CSS per name doesn't scale. `view-transition-class` solves that, and `match-element` generates a name from the element's own identity, so you don't have to invent `card-1`, `card-2`:
+
+```css
+.product-card {
+  view-transition-name: match-element;
+  view-transition-class: product-card;
+}
+
+::view-transition-group(*.product-card) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+```
+
+With this CSS, filtering or reordering the list inside `runViewTransition` slides each card to its new position. Because `match-element` relies on the same DOM node existing before and after, it only works same-document, and list keys must be stable so the framework doesn't create new nodes.
+
+## A shared element from list to detail
+
+For same-document work without a framework, I **assign the name dynamically** to the clicked element instead of naming every image in the list. That avoids duplicate names and avoids capturing hundreds of unnecessary snapshots.
+
+```ts
+export async function openProductDetail(card: HTMLElement, productId: string) {
+  const detail = await loadProductDetail(productId);
+  const thumbnail = card.querySelector<HTMLElement>(".product-card__image");
+  if (thumbnail) thumbnail.style.viewTransitionName = "product-hero";
+
+  await runViewTransition(() => {
+    if (thumbnail) thumbnail.style.viewTransitionName = "";
+    renderProductDetail(detail);
+  }, ["forward"]);
+}
+```
+
+On the detail view, the hero image has `view-transition-name: product-hero` in CSS. Ordering is the key: the name is on the thumbnail when the old state is captured, it's removed inside `update`, and when the new state is captured only the hero carries that name. Going back is the reverse: render the list, find the matching card, and name its thumbnail inside `update`. Data is loaded *before* the transition starts, exactly as the callout above says.
+
+A common artifact: if the old and new images have different aspect ratios, the group animates its size while both snapshots get stretched along the way. I usually set `object-fit: cover` together with `height: 100%` on `::view-transition-old(product-hero)` and `::view-transition-new(product-hero)` so the snapshots get cropped instead of distorted.
+
+## Cross-document: transitions between real pages
+
+For multi-page sites, no JavaScript is required. Both the source and destination pages opt in with CSS, and the navigation must be same-origin:
+
+```css
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+    types: forward;
+  }
+}
+
+.product-detail__hero {
+  view-transition-name: product-hero;
+}
+```
+
+`view-transition-name` works exactly as in same-document transitions: elements with the same name on the old and new page get paired. To pick a type dynamically from the URL (forward or back), handle the `pagereveal` event on the new page, read the navigation details from the Navigation API, and add types to `event.viewTransition.types`. `pageswap` is the matching event on the old page.
+
+One thing that's easy to miss: the new page can render its first frame before the named element has been parsed, and then there's nothing to pair. Chromium supports `link rel="expect"` with `blocking="render"` to hold rendering until a specific element appears. But that's a direct trade-off against time to first content, so I only use it for elements near the top of the HTML.
+
+## Browser support
+
+This is the part that changes fastest, so I list versions instead of saying "most browsers":
+
+| Feature | Chromium | Safari | Firefox |
+| --- | --- | --- | --- |
+| `startViewTransition`, `view-transition-name` | 111 | 18 | 144 |
+| `view-transition-class` | 125 | 18.2 | 144 |
+| Types (`types`, `:active-view-transition-type()`) | 125 | 18.2 | 147 |
+| `view-transition-name: match-element` | 137 | 18.4 | 144 |
+| Cross-document (`@view-transition`) | 126 | 18.2 | Not yet |
+
+Same-document view transitions became Baseline when Firefox 144 shipped in October 2025. Cross-document is still missing in Firefox; it's one of the Interop 2026 focus areas, but it hadn't shipped as of this writing. Fortunately, View Transitions are progressive enhancement in the truest sense: without support the DOM still updates, just without the animation.
+
+## Reduced motion and performance traps
+
+Reduced motion doesn't mean no motion at all. For users with `prefers-reduced-motion`, I remove positional and scaling movement but keep the crossfade, because it still helps people notice that content changed. The approach has two parts. Every animation that slides or zooms lives inside `@media (prefers-reduced-motion: no-preference)`, like the types example above. And for `reduce`, you only need to turn off the group animation:
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) {
+    animation-name: none;
+  }
+}
+```
+
+In the browser's default stylesheet, `old` and `new` inherit their duration from the group, so removing `animation-name` (rather than setting `animation-duration: 0s`) keeps the default crossfade, while elements jump straight to their new position instead of flying across the screen.
+
+On performance, these are the things I've measured or that caused real incidents:
+
+- **Every name is a snapshot.** Putting `match-element` on a 300-item list means 300 groups and 300 images in GPU memory. On a mid-range phone, the first frame of the transition visibly stutters. Only name what's in the viewport or genuinely needed.
+- **Groups animate `width` and `height`.** That animation doesn't run entirely on the compositor, so a busy main thread (hydration, heavy renders) makes the transition jank. Keep durations short and avoid heavy work right after the transition starts.
+- **The overlay blocks interaction.** While a transition runs, `::view-transition` covers the page and swallows clicks. Add `::view-transition { pointer-events: none; }` if your transitions last more than a few hundred milliseconds.
+- **Overlapping transitions.** Starting a new transition while one is running skips the old one. For rapid repeated actions like mashing "next" that's usually the right behavior, but don't write logic that assumes the old transition's `finished` always means its animation fully played.
+
+## React and Next.js 16: the `ViewTransition` component
+
+In React you shouldn't call `startViewTransition` yourself, because React needs to control when the DOM is committed. React provides a `ViewTransition` component that activates when an update comes from `startTransition`, a `Suspense` reveal, or `useDeferredValue`. A plain `setState` does **not** animate. In the Next.js App Router, navigations are transitions, so a shared element only needs the same `name` on both pages:
+
+```tsx
+import Image from "next/image";
+import Link from "next/link";
+import { ViewTransition } from "react";
+
+type Product = { id: string; slug: string; name: string; imageUrl: string };
+
+export function ProductGrid({ products }: { products: Product[] }) {
+  return (
+    <ul className="product-grid">
+      {products.map((product) => (
+        <li key={product.id}>
+          <Link href={`/products/${product.slug}`} transitionTypes={["nav-forward"]}>
+            <ViewTransition name={`product-image-${product.id}`} share="morph" default="none">
+              <Image src={product.imageUrl} alt={product.name} width={480} height={360} />
+            </ViewTransition>
+            <span>{product.name}</span>
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+The detail page wraps its hero image in a `ViewTransition` with the same `name`, `share="morph"` and `default="none"`. `default="none"` stops each image from running its own crossfade during every unrelated transition; once you have it, you must keep `share`, otherwise the pair silently stops morphing. The `morph` class is targeted in CSS with `::view-transition-group(.morph)`. The `transitionTypes` prop on `Link` arrived in Next.js 16.2, and those types are passed to `addTransitionType`.
+
+For updates within the same page, you add the type yourself:
+
+```tsx
+"use client";
+
+import { addTransitionType, startTransition, useState, ViewTransition } from "react";
+
+type Slide = { id: string; src: string; alt: string };
+
+export function ProductGallery({ slides }: { slides: Slide[] }) {
+  const [index, setIndex] = useState(0);
+  const slide = slides[index];
+
+  function go(step: 1 | -1) {
+    startTransition(() => {
+      addTransitionType(step === 1 ? "next" : "previous");
+      setIndex((current) => (current + step + slides.length) % slides.length);
+    });
+  }
+
+  return (
+    <div className="gallery">
+      <ViewTransition
+        key={slide.id}
+        enter={{ next: "slide-from-right", previous: "slide-from-left", default: "none" }}
+        exit={{ next: "slide-to-left", previous: "slide-to-right", default: "none" }}
+        default="none"
+      >
+        <img src={slide.src} alt={slide.alt} />
+      </ViewTransition>
+      <button type="button" onClick={() => go(-1)}>Previous</button>
+      <button type="button" onClick={() => go(1)}>Next</button>
+    </div>
+  );
+}
+```
+
+A few rules I learned by debugging: `ViewTransition` only activates enter/exit when it sits before any DOM node in the subtree being added or removed; each `name` may only be mounted once in the whole app; a `flushSync` in the middle makes React skip the transition; and the browser's back button carries no type, so directional slides won't play. React also doesn't disable animations for reduced-motion users, so the CSS from the previous section is still needed.
+
+<Callout>
+  When I wrote this post (June 2026), `ViewTransition` was still canary/experimental and Next.js 16 needed `experimental.viewTransition` turned on. Update, October 2026: React 19.3 (released September 9, 2026) made `ViewTransition` and `addTransitionType` stable, and the Next.js 16 view transitions guide now says the App Router works with no extra configuration. Check the docs for the exact version you're on.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- A view transition captures the old state, updates the DOM, captures the new state live, then animates a pseudo-element tree with CSS.
+- Load data first and only update the DOM inside the callback; the page is frozen while the callback runs.
+- Check for `types` support before passing an object to `startViewTransition`.
+- Names must be unique at capture time; name the clicked element dynamically instead of naming the whole list.
+- Use `view-transition-class` and `match-element` for groups of elements, but remember every name is a snapshot.
+- Cross-document only needs `@view-transition` on both same-origin pages; Firefox doesn't support it yet, and that's fine.
+- For reduced motion, drop positional movement and keep a short crossfade.
+- In React, use `ViewTransition` with Transitions instead of calling `startViewTransition` yourself; set `default="none"` on named elements.
+
+</Checklist>

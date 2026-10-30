@@ -1,0 +1,222 @@
+---
+title: "An AI-Assisted Frontend Workflow That Holds Up in Production"
+excerpt: "Where coding agents genuinely help a frontend team and where they quietly fail, how to give them context with AGENTS.md and small tasks, plan-then-implement, verification loops, reviewing AI-generated PRs, supply-chain risks like slopsquatting, and which skills matter more now for mid and senior engineers."
+---
+
+<Lead>In the same week this spring, a coding agent migrated about forty components off a deprecated internal API for me in one afternoon, and another session "fixed" a flaky test by bumping a timeout, hiding a real race condition that then reached staging. Both PRs looked equally confident. That's the core of working with AI on a frontend team: output quality varies a lot, the presentation doesn't. This is the workflow our team settled on after a year of daily agent use — what we hand off, how we brief, how we check.</Lead>
+
+## Where agents earn their keep, and where they don't
+
+After a year, the pattern is consistent enough that I put it in our onboarding doc:
+
+| Works well | Fails quietly |
+| --- | --- |
+| Scaffolding a component, route or test file that follows an existing example | Subtle state and timing bugs: stale closures, missing effect cleanup, race conditions |
+| Writing tests for code that already exists and behaves correctly | Accessibility beyond the basics: focus management, live regions, keyboard traps |
+| Mechanical refactors and migrations with a clear before/after pattern | Design fidelity: spacing, responsive edge cases, "almost the right" component variant |
+| Explaining unfamiliar code, tracing a call chain, summarising a module | Recent API changes: suggesting patterns from older framework versions |
+| Typing a messy API response, writing a codemod, one-off scripts | Decisions that need product context the agent doesn't have |
+
+The left column has something in common: there's a pattern to copy and a cheap way to check the result. The right column needs either information that isn't in the repo or judgement that's hard to verify mechanically.
+
+Outdated APIs deserve a special mention because they look correct. Agents still suggest `forwardRef` in React 19 code, where `ref` is now a regular prop for function components, or write a `middleware.ts` in a Next.js 16 app, where the convention was renamed to `proxy.ts`. Neither breaks the build immediately, which is exactly why they slip through review.
+
+## Context is the job now
+
+Most bad agent output I've seen came from a bad brief, not a bad model. The agent can read the code, but it can't read what's in your head: which of the three date utilities is the current one, that the `legacy/` folder is frozen, that the design system's `Button` must be used instead of raw `button`.
+
+### A project instruction file
+
+That knowledge goes into a project instruction file. `AGENTS.md` has become the common format — it's now stewarded by the Agentic AI Foundation under the Linux Foundation and read by many coding tools. Some tools use their own file name, such as `CLAUDE.md` for Claude Code; I keep one source of truth and point the other file at it, instead of maintaining two copies that drift apart. Ours is short and boring on purpose:
+
+```md
+## Commands
+- Install: bun install
+- Verify everything: bun run verify
+- Single test file: bun run test path/to/file.test.tsx
+
+## Conventions
+- UI components come from packages/ui. Never use raw button, input or dialog elements in apps.
+- Data fetching goes through the query hooks in src/queries, not fetch inside components.
+- Dates: use src/lib/dates.ts only. date-fns and dayjs are not dependencies.
+- No new dependencies without asking first.
+
+## Boundaries
+- Do not edit anything under src/legacy or generated files under src/api/generated.
+- Do not change snapshot or screenshot baselines to make a test pass.
+```
+
+The rules that earn their place are things the agent actually got wrong: every mistake I correct twice becomes a line here. Generic advice like "write clean code" changes nothing and costs context.
+
+### Small, bounded tasks
+
+The second lever is task size. "Build the settings page" invites the agent to invent half the product. "Add a `NotificationPreferences` form to the existing settings page, using the same pattern as `ProfileForm`, saving through `useUpdateSettings`" gives it an example to copy, a boundary, and an obvious definition of done. A task I can review in fifteen minutes is the right size; if the diff is too big to read carefully, it's too big to merge.
+
+## Plan first, then implement
+
+For anything beyond a small change, I ask for a plan before any code: which files will change, what the new types look like, which existing pieces get reused, and what's out of scope. Many tools now have an explicit planning mode; if yours doesn't, asking "propose a plan, don't edit files yet" works fine.
+
+Reviewing a plan is far cheaper than reviewing a diff. The usual problems show up right there: a new helper that duplicates an existing one, state placed in a global store when it belongs in the URL, a migration that touches the API contract. Fixing them in a ten-line plan takes a minute; in a 600-line diff it means starting over.
+
+For larger work I keep the plan in the PR description so reviewers can check the code against the original intent — the review question that matters most.
+
+## Verification loops the agent runs itself
+
+An agent that can run checks and read the output fixes most of its own mistakes before I see them. So the best investment isn't prompting technique, it's a single command that verifies everything quickly. Ours lives in `package.json`:
+
+```json
+{
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:visual": "playwright test --project=visual",
+    "verify": "bun run typecheck && bun run lint && bun run test"
+  }
+}
+```
+
+Types and lint catch hallucinated imports and wrong prop shapes. Unit tests catch logic regressions. But none of them catches "the card padding is wrong on mobile in dark mode", which is precisely the kind of thing agents get wrong. For that we keep a small set of visual regression tests on the screens that matter:
+
+```ts
+import { test, expect } from "@playwright/test";
+
+const viewports = [
+  { name: "mobile", width: 390, height: 844 },
+  { name: "desktop", width: 1280, height: 800 },
+];
+
+for (const viewport of viewports) {
+  test(`pricing page matches baseline on ${viewport.name} in dark mode`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+    await page.goto("/pricing");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page).toHaveScreenshot(`pricing-${viewport.name}-dark.png`, {
+      fullPage: true,
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+}
+```
+
+Notice the rule in the instruction file: the agent must not update baselines to make a test pass. Without it, an agent asked to "make the tests green" will sometimes do exactly that. For more on which layer tests what, see [A practical frontend testing strategy](/blog/frontend-testing-strategy).
+
+<Callout>
+  Green checks prove the code compiles and matches the tests that exist. They don't prove the tests are meaningful. Agents are good at writing tests that pass; whether those tests would fail on a real bug is still a human question.
+</Callout>
+
+## Reviewing AI-generated PRs critically
+
+I review an agent's PR the way I'd review one from a fast, confident new hire who never asks questions. The general principles from [code review](/blog/code-review-giving-and-receiving) still apply, but there's a set of smells I now look for specifically:
+
+- **Tests that test the mock.** The assertion checks that a mocked function was called with the arguments the code passes, and nothing about behavior.
+- **Silenced problems.** `as any`, non-null assertions, `eslint-disable`, `test.skip`, a raised timeout, an empty `catch`.
+- **Reinvented utilities.** A new `formatCurrency` sitting next to the existing one, because the agent didn't search first.
+- **Effects that should be derived state**, and effects that start async work without cleanup.
+- **Scope creep.** Unrelated files reformatted or "improved" alongside the actual change.
+
+The effect one is the most common subtle bug I find. This is a typical shape — it works in a demo and breaks when the user types fast:
+
+```tsx
+useEffect(() => {
+  searchProducts(query).then(setResults);
+}, [query]);
+```
+
+Responses can arrive out of order, so results for "ca" can overwrite results for "cat". The fix is small, but you have to know to look for it:
+
+```tsx
+useEffect(() => {
+  const controller = new AbortController();
+  searchProducts(query, controller.signal)
+    .then(setResults)
+    .catch((error: unknown) => {
+      if (!controller.signal.aborted) setSearchError(error);
+    });
+  return () => controller.abort();
+}, [query]);
+```
+
+I also check whether the author understands the PR. A teammate who opens an agent-written PR owns it exactly as if they'd typed it. "The AI did that part" is not an answer to a review question.
+
+## Security: secrets, permissions and hallucinated packages
+
+An agent with shell access runs with your permissions: it can read `.env` files, call APIs with your credentials, and run any install script a dependency ships. A few rules we enforce:
+
+- **Keep production secrets off developer machines** where agents run. Local `.env` files hold development keys only.
+- **Use the tool's permission settings** to deny reading secret files and to require approval for network calls and installs, instead of relying on the agent's good behavior.
+- **Never paste secrets, customer data or tokens into a prompt**, even "just to debug".
+
+The newer risk is **slopsquatting**, a term coined by Seth Larson: models sometimes invent package names that sound plausible, and research has found that the same invented names come back repeatedly across runs. An attacker can register those names on npm and wait. A typo in a human's install command is random; a hallucinated name is predictable.
+
+Our defence is a CI step that flags every dependency a PR adds and checks it against the registry. It's a plain script, `scripts/check-new-deps.ts`, run with `bun scripts/check-new-deps.ts origin/main`:
+
+```ts
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+type Manifest = { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+type RegistryDocument = { time?: { created?: string }; repository?: { url?: string } };
+
+const minimumAgeInDays = 30;
+const baseRef = process.argv[2] ?? "origin/main";
+
+function dependencyNames(manifest: Manifest): Set<string> {
+  return new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.devDependencies ?? {})]);
+}
+
+const baseManifest: Manifest = JSON.parse(execFileSync("git", ["show", `${baseRef}:package.json`], { encoding: "utf8" }));
+const headManifest: Manifest = JSON.parse(readFileSync("package.json", "utf8"));
+const existingNames = dependencyNames(baseManifest);
+const addedNames = [...dependencyNames(headManifest)].filter((name) => !existingNames.has(name));
+
+async function findProblem(name: string): Promise<string | null> {
+  const response = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2F")}`);
+  if (response.status === 404) return `${name} does not exist on the npm registry`;
+  if (!response.ok) return `${name}: registry returned ${response.status}`;
+  const registryDocument = (await response.json()) as RegistryDocument;
+  const createdAt = registryDocument.time?.created;
+  if (!createdAt) return `${name} has no creation date`;
+  const ageInDays = (Date.now() - Date.parse(createdAt)) / 86_400_000;
+  if (ageInDays < minimumAgeInDays) return `${name} was first published ${Math.floor(ageInDays)} days ago`;
+  if (!registryDocument.repository?.url) return `${name} has no linked source repository`;
+  return null;
+}
+
+const problems = (await Promise.all(addedNames.map(findProblem))).filter((problem) => problem !== null);
+for (const problem of problems) console.error(problem);
+process.exitCode = problems.length > 0 ? 1 : 0;
+```
+
+It doesn't block legitimate new packages forever, it forces a human to look. On top of that, pnpm's `minimumReleaseAge` setting (and similar options in other package managers) refuses versions published too recently, which helps against freshly compromised releases. For the broader picture, see [Practical frontend security](/blog/frontend-security-in-practice).
+
+<Callout>
+  The cheapest supply-chain defence is a rule in the instruction file plus a CI check: no new dependency without a human approving it. Agents add packages casually; reviewers tend to skim the lockfile diff.
+</Callout>
+
+## What changes for mid and senior engineers
+
+Typing speed was never the bottleneck, and now it matters even less. The skills that matter more look a lot like the ones that already made senior engineers:
+
+- **Specifying work.** Breaking a feature into small, verifiable tasks with clear boundaries is now the main input to your tools, not only to your teammates.
+- **Reading code critically.** You review far more code than you write. Spotting the race condition, the missing cleanup, the wrong abstraction quickly is the core skill.
+- **Building verification.** Teams that invested in fast types, tests and visual checks get much more out of agents than teams that didn't.
+- **Taste in the places agents are weak**: accessibility, interaction details, performance under real conditions, product judgement.
+
+For mid-level engineers there's a real trap: letting the agent do the parts you'd learn the most from. I still debug hard problems by hand sometimes, on purpose, because that's how review intuition gets built. Use agents to go faster on what you already understand, and slow down deliberately on what you don't. More on that transition in [From mid-level to senior frontend](/blog/mid-to-senior-frontend).
+
+## Key takeaways
+
+<Checklist>
+
+- Give agents work with a pattern to copy and a cheap way to verify it; keep subtle state, accessibility and design fidelity under close human review.
+- Watch for outdated APIs that still compile, like `forwardRef` in React 19 or `middleware.ts` in Next.js 16.
+- Maintain one short project instruction file built from real mistakes, not generic advice.
+- Keep tasks small enough to review in one sitting, and review the plan before the code.
+- Provide one fast verify command plus visual tests, and forbid updating baselines to pass.
+- Review AI PRs for tests of mocks, silenced errors, reinvented utilities and effects without cleanup; the human who opens the PR owns it.
+- Keep secrets away from agents, use permission settings, and check every new dependency against the registry.
+- Invest in specification, critical reading and verification — and keep learning the hard parts yourself.
+
+</Checklist>

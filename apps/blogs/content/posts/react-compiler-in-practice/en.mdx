@@ -1,0 +1,287 @@
+---
+title: "React Compiler in Practice: Adopting It in a Codebase That Already Ships"
+excerpt: "What React Compiler actually does, the Rules of React it relies on, the ESLint plugin, incremental rollout with annotation mode and \"use no memo\", what to do with existing useMemo/useCallback, how to verify it works, common bailouts, third-party libraries and build cost."
+---
+
+<Lead>Earlier this year my team turned on React Compiler for an internal dashboard with around three hundred components that had been in production for over two years. I expected one of two outcomes: either nothing would change, or everything would break. Reality landed in between: most screens got visibly faster in the Profiler without a single line changed, but an autosaving form started calling the API less often than it was supposed to, and it took half a day to understand why. This post is what I learned bringing the compiler into a codebase that *already ships*, not a fresh project.</Lead>
+
+If you need a refresher on why components re-render and the real cost of `memo`, `useMemo` and `useCallback`, read [the post on React rendering performance](/blog/react-rendering-performance) first. This one assumes you know that material.
+
+## Where things stand
+
+React Compiler 1.0 went stable in October 2025 and runs in production at Meta. A few things to know before you start:
+
+| Environment | How to enable | Notes |
+| --- | --- | --- |
+| Next.js 16 | `reactCompiler: true` in `next.config.ts` | Stable; moved from `experimental.reactCompiler` to top level in v16 |
+| Vite | Add `babel-plugin-react-compiler` to the React plugin's Babel config | Runs through Babel |
+| Expo | On by default since SDK 54 | |
+| React 17/18 | Set `target` and install `react-compiler-runtime` | React 19 is not required |
+
+The compiler is still distributed as the Babel plugin `babel-plugin-react-compiler`. The SWC plugin is still experimental and oxc support is being built together with the oxc team, so at the time of writing Babel is the official path. On Next.js 16 you still need to install the package:
+
+```bash
+npm install -D --save-exact babel-plugin-react-compiler
+```
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  reactCompiler: {
+    compilationMode: "annotation",
+  },
+};
+
+export default nextConfig;
+```
+
+Note the `--save-exact`. The React team states plainly that future versions may change how memoization is applied (for example, making it more granular), and that can make an effect fire more or less often. If your end-to-end tests are thin, pin the exact version and upgrade by hand.
+
+## What the compiler actually does
+
+Many people think the compiler "wraps every component in `React.memo`". In fact it memoizes at the level of **individual values and pieces of JSX** inside a component. It analyzes the function's data flow, groups computations by the inputs they depend on, and caches each group in an array stored on the fiber. Take this component:
+
+```tsx
+type Order = { id: string; total: number; status: "paid" | "pending" };
+
+function OrderSummary({ orders, currency }: { orders: Order[]; currency: string }) {
+  const paidOrders = orders.filter((order) => order.status === "paid");
+  const revenue = paidOrders.reduce((sum, order) => sum + order.total, 0);
+  const formatter = new Intl.NumberFormat("vi-VN", { style: "currency", currency });
+
+  return (
+    <section>
+      <h2>Revenue</h2>
+      <p>{formatter.format(revenue)}</p>
+      <OrderTable orders={paidOrders} />
+    </section>
+  );
+}
+```
+
+The output, simplified for readability, looks roughly like this (the real code uses `c` from `react/compiler-runtime` and different variable names):
+
+```tsx
+import { c as useMemoCache } from "react/compiler-runtime";
+
+function OrderSummary({ orders, currency }: { orders: Order[]; currency: string }) {
+  const cache = useMemoCache(9);
+
+  let paidOrders: Order[];
+  let revenue: number;
+  if (cache[0] !== orders) {
+    paidOrders = orders.filter((order) => order.status === "paid");
+    revenue = paidOrders.reduce((sum, order) => sum + order.total, 0);
+    cache[0] = orders;
+    cache[1] = paidOrders;
+    cache[2] = revenue;
+  } else {
+    paidOrders = cache[1];
+    revenue = cache[2];
+  }
+
+  let formattedRevenue: string;
+  if (cache[3] !== currency || cache[4] !== revenue) {
+    formattedRevenue = new Intl.NumberFormat("vi-VN", { style: "currency", currency }).format(revenue);
+    cache[3] = currency;
+    cache[4] = revenue;
+    cache[5] = formattedRevenue;
+  } else {
+    formattedRevenue = cache[5];
+  }
+
+  let heading: JSX.Element;
+  if (cache[6] === undefined) {
+    heading = <h2>Revenue</h2>;
+    cache[6] = heading;
+  } else {
+    heading = cache[6];
+  }
+
+  let table: JSX.Element;
+  if (cache[7] !== paidOrders) {
+    table = <OrderTable orders={paidOrders} />;
+    cache[7] = paidOrders;
+    cache[8] = table;
+  } else {
+    table = cache[8];
+  }
+
+  return (
+    <section>
+      {heading}
+      <p>{formattedRevenue}</p>
+      {table}
+    </section>
+  );
+}
+```
+
+Don't copy that; it only illustrates the idea. Three things matter:
+
+- **JSX gets cached too.** The `OrderTable` element keeps the same reference while `paidOrders` is unchanged, so React skips that whole subtree *without* `OrderTable` being wrapped in `memo`. This is why the compiler beats sprinkling `React.memo` by hand.
+- **Constants are hoisted.** JSX that depends on nothing is created exactly once.
+- **It can memoize after an early return and inside conditional branches**, which `useMemo` can't, because hooks can't be called conditionally.
+
+To see the real output for a specific component, paste it into the React Compiler Playground on react.dev.
+
+## The Rules of React and how bailouts work
+
+The compiler is only correct if your code follows the **Rules of React**: components and hooks are pure during render, props and state are immutable, values passed into or returned from hooks aren't mutated, and hooks are called by the rules. When its analysis finds a violation it can detect, the compiler **bails out**: it skips *only* that component or hook, leaves it as the original code, and keeps compiling the rest. No build error, no console warning. The component just isn't optimized.
+
+The three violations I hit most often in an old codebase:
+
+```tsx
+function PriceList({ items }: { items: Item[] }) {
+  items.sort((a, b) => a.price - b.price);
+  return <List items={items} />;
+}
+
+function Ticker({ label }: { label: string }) {
+  const renderCount = useRef(0);
+  renderCount.current += 1;
+  return <span>{label} ({renderCount.current})</span>;
+}
+
+function Greeting({ name }: { name: string }) {
+  const hour = new Date().getHours();
+  return <p>{hour < 12 ? "Good morning" : "Good afternoon"}, {name}</p>;
+}
+```
+
+- `PriceList` **mutates props**. `sort` sorts in place, so the parent's array changes behind its back. Fix it with `items.toSorted(...)`.
+- `Ticker` **reads and writes a ref during render**. A ref holds a value React doesn't track, so the compiler can't know when the cache goes stale. Refs should only be read and written in event handlers and effects.
+- `Greeting` **isn't idempotent**: rendering twice with the same props can give two different results. The compiler knows a list of impure functions (such as `Date.now` and `Math.random`), and the `purity` rule will warn. Put the current time in state, or pass it in from outside.
+
+<Callout type="warning">
+  The danger isn't the bailouts; it's the violations the compiler *doesn't* detect. That code still gets compiled and memoized, and if it quietly relied on re-running every render (say, reading a global object mutated from outside), you'll get a UI showing stale data. ESLint and end-to-end tests are your two safety nets; don't drop either.
+</Callout>
+
+## ESLint: turn it on before the compiler
+
+The compiler-powered rules now live directly in `eslint-plugin-react-hooks` (since v6; currently the 7.x line). The old `eslint-plugin-react-compiler` package is no longer needed, so remove it. The plugin works even if the compiler isn't enabled, so I always turn it on a few weeks *earlier*.
+
+```js
+import reactHooks from "eslint-plugin-react-hooks";
+import { defineConfig } from "eslint/config";
+
+export default defineConfig([
+  reactHooks.configs.flat.recommended,
+]);
+```
+
+The `recommended` preset includes `rules-of-hooks`, `exhaustive-deps` and the compiler rules such as `purity`, `refs`, `immutability`, `globals`, `static-components`, `set-state-in-render`, `set-state-in-effect`, `preserve-manual-memoization`, `incompatible-library` and `unsupported-syntax`. The `recommended-latest` preset adds the newest experimental rules; I don't use it in CI because it can introduce new errors on upgrade.
+
+In a large codebase, the first run usually reports a few hundred errors. My approach: count errors per directory, enable the compiler for the clean directories first, and set a "no new errors" threshold in CI for the rest. You don't have to fix everything before starting, because a violating component is just skipped; it doesn't break the build.
+
+## Incremental rollout
+
+There are several tools, and I use them in this order:
+
+| Tool | Scope | When |
+| --- | --- | --- |
+| `compilationMode: "annotation"` + `"use memo"` | Individual components/hooks opt in | First week, trying it on a few heavy screens |
+| Babel `overrides` per directory | Whole directories | Expanding module by module as lint gets clean |
+| `"use no memo"` | Individual components/hooks opt out | Isolating a component that broke after enabling everywhere |
+| `gating` | Runtime, behind a feature flag | A/B testing or rolling out by user segment |
+
+In annotation mode, the directive must be the first statement in the function:
+
+```tsx
+export function RevenueChart({ points }: { points: Point[] }) {
+  "use memo";
+  const series = buildSeries(points);
+  return <Chart series={series} />;
+}
+
+export function useLegacyAutosave(draft: Draft) {
+  "use no memo";
+  const lastSaved = useRef<Draft | null>(null);
+  useEffect(() => {
+    if (lastSaved.current !== draft) {
+      saveDraft(draft);
+      lastSaved.current = draft;
+    }
+  });
+}
+```
+
+Next.js only exposes the `reactCompiler` option; there's no per-directory `overrides` like in a Babel config. If I need directory-level control in Next.js, I use annotation mode and add `"use memo"` gradually, or enable it everywhere and use `"use no memo"` for old areas. Every `"use no memo"` should come with a ticket; it's a temporary escape hatch, not an end state.
+
+`gating` is useful if you want real numbers: the compiler emits both versions of each component and picks one at runtime based on your flag function.
+
+## Existing useMemo, useCallback and React.memo
+
+The official advice, which I agree with: **don't mass-delete them**. The compiler understands `useMemo`/`useCallback` and by default tries to preserve their memoization guarantees; the `preserve-manual-memoization` rule reports when it can't. Removing them can change the compiler's output, and if an effect depends on that value, behavior changes with it.
+
+That was exactly my autosave bug. Simplified, it looked like this:
+
+```tsx
+function DraftEditor({ draftId, body }: { draftId: string; body: string }) {
+  const payload = { draftId, body, savedAt: Date.now() };
+
+  useEffect(() => {
+    queueAutosave(payload);
+  }, [payload]);
+
+  return <Editor value={body} />;
+}
+```
+
+Before the compiler, `payload` was a new object every render, so the effect ran after *every* render, including ones caused by unrelated state. The code "worked" by accident, because some saves depended on it. After compilation, `payload` only changes when `draftId` or `body` changes (and `Date.now()` in render was already a violation). The effect ran less often and an old save path stopped firing. The compiler was right; the old code was wrong. The fix is to state the intent directly: save when `body` changes, and take the timestamp inside the effect.
+
+```tsx
+function DraftEditor({ draftId, body }: { draftId: string; body: string }) {
+  useEffect(() => {
+    queueAutosave({ draftId, body, savedAt: Date.now() });
+  }, [draftId, body]);
+
+  return <Editor value={body} />;
+}
+```
+
+The rules I follow:
+
+- **New code**: no more `useMemo`/`useCallback`/`memo`, unless I need precise control over a value used as an effect dependency.
+- **Old code**: leave it. Remove it only while already editing that file, with test coverage.
+- **`React.memo` with a custom comparison function**: keep it; the compiler can't replace your comparison logic.
+
+## Verifying it actually works
+
+Don't assume it's running; look:
+
+1. **React DevTools**: compiled components show a "Memo ✨" badge next to their name in the Components tab. If a component you expected isn't badged, it bailed out or is outside the compiled scope.
+2. **Playground**: paste the component in to see the specific bailout reason.
+3. **Profiler**: record the same interaction before and after enabling, and compare the number of components rendered and commit times. I do this on a production build with profiling enabled, not a dev build.
+4. **E2E tests**: run the full suite with the compiler on. Bugs like effects firing more or less often only show up here.
+
+On numbers: Meta reported up to 12% improvement in initial loads and cross-page navigations for the Quest Store, with some interactions more than 2.5× faster. Your app will differ. On our dashboard, large tables benefited most; form-heavy pages barely changed, because they were never slow to begin with.
+
+## Third-party libraries and build cost
+
+The compiler only compiles your code; it doesn't touch `node_modules`. The problem is libraries whose APIs **return mutable values, or functions whose behavior changes while keeping the same reference**. The compiler assumes values returned from hooks are stable until their inputs change; if a library mutates that object internally, a memoized component will show stale data. The compiler has a list of APIs known to be incompatible, and the `incompatible-library` rule warns when you use them; those components are skipped. Common examples are react-hook-form's `watch` and TanStack Table's hooks. For libraries not on the list, the only way to find out is testing: when the UI stops updating after enabling the compiler, try `"use no memo"` on that component first.
+
+Stores built on `useSyncExternalStore` return immutable snapshots, so they usually don't hit this problem.
+
+On build: the compiler is a Babel pass over each file, so it costs time compared to a pure SWC or esbuild pipeline. Next.js reduces that cost with a filtering step written in SWC that only sends files with JSX or hooks into the compiler. In Vite you pay the Babel cost for every file the React plugin processes. I don't have a trustworthy benchmark to quote; measure on your own CI before and after. Bundles also grow slightly from the generated cache code.
+
+<Callout>
+  The compiler doesn't fix a bad data design. State in the wrong place, a context holding the whole world, a ten-thousand-row list without virtualization are all still slow. It takes away the tedious work of manual memoization so you can focus on structure.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- React Compiler 1.0 is stable; Next.js 16 has a top-level `reactCompiler` option, but it still runs through `babel-plugin-react-compiler`.
+- Pin the exact compiler version and upgrade by hand if your E2E coverage is thin.
+- The compiler memoizes individual values and pieces of JSX, not just whole components.
+- Detected Rules of React violations make a component silently skipped; undetected ones are the real danger.
+- Enable `reactHooks.configs.flat.recommended` a few weeks before the compiler, and remove `eslint-plugin-react-compiler`.
+- Roll out with annotation mode, directories, `"use no memo"` and `gating`; every opt-out gets a ticket.
+- Don't mass-delete `useMemo`/`useCallback`; look for effects that only worked because of a new object every render.
+- Verify with the "Memo ✨" badge, the Playground, the Profiler on a production build, and E2E tests.
+- Measure build time on your own CI and watch for libraries that return mutable values.
+
+</Checklist>

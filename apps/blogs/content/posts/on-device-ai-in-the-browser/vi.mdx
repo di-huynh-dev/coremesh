@@ -1,0 +1,340 @@
+---
+title: "Chạy AI ngay trong trình duyệt: WebGPU, Web Worker và built-in AI của Chrome"
+excerpt: "Khi nào nên chạy model ngay trên máy người dùng và khi nào không, built-in AI của Chrome đã ship tới đâu, Transformers.js, ONNX Runtime Web và WebLLM trên WebGPU/WASM, chạy inference trong Web Worker, cache trọng số model và UX cho lần tải đầu tiên."
+---
+
+<Lead>Đầu năm nay team mình làm một công cụ nội bộ cho bộ phận chăm sóc khách hàng: tóm tắt ticket dài, phân loại ticket, tìm các ticket tương tự. Bản đầu gọi API LLM ở server, cho tới khi bên pháp chế hỏi: "Ticket có số điện thoại, địa chỉ của khách, sao lại gửi ra ngoài?". Thế là mình thử chạy model ngay trong trình duyệt. Vài tính năng chạy on-device rất ổn, vài tính năng thì không, và phần tốn công nhất không phải gọi model mà là mọi thứ xung quanh nó.</Lead>
+
+## Vì sao chạy model trên máy người dùng, và cái giá phải trả
+
+Lý do chạy on-device thường rơi vào bốn nhóm. Hãy viết rõ đâu là lý do *chính* của tính năng, vì nó quyết định cách fallback về sau.
+
+| Lợi ích | Thực tế |
+| --- | --- |
+| **Riêng tư** | Dữ liệu không rời khỏi thiết bị. Đây là lý do mạnh nhất, và cũng dễ bị phá vỡ nhất nếu fallback âm thầm gửi lên server. |
+| **Độ trễ** | Không có round-trip mạng, hợp với tác vụ nhỏ chạy liên tục như phát hiện ngôn ngữ khi gõ, gợi ý, embedding. |
+| **Chi phí** | Không trả tiền theo token. Nhưng bạn trả bằng băng thông tải model và bằng pin, máy của người dùng. |
+| **Offline** | Model đã cache thì chạy được khi mất mạng, hợp với app offline-first. |
+
+Còn đây là những giới hạn mình đụng phải ngay tuần đầu:
+
+- **Kích thước tải về.** Một model embedding nhỏ chỉ vài chục MB, nhưng một LLM nhỏ đã lượng tử hoá vẫn là hàng trăm MB tới vài GB. Bắt người dùng tải 1 GB để tóm tắt một đoạn văn là một quyết định sản phẩm, không phải chi tiết kỹ thuật.
+- **Bộ nhớ.** Trọng số model nằm trong RAM hoặc VRAM. Tab bị trình duyệt kill vì hết bộ nhớ trên laptop 8 GB là chuyện có thật, và lỗi này không hiện ra trong console của bạn.
+- **Thiết bị quá khác nhau.** Cùng đoạn code chạy mượt trên MacBook có GPU tốt, chậm hơn nhiều lần trên laptop văn phòng chạy WASM, và không chạy nổi trên điện thoại cũ.
+- **Chất lượng.** Model nhỏ đủ cho tác vụ hẹp (phân loại, trích xuất, embedding, dịch), nhưng thường không đủ cho suy luận nhiều bước.
+
+## Hai con đường: model của trình duyệt hay model tự mang theo
+
+Có hai cách rất khác nhau để có model trong trình duyệt:
+
+| | Built-in AI (Chrome) | Tự mang model (Transformers.js, ONNX Runtime Web, WebLLM) |
+| --- | --- | --- |
+| Ai tải model | Trình duyệt, một lần, dùng chung | Ứng dụng của bạn, cache theo origin |
+| Chọn model | Không, dùng model của trình duyệt | Tuỳ ý, miễn có bản ONNX/MLC phù hợp |
+| Hỗ trợ | Chrome desktop, có yêu cầu phần cứng | Mọi trình duyệt có WebGPU hoặc WASM |
+| Chạy trong Worker | Các API task-based thì không | Có, và nên như vậy |
+| Kiểm soát phiên bản | Không, model đổi theo bản Chrome | Hoàn toàn, bạn pin model ID và revision |
+
+Mình dùng built-in AI cho tác vụ nó làm sẵn (tóm tắt, dịch, phát hiện ngôn ngữ) và tự mang model cho thứ cần chạy ổn định trên mọi trình duyệt, như embedding.
+
+## Built-in AI của Chrome: cái gì đã ship
+
+Tính đến lúc mình viết, theo tài liệu của Chrome for Developers:
+
+| API | Trạng thái |
+| --- | --- |
+| Translator, Language Detector, Summarizer | Stable từ Chrome 138 (desktop) |
+| Prompt API (`LanguageModel`) | Stable cho Extension từ Chrome 138; cho trang web từ Chrome 148. Tham số sampling vẫn ở origin trial |
+| Writer, Rewriter, Proofreader | Vẫn đang ở giai đoạn trial, chưa nên dựa vào cho production |
+
+Vài chi tiết quan trọng hơn bảng trên:
+
+- Các API dùng model nền (Prompt, Summarizer, Writer, Rewriter, Proofreader) chỉ chạy trên Windows, macOS, Linux và Chromebook Plus, **không** chạy trên Android hay iOS. Yêu cầu phần cứng khá cao: tài liệu ghi cần tối thiểu 22 GB trống trên ổ đĩa, GPU hơn 4 GB VRAM hoặc CPU có 16 GB RAM và từ 4 nhân.
+- Summarizer, Translator và Language Detector **không dùng được trong Web Worker**.
+- Gọi `create()` khi model chưa sẵn sàng đòi hỏi user activation, tức là phải nằm trong luồng xử lý một thao tác thật của người dùng.
+- Ngôn ngữ hỗ trợ có giới hạn. Summarizer hiện liệt kê en, ja, es, de, fr. Với sản phẩm tiếng Việt, đây là chỗ mình bị vấp đầu tiên: Translator và Language Detector dùng được, còn tóm tắt ticket tiếng Việt thì phải tự lo.
+
+Mẫu chung cho mọi API built-in: kiểm tra API tồn tại, hỏi `availability()` với đúng option sẽ dùng, chỉ `create()` khi cần.
+
+```ts
+type ModelAvailability = "unavailable" | "downloadable" | "downloading" | "available";
+
+const summarizerOptions = {
+  type: "key-points",
+  format: "plain-text",
+  length: "short",
+  expectedInputLanguages: ["en"],
+  outputLanguage: "en",
+} as const;
+
+export async function getSummarizerAvailability(): Promise<ModelAvailability> {
+  if (!("Summarizer" in self)) return "unavailable";
+  return Summarizer.availability(summarizerOptions);
+}
+
+export function createSummarizer(onDownloadProgress: (fraction: number) => void, signal?: AbortSignal) {
+  return Summarizer.create({
+    ...summarizerOptions,
+    signal,
+    monitor(monitor) {
+      monitor.addEventListener("downloadprogress", (event) => onDownloadProgress(event.loaded));
+    },
+  });
+}
+```
+
+Type cho `Summarizer`, `LanguageModel` lấy từ `@types/dom-chromium-ai`. `event.loaded` là tỉ lệ từ 0 tới 1, không phải số byte.
+
+Với Prompt API, thứ hữu ích nhất cho ứng dụng thật là `responseConstraint`: truyền JSON Schema để model buộc phải trả về JSON đúng hình dạng, thay vì parse văn bản tự do.
+
+```ts
+const triageSchema = {
+  type: "object",
+  properties: {
+    category: { type: "string", enum: ["billing", "bug", "how-to", "other"] },
+    urgent: { type: "boolean" },
+  },
+  required: ["category", "urgent"],
+  additionalProperties: false,
+};
+
+type Triage = { category: "billing" | "bug" | "how-to" | "other"; urgent: boolean };
+
+export async function triageTicket(ticketText: string, signal: AbortSignal): Promise<Triage> {
+  const session = await LanguageModel.create({
+    initialPrompts: [{ role: "system", content: "You triage customer support tickets." }],
+    expectedInputs: [{ type: "text", languages: ["en"] }],
+    expectedOutputs: [{ type: "text", languages: ["en"] }],
+    signal,
+  });
+  try {
+    const raw = await session.prompt(ticketText, { responseConstraint: triageSchema, signal });
+    return JSON.parse(raw) as Triage;
+  } finally {
+    session.destroy();
+  }
+}
+```
+
+Session giữ context và tốn bộ nhớ, nên mình luôn `destroy()` khi xong, hoặc với hội thoại thì giữ một session và theo dõi `contextUsage` so với `contextWindow`.
+
+## Progressive enhancement với fallback về server
+
+Nguyên tắc của mình: tính năng phải chạy với *mọi* người dùng, on-device chỉ là đường nhanh hơn hoặc riêng tư hơn khi máy cho phép.
+
+```ts
+type SummaryResult = { text: string; source: "on-device" | "server" };
+
+async function summarizeOnServer(text: string, signal: AbortSignal): Promise<SummaryResult> {
+  const response = await fetch("/api/summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`Summarize failed with ${response.status}`);
+  const body = (await response.json()) as { summary: string };
+  return { text: body.summary, source: "server" };
+}
+
+export async function summarize(text: string, signal: AbortSignal): Promise<SummaryResult> {
+  if ((await getSummarizerAvailability()) !== "available") return summarizeOnServer(text, signal);
+  try {
+    const summarizer = await createSummarizer(() => {}, signal);
+    try {
+      return { text: await summarizer.summarize(text, { signal }), source: "on-device" };
+    } finally {
+      summarizer.destroy();
+    }
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return summarizeOnServer(text, signal);
+  }
+}
+```
+
+Hàm này chỉ dùng on-device khi trạng thái đã là `available`. Việc *tải* model nằm ở chỗ khác, sau một nút bấm rõ ràng, vì nó cần user activation và người dùng nên biết họ sắp tải gì.
+
+<Callout>
+  Fallback về server chỉ đúng khi lý do của tính năng là tốc độ hay chi phí. Nếu lý do là riêng tư, fallback âm thầm gửi dữ liệu lên server chính là phá vỡ lời hứa với người dùng. Trong công cụ ticket, mình để tóm tắt fallback về server (nội dung đã được che thông tin cá nhân ở backend), còn tính năng "phân tích ghi chú nháp" thì tắt hẳn khi không chạy được on-device và nói rõ lý do.
+</Callout>
+
+## Tự mang model: WebGPU, WASM và ba thư viện đáng biết
+
+Khi built-in AI không đủ, mình tự mang model. Có hai backend: **WebGPU** chạy tính toán trên GPU, nhanh hơn nhiều với model lớn; **WASM** chạy trên CPU, chậm hơn nhưng có mặt ở mọi nơi. WebGPU đã có trên Chrome và Edge từ bản 113, Safari từ bản 26, Firefox trên Windows và Mac Apple Silicon; Firefox trên Linux và Android thì vẫn chưa ổn định. Vì vậy, mình coi WASM là đường dự phòng bắt buộc, không phải tuỳ chọn.
+
+Ba thư viện mình đã dùng, ở phiên bản lúc viết bài:
+
+- **Transformers.js** (`@huggingface/transformers` 4.3): API `pipeline()` quen thuộc, chạy model ONNX từ Hugging Face Hub, chọn backend bằng option `device: "webgpu"` hoặc `"wasm"` và độ chính xác bằng `dtype`. Hợp nhất cho embedding, phân loại, nhận diện giọng nói, các model nhỏ.
+- **ONNX Runtime Web** (`onnxruntime-web` 1.31): runtime mà Transformers.js dùng bên dưới. Dùng khi có model ONNX riêng và tự lo tiền xử lý, hậu xử lý; import từ `onnxruntime-web/webgpu` và chọn `executionProviders`.
+- **WebLLM** (`@mlc-ai/web-llm` 0.2.x): chuyên cho LLM, biên dịch model sang WebGPU, API theo kiểu OpenAI `engine.chat.completions.create`. Bắt buộc WebGPU, không có đường WASM.
+
+Một bẫy với WASM: để chạy đa luồng, ONNX Runtime cần `SharedArrayBuffer`, và cái này chỉ có khi trang được cross-origin isolated (header COOP và COEP). Thiếu hai header này, runtime vẫn chạy nhưng chỉ một luồng. Bật COEP lại có thể làm vỡ iframe, ảnh hay script bên thứ ba không gửi header CORP, nên hãy kiểm tra kỹ.
+
+## Chạy inference trong Web Worker
+
+Inference chiếm main thread hàng trăm mili giây tới vài giây, đủ để làm hỏng INP. Mình luôn đặt model trong một module worker. File `embedding.worker.ts`:
+
+```ts
+import { pipeline, type FeatureExtractionPipeline, type ProgressInfo } from "@huggingface/transformers";
+
+const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
+
+type Backend = { device: "webgpu" | "wasm"; dtype: "fp16" | "fp32" | "q8" };
+type EmbedRequest = { id: number; texts: string[] };
+
+export type WorkerMessage =
+  | { type: "progress"; loaded: number; total: number }
+  | { type: "ready"; device: Backend["device"] }
+  | { type: "result"; id: number; vectors: number[][] }
+  | { type: "error"; id: number; message: string };
+
+let extractorPromise: Promise<FeatureExtractionPipeline> | null = null;
+
+async function pickBackend(): Promise<Backend> {
+  const adapter = "gpu" in navigator ? await navigator.gpu.requestAdapter() : null;
+  if (!adapter) return { device: "wasm", dtype: "q8" };
+  return { device: "webgpu", dtype: adapter.features.has("shader-f16") ? "fp16" : "fp32" };
+}
+
+function forwardProgress(info: ProgressInfo) {
+  if (info.status !== "progress_total") return;
+  self.postMessage({ type: "progress", loaded: info.loaded, total: info.total } satisfies WorkerMessage);
+}
+
+function getExtractor() {
+  extractorPromise ??= (async () => {
+    const backend = await pickBackend();
+    const extractor = await pipeline("feature-extraction", MODEL_ID, { ...backend, progress_callback: forwardProgress });
+    self.postMessage({ type: "ready", device: backend.device } satisfies WorkerMessage);
+    return extractor;
+  })().catch((error: unknown) => {
+    extractorPromise = null;
+    throw error;
+  });
+  return extractorPromise;
+}
+
+self.addEventListener("message", async (event: MessageEvent<EmbedRequest>) => {
+  const { id, texts } = event.data;
+  try {
+    const extractor = await getExtractor();
+    const output = await extractor(texts, { pooling: "mean", normalize: true });
+    self.postMessage({ type: "result", id, vectors: output.tolist() as number[][] } satisfies WorkerMessage);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    self.postMessage({ type: "error", id, message } satisfies WorkerMessage);
+  }
+});
+```
+
+Vài quyết định trong đoạn trên: chọn `dtype` theo khả năng thật của GPU (không phải GPU nào cũng hỗ trợ `shader-f16`); chỉ chuyển tiếp sự kiện `progress_total` của Transformers.js 4 vì nó đã gộp tiến độ của mọi file; và reset promise khi lỗi để lần sau có thể thử lại thay vì kẹt mãi ở một promise đã reject. Type của `navigator.gpu` lấy từ `@webgpu/types`.
+
+Phía main thread, mình bọc worker thành một client có API dạng promise:
+
+```ts
+import type { WorkerMessage } from "./embedding.worker";
+
+type PendingRequest = { resolve: (vectors: number[][]) => void; reject: (error: Error) => void };
+
+export function createEmbeddingClient(onProgress: (fraction: number) => void) {
+  const worker = new Worker(new URL("./embedding.worker.ts", import.meta.url), { type: "module" });
+  const pending = new Map<number, PendingRequest>();
+  let nextId = 0;
+
+  worker.addEventListener("message", (event: MessageEvent<WorkerMessage>) => {
+    const message = event.data;
+    if (message.type === "progress") {
+      onProgress(message.total > 0 ? message.loaded / message.total : 0);
+      return;
+    }
+    if (message.type === "ready") return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    if (message.type === "result") request.resolve(message.vectors);
+    else request.reject(new Error(message.message));
+  });
+
+  return {
+    embed(texts: string[]) {
+      const id = nextId++;
+      return new Promise<number[][]>((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, texts });
+      });
+    },
+    dispose() {
+      worker.terminate();
+      pending.forEach((request) => request.reject(new Error("Embedding worker disposed")));
+      pending.clear();
+    },
+  };
+}
+```
+
+Trong React, mình tạo client này một lần ở tầng cao (một context hoặc module singleton chỉ khởi tạo phía client), không tạo trong từng component: mỗi worker là một bản model riêng trong bộ nhớ.
+
+## Cache trọng số model: Cache API, OPFS và quota
+
+Tải lại 100 MB mỗi lần mở trang là không chấp nhận được. Tin tốt: thư viện đã làm phần lớn. Transformers.js mặc định lưu file model vào Cache API dưới khoá `transformers-cache` (và cache luôn file WASM của runtime). WebLLM cho chọn `cacheBackend` là `"cache"`, `"indexeddb"` hoặc `"opfs"`, trong đó Cache API được ghi là đã kiểm thử kỹ nhất.
+
+Phần thư viện không làm giúp bạn là quản lý quota và vòng đời:
+
+```ts
+export async function ensureModelStorage(requiredBytes: number) {
+  const { quota = 0, usage = 0 } = await navigator.storage.estimate();
+  const persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist());
+  return { hasRoom: quota - usage > requiredBytes * 1.2, persisted };
+}
+
+export async function deleteStaleModelFiles(currentModelId: string) {
+  const cache = await caches.open("transformers-cache");
+  const requests = await cache.keys();
+  const stale = requests.filter((request) => request.url.includes("/resolve/") && !request.url.includes(currentModelId));
+  await Promise.all(stale.map((request) => cache.delete(request)));
+}
+```
+
+Storage mặc định là "best-effort": khi ổ đĩa đầy, trình duyệt có thể xoá dữ liệu của bạn mà không báo. `persist()` xin chế độ bền vững nhưng có thể bị từ chối, nên code phải chịu được việc cache biến mất. Khi đổi model, hãy xoá bản cũ, nếu không mỗi lần nâng cấp lại chồng thêm vài trăm MB.
+
+Nếu bạn tự quản lý file lớn, OPFS hợp hơn Cache API: ghi stream trực tiếp xuống file, không phải bọc trong `Response`. Một chi tiết hay: `createWritable()` ghi vào file tạm, chỉ commit khi stream đóng thành công, nên tải dở rồi huỷ sẽ không để lại file hỏng.
+
+```ts
+export async function downloadToOpfs(url: string, fileName: string, signal: AbortSignal) {
+  const root = await navigator.storage.getDirectory();
+  const handle = await root.getFileHandle(fileName, { create: true });
+  const response = await fetch(url, { signal });
+  if (!response.ok || !response.body) throw new Error(`Download failed with ${response.status}`);
+  await response.body.pipeTo(await handle.createWritable(), { signal });
+}
+```
+
+## UX cho lần tải model đầu tiên
+
+Phần mình đánh giá thấp nhất lúc đầu, và là phần người dùng nhớ nhất.
+
+- **Hỏi trước khi tải.** Một nút "Bật tóm tắt trên máy (khoảng 80 MB)" tốt hơn nhiều so với tự tải ngầm. Nó vừa thoả yêu cầu user activation của built-in AI, vừa tôn trọng người đang dùng 4G.
+- **Hiện tiến độ thật.** Dùng `progress_total` hoặc sự kiện `downloadprogress` để hiện phần trăm. Nếu chưa biết tổng dung lượng, hiện trạng thái không xác định thay vì một thanh tiến độ đứng yên ở 0%.
+- **Không chặn tính năng.** Trong lúc tải, tính năng vẫn dùng được qua đường server (nếu lý do không phải riêng tư). Khi model sẵn sàng, chuyển sang on-device một cách lặng lẽ.
+- **Cho phép huỷ.** Truyền `AbortSignal` xuống tận `fetch` hay `create()`; nút huỷ mà không huỷ được gì còn tệ hơn không có nút.
+- **Phân biệt "đang tải" với "đang khởi động".** Trên WebGPU, sau khi tải xong còn mất thời gian biên dịch shader; hãy cho người dùng biết app không bị treo.
+
+<Callout>
+  Đừng đo thành công bằng việc "model chạy được trên máy mình". Hãy log `device` (webgpu hay wasm), tỉ lệ người dùng thật tới được trạng thái sẵn sàng, thời gian để tới đó, và tỉ lệ phải fallback. Với công cụ ticket, con số fallback ở tuần đầu cao hơn mình dự đoán rất nhiều, chủ yếu vì yêu cầu phần cứng của built-in AI.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Viết rõ lý do chính của tính năng on-device (riêng tư, độ trễ, chi phí, offline) vì nó quyết định cách fallback.
+- Built-in AI của Chrome: Translator, Language Detector, Summarizer stable từ 138; Prompt API cho web từ 148; chỉ desktop, yêu cầu phần cứng cao, ngôn ngữ còn hạn chế.
+- Luôn feature-detect, gọi `availability()` với đúng option, và chỉ tải model sau một thao tác rõ ràng của người dùng.
+- Tự mang model khi cần chạy trên mọi trình duyệt: WebGPU khi có, WASM là đường dự phòng bắt buộc.
+- Đặt inference trong module worker và tạo một instance dùng chung, không tạo theo component.
+- Để thư viện cache trọng số, còn bạn lo `persist()`, kiểm tra quota và xoá model cũ.
+- Hiện tiến độ thật, cho phép huỷ, không chặn tính năng trong lúc tải.
+- Fallback về server chỉ khi không phá vỡ lời hứa riêng tư với người dùng.
+
+</Checklist>

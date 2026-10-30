@@ -1,0 +1,335 @@
+---
+title: "Frontend Observability with OpenTelemetry: From Web Vitals to One Trace Across Browser, API and Database"
+excerpt: "RUM vs synthetic monitoring, what to actually collect in the browser, OpenTelemetry on the web in 2026, propagating traceparent from fetch to the backend, CORS, sampling and cost, reliable delivery on pagehide, PII scrubbing, and wiring it all into Next.js 16."
+---
+
+<Lead>A support ticket once said "checkout is slow, sometimes". Our error tracker was clean, the API p95 looked fine, and Lighthouse gave us a 96. It took a week to find out that a third-party script blocked the main thread for 400 ms right after the payment form mounted, but only on mid-range Android phones. Nothing we had could connect "this user clicked Pay" to "this frame was long" to "this API call took 1.8 s because of a lock in the database". That week is why I now treat the browser as a first-class part of the trace, not a place where errors come from.</Lead>
+
+## Observability is more than error tracking
+
+Error tracking answers "what threw?". Observability answers "why was this user's experience bad?", which includes everything that did not throw: slow interactions, layout jank, a request that succeeded in 9 seconds. I covered classifying and reporting errors in [the error-handling post](/blog/frontend-error-handling-strategy); this one is about everything else.
+
+There are two complementary sources of data:
+
+| | Synthetic monitoring | Real User Monitoring (RUM) |
+| --- | --- | --- |
+| Who generates data | A scripted bot on a fixed device and network | Every real session |
+| Good for | Uptime, regression in CI, before-launch baselines | Real distribution of devices, networks, journeys |
+| Blind to | Long tails, third-party scripts behaving differently, real user behaviour | Pages nobody visits yet, anything before you ship |
+| Cost driver | Number of checks × frequency | Traffic × sampling rate × payload size |
+
+I run a small set of synthetic checks for the critical journeys (login, search, checkout) so I hear about an outage at 3 a.m. before users do, and RUM for everything else. Synthetic tells you it is broken; RUM tells you for whom and how badly.
+
+## What to collect in the browser
+
+The temptation is to collect everything. Do not: every attribute you add multiplies storage and cardinality. My default set:
+
+- **Core Web Vitals with attribution.** Not just the number, but the LCP element and its phases, the INP target and its input delay, processing and presentation split, the CLS source. The mechanics are in [the Core Web Vitals post](/blog/core-web-vitals); here they become span attributes keyed by route.
+- **Long animation frames (LoAF).** The successor of Long Tasks: it tells you which script (URL, function name, invoker) made a frame slow. It is Chromium-only as far as I can verify, so treat it as a sampling of the truth, not the full picture.
+- **Resource timing for things that matter.** Not every image, just the API calls, the main bundle and critical fonts, with `transferSize` and `nextHopProtocol` to spot cache misses and HTTP/1.1 fallbacks.
+- **Custom user-journey spans.** "Open cart → payment confirmed" as one span with child spans for each fetch. This is the piece no off-the-shelf tool gives you, and the most useful one.
+
+LoAF needs a feature check and a local type, because not every TypeScript `lib.dom` version ships it:
+
+```ts
+type LongAnimationFrameScript = {
+  sourceURL: string;
+  sourceFunctionName: string;
+  invoker: string;
+  duration: number;
+};
+
+type LongAnimationFrameEntry = PerformanceEntry & {
+  blockingDuration: number;
+  scripts: LongAnimationFrameScript[];
+};
+
+export function observeLongAnimationFrames(report: (entry: LongAnimationFrameEntry) => void) {
+  if (!PerformanceObserver.supportedEntryTypes.includes("long-animation-frame")) return;
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries() as LongAnimationFrameEntry[]) {
+      if (entry.blockingDuration > 100) report(entry);
+    }
+  }).observe({ type: "long-animation-frame", buffered: true });
+}
+```
+
+## OpenTelemetry in the browser in 2026
+
+OpenTelemetry gives you a vendor-neutral data model (traces, metrics, logs) and the OTLP wire format, so you can switch backends without rewriting instrumentation. On the web, the honest status as of late 2026:
+
+- The core web tracing packages, `@opentelemetry/sdk-trace-web` with `@opentelemetry/instrumentation-fetch` and friends, work and are widely used, but the instrumentation packages are still on 0.x versions and their APIs still move between releases.
+- The Browser SIG is building a dedicated browser SDK and browser instrumentation in a separate repository. Those packages are experimental; I would not bet a production rollout on their API yet.
+- Browser-specific semantic conventions exist (for example `browser.*` resource attributes) but much of the RUM side, such as how a Web Vital or a user action should be modelled, is still marked development or experimental. Pin versions and expect renames.
+
+My practical take: use OpenTelemetry's **data model and conventions** in the browser even if you do not use the full SDK. The official SDK plus zone-based context management adds noticeable bundle weight for a page whose LCP you are trying to protect. A small hand-written tracer that emits spans with the same IDs, names and attribute keys (`http.request.method`, `url.full`, `http.response.status_code`) gives you 80% of the value, and a collector can convert it to OTLP. If you have the budget, the SDK is the more maintainable choice; just lazy-load it after first paint.
+
+## One trace from click to database
+
+The killer feature is propagation. The W3C Trace Context `traceparent` header carries a version, a 16-byte trace ID, an 8-byte parent span ID and flags (the low bit means "sampled"). If the browser sends it with a fetch, an OpenTelemetry-instrumented backend continues the same trace, and its database spans become grandchildren of your click.
+
+Here is the span helper I start from. The sampling decision is made once per session, so every span of a session is either in or out:
+
+```ts
+export type SpanRecord = {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  startTime: number;
+  endTime?: number;
+  status: "unset" | "ok" | "error";
+  attributes: Record<string, string | number | boolean>;
+};
+
+export type SpanHandle = ReturnType<typeof startSpan>;
+
+const sessionSampled = Math.random() < 0.1;
+
+function randomHex(byteLength: number): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function nowEpochMs(): number {
+  return performance.timeOrigin + performance.now();
+}
+
+export function startSpan(name: string, parent?: SpanRecord) {
+  const span: SpanRecord = {
+    traceId: parent?.traceId ?? randomHex(16),
+    spanId: randomHex(8),
+    parentSpanId: parent?.spanId,
+    name,
+    startTime: nowEpochMs(),
+    status: "unset",
+    attributes: {},
+  };
+
+  return {
+    span,
+    setAttribute(key: string, value: string | number | boolean) {
+      span.attributes[key] = value;
+    },
+    traceparent(): string {
+      return `00-${span.traceId}-${span.spanId}-${sessionSampled ? "01" : "00"}`;
+    },
+    end(status: "ok" | "error" = "ok") {
+      if (span.endTime !== undefined) return;
+      span.endTime = nowEpochMs();
+      span.status = status;
+      if (sessionSampled || status === "error") enqueueSpan(span);
+    },
+  };
+}
+
+let activeJourney: SpanHandle | undefined;
+
+export function startJourney(name: string): SpanHandle {
+  activeJourney = startSpan(`journey.${name}`);
+  return activeJourney;
+}
+
+export function endJourney(status: "ok" | "error" = "ok") {
+  activeJourney?.end(status);
+  activeJourney = undefined;
+}
+
+export function currentJourney(): SpanRecord | undefined {
+  return activeJourney?.span;
+}
+```
+
+And the fetch instrumentation. It only injects headers for origins I explicitly allow, and skips the telemetry endpoint itself to avoid recursion:
+
+```ts
+const telemetryPath = "/api/rum";
+const propagationOrigins = new Set([location.origin, "https://api.example.com"]);
+
+export function instrumentFetch() {
+  const originalFetch = window.fetch.bind(window);
+
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.origin === location.origin && url.pathname === telemetryPath) {
+      return originalFetch(request);
+    }
+
+    const handle = startSpan(`HTTP ${request.method}`, currentJourney());
+    handle.setAttribute("http.request.method", request.method);
+    handle.setAttribute("url.full", `${url.origin}${url.pathname}`);
+    if (propagationOrigins.has(url.origin)) {
+      request.headers.set("traceparent", handle.traceparent());
+    }
+
+    try {
+      const response = await originalFetch(request);
+      handle.setAttribute("http.response.status_code", response.status);
+      handle.end(response.ok ? "ok" : "error");
+      return response;
+    } catch (error) {
+      handle.setAttribute("error.type", error instanceof Error ? error.name : "unknown");
+      handle.end("error");
+      throw error;
+    }
+  };
+}
+```
+
+Note `url.full` deliberately drops the query string; more on that in the PII section. On the backend, any OpenTelemetry SDK with the default W3C propagator and a parent-based sampler will honour the sampled flag, so the browser decides and the server follows.
+
+### CORS: the header that breaks production
+
+`traceparent` is not a CORS-safelisted request header. The moment you add it to a cross-origin request, the browser sends a preflight `OPTIONS`, and if the API does not list it in `Access-Control-Allow-Headers`, the real request fails. Not the span: the user's request. Your API must respond to the preflight with something like `Access-Control-Allow-Headers: content-type, authorization, traceparent, tracestate`, and ideally a sensible `Access-Control-Max-Age` so you do not pay an extra round trip on every call.
+
+<Callout type="danger">
+  Never propagate trace headers to third-party origins (payment providers, analytics, CDNs you do not control). At best they ignore it; at worst the preflight fails and you have broken checkout for a tracing feature. That is why the helper uses an allowlist of origins, the same idea as the OpenTelemetry fetch instrumentation's `propagateTraceHeaderCorsUrls` option.
+</Callout>
+
+## Sending data without losing the last batch
+
+The most interesting telemetry (the final INP, the abandoned journey) happens right before the user leaves. `unload` is unreliable and blocks the back/forward cache, so flush on `visibilitychange` to hidden and on `pagehide`. Use `navigator.sendBeacon` or `fetch` with `keepalive: true`, both of which survive the page going away, and both of which are limited to about 64 KB of in-flight body per page. Hence the byte-capped batches:
+
+```ts
+const maxBatchBytes = 60_000;
+const maxBatchSpans = 50;
+const flushDelayMs = 5_000;
+
+let pendingSpans: SpanRecord[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
+
+export function enqueueSpan(span: SpanRecord) {
+  pendingSpans.push(span);
+  if (pendingSpans.length >= maxBatchSpans) {
+    flushSpans(false);
+    return;
+  }
+  flushTimer ??= setTimeout(() => flushSpans(false), flushDelayMs);
+}
+
+function takeBatch(): SpanRecord[] {
+  const batch: SpanRecord[] = [];
+  let batchBytes = 0;
+  while (pendingSpans.length > 0) {
+    const spanBytes = JSON.stringify(pendingSpans[0]).length;
+    if (batch.length > 0 && batchBytes + spanBytes > maxBatchBytes) break;
+    batch.push(pendingSpans.shift() as SpanRecord);
+    batchBytes += spanBytes;
+  }
+  return batch;
+}
+
+function flushSpans(pageIsHiding: boolean) {
+  clearTimeout(flushTimer);
+  flushTimer = undefined;
+  while (pendingSpans.length > 0) {
+    const body = JSON.stringify({ spans: takeBatch() });
+    const beaconQueued =
+      pageIsHiding && navigator.sendBeacon(telemetryPath, new Blob([body], { type: "application/json" }));
+    if (!beaconQueued) {
+      fetch(telemetryPath, {
+        method: "POST",
+        body,
+        keepalive: true,
+        headers: { "content-type": "application/json" },
+      }).catch(() => undefined);
+    }
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushSpans(true);
+});
+window.addEventListener("pagehide", () => flushSpans(true));
+```
+
+Two details that bit me. First, keep the endpoint same-origin (proxy it to your collector): a cross-origin beacon with a JSON content type needs CORS, and beacons cannot do a preflight gracefully. Second, `sendBeacon` returns `false` when the browser refuses to queue the data, typically because of the size quota; that is the signal to fall back, not to retry in a loop.
+
+## Sampling and cost
+
+RUM cost scales with traffic, and a busy site generates a lot of spans. Strategies I combine:
+
+- **Head sampling per session**, as above. 5–20% is enough for p75 dashboards on most products; sampling per session (not per span) keeps journeys whole.
+- **Always keep errors.** The helper exports error spans even from unsampled sessions. The trace will be partial on the backend, but you get the signal.
+- **Tail sampling in the collector** for the rest: keep slow traces and error traces in full, drop most of the boring fast ones. This needs an OpenTelemetry Collector between the browser and the vendor, which I recommend anyway because it is also where you rate-limit and scrub.
+- **Watch cardinality, not just volume.** A `url.full` with IDs in the path turns into millions of unique series. Normalise to the route template (`/orders/[id]`) before it becomes an attribute you group by.
+
+## PII, consent and trust
+
+Telemetry is personal data the moment it can identify someone. My rules: strip query strings and fragments from every URL (reset tokens and emails live there), never record input values or text content, use a random session ID rather than a user ID, and scrub again at the collector because client code is not the last line of defence. The `scrub` helper from the error-handling post works for span attributes too.
+
+Consent depends on your jurisdiction and your legal team, not on me, but the engineering side is the same: initialise telemetry only after consent where required, make the sampling flag part of that decision, and keep a kill switch so you can turn RUM off without a deploy.
+
+## Dashboards and alerts that people actually use
+
+A dashboard nobody opens is just a bill. The views that earned their place on my team:
+
+- **p75 of each Web Vital by route template and device class**, next to the number of samples so nobody panics over five sessions.
+- **Journey funnels with duration**: how long "open cart → payment confirmed" takes at p50/p75/p95, and where the time goes (browser, network, API, DB) thanks to the joined trace.
+- **Top LoAF scripts by total blocking duration.** This is how we found the third-party script from the intro.
+- **Release comparison**: every span carries the build SHA, so "did this deploy make INP worse?" is one filter.
+
+For alerts, alert on user impact relative to a baseline (p75 INP on checkout up 30% for an hour, journey error rate above X%), not on single slow spans. Route alerts to the team that owns the route.
+
+## Wiring it into Next.js 16
+
+Next.js has `instrumentation-client.ts` (at the project root or in `src`): code in it runs after the HTML loads and before React hydrates, which is exactly where RUM should start. It can also export `onRouterTransitionStart`, which fires on client-side navigations, a good place to start a navigation span. On the server, `instrumentation.ts` with `register()` sets up OpenTelemetry for route handlers and server components, for example via `@vercel/otel` or the Node SDK, so the backend side of the trace exists.
+
+```ts
+import { onINP, onLCP } from "web-vitals/attribution";
+import { endJourney, instrumentFetch, startJourney, startSpan } from "./lib/rum";
+import { observeLongAnimationFrames } from "./lib/loaf";
+
+instrumentFetch();
+
+onINP((metric) => {
+  const handle = startSpan("web_vital.inp");
+  handle.setAttribute("web_vital.value", metric.value);
+  handle.setAttribute("web_vital.rating", metric.rating);
+  handle.setAttribute("inp.target", metric.attribution.interactionTarget);
+  handle.setAttribute("inp.input_delay", metric.attribution.inputDelay);
+  handle.setAttribute("inp.processing", metric.attribution.processingDuration);
+  handle.setAttribute("inp.presentation", metric.attribution.presentationDelay);
+  handle.end();
+});
+
+onLCP((metric) => {
+  const handle = startSpan("web_vital.lcp");
+  handle.setAttribute("web_vital.value", metric.value);
+  handle.setAttribute("lcp.target", metric.attribution.target ?? "unknown");
+  handle.end();
+});
+
+observeLongAnimationFrames((entry) => {
+  const worstScript = entry.scripts.toSorted((a, b) => b.duration - a.duration)[0];
+  const handle = startSpan("browser.long_animation_frame");
+  handle.setAttribute("loaf.blocking_duration", entry.blockingDuration);
+  handle.setAttribute("loaf.script_url", worstScript?.sourceURL ?? "unknown");
+  handle.end();
+});
+
+export function onRouterTransitionStart(url: string, navigationType: "push" | "replace" | "traverse") {
+  endJourney();
+  const journey = startJourney("navigation");
+  journey.setAttribute("navigation.type", navigationType);
+  journey.setAttribute("url.path", new URL(url, location.origin).pathname);
+}
+```
+
+Attribute names like `web_vital.*` and `loaf.*` are my own; until the browser conventions settle, pick a namespace, document it, and keep it stable. The code above is `instrumentation-client.ts`; keep the imported modules tiny, because everything here runs before hydration and competes with your LCP.
+
+## Key takeaways
+
+<Checklist>
+
+- Error tracking tells you what threw; observability tells you why the experience was bad. You need both, plus a few synthetic checks for critical journeys.
+- Collect Web Vitals with attribution, long animation frames, selected resource timings and custom journey spans; resist collecting everything.
+- OpenTelemetry's data model and W3C `traceparent` are stable ground; the browser SDK and RUM conventions are still experimental, so pin versions or keep a thin tracer.
+- Propagate `traceparent` only to an allowlist of your own origins, and make the API allow it in CORS preflights.
+- Flush on `visibilitychange` and `pagehide` with `sendBeacon` or `keepalive` fetch, in batches under 64 KB, to a same-origin endpoint.
+- Sample per session, always keep errors, tail-sample in a collector, and normalise URLs to route templates.
+- Strip query strings, never record input values, respect consent, and keep a kill switch.
+- In Next.js 16, start RUM in `instrumentation-client.ts` and trace the server in `instrumentation.ts` so one trace spans browser, API and database.
+
+</Checklist>

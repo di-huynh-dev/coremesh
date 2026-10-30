@@ -1,0 +1,287 @@
+---
+title: "React Compiler trong thực tế: đưa vào một codebase đang chạy"
+excerpt: "React Compiler thực sự làm gì, các Rules of React nó dựa vào, ESLint plugin, rollout từng phần bằng annotation mode và \"use no memo\", xử lý useMemo/useCallback cũ, cách kiểm chứng nó chạy, các lý do bail out thường gặp, thư viện bên thứ ba và chi phí build."
+---
+
+<Lead>Đầu năm nay team mình bật React Compiler cho một dashboard nội bộ khoảng ba trăm component, đã chạy production hơn hai năm. Mình đoán sẽ có hai kết quả: hoặc chẳng có gì thay đổi, hoặc mọi thứ vỡ tung. Thực tế nằm ở giữa: phần lớn màn hình nhanh hơn thấy rõ trong Profiler mà không sửa dòng nào, nhưng có một form tự động lưu bắt đầu gọi API ít hơn mức nó phải gọi, và mất nửa ngày mới hiểu vì sao. Bài này là những gì mình rút ra khi đưa compiler vào một codebase *đang chạy*, không phải một project mới tinh.</Lead>
+
+Nếu bạn cần ôn lại vì sao component render lại và chi phí thật của `memo`, `useMemo`, `useCallback`, hãy đọc [bài về hiệu năng render trong React](/blog/react-rendering-performance) trước. Bài này giả định bạn đã nắm phần đó.
+
+## Trạng thái hiện tại
+
+React Compiler 1.0 ra bản stable vào tháng 10/2025 và đã chạy production ở Meta. Vài điểm cần biết trước khi bắt đầu:
+
+| Môi trường | Cách bật | Ghi chú |
+| --- | --- | --- |
+| Next.js 16 | `reactCompiler: true` trong `next.config.ts` | Đã stable, chuyển từ `experimental.reactCompiler` ra top-level ở v16 |
+| Vite | Thêm `babel-plugin-react-compiler` vào Babel của plugin React | Chạy qua Babel |
+| Expo | Bật mặc định từ SDK 54 | |
+| React 17/18 | Đặt `target` và cài `react-compiler-runtime` | React 19 không bắt buộc |
+
+Compiler vẫn được phân phối dưới dạng Babel plugin `babel-plugin-react-compiler`. Plugin cho SWC vẫn đang ở dạng thử nghiệm, còn hỗ trợ cho oxc thì đang được làm cùng team oxc, nên ở thời điểm mình viết thì Babel vẫn là đường chính thức. Với Next.js 16, bạn vẫn cần cài package này:
+
+```bash
+npm install -D --save-exact babel-plugin-react-compiler
+```
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  reactCompiler: {
+    compilationMode: "annotation",
+  },
+};
+
+export default nextConfig;
+```
+
+Lưu ý `--save-exact`. Team React nói rõ các phiên bản sau có thể thay đổi cách memoize (ví dụ chi tiết hơn), và điều đó có thể làm một effect chạy nhiều hơn hoặc ít hơn. Nếu test end-to-end của bạn chưa đủ dày, hãy pin đúng phiên bản và nâng cấp thủ công.
+
+## Compiler thực sự làm gì
+
+Nhiều người nghĩ compiler "tự bọc `React.memo` cho mọi component". Thực ra nó memoize ở mức **từng giá trị và từng đoạn JSX** bên trong component. Compiler phân tích luồng dữ liệu của hàm, nhóm các phép tính theo những input mà chúng phụ thuộc, rồi cache từng nhóm vào một mảng nằm trên fiber. Lấy component sau:
+
+```tsx
+type Order = { id: string; total: number; status: "paid" | "pending" };
+
+function OrderSummary({ orders, currency }: { orders: Order[]; currency: string }) {
+  const paidOrders = orders.filter((order) => order.status === "paid");
+  const revenue = paidOrders.reduce((sum, order) => sum + order.total, 0);
+  const formatter = new Intl.NumberFormat("vi-VN", { style: "currency", currency });
+
+  return (
+    <section>
+      <h2>Doanh thu</h2>
+      <p>{formatter.format(revenue)}</p>
+      <OrderTable orders={paidOrders} />
+    </section>
+  );
+}
+```
+
+Output đã được rút gọn để dễ đọc trông gần như sau (code thật dùng `c` từ `react/compiler-runtime` và đặt tên biến khác):
+
+```tsx
+import { c as useMemoCache } from "react/compiler-runtime";
+
+function OrderSummary({ orders, currency }: { orders: Order[]; currency: string }) {
+  const cache = useMemoCache(9);
+
+  let paidOrders: Order[];
+  let revenue: number;
+  if (cache[0] !== orders) {
+    paidOrders = orders.filter((order) => order.status === "paid");
+    revenue = paidOrders.reduce((sum, order) => sum + order.total, 0);
+    cache[0] = orders;
+    cache[1] = paidOrders;
+    cache[2] = revenue;
+  } else {
+    paidOrders = cache[1];
+    revenue = cache[2];
+  }
+
+  let formattedRevenue: string;
+  if (cache[3] !== currency || cache[4] !== revenue) {
+    formattedRevenue = new Intl.NumberFormat("vi-VN", { style: "currency", currency }).format(revenue);
+    cache[3] = currency;
+    cache[4] = revenue;
+    cache[5] = formattedRevenue;
+  } else {
+    formattedRevenue = cache[5];
+  }
+
+  let heading: JSX.Element;
+  if (cache[6] === undefined) {
+    heading = <h2>Doanh thu</h2>;
+    cache[6] = heading;
+  } else {
+    heading = cache[6];
+  }
+
+  let table: JSX.Element;
+  if (cache[7] !== paidOrders) {
+    table = <OrderTable orders={paidOrders} />;
+    cache[7] = paidOrders;
+    cache[8] = table;
+  } else {
+    table = cache[8];
+  }
+
+  return (
+    <section>
+      {heading}
+      <p>{formattedRevenue}</p>
+      {table}
+    </section>
+  );
+}
+```
+
+Đừng chép đoạn trên, nó chỉ để minh hoạ ý tưởng. Ba điều quan trọng rút ra:
+
+- **JSX cũng được cache.** Element `OrderTable` giữ nguyên reference khi `paidOrders` không đổi, nên React bỏ qua cả subtree đó mà *không cần* `OrderTable` được bọc `memo`. Đây là lý do compiler hiệu quả hơn việc rắc `React.memo` thủ công.
+- **Hằng số được hoist.** JSX không phụ thuộc gì chỉ tạo đúng một lần.
+- **Memoize được sau early return và trong nhánh điều kiện**, điều mà `useMemo` không làm được vì hook không được gọi có điều kiện.
+
+Muốn xem output thật của một component cụ thể, dán nó vào React Compiler Playground trên react.dev.
+
+## Rules of React và cơ chế bail out
+
+Compiler chỉ đúng khi code của bạn tuân theo **Rules of React**: component và hook phải là hàm thuần trong lúc render, props và state là bất biến, giá trị truyền vào hook hoặc trả về từ hook không bị mutate, hook được gọi đúng luật. Khi phân tích thấy một vi phạm mà nó phát hiện được, compiler **bail out**: nó bỏ qua *riêng* component hoặc hook đó, để nguyên như code gốc, và tiếp tục compile phần còn lại. Không có lỗi build, không có cảnh báo trên console. Component chỉ đơn giản là không được tối ưu.
+
+Ba kiểu vi phạm mình gặp nhiều nhất trong codebase cũ:
+
+```tsx
+function PriceList({ items }: { items: Item[] }) {
+  items.sort((a, b) => a.price - b.price);
+  return <List items={items} />;
+}
+
+function Ticker({ label }: { label: string }) {
+  const renderCount = useRef(0);
+  renderCount.current += 1;
+  return <span>{label} ({renderCount.current})</span>;
+}
+
+function Greeting({ name }: { name: string }) {
+  const hour = new Date().getHours();
+  return <p>{hour < 12 ? "Chào buổi sáng" : "Chào buổi chiều"}, {name}</p>;
+}
+```
+
+- `PriceList` **mutate props**. `sort` sắp xếp tại chỗ, nên mảng của component cha bị thay đổi ngầm. Sửa bằng `items.toSorted(...)`.
+- `Ticker` **đọc và ghi ref trong lúc render**. Ref là chỗ chứa giá trị mà React không theo dõi, nên compiler không thể biết khi nào cache hết hạn. Ref chỉ nên đọc/ghi trong event handler và effect.
+- `Greeting` **không idempotent**: render hai lần với cùng props có thể ra hai kết quả khác nhau. Compiler có danh sách các hàm đã biết là không thuần (như `Date.now`, `Math.random`) và rule `purity` sẽ cảnh báo. Đưa giờ hiện tại vào state, hoặc truyền từ ngoài vào.
+
+<Callout type="warning">
+  Điều nguy hiểm không phải là bail out, mà là những vi phạm compiler *không* phát hiện được. Code đó vẫn được compile và memoize, và nếu nó âm thầm dựa vào việc render lại mỗi lần (ví dụ đọc một object global bị mutate từ bên ngoài), bạn sẽ có UI hiển thị dữ liệu cũ. ESLint và test end-to-end là hai lưới an toàn, đừng bỏ cái nào.
+</Callout>
+
+## ESLint: bật trước khi bật compiler
+
+Các rule dựa trên compiler giờ nằm ngay trong `eslint-plugin-react-hooks` (từ v6, hiện là nhánh 7.x). Package `eslint-plugin-react-compiler` cũ không còn cần nữa, gỡ nó đi. Plugin này chạy được kể cả khi bạn chưa bật compiler, nên mình luôn bật nó *trước* vài tuần.
+
+```js
+import reactHooks from "eslint-plugin-react-hooks";
+import { defineConfig } from "eslint/config";
+
+export default defineConfig([
+  reactHooks.configs.flat.recommended,
+]);
+```
+
+Preset `recommended` gồm `rules-of-hooks`, `exhaustive-deps` và các rule của compiler như `purity`, `refs`, `immutability`, `globals`, `static-components`, `set-state-in-render`, `set-state-in-effect`, `preserve-manual-memoization`, `incompatible-library`, `unsupported-syntax`. Preset `recommended-latest` thêm các rule thử nghiệm mới nhất; mình không dùng nó trong CI vì nó có thể thêm lỗi mới khi nâng cấp.
+
+Với codebase lớn, lần chạy đầu thường ra vài trăm lỗi. Cách mình xử lý: đếm lỗi theo thư mục, bật compiler cho những thư mục sạch trước, và đặt ngưỡng "không được tăng số lỗi" trong CI cho phần còn lại. Không cần sửa hết mới bắt đầu, vì component vi phạm chỉ bị bỏ qua chứ không làm hỏng build.
+
+## Rollout từng phần
+
+Có ba công cụ, mình dùng cả ba theo thứ tự:
+
+| Công cụ | Phạm vi | Dùng khi |
+| --- | --- | --- |
+| `compilationMode: "annotation"` + `"use memo"` | Từng component/hook tự opt-in | Tuần đầu, thử trên vài màn hình nặng |
+| Babel `overrides` theo thư mục | Cả thư mục | Mở rộng dần theo module sạch lint |
+| `"use no memo"` | Từng component/hook opt-out | Cô lập một component gây bug sau khi bật toàn bộ |
+| `gating` | Runtime, theo feature flag | A/B test hoặc rollout theo nhóm người dùng |
+
+Với annotation mode, directive phải là câu lệnh đầu tiên trong hàm:
+
+```tsx
+export function RevenueChart({ points }: { points: Point[] }) {
+  "use memo";
+  const series = buildSeries(points);
+  return <Chart series={series} />;
+}
+
+export function useLegacyAutosave(draft: Draft) {
+  "use no memo";
+  const lastSaved = useRef<Draft | null>(null);
+  useEffect(() => {
+    if (lastSaved.current !== draft) {
+      saveDraft(draft);
+      lastSaved.current = draft;
+    }
+  });
+}
+```
+
+Next.js chỉ có option `reactCompiler`, không có `overrides` theo thư mục như Babel config. Nếu cần theo thư mục trong Next.js, mình dùng annotation mode và thêm `"use memo"` dần, hoặc bật toàn bộ rồi dùng `"use no memo"` cho các vùng cũ. Mỗi `"use no memo"` nên đi kèm một ticket; nó là lối thoát tạm thời, không phải trạng thái cuối.
+
+`gating` hữu ích nếu bạn muốn số liệu thật: compiler sinh ra cả hai phiên bản của mỗi component và chọn theo hàm flag lúc runtime.
+
+## Xử lý useMemo, useCallback và React.memo cũ
+
+Lời khuyên chính thức, và mình đồng ý: **đừng xoá hàng loạt**. Compiler hiểu `useMemo`/`useCallback` và mặc định cố gắng giữ nguyên đảm bảo memoize của chúng; rule `preserve-manual-memoization` báo khi nó không giữ được. Xoá chúng có thể thay đổi output của compiler, và nếu có effect phụ thuộc vào giá trị đó, hành vi sẽ đổi theo.
+
+Đây chính là bug form tự lưu của mình. Đơn giản hoá thì nó trông như sau:
+
+```tsx
+function DraftEditor({ draftId, body }: { draftId: string; body: string }) {
+  const payload = { draftId, body, savedAt: Date.now() };
+
+  useEffect(() => {
+    queueAutosave(payload);
+  }, [payload]);
+
+  return <Editor value={body} />;
+}
+```
+
+Trước khi có compiler, `payload` là object mới mỗi lần render, nên effect chạy sau *mọi* lần render, kể cả những lần render do state không liên quan. Code "chạy đúng" một cách tình cờ, vì có những lần lưu dựa vào việc đó. Sau khi compile, `payload` chỉ đổi khi `draftId` hoặc `body` đổi (và `Date.now()` trong render đã là vi phạm). Effect chạy ít hơn, một luồng lưu cũ không còn được kích hoạt. Compiler đúng; code cũ sai. Cách sửa là nói thẳng ý định: lưu khi `body` đổi, lấy thời gian trong effect.
+
+```tsx
+function DraftEditor({ draftId, body }: { draftId: string; body: string }) {
+  useEffect(() => {
+    queueAutosave({ draftId, body, savedAt: Date.now() });
+  }, [draftId, body]);
+
+  return <Editor value={body} />;
+}
+```
+
+Quy tắc mình áp dụng:
+
+- **Code mới**: không viết `useMemo`/`useCallback`/`memo` nữa, trừ khi cần kiểm soát chính xác một giá trị làm dependency của effect.
+- **Code cũ**: để nguyên. Chỉ xoá khi đang sửa file đó và có test bao phủ.
+- **`React.memo` với hàm so sánh tuỳ biến**: giữ lại, compiler không thay thế được logic so sánh của bạn.
+
+## Kiểm chứng compiler có chạy thật
+
+Đừng tin là nó chạy, hãy nhìn:
+
+1. **React DevTools**: component đã được compile hiện badge "Memo ✨" cạnh tên trong tab Components. Nếu một component bạn mong đợi lại không có badge, nó đã bị bail out hoặc nằm ngoài phạm vi compile.
+2. **Playground**: dán component vào để xem lý do bail out cụ thể.
+3. **Profiler**: ghi lại cùng một tương tác trước và sau khi bật, so sánh số component render và thời gian commit. Mình làm việc này trên build production có bật profiling, không phải dev build.
+4. **E2E test**: chạy toàn bộ suite với compiler bật. Các bug kiểu effect chạy ít/nhiều hơn chỉ lộ ra ở đây.
+
+Về con số: Meta báo cáo Quest Store cải thiện tới 12% cho lần tải đầu và chuyển trang, một số tương tác nhanh hơn hơn 2,5 lần. App của bạn sẽ khác. Ở dashboard của mình, những bảng lớn được lợi nhiều nhất; các trang chủ yếu là form gần như không đổi, vì chúng vốn không chậm.
+
+## Thư viện bên thứ ba và chi phí build
+
+Compiler chỉ compile code của bạn, không đụng vào `node_modules`. Vấn đề nằm ở những thư viện có API **trả về giá trị mutable hoặc hàm thay đổi theo thời gian mà giữ nguyên reference**. Compiler giả định giá trị trả về từ hook là ổn định cho tới khi input đổi; nếu thư viện mutate object đó bên trong, component đã memoize sẽ hiển thị dữ liệu cũ. Compiler có danh sách các API đã biết là không tương thích và rule `incompatible-library` sẽ cảnh báo khi bạn dùng chúng; component đó sẽ bị bỏ qua. Ví dụ hay gặp là `watch` của react-hook-form và các hook của TanStack Table. Với thư viện mà danh sách không biết tới, cách phát hiện duy nhất vẫn là test: khi thấy UI không cập nhật sau khi bật compiler, thử `"use no memo"` trên component đó trước tiên.
+
+Các store dùng `useSyncExternalStore` trả về snapshot bất biến nên thường không gặp vấn đề này.
+
+Về build: compiler là một pass Babel chạy trên từng file, nên nó tốn thêm thời gian so với pipeline thuần SWC hay esbuild. Next.js giảm chi phí này bằng một bước lọc viết bằng SWC, chỉ đưa vào compiler những file có JSX hoặc hook. Trong Vite, bạn trả giá Babel cho mọi file plugin React xử lý. Mình không có benchmark đáng tin để đưa ra con số; hãy đo trên CI của chính bạn trước và sau khi bật. Bundle cũng lớn hơn một chút vì code cache được sinh thêm.
+
+<Callout>
+  Compiler không sửa thiết kế dữ liệu tồi. State đặt sai chỗ, context chứa cả thế giới, danh sách mười nghìn dòng chưa virtualize vẫn chậm. Nó lấy đi phần việc nhàm chán là memoize thủ công, để bạn tập trung vào cấu trúc.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- React Compiler 1.0 đã stable; Next.js 16 có option `reactCompiler` top-level, nhưng vẫn chạy qua `babel-plugin-react-compiler`.
+- Pin chính xác phiên bản compiler và nâng cấp thủ công nếu test E2E chưa đủ.
+- Compiler memoize từng giá trị và từng đoạn JSX, không chỉ bọc component.
+- Vi phạm Rules of React bị phát hiện thì component bị bỏ qua lặng lẽ; vi phạm không bị phát hiện mới là nguy hiểm.
+- Bật `reactHooks.configs.flat.recommended` vài tuần trước khi bật compiler và gỡ `eslint-plugin-react-compiler`.
+- Rollout bằng annotation mode, thư mục, `"use no memo"` và `gating`; mỗi opt-out đi kèm một ticket.
+- Không xoá hàng loạt `useMemo`/`useCallback`; tìm những effect vốn chạy đúng nhờ object mới mỗi lần render.
+- Kiểm chứng bằng badge "Memo ✨", Playground, Profiler trên build production và E2E test.
+- Đo thời gian build trên CI của bạn và cảnh giác với thư viện trả về giá trị mutable.
+
+</Checklist>

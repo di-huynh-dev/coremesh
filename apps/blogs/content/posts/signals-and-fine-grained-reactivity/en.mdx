@@ -1,0 +1,335 @@
+---
+title: "Signals and Fine-Grained Reactivity: How They Work and When They Actually Matter"
+excerpt: "How signals track dependencies, why push-pull gives glitch-free updates, how Solid, Preact, Angular and Vue use them, where the TC39 proposal stands, what the React Compiler changes, and the production pitfalls — with a tiny signal implementation in TypeScript."
+---
+
+<Lead>We had a trading dashboard in React: around 400 price cells, each updated several times per second over a WebSocket. Every tick changed one store value, which re-rendered a whole table section, and the Profiler showed most of the frame spent comparing unchanged props. `memo`, selectors and split contexts helped, but each was a workaround for one fact: React re-runs components, and we only wanted to change one text node. That's the problem signals solve. This post covers how they work underneath, and the more common case where you don't need them.</Lead>
+
+## Two models: re-run the component vs update the binding
+
+In React, state changes, React calls your component function again, diffs the new element tree against the old one, then commits the differences to the DOM. The unit of update is the **component**. If a state value lives high in the tree, everything below re-renders unless you stop it with `memo` (or the compiler does it for you).
+
+Signals flip this. A signal is a value container that knows **who read it**. When a template, computed or effect reads a signal, the runtime records a dependency; when the signal changes, only those dependents are notified. In Solid or Vue's Vapor mode, a component runs **once** to set up the DOM and bindings; after that, a change goes straight from the signal to the exact text node or attribute that uses it, with no tree diff.
+
+| | React (re-render model) | Signals (fine-grained) |
+| --- | --- | --- |
+| Unit of update | Component subtree | Individual binding/computation |
+| Dependency tracking | Explicit (props, deps arrays) or compiler-inferred | Automatic, at runtime, on read |
+| Cost of an update | Proportional to subtree size | Proportional to number of dependents |
+| Main pitfall | Unnecessary re-renders | Hidden dependencies, effects everywhere |
+
+Neither is "correct". A React render is just a function call, easy to reason about locally. Signals are cheaper for frequent, narrow updates, but the data flow lives in a graph you can't see in the code.
+
+## How signals track dependencies
+
+Every signal implementation I've read has three primitives:
+
+- **State** (`signal`): a writable value.
+- **Computed** (`computed`, `memo`, `derived`): a value derived from other signals, cached until a dependency changes.
+- **Effect**: a side effect that re-runs when its dependencies change. Rendering itself is just an effect that writes to the DOM.
+
+Tracking works through a global "currently running observer": while a computed or effect runs, every signal it reads registers it as a subscriber. So dependencies are dynamic — signals in a branch that isn't taken aren't dependencies for that run.
+
+### Push-pull and the diamond problem
+
+The naive approach — when a signal changes, immediately re-run everything that depends on it — breaks on a diamond. Say `subtotal` depends on `price`, `hasDiscount` depends on `subtotal`, and `total` depends on both. Change `price`, and with naive push, `total` might first recompute with the new `subtotal` but the old `hasDiscount`, producing a value that should never exist. That's a **glitch**, and if an effect sees it, you get a wrong DOM write or a wrong request.
+
+Modern libraries use **push-pull**:
+
+1. **Push:** when a signal is written, walk the graph and only *mark* dependents as stale. Nothing is recomputed yet.
+2. **Pull:** when a stale computed is read (or a scheduled effect runs), it asks its sources whether they actually changed, recomputing them recursively if needed, and only then recomputes itself.
+
+Because recomputation always pulls from the bottom up, a computed never sees a mix of old and new values. You also get **equality cutoff**: if `hasDiscount` recomputes and is still `false`, its version doesn't change, so things that depend only on it don't re-run.
+
+## A tiny signal implementation in TypeScript
+
+The best way I've found to understand signals is to write one. This is under 200 lines, push-pull, glitch-free, with batching and equality cutoff. It leaves out error handling and ownership trees, which real libraries handle.
+
+```ts
+type Source = { version: number; observers: Set<Observer>; refresh(): void };
+type Observer = { stale: boolean; sources: Map<Source, number>; markStale(): void };
+
+let currentObserver: Observer | null = null;
+let batchDepth = 0;
+let flushing = false;
+const queuedEffects = new Set<EffectNode>();
+
+function track(source: Source) {
+  if (!currentObserver) return;
+  currentObserver.sources.set(source, source.version);
+  source.observers.add(currentObserver);
+}
+
+function runTracked<T>(observer: Observer, fn: () => T): T {
+  for (const source of observer.sources.keys()) source.observers.delete(observer);
+  observer.sources.clear();
+  const previous = currentObserver;
+  currentObserver = observer;
+  try {
+    return fn();
+  } finally {
+    currentObserver = previous;
+  }
+}
+
+function anySourceChanged(observer: Observer): boolean {
+  for (const [source, seenVersion] of observer.sources) {
+    source.refresh();
+    if (source.version !== seenVersion) return true;
+  }
+  return false;
+}
+
+function flushEffects() {
+  if (batchDepth > 0 || flushing) return;
+  flushing = true;
+  try {
+    for (const effect of queuedEffects) {
+      queuedEffects.delete(effect);
+      effect.run();
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+class StateNode<T> implements Source {
+  version = 0;
+  observers = new Set<Observer>();
+  private value: T;
+
+  constructor(initial: T) {
+    this.value = initial;
+  }
+
+  get(): T {
+    track(this);
+    return this.value;
+  }
+
+  set(next: T) {
+    if (Object.is(next, this.value)) return;
+    this.value = next;
+    this.version++;
+    for (const observer of [...this.observers]) observer.markStale();
+    flushEffects();
+  }
+
+  refresh() {}
+}
+
+class ComputedNode<T> implements Source, Observer {
+  version = 0;
+  observers = new Set<Observer>();
+  sources = new Map<Source, number>();
+  stale = true;
+  private value: T | undefined;
+  private hasValue = false;
+  private compute: () => T;
+
+  constructor(compute: () => T) {
+    this.compute = compute;
+  }
+
+  markStale() {
+    if (this.stale) return;
+    this.stale = true;
+    for (const observer of [...this.observers]) observer.markStale();
+  }
+
+  refresh() {
+    if (!this.stale) return;
+    this.stale = false;
+    if (this.hasValue && !anySourceChanged(this)) return;
+    const next = runTracked(this, this.compute);
+    if (!this.hasValue || !Object.is(next, this.value)) {
+      this.value = next;
+      this.hasValue = true;
+      this.version++;
+    }
+  }
+
+  get(): T {
+    this.refresh();
+    track(this);
+    return this.value as T;
+  }
+}
+
+type EffectFn = () => void | (() => void);
+
+class EffectNode implements Observer {
+  stale = true;
+  sources = new Map<Source, number>();
+  private hasRun = false;
+  private disposed = false;
+  private cleanup: (() => void) | undefined;
+  private fn: EffectFn;
+
+  constructor(fn: EffectFn) {
+    this.fn = fn;
+  }
+
+  markStale() {
+    if (this.stale || this.disposed) return;
+    this.stale = true;
+    queuedEffects.add(this);
+  }
+
+  run() {
+    if (!this.stale || this.disposed) return;
+    this.stale = false;
+    if (this.hasRun && !anySourceChanged(this)) return;
+    this.hasRun = true;
+    this.cleanup?.();
+    const result = runTracked(this, this.fn);
+    this.cleanup = typeof result === "function" ? result : undefined;
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.cleanup?.();
+    for (const source of this.sources.keys()) source.observers.delete(this);
+    this.sources.clear();
+    queuedEffects.delete(this);
+  }
+}
+
+export const signal = <T>(initial: T) => new StateNode(initial);
+export const computed = <T>(compute: () => T) => new ComputedNode(compute);
+
+export function effect(fn: EffectFn): () => void {
+  const node = new EffectNode(fn);
+  node.run();
+  return () => node.dispose();
+}
+
+export function batch(fn: () => void) {
+  batchDepth++;
+  try {
+    fn();
+  } finally {
+    batchDepth--;
+    flushEffects();
+  }
+}
+```
+
+The mapping to the previous section:
+
+- `track` is the auto-subscription: whoever is in `currentObserver` subscribes to what it reads, remembering the **version** it saw.
+- `markStale` is the push phase. It only flips flags and queues effects; it never calls user code.
+- `refresh` and `anySourceChanged` are the pull phase: refresh sources first, compare versions, skip recomputing if nothing changed.
+- `runTracked` clears old dependencies before each run, so dependencies are dynamic.
+
+Here's the diamond from earlier, running against it:
+
+```ts
+const price = signal(100);
+const quantity = signal(2);
+const subtotal = computed(() => price.get() * quantity.get());
+const hasDiscount = computed(() => subtotal.get() >= 500);
+const total = computed(() => (hasDiscount.get() ? subtotal.get() * 0.9 : subtotal.get()));
+
+const stop = effect(() => {
+  console.log(`total=${total.get()} discount=${hasDiscount.get()}`);
+});
+
+quantity.set(3);
+batch(() => {
+  price.set(200);
+  quantity.set(4);
+});
+price.set(200);
+stop();
+quantity.set(10);
+```
+
+This logs exactly three lines: `total=200`, `total=300`, then `total=720 discount=true`. The batch produces one log, setting `price` to the same value logs nothing, and nothing runs after `stop()`. At no point does the effect see a `total` computed from a stale `hasDiscount`.
+
+<Callout>
+  The toy keeps every computed subscribed to its sources forever, even when nothing reads it any more. Production libraries detach a computed when its last observer goes away and reattach it on the next read. Write your own reactive layer and that's the first leak you'll hit.
+</Callout>
+
+## How the frameworks use them
+
+- **Solid** built its whole model on signals: `createSignal` returns a getter/setter pair, `createMemo` is a computed, `createEffect` an effect. Components run once; JSX compiles to DOM creation plus effects bound to specific nodes.
+- **Preact Signals** (`@preact/signals-core`) exposes `signal`, `computed`, `effect` and `batch` with a `.value` accessor. Pass a signal directly into JSX and Preact updates that text node without re-rendering the component.
+- **Angular** has moved its reactivity onto signals: `signal`, `computed`, `effect`, `linkedSignal`, signal inputs. `effect` and `linkedSignal` became stable in v20, and since v21 new projects are zoneless by default.
+- **Vue** has always been signal-based under the name refs: `ref`, `computed`, `watchEffect`. Vue 3.6 rewrites the reactivity core on top of the alien-signals algorithm, and adds Vapor mode, which compiles templates to direct DOM updates without a virtual DOM. At the time of writing, 3.6 is still in release candidates, so I don't use Vapor in production yet.
+- **Svelte 5** runes (`$state`, `$derived`, `$effect`) are signals behind compiler syntax.
+
+### The TC39 Signals proposal
+
+There's a proposal to put signals into JavaScript itself, pushed by people from several of these frameworks. It defines `Signal.State` and `Signal.Computed` with `.get()`/`.set()`, plus a low-level `Signal.subtle.Watcher` that frameworks would use to build their own effects and scheduling. There's deliberately no built-in `effect`, because scheduling is where frameworks disagree most.
+
+As of this writing, the proposal is still at **Stage 1**. The champions want production polyfills and real framework integrations before asking for Stage 2; a `signal-polyfill` package exists for experiments. My read: a promising interop layer for library authors that sits under a framework, not something to build an app on.
+
+## React's answer: the compiler, not signals
+
+React hasn't adopted signals; it keeps the re-render model and bets on making re-renders cheap. Its answer is the **React Compiler** (stable since v1.0 in October 2025, with stable support in Next.js 16). It analyzes components at build time and memoizes JSX and computed values automatically, so an unchanged subtree is skipped without hand-written `memo`/`useMemo`/`useCallback`. I covered the details in [React rendering performance](/blog/react-rendering-performance).
+
+What the compiler doesn't change is the unit of update: a state change still re-runs the owning component and walks the subtree; the compiler just makes the walk cheap. For most apps that closes the gap. For a few hundred cells updating many times a second, it narrows it but doesn't eliminate it.
+
+If you need fine-grained updates inside a React app, the stable boundary is `useSyncExternalStore`. With the toy library above, a bridge looks like this:
+
+```tsx
+import { useCallback, useSyncExternalStore } from "react";
+import { effect } from "./signals";
+
+type Readable<T> = { get(): T };
+
+export function useSignalValue<T>(source: Readable<T>): T {
+  const subscribe = useCallback(
+    (onStoreChange: () => void) =>
+      effect(() => {
+        source.get();
+        onStoreChange();
+      }),
+    [source],
+  );
+  return useSyncExternalStore(subscribe, () => source.get(), () => source.get());
+}
+```
+
+Only the component that reads that signal re-renders. More "magical" adapters exist, but they rely on a Babel transform or React internals; I pick the explicit hook.
+
+## When fine-grained reactivity actually matters
+
+From what I've shipped, signals clearly pay off when:
+
+- **Updates are frequent and narrow:** live prices, collaborative cursors, progress bars, timers, drag-and-drop coordinates.
+- **The tree is large and the change is small:** a cell in a big spreadsheet-like grid, one row status in a long list.
+- **State is shared across distant parts of the UI** and you're fighting context re-renders.
+
+They matter little for CRUD screens and forms, where updates come at human speed and the compiler removes most of the waste. Picking a framework for signals alone when your app is mostly forms is optimizing the wrong thing.
+
+<Callout>
+  Before adding signals to a React app, measure. If the Profiler shows slow commits because a big subtree re-renders on a high-frequency update, a signal store behind `useSyncExternalStore` is a reasonable fix. If not, the problem is elsewhere.
+</Callout>
+
+## Pitfalls I've hit in production
+
+**Effects everywhere.** Effects are so cheap that people sync state with them: "when `a` changes, set `b`". That creates effect chains, ordering bugs and extra passes. If `b` is derived from `a`, it's a `computed`. Effects are for leaving the reactive world: DOM, network, storage, logging.
+
+**Reading outside a tracking context.** A signal read in an event handler, a `setTimeout` or after an `await` isn't tracked, because the current observer is gone by then. In async code, read every dependency synchronously at the top of the effect.
+
+**Debugging an invisible graph.** With signals, "why did this re-run?" only has the answer "something you read changed", and the dependency list exists only at runtime. Keep computeds small and named after what they mean, avoid long effect chains, and when in doubt, log what a computation read during its last run.
+
+**Leaking subscriptions.** An effect created in a loop, a hook without cleanup, or a module-level helper stays subscribed forever and keeps old closures alive. Tie each effect to an owner (component, route, store) and dispose it when the owner goes away.
+
+**Mutating inside objects.** `items.get().push(x)` doesn't change the signal's identity, so with `Object.is` equality nothing is notified. Either set a new array or use a library with deep reactive proxies, and be consistent.
+
+## Key takeaways
+
+<Checklist>
+
+- React updates by re-running components; signals update the exact bindings that read a value.
+- Signals track dependencies automatically on read, so dependencies are dynamic per run.
+- Push-pull (mark stale, then recompute on read) gives glitch-free updates and equality cutoff.
+- Solid, Preact, Angular, Vue and Svelte all use signals; TC39 Signals is still at Stage 1 and aimed at framework authors.
+- The React Compiler makes re-renders cheap but keeps the component as the unit of update.
+- Reach for signals for frequent, narrow updates in large trees, after measuring.
+- Derive with computed, keep effects for side effects, read synchronously, and dispose every effect.
+
+</Checklist>

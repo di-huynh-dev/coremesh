@@ -1,0 +1,340 @@
+---
+title: "On-Device AI in the Browser: WebGPU, Web Workers and Chrome's Built-in AI"
+excerpt: "When running a model on the user's machine makes sense and when it doesn't, how far Chrome's built-in AI has shipped, Transformers.js, ONNX Runtime Web and WebLLM on WebGPU/WASM, running inference in a Web Worker, caching model weights, and UX for the first download."
+---
+
+<Lead>Earlier this year my team built an internal tool for our customer support staff: summarize long tickets, classify them, find similar tickets. The first version called an LLM API from the server, until our legal team asked: "Tickets contain customers' phone numbers and addresses, why are we sending them to a third party?" So I tried running models inside the browser. Some features ran on-device very well, some didn't, and the hardest part wasn't calling the model but everything around it.</Lead>
+
+## Why run models on the user's machine, and what it costs
+
+The reasons to go on-device usually fall into four groups. Write down which one is the *main* reason for a feature, because it decides how you fall back later.
+
+| Benefit | Reality |
+| --- | --- |
+| **Privacy** | Data never leaves the device. The strongest reason, and the easiest to break if a fallback silently sends data to a server. |
+| **Latency** | No network round-trip, great for small tasks that run constantly: language detection while typing, suggestions, embeddings. |
+| **Cost** | No per-token bill. But you pay in download bandwidth, and in the user's battery and machine. |
+| **Offline** | A cached model keeps working without a network, which fits offline-first apps. |
+
+And here are the limits I hit in the first week:
+
+- **Download size.** A small embedding model is a few dozen MB, but even a small quantized LLM is hundreds of MB to several GB. Making a user download 1 GB to summarize a paragraph is a product decision, not a technical detail.
+- **Memory.** Model weights live in RAM or VRAM. A tab killed by the browser for running out of memory on an 8 GB laptop is real, and that failure never shows up in your console.
+- **Wildly different devices.** The same code runs smoothly on a MacBook with a good GPU, several times slower on an office laptop running WASM, and not at all on an old phone.
+- **Quality.** Small models are enough for narrow tasks (classification, extraction, embeddings, translation), but usually not for multi-step reasoning.
+
+## Two paths: the browser's model or your own
+
+There are two very different ways to get a model into the browser:
+
+| | Built-in AI (Chrome) | Bring your own (Transformers.js, ONNX Runtime Web, WebLLM) |
+| --- | --- | --- |
+| Who downloads the model | The browser, once, shared | Your app, cached per origin |
+| Model choice | None, you get the browser's model | Anything with a suitable ONNX/MLC build |
+| Support | Chrome desktop, with hardware requirements | Any browser with WebGPU or WASM |
+| Runs in a Worker | Not the task-based APIs | Yes, and it should |
+| Version control | None, the model changes with Chrome | Full, you pin the model ID and revision |
+
+I use built-in AI for the tasks it does out of the box (summarization, translation, language detection) and bring my own model for things that must run reliably in every browser, like embeddings.
+
+## Chrome's built-in AI: what has actually shipped
+
+At the time of writing, according to the Chrome for Developers docs:
+
+| API | Status |
+| --- | --- |
+| Translator, Language Detector, Summarizer | Stable since Chrome 138 (desktop) |
+| Prompt API (`LanguageModel`) | Stable for Extensions since Chrome 138; for web pages since Chrome 148. Sampling parameters are still in an origin trial |
+| Writer, Rewriter, Proofreader | Still in trial stages, not something to rely on in production |
+
+A few details matter more than the table:
+
+- The APIs backed by the foundation model (Prompt, Summarizer, Writer, Rewriter, Proofreader) only run on Windows, macOS, Linux and Chromebook Plus, **not** on Android or iOS. Hardware requirements are steep: the docs list at least 22 GB of free disk space, a GPU with more than 4 GB of VRAM, or a CPU with 16 GB of RAM and 4 or more cores.
+- Summarizer, Translator and Language Detector are **not available in Web Workers**.
+- Calling `create()` while the model isn't ready requires user activation, meaning it must happen while handling a real user interaction.
+- Language support is limited. Summarizer currently lists en, ja, es, de and fr. For a Vietnamese product this is where I tripped first: Translator and Language Detector were usable, but summarizing Vietnamese tickets was on us.
+
+The pattern I use for every built-in API is the same: check the API exists, ask `availability()` with exactly the options you'll use, and only `create()` when there's a reason to.
+
+```ts
+type ModelAvailability = "unavailable" | "downloadable" | "downloading" | "available";
+
+const summarizerOptions = {
+  type: "key-points",
+  format: "plain-text",
+  length: "short",
+  expectedInputLanguages: ["en"],
+  outputLanguage: "en",
+} as const;
+
+export async function getSummarizerAvailability(): Promise<ModelAvailability> {
+  if (!("Summarizer" in self)) return "unavailable";
+  return Summarizer.availability(summarizerOptions);
+}
+
+export function createSummarizer(onDownloadProgress: (fraction: number) => void, signal?: AbortSignal) {
+  return Summarizer.create({
+    ...summarizerOptions,
+    signal,
+    monitor(monitor) {
+      monitor.addEventListener("downloadprogress", (event) => onDownloadProgress(event.loaded));
+    },
+  });
+}
+```
+
+Types for `Summarizer` and `LanguageModel` aren't in `lib.dom`; I install `@types/dom-chromium-ai` to get them. `event.loaded` here is a fraction from 0 to 1, not a byte count.
+
+With the Prompt API, the most useful feature for real applications is `responseConstraint`: pass a JSON Schema and the model is forced to return JSON of the right shape, instead of you parsing free text.
+
+```ts
+const triageSchema = {
+  type: "object",
+  properties: {
+    category: { type: "string", enum: ["billing", "bug", "how-to", "other"] },
+    urgent: { type: "boolean" },
+  },
+  required: ["category", "urgent"],
+  additionalProperties: false,
+};
+
+type Triage = { category: "billing" | "bug" | "how-to" | "other"; urgent: boolean };
+
+export async function triageTicket(ticketText: string, signal: AbortSignal): Promise<Triage> {
+  const session = await LanguageModel.create({
+    initialPrompts: [{ role: "system", content: "You triage customer support tickets." }],
+    expectedInputs: [{ type: "text", languages: ["en"] }],
+    expectedOutputs: [{ type: "text", languages: ["en"] }],
+    signal,
+  });
+  try {
+    const raw = await session.prompt(ticketText, { responseConstraint: triageSchema, signal });
+    return JSON.parse(raw) as Triage;
+  } finally {
+    session.destroy();
+  }
+}
+```
+
+Each session holds context and costs memory, so I always `destroy()` when done, or keep one long-lived session and watch `contextUsage` against `contextWindow` for conversational use.
+
+## Progressive enhancement with a server fallback
+
+My rule: the feature must work for *every* user; on-device is just a faster or more private path when the machine allows it. The code calling the feature shouldn't know where it runs.
+
+```ts
+type SummaryResult = { text: string; source: "on-device" | "server" };
+
+async function summarizeOnServer(text: string, signal: AbortSignal): Promise<SummaryResult> {
+  const response = await fetch("/api/summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`Summarize failed with ${response.status}`);
+  const body = (await response.json()) as { summary: string };
+  return { text: body.summary, source: "server" };
+}
+
+export async function summarize(text: string, signal: AbortSignal): Promise<SummaryResult> {
+  if ((await getSummarizerAvailability()) !== "available") return summarizeOnServer(text, signal);
+  try {
+    const summarizer = await createSummarizer(() => {}, signal);
+    try {
+      return { text: await summarizer.summarize(text, { signal }), source: "on-device" };
+    } finally {
+      summarizer.destroy();
+    }
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return summarizeOnServer(text, signal);
+  }
+}
+```
+
+Note that this function only goes on-device when the state is already `available`. *Downloading* the model is triggered elsewhere, by an explicit button, because it needs user activation and because users deserve to know what they're about to download.
+
+<Callout>
+  Falling back to the server is only correct when the feature exists for speed or cost. If the reason is privacy, a silent fallback that sends data to a server breaks your promise to the user. In the ticket tool, summaries fall back to the server (personal data is redacted on the backend first), while the "analyze my draft notes" feature turns itself off when it can't run on-device and says why.
+</Callout>
+
+## Bringing your own model: WebGPU, WASM and three libraries worth knowing
+
+When built-in AI isn't enough, I bring my own model. There are two backends: **WebGPU** runs compute on the GPU and is much faster for larger models; **WASM** runs on the CPU, slower but available everywhere. WebGPU has shipped in Chrome and Edge since 113, Safari since 26, and Firefox on Windows and Apple Silicon Macs; Firefox on Linux and Android is not there yet. So I treat WASM as a mandatory fallback, not an option.
+
+The three libraries I've used, at the versions current when writing:
+
+- **Transformers.js** (`@huggingface/transformers` 4.3): the familiar `pipeline()` API, runs ONNX models from the Hugging Face Hub, picks the backend with `device: "webgpu"` or `"wasm"` and precision with `dtype`. Best fit for embeddings, classification, speech recognition and other small models.
+- **ONNX Runtime Web** (`onnxruntime-web` 1.31): the runtime Transformers.js uses underneath. Use it when you have your own ONNX model and handle pre- and post-processing yourself; import from `onnxruntime-web/webgpu` and choose `executionProviders`.
+- **WebLLM** (`@mlc-ai/web-llm` 0.2.x): specialized for LLMs, compiles models for WebGPU, with an OpenAI-style `engine.chat.completions.create` API. WebGPU is required; there's no WASM path.
+
+One WASM trap: to run multi-threaded, ONNX Runtime needs `SharedArrayBuffer`, which only exists when the page is cross-origin isolated (COOP and COEP headers). Without them the runtime still works but on a single thread, noticeably slower. Turning on COEP can break third-party iframes, images or scripts that don't send a CORP header, so test carefully before enabling it site-wide.
+
+## Running inference in a Web Worker
+
+Inference occupies the main thread for hundreds of milliseconds to several seconds; running it there wrecks INP immediately. I always put the model in a module worker, and the main thread only sends and receives messages. The file `embedding.worker.ts`:
+
+```ts
+import { pipeline, type FeatureExtractionPipeline, type ProgressInfo } from "@huggingface/transformers";
+
+const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
+
+type Backend = { device: "webgpu" | "wasm"; dtype: "fp16" | "fp32" | "q8" };
+type EmbedRequest = { id: number; texts: string[] };
+
+export type WorkerMessage =
+  | { type: "progress"; loaded: number; total: number }
+  | { type: "ready"; device: Backend["device"] }
+  | { type: "result"; id: number; vectors: number[][] }
+  | { type: "error"; id: number; message: string };
+
+let extractorPromise: Promise<FeatureExtractionPipeline> | null = null;
+
+async function pickBackend(): Promise<Backend> {
+  const adapter = "gpu" in navigator ? await navigator.gpu.requestAdapter() : null;
+  if (!adapter) return { device: "wasm", dtype: "q8" };
+  return { device: "webgpu", dtype: adapter.features.has("shader-f16") ? "fp16" : "fp32" };
+}
+
+function forwardProgress(info: ProgressInfo) {
+  if (info.status !== "progress_total") return;
+  self.postMessage({ type: "progress", loaded: info.loaded, total: info.total } satisfies WorkerMessage);
+}
+
+function getExtractor() {
+  extractorPromise ??= (async () => {
+    const backend = await pickBackend();
+    const extractor = await pipeline("feature-extraction", MODEL_ID, { ...backend, progress_callback: forwardProgress });
+    self.postMessage({ type: "ready", device: backend.device } satisfies WorkerMessage);
+    return extractor;
+  })().catch((error: unknown) => {
+    extractorPromise = null;
+    throw error;
+  });
+  return extractorPromise;
+}
+
+self.addEventListener("message", async (event: MessageEvent<EmbedRequest>) => {
+  const { id, texts } = event.data;
+  try {
+    const extractor = await getExtractor();
+    const output = await extractor(texts, { pooling: "mean", normalize: true });
+    self.postMessage({ type: "result", id, vectors: output.tolist() as number[][] } satisfies WorkerMessage);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    self.postMessage({ type: "error", id, message } satisfies WorkerMessage);
+  }
+});
+```
+
+A few decisions in there: pick `dtype` based on what the GPU actually supports (not every GPU has `shader-f16`); forward only Transformers.js 4's `progress_total` event since it already aggregates progress across all files; and reset the promise on failure so the next call can retry instead of being stuck on a rejected promise forever. Types for `navigator.gpu` come from `@webgpu/types`.
+
+On the main thread, I wrap the worker in a client with a promise-based API:
+
+```ts
+import type { WorkerMessage } from "./embedding.worker";
+
+type PendingRequest = { resolve: (vectors: number[][]) => void; reject: (error: Error) => void };
+
+export function createEmbeddingClient(onProgress: (fraction: number) => void) {
+  const worker = new Worker(new URL("./embedding.worker.ts", import.meta.url), { type: "module" });
+  const pending = new Map<number, PendingRequest>();
+  let nextId = 0;
+
+  worker.addEventListener("message", (event: MessageEvent<WorkerMessage>) => {
+    const message = event.data;
+    if (message.type === "progress") {
+      onProgress(message.total > 0 ? message.loaded / message.total : 0);
+      return;
+    }
+    if (message.type === "ready") return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    if (message.type === "result") request.resolve(message.vectors);
+    else request.reject(new Error(message.message));
+  });
+
+  return {
+    embed(texts: string[]) {
+      const id = nextId++;
+      return new Promise<number[][]>((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, texts });
+      });
+    },
+    dispose() {
+      worker.terminate();
+      pending.forEach((request) => request.reject(new Error("Embedding worker disposed")));
+      pending.clear();
+    },
+  };
+}
+```
+
+In React, I create this client once at a high level (a context, or a module singleton initialized only on the client), never per component: each worker is a separate copy of the model in memory.
+
+## Caching model weights: Cache API, OPFS and quota
+
+Re-downloading 100 MB on every page load is unacceptable, so caching is mandatory. The good news: the libraries do most of it. Transformers.js stores model files in the Cache API under the `transformers-cache` key by default (and caches the runtime's WASM files too). WebLLM lets you choose a `cacheBackend` of `"cache"`, `"indexeddb"` or `"opfs"`, with the Cache API documented as the most thoroughly tested.
+
+What the libraries don't do for you is manage quota and lifecycle:
+
+```ts
+export async function ensureModelStorage(requiredBytes: number) {
+  const { quota = 0, usage = 0 } = await navigator.storage.estimate();
+  const persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist());
+  return { hasRoom: quota - usage > requiredBytes * 1.2, persisted };
+}
+
+export async function deleteStaleModelFiles(currentModelId: string) {
+  const cache = await caches.open("transformers-cache");
+  const requests = await cache.keys();
+  const stale = requests.filter((request) => request.url.includes("/resolve/") && !request.url.includes(currentModelId));
+  await Promise.all(stale.map((request) => cache.delete(request)));
+}
+```
+
+Storage is "best-effort" by default: when the disk fills up, the browser may evict your data without telling you. `persist()` asks for persistent mode but may be refused, so your code must survive the cache disappearing. When you change models, delete the old one, otherwise every upgrade piles on another few hundred MB.
+
+If you manage large files yourself, OPFS fits better than the Cache API: you stream straight to a file without wrapping it in a `Response`. A nice detail: `createWritable()` writes to a temporary file and only commits when the stream closes successfully, so a cancelled half-download doesn't leave a corrupt file behind.
+
+```ts
+export async function downloadToOpfs(url: string, fileName: string, signal: AbortSignal) {
+  const root = await navigator.storage.getDirectory();
+  const handle = await root.getFileHandle(fileName, { create: true });
+  const response = await fetch(url, { signal });
+  if (!response.ok || !response.body) throw new Error(`Download failed with ${response.status}`);
+  await response.body.pipeTo(await handle.createWritable(), { signal });
+}
+```
+
+## UX for the first model download
+
+This is the part I underestimated most at the start, and the part users remember most.
+
+- **Ask before downloading.** A button saying "Enable on-device summaries (about 80 MB)" beats a silent background download. It satisfies built-in AI's user activation requirement and respects people on mobile data.
+- **Show real progress.** Use `progress_total` or the `downloadprogress` event to show a percentage. If the total size isn't known yet, show an indeterminate state rather than a bar frozen at 0%.
+- **Don't block the feature.** While downloading, the feature still works via the server path (if the reason isn't privacy). When the model is ready, switch to on-device quietly.
+- **Allow cancelling.** Pass an `AbortSignal` all the way down to `fetch` or `create()`; a cancel button that cancels nothing is worse than no button.
+- **Separate "downloading" from "warming up".** The first initialization on WebGPU also spends time compiling shaders after the download finishes; users need to know the app isn't frozen.
+
+<Callout>
+  Don't measure success as "the model runs on my machine". Log the `device` (webgpu or wasm), the share of real users who reach the ready state, how long it takes them, and the fallback rate. For the ticket tool, the fallback rate in the first week was far higher than I expected, mostly because of built-in AI's hardware requirements.
+</Callout>
+
+## Summary
+
+<Checklist>
+
+- Write down the main reason for an on-device feature (privacy, latency, cost, offline) because it decides how you fall back.
+- Chrome built-in AI: Translator, Language Detector and Summarizer stable since 138; Prompt API on the web since 148; desktop only, steep hardware requirements, limited languages.
+- Always feature-detect, call `availability()` with the exact options, and download models only after an explicit user action.
+- Bring your own model when it must run in every browser: WebGPU when present, WASM as a mandatory fallback.
+- Put inference in a module worker and share one instance, never one per component.
+- Let the library cache weights, while you handle `persist()`, quota checks and deleting old models.
+- Show real progress, allow cancelling, and don't block the feature while downloading.
+- Fall back to the server only when it doesn't break your privacy promise to the user.
+
+</Checklist>

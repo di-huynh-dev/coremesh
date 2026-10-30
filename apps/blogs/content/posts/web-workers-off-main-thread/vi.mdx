@@ -1,0 +1,461 @@
+---
+title: "Đưa việc nặng ra khỏi main thread với Web Worker"
+excerpt: "Việc gì nên đưa vào worker và việc gì không, chi phí structured clone so với Transferable, một lớp RPC có type (hoặc Comlink), module worker với bundler, SharedArrayBuffer và cross-origin isolation, OffscreenCanvas, worker pool, và hook useWorker có huỷ được."
+---
+
+<Lead>Lần đầu mình chuyển phần parse CSV vào Web Worker, màn hình import lại *chậm hơn*. Tab không còn đứng hình nữa, nhưng bảng dữ liệu hiện ra muộn hơn, vì worker gửi trả về hàng trăm nghìn object và main thread mất một khoảng dài chỉ để deserialize chúng. Worker không phải nút "làm cho nhanh". Nó là một nơi khác để chạy code, kèm chi phí riêng: gửi message, copy dữ liệu, khởi động và bộ nhớ. Bài này là cách mình quyết định nên chuyển gì, chuyển thế nào, và chứng minh việc đó đáng công.</Lead>
+
+Vì sao một long task làm đứng UI thì mình đã viết trong [bài về event loop](/blog/event-loop-and-rendering). Ở đây mình đi thẳng vào những phần quyết định worker có đáng hay không.
+
+## Việc gì nên đưa vào worker, việc gì không
+
+Câu hỏi thật sự là: phần tính toán có nặng *so với lượng dữ liệu phải đi qua ranh giới giữa hai thread* hay không. Worker thắng khi bạn gửi ít mà tính nhiều, hoặc khi dữ liệu có thể *sống luôn* trong worker.
+
+| Hợp | Vì sao |
+| --- | --- |
+| Parse file lớn (CSV, JSON to, markdown, log) | Gửi `File` vào, nhận lại bản tóm tắt hoặc một trang dữ liệu |
+| Diff văn bản hay cấu trúc dữ liệu | Tính nặng, kết quả nhỏ |
+| Đánh index và tìm kiếm fuzzy | Index nằm trong worker, mỗi truy vấn chỉ gửi một chuỗi |
+| Xử lý ảnh, nén, hash, WASM | Dữ liệu nhị phân transfer được thay vì copy |
+
+| Không hợp | Vì sao |
+| --- | --- |
+| Đọc/ghi DOM, đo layout | Worker không có DOM |
+| Bản thân việc render React | Reconciler và DOM đều ở main thread |
+| Tác vụ chỉ vài mili giây | Chi phí message và bước async thêm vào nuốt hết lợi ích |
+| Việc cần một khối state lớn của main thread mỗi lần gọi | Copy mỗi lần tốn ngang việc tính |
+
+Pattern mình thích nhất là **worker có state**: gửi dữ liệu một lần, giữ luôn trong worker, sau đó chỉ trao đổi request và kết quả nhỏ.
+
+## Chi phí thật: structured clone và Transferable
+
+`postMessage` dùng structured clone: serialize chạy *đồng bộ trên thread gửi*, deserialize chạy trên thread nhận. Chi phí phụ thuộc vào hình dạng của object graph chứ không chỉ số byte: 500.000 object nhỏ tốn hơn nhiều so với một `ArrayBuffer` cùng kích thước, vì từng object, từng key, từng chuỗi đều phải được duyệt qua.
+
+Vài điều hay làm người ta bất ngờ:
+
+- Function, DOM node và symbol không clone được; `postMessage` ném `DataCloneError`.
+- Instance của class sang bên kia thành object thường, mất hết method và getter.
+- Gửi `File` hay `Blob` không copy nội dung file, nên hãy gửi `File` và đọc nó *trong worker*.
+- `AbortSignal` không clone được, nên huỷ việc phải mô hình hoá thành một message riêng.
+
+Với dữ liệu nhị phân, dùng **Transferable**: quyền sở hữu vùng nhớ được chuyển sang thread kia thay vì copy. `ArrayBuffer`, `MessagePort`, `ImageBitmap` và `OffscreenCanvas` là những thứ mình dùng nhiều nhất.
+
+```ts
+const pixels = sourceContext.getImageData(0, 0, width, height);
+filterWorker.postMessage({ width, height, buffer: pixels.data.buffer }, [pixels.data.buffer]);
+```
+
+Sau dòng đó, `pixels.data.byteLength` bằng `0`: buffer đã bị *detach*. Đọc nó không ném lỗi, bạn chỉ lặng lẽ nhận về dữ liệu rỗng — bug kinh điển sau khi thêm transfer list. Worker gửi kết quả về cũng transfer theo cách tương tự:
+
+```ts
+self.postMessage({ width, height, buffer: output.buffer }, { transfer: [output.buffer] });
+```
+
+Cách sửa vụ CSV là chỉ trả về trang dữ liệu đang xem cùng vài con số tổng hợp. Dữ liệu đã parse nằm lại trong worker; UI cần trang nào thì hỏi trang đó.
+
+## Một lớp RPC có type thay cho onmessage trần
+
+`onmessage` trần chỉ ổn khi mỗi lúc có đúng một request. Có hai request cùng chạy là bạn cần request id, danh sách promise đang chờ và cách truyền lỗi về. Mình viết một lớp nhỏ một lần rồi dùng lại: phần protocol chung, phía worker và phía main thread.
+
+```ts
+export type RpcRequest = { id: number; method: string; args: unknown[] };
+
+export type RpcResponse =
+  | { id: number; ok: true; value: unknown }
+  | { id: number; ok: false; error: string };
+```
+
+Phía worker, `exposeApi` nhận một object chứa các method và trả lời từng request theo id:
+
+```ts
+import type { RpcRequest, RpcResponse } from "./rpc-protocol";
+
+type WorkerMethods = Record<string, (...args: never[]) => unknown>;
+
+export function exposeApi(api: WorkerMethods) {
+  self.addEventListener("message", async (event: MessageEvent<RpcRequest>) => {
+    const { id, method, args } = event.data;
+    let response: RpcResponse;
+    try {
+      const handler = api[method];
+      if (!handler) throw new Error(`Unknown method: ${method}`);
+      response = { id, ok: true, value: await handler(...(args as never[])) };
+    } catch (error) {
+      response = { id, ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    self.postMessage(response);
+  });
+}
+```
+
+Khi đó search worker chỉ là một object bình thường, và type của nó được export ra:
+
+```ts
+import { exposeApi } from "./expose-api";
+
+export type SearchDocument = { id: string; title: string; body: string };
+export type SearchHit = { id: string; title: string; score: number };
+
+let entries: { document: SearchDocument; text: string }[] = [];
+
+const searchApi = {
+  loadDocuments(documents: SearchDocument[]) {
+    entries = documents.map((document) => ({
+      document,
+      text: `${document.title} ${document.body}`.toLowerCase(),
+    }));
+    return entries.length;
+  },
+  search(query: string, limit: number): SearchHit[] {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return [];
+    return entries
+      .map(({ document, text }) => ({
+        id: document.id,
+        title: document.title,
+        score: terms.filter((term) => text.includes(term)).length,
+      }))
+      .filter((hit) => hit.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+  },
+};
+
+export type SearchApi = typeof searchApi;
+exposeApi(searchApi);
+```
+
+Ở main thread, một `Proxy` biến mỗi property thành một lời gọi từ xa có type:
+
+```ts
+import type { RpcRequest, RpcResponse } from "./rpc-protocol";
+
+export type RemoteApi<Api> = {
+  [Method in keyof Api]: Api[Method] extends (...args: infer Args) => infer Result
+    ? (...args: Args) => Promise<Awaited<Result>>
+    : never;
+};
+
+export type WorkerClient<Api> = { api: RemoteApi<Api>; dispose: () => void };
+
+type PendingCall = { resolve: (value: unknown) => void; reject: (reason: unknown) => void };
+
+export function wrapWorker<Api>(worker: Worker): WorkerClient<Api> {
+  const pending = new Map<number, PendingCall>();
+  let nextId = 0;
+
+  const rejectAll = (reason: Error) => {
+    for (const call of pending.values()) call.reject(reason);
+    pending.clear();
+  };
+
+  worker.addEventListener("message", (event: MessageEvent<RpcResponse>) => {
+    const response = event.data;
+    const call = pending.get(response.id);
+    if (!call) return;
+    pending.delete(response.id);
+    if (response.ok) call.resolve(response.value);
+    else call.reject(new Error(response.error));
+  });
+  worker.addEventListener("error", (event) => rejectAll(new Error(event.message)));
+
+  const api = new Proxy({} as RemoteApi<Api>, {
+    get(_target, method) {
+      if (typeof method !== "string" || method === "then") return undefined;
+      return (...args: unknown[]) =>
+        new Promise((resolve, reject) => {
+          const id = nextId++;
+          pending.set(id, { resolve, reject });
+          worker.postMessage({ id, method, args } satisfies RpcRequest);
+        });
+    },
+  });
+
+  return {
+    api,
+    dispose() {
+      worker.terminate();
+      rejectAll(new DOMException("Worker disposed", "AbortError"));
+    },
+  };
+}
+```
+
+Hai chi tiết mình học được theo cách đau đớn. Thiếu điều kiện `method === "then"`, việc `await` proxy (hoặc return nó từ một hàm async) sẽ khiến JavaScript coi nó là thenable và gọi một method `then` từ xa không bao giờ trả lời. Còn `import type` bị xoá khi compile, nên bundle chính có type của worker mà không kéo theo code của nó.
+
+### Hoặc dùng luôn Comlink
+
+[Comlink](https://github.com/GoogleChromeLabs/comlink) làm đúng việc này, kỹ hơn: `Comlink.expose(api)` trong worker, `Comlink.wrap(worker)` kèm type `SearchApi` ở main thread, `Comlink.transfer` cho transferable, `Comlink.proxy` cho callback như báo tiến độ. Thư viện nhỏ và ổn định, dù bản phát hành gần nhất là từ cuối 2024. Mình chỉ tự viết khi cần kiểm soát cách serialize lỗi hoặc giao thức huỷ. Callback bọc bằng `Comlink.proxy` giữ một `MessageChannel` mở, nên nhớ release, không thì rò bộ nhớ.
+
+## Module worker và bundler
+
+webpack 5, Vite và Turbopack đều hiểu cú pháp này:
+
+```ts
+const worker = new Worker(new URL("./search.worker.ts", import.meta.url), { type: "module" });
+```
+
+Bundler tìm ra nó bằng *phân tích tĩnh*, nên `new URL(...)` phải viết inline với chuỗi literal. Đưa đường dẫn vào biến là worker không được bundle, và bạn ăn 404 lúc chạy. Module worker chạy được trên mọi trình duyệt hiện tại (Firefox là trình duyệt cuối cùng, từ bản 114).
+
+- **Next.js:** top level của một module `"use client"` vẫn chạy khi SSR, nên hãy tạo worker lazy trong effect hoặc event handler. Cách Turbopack xử lý worker đã thay đổi qua các bản minor của Next.js 16, nên hãy test bản build production, đừng chỉ tin dev.
+- **Vite:** `worker.format` mặc định là `"iife"`; đặt `worker: { format: "es" }` nếu worker dùng `import()` động. Plugin cho bundle của worker phải nằm trong `worker.plugins`.
+- **Trùng lặp:** worker là một entry point riêng, nên thư viện được import ở cả hai phía thường bị bundle hai lần.
+
+## SharedArrayBuffer và cross-origin isolation
+
+`SharedArrayBuffer` cho các thread dùng chung bộ nhớ mà không copy. Từ sau Spectre, nó đòi trang phải **cross-origin isolated**:
+
+```http
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+Cái giá là có thật. `COOP: same-origin` cắt liên kết với popup khác origin, nên luồng OAuth hay thanh toán dựa vào `window.opener` có thể hỏng. `COEP: require-corp` chặn mọi tài nguyên khác origin không có header `Cross-Origin-Resource-Policy` hoặc không đi qua CORS: ảnh bên thứ ba, iframe, vài script analytics. `COEP: credentialless` nhẹ tay hơn (các request đó không gửi cookie) và chạy trên Chrome, Firefox, nhưng dữ liệu tương thích của MDN vẫn ghi Safari chưa hỗ trợ tại thời điểm mình viết. Vì vậy mình chỉ bật cho đúng route cần nó:
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: "/editor/:path*",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+        ],
+      },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
+<Callout>
+  Isolation được quyết định lúc một *document* được tải. Điều hướng phía client từ một trang không isolated sang `/editor` không tải document mới, nên `crossOriginIsolated` vẫn là `false` dù route đã có đủ header. Hãy vào khu vực isolated bằng một lần tải trang đầy đủ, và luôn kiểm tra `crossOriginIsolated` lúc chạy, kèm đường lui dùng `postMessage`.
+</Callout>
+
+Cách dùng thực tế nhất của mình lại là **huỷ hợp tác** (cooperative cancellation). Worker đang chạy một vòng lặp đồng bộ dài sẽ không xử lý message "huỷ" cho tới khi vòng lặp xong. Một cờ dùng chung giải quyết chuyện đó:
+
+```ts
+const cancelSignal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+diffWorker.postMessage({ before, after, cancelSignal });
+cancelButton.addEventListener("click", () => Atomics.store(cancelSignal, 0, 1));
+```
+
+```ts
+function diffRows(before: string[], after: string[], cancelSignal: Int32Array) {
+  const changedRows: number[] = [];
+  for (let row = 0; row < Math.max(before.length, after.length); row++) {
+    if (Atomics.load(cancelSignal, 0) === 1) return null;
+    if (before[row] !== after[row]) changedRows.push(row);
+  }
+  return changedRows;
+}
+```
+
+Không có isolation thì chia việc thành từng chunk và nhường bằng `setTimeout` giữa các chunk để message huỷ có cơ hội được xử lý.
+
+## OffscreenCanvas: render và xử lý ảnh trong worker
+
+`OffscreenCanvas` đã là Baseline từ Safari 16.4 (WebGL từ Safari 17). Mình dùng nó theo hai cách. Cách thứ nhất là **giao hẳn một canvas cho worker** để vẽ biểu đồ realtime, để main thread có giật thì animation vẫn chạy đều:
+
+```ts
+const offscreen = chartCanvas.transferControlToOffscreen();
+chartWorker.postMessage({ canvas: offscreen, devicePixelRatio }, [offscreen]);
+```
+
+`transferControlToOffscreen` chỉ gọi được một lần cho mỗi canvas; sau đó bạn tự gửi thay đổi kích thước sang worker. Dedicated worker có `requestAnimationFrame`, nên vòng lặp vẽ nằm hẳn trong đó. Cách thứ hai là **xử lý ảnh**, ví dụ thu nhỏ ảnh trước khi upload. Để ý là nó nhận `File`, không phải byte:
+
+```ts
+self.addEventListener("message", async (event: MessageEvent<{ file: File; maxWidth: number }>) => {
+  const { file, maxWidth } = event.data;
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const canvas = new OffscreenCanvas(Math.round(bitmap.width * scale), Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("2D context unavailable");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const resized = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+  self.postMessage({ name: file.name, blob: resized });
+});
+```
+
+## Worker pool: khi một worker không đủ
+
+Với nhiều job độc lập (hai mươi tấm ảnh cần resize), một pool chia chúng ra các core. Mỗi worker tốn bộ nhớ và thời gian khởi động, nên mình giới hạn kích thước và chỉ tạo pool khi dùng lần đầu:
+
+```ts
+type PoolResponse<Output> = { ok: true; value: Output } | { ok: false; error: string };
+
+type PoolJob<Input, Output> = {
+  input: Input;
+  transfer: Transferable[];
+  resolve: (output: Output) => void;
+  reject: (reason: unknown) => void;
+};
+
+export class WorkerPool<Input, Output> {
+  private readonly idleWorkers: Worker[] = [];
+  private readonly allWorkers: Worker[] = [];
+  private readonly queue: PoolJob<Input, Output>[] = [];
+
+  constructor(createWorker: () => Worker, size = defaultPoolSize()) {
+    for (let index = 0; index < size; index++) {
+      const worker = createWorker();
+      this.allWorkers.push(worker);
+      this.idleWorkers.push(worker);
+    }
+  }
+
+  run(input: Input, transfer: Transferable[] = []): Promise<Output> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ input, transfer, resolve, reject });
+      this.dispatch();
+    });
+  }
+
+  destroy() {
+    this.allWorkers.forEach((worker) => worker.terminate());
+    this.queue.splice(0).forEach((job) => job.reject(new DOMException("Pool destroyed", "AbortError")));
+  }
+
+  private dispatch() {
+    while (this.idleWorkers.length > 0 && this.queue.length > 0) {
+      const worker = this.idleWorkers.pop()!;
+      const job = this.queue.shift()!;
+      worker.onmessage = (event: MessageEvent<PoolResponse<Output>>) => {
+        if (event.data.ok) job.resolve(event.data.value);
+        else job.reject(new Error(event.data.error));
+        this.idleWorkers.push(worker);
+        this.dispatch();
+      };
+      worker.postMessage(job.input, job.transfer);
+    }
+  }
+}
+
+function defaultPoolSize() {
+  return Math.max(1, Math.min(4, navigator.hardwareConcurrency - 1));
+}
+```
+
+Bản production còn phải lắng nghe sự kiện `error` của từng worker và thay worker đã chết. Và đừng dùng pool cho worker có state: truy vấn rơi vào worker không giữ index thì chẳng trả về gì.
+
+## Tích hợp React: hook useWorker có huỷ được
+
+Hook này tạo worker lazy (không bao giờ trong lúc SSR), terminate khi unmount, và có `reset` để huỷ cứng.
+
+```tsx
+import { useCallback, useEffect, useRef } from "react";
+import { wrapWorker, type RemoteApi, type WorkerClient } from "./worker-client";
+
+export function useWorker<Api>(createWorker: () => Worker) {
+  const clientRef = useRef<WorkerClient<Api> | null>(null);
+  const createWorkerRef = useRef(createWorker);
+
+  const reset = useCallback(() => {
+    clientRef.current?.dispose();
+    clientRef.current = null;
+  }, []);
+
+  useEffect(() => reset, [reset]);
+
+  const getApi = useCallback((): RemoteApi<Api> => {
+    clientRef.current ??= wrapWorker<Api>(createWorkerRef.current());
+    return clientRef.current.api;
+  }, []);
+
+  return { getApi, reset };
+}
+```
+
+Tìm kiếm khi gõ dựng trên đó: mỗi truy vấn mới đánh dấu truy vấn trước là cũ, còn `isPending` được suy ra thay vì lưu thành state riêng:
+
+```tsx
+import { useEffect, useState } from "react";
+import { useWorker } from "./use-worker";
+import type { SearchApi, SearchDocument, SearchHit } from "./search.worker";
+
+type SearchResult = { query: string; hits: SearchHit[] };
+
+function ignoreAbort(error: unknown) {
+  if (error instanceof DOMException && error.name === "AbortError") return;
+  throw error;
+}
+
+export function useWorkerSearch(documents: SearchDocument[], query: string) {
+  const { getApi } = useWorker<SearchApi>(
+    () => new Worker(new URL("./search.worker.ts", import.meta.url), { type: "module" }),
+  );
+  const [result, setResult] = useState<SearchResult | null>(null);
+
+  useEffect(() => {
+    getApi().loadDocuments(documents).catch(ignoreAbort);
+  }, [documents, getApi]);
+
+  useEffect(() => {
+    let stale = false;
+    getApi()
+      .search(query, 20)
+      .then((hits) => {
+        if (!stale) setResult({ query, hits });
+      })
+      .catch(ignoreAbort);
+    return () => {
+      stale = true;
+    };
+  }, [query, getApi]);
+
+  return { hits: result?.hits ?? [], isPending: result?.query !== query };
+}
+```
+
+Message tới worker được xử lý theo thứ tự, nên `loadDocuments` luôn chạy trước lần `search` đầu tiên. Trong Strict Mode, worker đầu tiên bị dispose, promise đang chờ reject với `AbortError` (được bỏ qua), và lần mount thứ hai tạo worker mới rồi nạp lại dữ liệu.
+
+<Callout>
+  Bỏ qua kết quả cũ không có nghĩa là dừng việc: worker vẫn chạy truy vấn cũ tới cùng. Truy vấn rẻ thì không sao. Với job mất vài giây, bạn cần huỷ thật: `reset()` để terminate (mất luôn state của worker), hoặc cờ huỷ dùng chung như ở phần trên.
+</Callout>
+
+## Đo xem có lợi thật không
+
+Worker tối ưu *độ phản hồi*, chưa chắc tối ưu *tổng thời gian*, nên mình đo cả hai:
+
+- **Độ phản hồi:** INP từ dữ liệu thực tế, cộng với long animation frame (entry `long-animation-frame` chỉ có trên Chromium, nhưng đủ để so trước/sau).
+- **Thời gian đầu-cuối:** từ lúc người dùng thao tác tới khi kết quả hiện lên, tính cả khởi động và chi phí clone hai chiều.
+- **Khởi động:** lần gọi đầu phải tải và parse bundle của worker; khởi động sẵn khi màn hình mount nếu tương tác đầu tiên quan trọng.
+
+```ts
+export async function timed<Result>(label: string, task: () => Promise<Result>) {
+  const start = performance.now();
+  try {
+    return await task();
+  } finally {
+    performance.measure(label, { start, end: performance.now() });
+  }
+}
+
+const observer = new PerformanceObserver((list) => {
+  for (const entry of list.getEntries()) reportMetric("long-animation-frame", entry.duration);
+});
+observer.observe({ type: "long-animation-frame", buffered: true });
+```
+
+Các measure hiện trong track Timings của tab Performance trong DevTools, và mỗi worker có track thread riêng, nên bạn thấy rõ việc đã chuyển đi đâu và main thread có còn bận deserialize kết quả hay không.
+
+## Tóm tắt
+
+<Checklist>
+
+- Dùng worker khi phần tính toán nặng so với lượng dữ liệu đi qua ranh giới; việc đụng DOM và tác vụ nhỏ thì để nguyên.
+- Ưu tiên worker có state: gửi dữ liệu một lần, sau đó chỉ trao đổi request nhỏ.
+- Chi phí clone đi theo hình dạng object graph; transfer dữ liệu nhị phân và gửi `File` thay vì byte của nó.
+- Dùng lớp RPC có type hoặc Comlink, và cẩn thận cái bẫy `then` với `Proxy`.
+- Viết `new URL(...)` inline trong `new Worker` để bundler nhận ra; test bản build production.
+- Chỉ bật cross-origin isolation cho route cần `SharedArrayBuffer`, và luôn có đường lui.
+- Trong React: tạo lazy, terminate khi unmount, bỏ qua kết quả cũ, huỷ thật khi job dài.
+- Đo riêng độ phản hồi và thời gian đầu-cuối.
+
+</Checklist>

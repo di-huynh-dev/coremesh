@@ -1,0 +1,265 @@
+---
+title: "View Transitions API: animation chuyển trang và shared element không cần thư viện"
+excerpt: "Cơ chế snapshot và cây pseudo-element của View Transitions, startViewTransition trong SPA, transition giữa hai document, view-transition-name, view-transition-class và types, shared element từ danh sách sang trang chi tiết, reduced motion, những bẫy hiệu năng, và cách dùng component ViewTransition của React trong Next.js 16."
+---
+
+<Lead>Designer gửi mình một đoạn video prototype: bấm vào ảnh sản phẩm trong danh sách, ảnh "bay" lên thành hero của trang chi tiết, phần còn lại của trang trượt vào. Lần trước làm hiệu ứng kiểu này, team mình mất gần hai tuần với kỹ thuật FLIP: đo vị trí, clone phần tử, giữ trang cũ sống thêm vài trăm mili giây, và xử lý đủ loại edge case khi người dùng bấm back giữa chừng. Lần này mọi thứ gói gọn trong vài chục dòng CSS, vì trình duyệt đã tự làm phần khó nhất. Bài này là những gì mình học được khi đưa View Transitions API vào production: cơ chế bên dưới, các tính năng mới, và những chỗ dễ vấp.</Lead>
+
+## Cơ chế: snapshot, cập nhật DOM, rồi animate pseudo-element
+
+Hiểu đúng cơ chế giúp mình debug nhanh hơn hẳn. Khi gọi `document.startViewTransition(update)`, trình duyệt làm theo thứ tự:
+
+1. **Chụp trạng thái cũ.** Mỗi phần tử có `view-transition-name` (mặc định có `root` là cả trang) được chụp thành một ảnh tĩnh.
+2. **Tạm dừng render và chạy `update`.** Bạn thay đổi DOM tuỳ ý; người dùng vẫn nhìn thấy trạng thái cũ.
+3. **Chụp trạng thái mới** dưới dạng live, tức vẫn cập nhật theo DOM thật.
+4. **Dựng cây pseudo-element** phủ lên trang và chạy animation bằng CSS.
+
+Cây pseudo-element trông như sau, mỗi tên có một nhánh `group` riêng:
+
+```text
+::view-transition
+└─ ::view-transition-group(root)
+   └─ ::view-transition-image-pair(root)
+      ├─ ::view-transition-old(root)
+      └─ ::view-transition-new(root)
+```
+
+Mặc định `old` mờ dần, `new` hiện dần, còn `group` animate vị trí và kích thước từ chỗ cũ sang chỗ mới. Mọi tuỳ biến đều là CSS animation bình thường nhắm vào các pseudo-element này. Object `ViewTransition` trả về có ba promise: `updateCallbackDone`, `ready` (cây pseudo đã dựng, có thể animate bằng Web Animations API) và `finished`, cùng hàm `skipTransition()`.
+
+## Same-document: một helper an toàn
+
+Mình không gọi `startViewTransition` trực tiếp ở khắp nơi mà bọc qua một helper, vì có hai chuyện cần xử lý: trình duyệt không hỗ trợ, và trình duyệt hỗ trợ API nhưng chưa hỗ trợ **types**.
+
+```ts
+type DomUpdate = () => void | Promise<void>;
+
+const supportsTransitionTypes =
+  typeof ViewTransition !== "undefined" && "types" in ViewTransition.prototype;
+
+export async function runViewTransition(update: DomUpdate, types: string[] = []) {
+  if (typeof document.startViewTransition !== "function") {
+    await update();
+    return;
+  }
+
+  const transition = supportsTransitionTypes
+    ? document.startViewTransition({ update, types })
+    : document.startViewTransition(update);
+
+  await transition.updateCallbackDone;
+}
+```
+
+Dạng object `{ update, types }` ra đời sau dạng callback. Trình duyệt chỉ có dạng callback sẽ ném `TypeError` khi nhận object, đó là lý do phải kiểm tra `types` trước. Helper chỉ chờ `updateCallbackDone` vì phần lớn code gọi nó chỉ cần biết DOM đã cập nhật, không cần chờ animation chạy xong.
+
+Types cho phép một transition mang ngữ nghĩa, ví dụ hướng điều hướng. CSS đọc chúng qua `:active-view-transition-type()`:
+
+```css
+@media (prefers-reduced-motion: no-preference) {
+  html:active-view-transition-type(forward)::view-transition-old(root) {
+    animation: 180ms ease-in both slide-out-to-left;
+  }
+
+  html:active-view-transition-type(forward)::view-transition-new(root) {
+    animation: 260ms ease-out both slide-in-from-right;
+  }
+}
+
+@keyframes slide-out-to-left {
+  to { opacity: 0; translate: -48px 0; }
+}
+
+@keyframes slide-in-from-right {
+  from { opacity: 0; translate: 48px 0; }
+}
+```
+
+<Callout>
+  Trong `update`, trình duyệt ngừng render trang. Nếu bạn `await fetch()` bên trong callback, trang đứng hình suốt thời gian chờ mạng. Luôn tải dữ liệu xong rồi mới bắt đầu transition; callback chỉ nên làm việc đồng bộ hoặc gần như đồng bộ: gắn dữ liệu đã có vào DOM.
+</Callout>
+
+## `view-transition-name`, `view-transition-class` và `match-element`
+
+`view-transition-name` đánh dấu phần tử cần được chụp và animate riêng. Luật quan trọng nhất: **tên phải duy nhất** trong các phần tử đang render tại thời điểm chụp. Hai phần tử cùng tên thì transition bị bỏ qua và DOM cập nhật như không có animation. Đây là lỗi mình gặp nhiều nhất, thường do render một component có tên cố định hai lần.
+
+Khi có nhiều phần tử cần cùng một kiểu animation, viết CSS cho từng tên là không khả thi. `view-transition-class` giải quyết điều đó, và `match-element` tự sinh tên dựa trên chính danh tính của phần tử, nên bạn không phải tự tạo `card-1`, `card-2`:
+
+```css
+.product-card {
+  view-transition-name: match-element;
+  view-transition-class: product-card;
+}
+
+::view-transition-group(*.product-card) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+```
+
+Với CSS này, lọc hoặc sắp xếp lại danh sách bên trong `runViewTransition` sẽ làm từng card trượt về vị trí mới. Vì `match-element` dựa vào việc cùng một node DOM tồn tại trước và sau, nó chỉ dùng được trong same-document, và key của danh sách phải ổn định để framework không tạo node mới.
+
+## Shared element từ danh sách sang trang chi tiết
+
+Với same-document không dùng framework, mình **gán tên động** cho đúng phần tử được bấm thay vì đặt tên cho mọi ảnh trong danh sách. Cách này tránh trùng tên và tránh chụp hàng trăm snapshot không cần thiết.
+
+```ts
+export async function openProductDetail(card: HTMLElement, productId: string) {
+  const detail = await loadProductDetail(productId);
+  const thumbnail = card.querySelector<HTMLElement>(".product-card__image");
+  if (thumbnail) thumbnail.style.viewTransitionName = "product-hero";
+
+  await runViewTransition(() => {
+    if (thumbnail) thumbnail.style.viewTransitionName = "";
+    renderProductDetail(detail);
+  }, ["forward"]);
+}
+```
+
+Trong trang chi tiết, ảnh hero có sẵn `view-transition-name: product-hero` trong CSS. Thứ tự là then chốt: tên nằm trên thumbnail lúc chụp trạng thái cũ, được gỡ ra trong `update`, và lúc chụp trạng thái mới thì chỉ hero mang tên đó. Chiều quay lại làm ngược: render danh sách, tìm card tương ứng, gán tên cho thumbnail bên trong `update`. Dữ liệu được tải *trước* khi gọi transition, đúng như callout ở trên.
+
+Một hiện tượng hay gặp: nếu ảnh cũ và mới khác tỉ lệ khung hình, group animate kích thước còn hai snapshot bị kéo giãn trong lúc chuyển. Thường mình đặt `object-fit: cover` cùng `height: 100%` cho `::view-transition-old(product-hero)` và `::view-transition-new(product-hero)` để snapshot được cắt thay vì bị bóp méo.
+
+## Cross-document: transition giữa hai trang thật
+
+Với site nhiều trang (MPA), không cần JavaScript. Cả trang nguồn và trang đích đều opt-in bằng CSS, và điều hướng phải cùng origin:
+
+```css
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+    types: forward;
+  }
+}
+
+.product-detail__hero {
+  view-transition-name: product-hero;
+}
+```
+
+Các `view-transition-name` hoạt động y như same-document: phần tử cùng tên ở trang cũ và trang mới sẽ được nối với nhau. Để chọn type động theo URL (tiến hay lùi), bạn xử lý trong sự kiện `pagereveal` ở trang mới, đọc thông tin điều hướng từ Navigation API rồi thêm type vào `event.viewTransition.types`. `pageswap` là sự kiện tương ứng ở trang cũ.
+
+Một điểm dễ bỏ sót: trang mới có thể render lần đầu trước khi phần tử mang tên được parse xong, và khi đó không có cặp nào để nối. Chromium hỗ trợ `link rel="expect"` với `blocking="render"` để chặn render cho tới khi một phần tử cụ thể xuất hiện. Nhưng đó là đánh đổi trực tiếp với thời gian hiển thị nội dung đầu tiên, nên mình chỉ dùng cho phần tử nằm ở đầu HTML.
+
+## Hỗ trợ trình duyệt
+
+Đây là phần thay đổi nhanh nhất, nên mình ghi rõ phiên bản thay vì nói "hầu hết trình duyệt":
+
+| Tính năng | Chromium | Safari | Firefox |
+| --- | --- | --- | --- |
+| `startViewTransition`, `view-transition-name` | 111 | 18 | 144 |
+| `view-transition-class` | 125 | 18.2 | 144 |
+| Types (`types`, `:active-view-transition-type()`) | 125 | 18.2 | 147 |
+| `view-transition-name: match-element` | 137 | 18.4 | 144 |
+| Cross-document (`@view-transition`) | 126 | 18.2 | Chưa có |
+
+Same-document view transitions trở thành Baseline khi Firefox 144 ra mắt tháng 10/2025. Cross-document vẫn thiếu Firefox; nó nằm trong các mục tiêu của Interop 2026, nhưng tới lúc viết bài thì chưa ship. May mắn là View Transitions là progressive enhancement đúng nghĩa: không hỗ trợ thì DOM vẫn cập nhật, chỉ là không có animation.
+
+## Reduced motion và bẫy hiệu năng
+
+Reduced motion không có nghĩa là không có chuyển động nào. Với người dùng bật `prefers-reduced-motion`, mình bỏ các chuyển động theo vị trí và tỉ lệ, nhưng giữ crossfade vì nó vẫn giúp nhận ra nội dung đã đổi. Cách làm có hai phần. Mọi animation có trượt hoặc phóng to đều nằm trong `@media (prefers-reduced-motion: no-preference)`, như ví dụ types ở trên. Còn với `reduce`, chỉ cần tắt animation của group:
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) {
+    animation-name: none;
+  }
+}
+```
+
+Trong stylesheet mặc định của trình duyệt, `old` và `new` kế thừa thời lượng từ group, nên bỏ `animation-name` (thay vì đặt `animation-duration: 0s`) giữ nguyên crossfade mặc định, trong khi phần tử nhảy thẳng tới vị trí mới thay vì bay qua màn hình.
+
+Về hiệu năng, đây là những thứ mình đã đo được hoặc đã gây sự cố thật:
+
+- **Mỗi tên là một snapshot.** Đặt `match-element` cho một danh sách 300 item là 300 group, 300 ảnh trong bộ nhớ GPU. Trên điện thoại tầm trung, frame đầu của transition giật thấy rõ. Chỉ đặt tên cho những gì nằm trong viewport hoặc thật sự cần.
+- **Group animate cả `width` và `height`.** Animation đó không chạy hoàn toàn trên compositor, nên main thread bận (hydration, render nặng) sẽ làm transition giật. Giữ thời gian ngắn và tránh việc nặng ngay sau khi transition bắt đầu.
+- **Overlay chặn tương tác.** Trong lúc transition chạy, `::view-transition` phủ lên trang và nuốt click. Thêm `::view-transition { pointer-events: none; }` nếu transition dài hơn vài trăm mili giây.
+- **Transition chồng nhau.** Gọi transition mới khi transition cũ chưa xong sẽ skip transition cũ. Với thao tác lặp nhanh như bấm next liên tục, đây thường là hành vi đúng, nhưng đừng viết logic dựa vào việc `finished` của transition cũ luôn chạy hết animation.
+
+## React và Next.js 16: component `ViewTransition`
+
+Trong React, bạn không nên tự gọi `startViewTransition`, vì React cần biết thời điểm commit DOM. React cung cấp component `ViewTransition`, kích hoạt khi cập nhật đến từ `startTransition`, một lần reveal của `Suspense` hoặc `useDeferredValue`. Một lệnh `setState` bình thường, không nằm trong Transition, **không** tạo animation. Trong Next.js App Router, điều hướng là transition, nên shared element chỉ cần cùng `name` ở hai trang:
+
+```tsx
+import Image from "next/image";
+import Link from "next/link";
+import { ViewTransition } from "react";
+
+type Product = { id: string; slug: string; name: string; imageUrl: string };
+
+export function ProductGrid({ products }: { products: Product[] }) {
+  return (
+    <ul className="product-grid">
+      {products.map((product) => (
+        <li key={product.id}>
+          <Link href={`/products/${product.slug}`} transitionTypes={["nav-forward"]}>
+            <ViewTransition name={`product-image-${product.id}`} share="morph" default="none">
+              <Image src={product.imageUrl} alt={product.name} width={480} height={360} />
+            </ViewTransition>
+            <span>{product.name}</span>
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Trang chi tiết bọc ảnh hero trong `ViewTransition` với cùng `name`, `share="morph"` và `default="none"`. `default="none"` ngăn mỗi ảnh tự crossfade trong mọi transition không liên quan; khi đã có nó thì phải giữ `share`, nếu không cặp ảnh sẽ âm thầm không morph nữa. Class `morph` được nhắm bằng `::view-transition-group(.morph)` trong CSS. Prop `transitionTypes` của `Link` có từ Next.js 16.2, và các type đó đi vào `addTransitionType`.
+
+Với cập nhật trong cùng trang, bạn tự gắn type:
+
+```tsx
+"use client";
+
+import { addTransitionType, startTransition, useState, ViewTransition } from "react";
+
+type Slide = { id: string; src: string; alt: string };
+
+export function ProductGallery({ slides }: { slides: Slide[] }) {
+  const [index, setIndex] = useState(0);
+  const slide = slides[index];
+
+  function go(step: 1 | -1) {
+    startTransition(() => {
+      addTransitionType(step === 1 ? "next" : "previous");
+      setIndex((current) => (current + step + slides.length) % slides.length);
+    });
+  }
+
+  return (
+    <div className="gallery">
+      <ViewTransition
+        key={slide.id}
+        enter={{ next: "slide-from-right", previous: "slide-from-left", default: "none" }}
+        exit={{ next: "slide-to-left", previous: "slide-to-right", default: "none" }}
+        default="none"
+      >
+        <img src={slide.src} alt={slide.alt} />
+      </ViewTransition>
+      <button type="button" onClick={() => go(-1)}>Previous</button>
+      <button type="button" onClick={() => go(1)}>Next</button>
+    </div>
+  );
+}
+```
+
+Vài luật mình học bằng cách debug: `ViewTransition` chỉ kích hoạt enter/exit khi nó nằm trước mọi DOM node trong cây con được thêm hoặc xoá; mỗi `name` chỉ được mount một lần trong toàn app; `flushSync` giữa chừng làm React bỏ qua transition; nút back của trình duyệt không mang type nên slide theo hướng sẽ không chạy. React cũng không tự tắt animation khi người dùng bật reduced motion, nên CSS ở phần trước vẫn cần thiết.
+
+<Callout>
+  Lúc mình viết bài này (6/2026), `ViewTransition` vẫn ở bản canary/experimental và Next.js 16 cần bật `experimental.viewTransition`. Cập nhật 10/2026: React 19.3 (phát hành 9/9/2026) đã đưa `ViewTransition` và `addTransitionType` lên stable, và hướng dẫn view transitions của Next.js 16 hiện nói App Router dùng được mà không cần cấu hình thêm. Hãy kiểm tra docs đúng phiên bản bạn đang dùng.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- View transition gồm chụp trạng thái cũ, cập nhật DOM, chụp trạng thái mới live, rồi animate cây pseudo-element bằng CSS.
+- Tải dữ liệu trước, chỉ cập nhật DOM trong callback; trang đứng hình trong lúc callback chạy.
+- Kiểm tra hỗ trợ `types` trước khi truyền object vào `startViewTransition`.
+- Tên phải duy nhất lúc chụp; gán tên động cho phần tử được bấm thay vì đặt tên cho cả danh sách.
+- Dùng `view-transition-class` và `match-element` cho nhóm phần tử, nhưng nhớ mỗi tên là một snapshot.
+- Cross-document chỉ cần `@view-transition` ở cả hai trang cùng origin; Firefox chưa hỗ trợ, và điều đó không sao.
+- Với reduced motion, bỏ chuyển động vị trí và giữ crossfade ngắn.
+- Trong React, dùng `ViewTransition` với Transition thay vì tự gọi `startViewTransition`; đặt `default="none"` cho phần tử có `name`.
+
+</Checklist>

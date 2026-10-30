@@ -1,0 +1,233 @@
+---
+title: "Cascade Layers and @scope: Ending Specificity Wars in Large Codebases"
+excerpt: "Why CSS in large projects always drifts toward !important, how @layer changes who wins the cascade, traps like unlayered styles and the !important inversion, @scope with donut scopes and proximity, native nesting gotchas, and a step-by-step path for moving a legacy codebase into layers."
+---
+
+<Lead>There's one commit I still remember: to change the text color of a button inside a modal, a teammate had to write `#root .modal-wrapper .modal .footer .btn.btn-primary`, because the theme's existing selector was already that long. Two weeks later someone else needed to override it again and… added `!important`. Six months later the stylesheet had more than three hundred `!important`s and nobody dared delete a line. That wasn't anyone's fault — it's the natural outcome when the only priority lever you control is specificity. Cascade layers and `@scope` give us two more levers, and after bringing them into a legacy project, I don't want to go back.</Lead>
+
+## How specificity wars start
+
+Before layers, the cascade picked a winner in this order: origin and importance (`!important`), then specificity, then order of appearance in the source. In a large codebase, the last two are both hard to control:
+
+- **Source order isn't stable.** Modern bundlers split CSS into chunks per route. The same component can get a different CSS order on two pages, so "the file that loads later wins" becomes a coin toss.
+- **Third-party libraries set the specificity for you.** A date picker writes `.react-datepicker__month .react-datepicker__day--selected` (0,2,0). To recolor the selected day you have to write a selector at least that strong.
+
+So everyone bumps specificity "just to be safe", and `!important` is the last step of that arms race:
+
+```css
+.button {
+  background: var(--color-primary);
+}
+
+.checkout-page .sidebar .button {
+  background: var(--color-success);
+}
+
+.promo-banner .button {
+  background: var(--color-warning) !important;
+}
+```
+
+The problem isn't any single line. It's that the *intent* ("page styles override component styles", "utilities always win") isn't expressed anywhere. It only exists implicitly, in the length of selectors.
+
+## `@layer`: putting intent into the cascade
+
+Cascade layers insert a new criterion **before** specificity. When two declarations live in different layers, the layer declared later wins, regardless of specificity. Specificity is only used to break ties *inside* the same layer.
+
+```css
+@layer reset, vendor, base, components, utilities;
+
+@layer components {
+  .checkout-page .sidebar .button {
+    background: var(--color-success);
+  }
+}
+
+@layer utilities {
+  .bg-warning {
+    background: var(--color-warning);
+  }
+}
+```
+
+Here `.bg-warning` (0,1,0) beats the (0,3,0) selector above because `utilities` is declared after `components`. No `!important`, no doubled-up classes.
+
+The `@layer reset, vendor, base, components, utilities;` line at the top is the most important one. Layer order is set by the **first time** a layer name appears. If some CSS chunk containing `@layer components` loads before this statement, the order won't be what you think. So I always put the order statement on the very first line of the global stylesheet that's imported earliest (in Next.js, the one imported by the root layout). That's the second big win of layers: the order of CSS chunks across routes no longer decides who wins.
+
+Layers can be nested (`components.forms`), and you can assign one at import time:
+
+```css
+@layer reset, vendor, base, components, utilities;
+
+@import url("modern-normalize.css") layer(reset);
+@import url("react-datepicker/dist/react-datepicker.css") layer(vendor);
+```
+
+A `@layer` statement is allowed before `@import`, so this file is valid. Browser support is no longer a question: cascade layers have been in Chrome 99, Firefox 97 and Safari 15.4 since 2022.
+
+## Two rules that will trip you up
+
+### Unlayered styles always win
+
+Every style that isn't in a layer is collected into an implicit layer that sits **after all** your declared layers. That means a bare `.card` selector somewhere beats everything in `utilities`. The most commonly forgotten case is styles injected at runtime: CSS-in-JS libraries insert `style` tags without a layer, so they beat your entire layer system. Some libraries offer an option to wrap their output in a layer; if yours doesn't, accept that it's the top tier and design around that. Inline styles (the `style` attribute) still beat every layer, as before.
+
+### `!important` is inverted
+
+For normal declarations, a later layer beats an earlier one. For `!important`, the order is **reversed**: `!important` in an *earlier* layer beats `!important` in a later layer, and `!important` in any layer beats unlayered `!important`.
+
+| Situation | Winner |
+| --- | --- |
+| Two normal declarations in `vendor` and `utilities` | `utilities` |
+| Normal declaration in `utilities` vs an unlayered style | The unlayered style |
+| `!important` in `vendor` vs `!important` in `utilities` | `vendor` |
+| `!important` in `reset` vs unlayered `!important` | `reset` |
+
+This is by design: low layers (reset, vendor) use `!important` to say "nobody override this", e.g. `[hidden] { display: none !important; }` in a reset. But during a migration it's a real trap. If you wrap legacy CSS in a low layer, every old `!important` in it suddenly becomes *stronger* than before.
+
+<Callout>
+  Before wrapping an old chunk of CSS in a layer, count the `!important`s in it. Each one will beat every `!important` you later write in a higher layer. I handle this by moving them into a separate file, keeping it unlayered, and treating it as a debt list to pay down.
+</Callout>
+
+### Stepping back a layer with `revert-layer`
+
+The `revert-layer` keyword rolls a property back to whatever the previous layers decided. I use it for "bare" component variants instead of trying to guess the original values:
+
+```css
+@layer components {
+  .button {
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .button[data-variant="bare"] {
+    border-radius: revert-layer;
+    box-shadow: revert-layer;
+  }
+}
+```
+
+## Putting resets, third-party CSS and Tailwind into layers
+
+Tailwind v4 uses real browser cascade layers: `@import "tailwindcss";` emits `@layer theme, base, components, utilities;`. That has two consequences I've run into in practice.
+
+First, CSS you write outside a layer beats utilities. A developer writes `.card { padding: 24px; }` in a global file, then wonders why `p-4` on that element does nothing. With Tailwind v3, `p-4` might win thanks to source order; with v4 it never will. Our team rule: every hand-written style lives in a layer.
+
+Second, you can slot your own layers between Tailwind's, as long as you declare the order before the import:
+
+```css
+@layer theme, base, vendor, components, utilities;
+
+@import "tailwindcss";
+@import "react-datepicker/dist/react-datepicker.css" layer(vendor);
+
+@layer components {
+  .react-datepicker__day--selected {
+    background: var(--color-primary);
+  }
+}
+```
+
+Now a one-class selector in `components` beats the date picker's two-class selector, because `vendor` comes first. And a utility like `bg-red-500` still beats both. The specificity war with a third-party library ends with a single `layer(vendor)`.
+
+## `@scope`: limiting reach and adding proximity
+
+Layers answer "which group of styles takes priority". `@scope` answers a different question: "which part of the DOM is this style allowed to touch".
+
+```css
+@scope (.media-card) to (.media-card__slot) {
+  img {
+    border-radius: var(--radius-lg);
+    aspect-ratio: 16 / 9;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+```
+
+`.media-card` is the **scope root** and `.media-card__slot` is the **scope limit**. The styles apply to `img` and `a` inside the card but stop at the slot, where a parent component passes in arbitrary content. That's a "donut scope": a ring with a hole in the middle. By default the root is included in the scope and the limit is not.
+
+Two specificity details: a bare selector inside `@scope` like `img` doesn't add the root's specificity (it stays 0,0,1), while `:scope img` adds one pseudo-class (0,1,1). The behavior of `&` inside `@scope` has differed between engines, so I avoid it there.
+
+### Proximity: the closer root wins
+
+When two rules have the same specificity and the same layer, `@scope` adds a criterion before source order: the scope root that is **closer** to the element (fewer hops up the DOM) wins.
+
+```css
+@scope (.theme-light) {
+  :scope { background: white; }
+  p { color: #111; }
+}
+
+@scope (.theme-dark) {
+  :scope { background: #111; }
+  p { color: #eee; }
+}
+```
+
+A `.theme-light` panel nested inside a `.theme-dark` region gets dark text, because the light root is closer. Written with plain selectors like `.theme-dark p`, the result depends only on which rule comes later in the file.
+
+Note: `@scope` limits *selectors*, it doesn't block *inheritance*. A `color` set on the root is still inherited past the scope limit as usual.
+
+### Browser support
+
+Chromium has supported `@scope` since 118, Safari since 17.4, and Firefox was the last engine, with version 146 (December 2025). Browsers that don't understand `@scope` drop the whole block, so for users still on an older Firefox, those styles simply vanish. For core components I still keep base styles outside `@scope` and use scopes only for refinements.
+
+If your codebase already uses CSS Modules or Tailwind for every component, `@scope` doesn't add much. Where it shines is content whose classes you don't control: HTML from a CMS, markdown blocks, embedded widgets, and the `prose` area of this very blog.
+
+## Native nesting: gotchas worth knowing
+
+CSS nesting has worked in every major browser since late 2023, and many teams are dropping Sass because of it. But native nesting isn't Sass:
+
+```css
+#site-header,
+.drawer-nav {
+  & a {
+    color: var(--color-link);
+  }
+}
+
+.nav-list a {
+  color: var(--color-muted);
+}
+```
+
+`&` computes specificity like `:is()`, taking the **highest** value in the parent selector list. So `& a` here is (1,0,1) even for links inside `.drawer-nav`, and `.nav-list a` (0,1,1) can never win — even though `#site-header` isn't on that page at all. Keep ids out of the parent selector of a nesting block.
+
+- **No string concatenation.** In Sass, `&__title` produces `.card__title`; in plain CSS that rule is invalid and ignored. Anyone migrating from Sass with BEM hits this first.
+- **Declarations after a nested rule.** Before Chrome 130 and Firefox 132, declarations written after a nested rule were "hoisted" to the top of the block, so they could be overridden by the very `@media` nested inside it. From those versions on (and Safari has followed), they keep their position thanks to `CSSNestedDeclarations`. The safe rule: declarations first, nested rules after.
+- **Deep nesting is hidden specificity.** Three levels of nesting is a three-part selector. Nesting makes specificity growth invisible, so I cap it at two levels.
+
+## A migration path for a legacy codebase
+
+These are the steps I took with an app of roughly 40 thousand lines of CSS, running alongside feature work, with no big-bang PR:
+
+1. **Declare the layer order** on the first line of the entry file: `@layer reset, vendor, legacy, components, utilities;`. Nothing else changes yet, and nothing changes visually.
+2. **Wrap third-party CSS in `vendor`** with `@import ... layer(vendor)`. Run visual regression tests. There are usually a few places where legacy CSS relied on losing to vendor specificity; fix them right away.
+3. **Pull `!important` out of legacy.** Grep, move each one into a `legacy-important.css` file kept outside any layer, with a tracking ticket.
+4. **Wrap the legacy CSS in `legacy`.** From this point on, any new CSS in `components` automatically beats legacy, however long the legacy selectors are. This is the step where the whole team exhales.
+5. **Move pieces gradually** from `legacy` to `components` whenever you touch the related feature, deleting specificity hacks along the way.
+6. **Add lint rules** that forbid unlayered CSS in new code and forbid `!important` outside `reset` and `utilities`.
+
+Chrome and Firefox DevTools both show each rule's layer in the Styles panel, so when QA reports "the style doesn't apply", the first question I ask is: which layer is that rule in?
+
+<Callout>
+  Layers don't replace naming conventions or CSS Modules. They replace what we used to express through specificity: the priority between groups of styles. Once that order is written down in a single `@layer` line, specificity goes back to its proper job — breaking ties in a small scope.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Specificity and source order can't express intent in a large codebase; that's why `!important` multiplies.
+- Declare the layer order once, on the first line of the earliest-loaded stylesheet; later layers beat earlier ones regardless of specificity.
+- Unlayered styles, runtime CSS-in-JS and inline styles beat every layer — put all hand-written CSS in a layer.
+- `!important` inverts layer order: count and extract `!important`s before wrapping old CSS in a low layer.
+- Put resets and third-party CSS into layers with `@import ... layer()`; with Tailwind v4, slot your own layer between `base` and `components`.
+- Use `@scope` with a scope limit for content whose classes you don't control; proximity solves nested themes.
+- With native nesting: `&` computes specificity like `:is()`, there's no BEM-style concatenation, and declarations go before nested rules.
+- Migrate in steps: vendor, extract `!important`, wrap legacy, then move gradually into `components`.
+
+</Checklist>

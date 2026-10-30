@@ -1,0 +1,276 @@
+---
+title: "Streaming SSR and Suspense: What Actually Happens on the Wire"
+excerpt: "How streaming HTML works at the protocol level, where to put Suspense boundaries, avoiding waterfalls, selective hydration, Partial Prerendering in Next.js 16, the effect on TTFB, LCP and CLS, proxies that silently buffer your stream, and handling errors after a 200 has already gone out."
+---
+
+<Lead>Our team's dashboard once had a TTFB exactly equal to its slowest API — the "recommended for you" block called a far-away service, and the whole page waited for it. After we switched to streaming, TTFB on local machines dropped sharply. Then two things happened: LCP in production barely moved because the hero image sat inside a Suspense boundary, and on staging nothing streamed at all because nginx collected the whole response before sending it. This post is what I had to understand to make streaming actually pay off.</Lead>
+
+## What streaming HTML looks like on the wire
+
+A streamed response has no `Content-Length`: HTTP/1.1 uses chunked transfer encoding, HTTP/2 and HTTP/3 send multiple data frames. Browsers already parse HTML incrementally, so each piece can be painted as it arrives.
+
+React builds on that in a fixed sequence:
+
+1. **The shell goes first.** The first chunk contains the `head` (CSS, scripts, preloads), the layout, and the **fallback** of every Suspense boundary that isn't ready. Each fallback is marked with a placeholder that has an id.
+2. **Content arrives later, out of order.** When a boundary has its data, React sends its finished HTML inside a hidden `div` at the end of the document, plus a small inline script that moves it into the fallback's place. Whichever boundary finishes first arrives first, regardless of its position in the tree.
+3. **The payload for hydration** streams alongside, in script tags.
+
+Simplified, the first chunk contains this:
+
+```html
+<main>
+  <h1>Recent orders</h1>
+  <template id="B:0"></template>
+  <div class="orders-skeleton" style="min-height: 480px"></div>
+</main>
+```
+
+A few hundred milliseconds later, at the end of the stream:
+
+```html
+<div hidden id="S:0">
+  <table class="orders">
+    <tr><td>#10231</td><td>Delivered</td></tr>
+  </table>
+</div>
+<script>$RC("B:0", "S:0")</script>
+```
+
+Names like `$RC` are React internals that change between versions; the mechanism is what matters. The swap script runs **as soon as it arrives**, without waiting for the bundle or hydration.
+
+Since React 19.2, reveals of server-rendered boundaries are **batched** for a short window (the docs currently say at most once every 300ms) so several appear together, and batching stops as load time approaches 2.5 seconds so it never costs you LCP.
+
+The most important consequence of streaming: **the status code and headers are locked from the first byte.** Once the shell is out, you can't switch to a 404 or a 302. In Next.js, `notFound()` called mid-stream injects `meta name="robots" content="noindex"` instead of a 404 status, and `redirect()` becomes a client-side redirect.
+
+## Where to put Suspense boundaries
+
+A Suspense boundary is simultaneously a unit of **waiting**, a unit of **reveal**, and a unit of **hydration**. Get it wrong and you either wait too long or get a "popcorn" page — ten blocks popping in ten times.
+
+The rules I use:
+
+- **Draw boundaries by data source and visual region**, not per component. A grid of 12 product cards from one query is one boundary, not 12.
+- **Keep above-the-fold content in the shell**, especially the LCP element.
+- **Things that must appear together share a boundary.** A table and its filters shouldn't show up at different times.
+- **Fallbacks must match the real content's size** — skeletons with the right height, or a container with `min-height`.
+- **Push dynamic access down.** Don't `await` at the top of a layout; pass the promise to the component that needs it.
+
+```tsx
+import { Suspense } from "react";
+import { DashboardHeader } from "./dashboard-header";
+import { KpiCards, KpiCardsSkeleton } from "./kpi-cards";
+import { RecentOrders, RecentOrdersSkeleton } from "./recent-orders";
+import { Recommendations, RecommendationsSkeleton } from "./recommendations";
+
+export default function DashboardPage({ searchParams }: PageProps<"/dashboard">) {
+  return (
+    <>
+      <DashboardHeader />
+      <Suspense fallback={<KpiCardsSkeleton />}>
+        <KpiCards />
+      </Suspense>
+      <Suspense fallback={<RecentOrdersSkeleton />}>
+        <RecentOrders searchParams={searchParams} />
+      </Suspense>
+      <Suspense fallback={<RecommendationsSkeleton />}>
+        <Recommendations />
+      </Suspense>
+    </>
+  );
+}
+```
+
+`DashboardHeader` is in the shell; the three data blocks stream independently, and because `searchParams` is passed down as a promise, only `RecentOrders` waits for it.
+
+## Avoiding waterfalls
+
+Streaming hides latency; it doesn't make requests faster. The most common waterfall in Server Components is **nesting after an `await`**: a child only starts fetching once its parent has finished awaiting.
+
+Siblings don't have this problem — React starts rendering them in parallel, each suspending inside its own boundary. The trouble is vertical:
+
+```tsx
+export default async function OrderPage({ params }: PageProps<"/orders/[id]">) {
+  const { id } = await params;
+  const order = await getOrder(id);
+
+  return (
+    <>
+      <OrderSummary order={order} />
+      <Suspense fallback={<ShipmentSkeleton />}>
+        <ShipmentStatus orderId={id} />
+      </Suspense>
+    </>
+  );
+}
+```
+
+`ShipmentStatus` is only rendered — and only starts calling the shipping API — after `getOrder` resolves. Two independent requests end up queued one after the other. The fix is to start the request early and have the child pick up the same promise. I use the preload pattern with React's `cache`:
+
+```ts
+import "server-only";
+import { cache } from "react";
+
+export type Shipment = { carrier: string; status: string; eta: string | null };
+
+export const getShipment = cache(async (orderId: string): Promise<Shipment> => {
+  const response = await fetch(`${process.env.LOGISTICS_API_URL}/shipments/${orderId}`);
+  if (!response.ok) throw new Error(`Shipment ${orderId} failed with ${response.status}`);
+  return response.json();
+});
+
+export function preloadShipment(orderId: string) {
+  void getShipment(orderId);
+}
+```
+
+In `OrderPage`, call `preloadShipment(id)` **before** `await getOrder(id)`. When `ShipmentStatus` calls `getShipment(id)`, it gets back the in-flight promise instead of creating a new request. For independent data within a single component, `Promise.all` is still the simplest tool.
+
+Waterfalls happen with resources too: a hero image, font or stylesheet is only discovered when the HTML containing it arrives. Declare them early in the shell: `preload` and `preinit` from `react-dom` for fonts and scripts, and the `preload` prop of `next/image` in Next.js 16 for the LCP image. They go out in the first chunk, so the browser downloads in parallel while the server renders.
+
+## Selective hydration
+
+Every Suspense boundary is also its own **hydration unit**. Instead of hydrating the whole page in one long task, React hydrates each boundary once its HTML and JS are ready, yielding to the main thread in between. If the user clicks inside a region that hasn't hydrated yet, React bumps that boundary to the highest priority, hydrates it first, and then handles the event.
+
+Two practical consequences:
+
+- **Anything outside every boundary hydrates as one block.** A giant Client Component wrapping the whole page cancels this benefit, even if the HTML streams nicely.
+- **Hydration mismatches are contained.** When server HTML doesn't match the client render, React re-renders on the client up to the nearest boundary instead of the whole page. It still costs a re-render, so don't ignore the warnings.
+
+## Partial Prerendering in Next.js 16
+
+Partial Prerendering (PPR) is no longer a separate experimental flag. Next.js 16 removed `experimental.ppr`; PPR is now the default behavior when you enable `cacheComponents: true`. At the React level, 19.2 also made the underlying APIs (`prerender` and `resume`) public for frameworks.
+
+The mechanism: at build time, Next.js renders the route until it hits something it can't know ahead of time — uncached data, `cookies()`, `headers()`, `searchParams`. Everything above those "holes", plus their fallbacks, becomes the **static shell** served straight from the CDN. On request, the server renders the holes and streams them into **the same response**. You get the TTFB of a static page with the content of a dynamic one.
+
+The price is discipline: dynamic access outside `Suspense` triggers a "blocking route" error. Data cached with `"use cache"` lives in the shell unless its lifetime is too short — the `seconds` profile or an `expire` under 5 minutes turns it into a dynamic hole. For `"use cache"` and the server/client boundary, see the [RSC post](/blog/react-server-components-mental-model).
+
+`loading.tsx` is the quickest way to get a boundary: Next.js wraps `page` in `Suspense` with that component as the fallback, nested inside `layout`. It's also prefetched as an instant fallback for navigation. But it's coarse:
+
+| | `loading.tsx` | Hand-placed `Suspense` |
+| --- | --- | --- |
+| Scope | The whole page | Any component |
+| Client navigation | Fallback is prefetched, shows instantly | Depends on prefetch settings |
+| Good for | Pages with nothing worth showing before data | Most pages |
+| Risk | The whole page becomes a skeleton, losing a meaningful shell | Too many boundaries, a "popcorn" page |
+
+I use `loading.tsx` as a safety net and place `Suspense` close to dynamic access everywhere else.
+
+## TTFB, LCP, CLS: what really changes
+
+I covered the Core Web Vitals basics in a [separate post](/blog/core-web-vitals); here I'll stick to how streaming affects them.
+
+- **TTFB and FCP drop** to the time it takes to render the shell, or the time the CDN takes to return it with PPR. But a good TTFB doesn't mean a fast page.
+- **LCP only improves if the LCP element is in the shell.** If it lives inside a boundary, it waits for data, for its HTML to arrive, and for the swap script to run. React can also "activate" a boundary just because its HTML is large and slow to arrive, even when nothing suspends. This is exactly the trap from the intro.
+- **CLS grows if fallbacks are the wrong size.** Every swap is a reflow; a skeleton shorter than the real content pushes everything below it. React batching reveals reduces chains of consecutive shifts, but it can't save a wrongly sized fallback.
+
+<Callout>
+I evaluate streaming with two questions instead of one number: is the LCP element in the first HTML chunk, and does the total height of the fallbacks match the real content? Answer "yes" to both and a low TTFB turns into a low LCP and near-zero CLS.
+</Callout>
+
+## Infrastructure that silently kills streaming
+
+Any layer that collects the response before forwarding it wipes out the benefit:
+
+- **Reverse proxies.** Nginx buffers responses by default. Turn it off with `proxy_buffering off` in its config, or have the app send an `X-Accel-Buffering: no` header.
+- **CDNs.** Some CDNs collect the whole response before sending it, or only stream on certain plans or configurations. Read your provider's docs.
+- **Serverless.** AWS Lambda needs response streaming mode enabled; it isn't on by default.
+- **Compression.** Gzip and Brotli need enough data before flushing, and can hold back the first chunk.
+- **Clients.** Safari buffers until roughly the first 1KB arrives; `curl` buffers too, and even with `-N` it depends on newlines.
+
+The nginx header can be set right in `next.config.ts`:
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [{ key: "X-Accel-Buffering", value: "no" }],
+      },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
+To verify, I run a small script that prints the timing of each chunk, against a URL that goes through the same proxy and CDN as the environment I'm checking:
+
+```ts
+const targetUrl = process.argv[2] ?? "http://localhost:3000/dashboard";
+const startedAt = performance.now();
+const response = await fetch(targetUrl, { headers: { "Accept-Encoding": "identity" } });
+if (!response.body) throw new Error("Response has no body");
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let chunkIndex = 0;
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  const preview = decoder.decode(value, { stream: true }).replace(/\s+/g, " ").slice(0, 80);
+  console.log(`chunk ${chunkIndex++} +${elapsedMs}ms ${value.byteLength}B ${preview}`);
+}
+```
+
+If you see a single chunk arriving late, something is buffering. One more note: Next.js deliberately does **not** stream to HTML-limited bots; it waits for metadata so the `head` is complete. The list is configurable via `htmlLimitedBots`, so testing with a bot user agent returns a single blob.
+
+## Errors after the stream has started
+
+Because the 200 is already out, errors mid-stream must be handled **inside the HTML**. Three layers I rely on:
+
+- **Check early for anything that needs a real status.** `notFound()` or a redirect for unauthenticated users should run before any `Suspense` — `loading.tsx` included — or move up into `proxy.ts`.
+- **`error.tsx` for the whole segment.** Errors from Server Components are serialized and rethrown on the client at the nearest error boundary. In production, the message is replaced with a generic one plus a `digest` you can match against server logs. Since Next.js 16.3, the error component gets a `retry` prop that refetches and re-renders the segment; earlier versions use `reset`, which only clears the error state without refetching.
+- **A dedicated error boundary for risky widgets**, placed outside their `Suspense`, so a failing recommendations API doesn't take the whole dashboard down.
+
+```tsx
+"use client";
+
+import { Component, type ReactNode } from "react";
+
+type WidgetErrorBoundaryProps = { fallback: ReactNode; children: ReactNode };
+type WidgetErrorBoundaryState = { failed: boolean };
+
+export class WidgetErrorBoundary extends Component<WidgetErrorBoundaryProps, WidgetErrorBoundaryState> {
+  state: WidgetErrorBoundaryState = { failed: false };
+
+  static getDerivedStateFromError(): WidgetErrorBoundaryState {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+```
+
+```tsx
+<WidgetErrorBoundary fallback={<p>Couldn't load recommendations, try again later.</p>}>
+  <Suspense fallback={<RecommendationsSkeleton />}>
+    <Recommendations />
+  </Suspense>
+</WidgetErrorBoundary>
+```
+
+A lesser-known behavior: if a Client Component throws during SSR, React doesn't abort; it sends the nearest Suspense fallback and retries on the client. If the retry succeeds, the user never sees an error — but you lose that HTML for SEO and LCP. Log these "self-healed" errors; they're an early warning.
+
+<Callout>
+Don't wrap every widget in an error boundary by reflex. Each boundary is a product decision: when this part breaks, what should the user see, and can they keep going? In a checkout flow, a silently empty block is worse than a clear error page.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Streaming sends the shell first, then slots in each boundary via hidden HTML and an inline script, out of order and without waiting for hydration.
+- The status code is locked at the first byte: check 404s, redirects and auth before the first `Suspense` or in `proxy.ts`.
+- Draw boundaries by data source and visual region; keep the LCP element in the shell and size fallbacks like the real content.
+- Avoid vertical waterfalls: start requests before `await`, use preload with `cache`, declare LCP resources early.
+- In Next.js 16, PPR is the default behavior of `cacheComponents`; `loading.tsx` is a safety net, not a strategy.
+- Verify streaming through production's real proxy, CDN and compression layers with a script that timestamps each chunk.
+- Pair error boundaries with Suspense for risky widgets; log SSR errors that recovered on their own.
+
+</Checklist>

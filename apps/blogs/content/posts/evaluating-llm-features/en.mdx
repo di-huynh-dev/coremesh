@@ -1,0 +1,406 @@
+---
+title: "Evaluating LLM Features: Knowing They Work and Keeping Them Working"
+excerpt: "Building a golden dataset from real usage, deterministic checks first, LLM-as-judge with rubrics and its biases, pairwise comparison, running evals in CI on prompt or model changes, tracking cost and latency alongside quality, online signals, tracing, and how to avoid overfitting your eval set."
+---
+
+<Lead>I once tweaked the prompt of our support-ticket summarizer to make summaries shorter. Tried about ten tickets, results looked great, merged. Two weeks later we found out that for long tickets written in a mix of English and Vietnamese, the model occasionally returned JSON missing the `category` field, the parser quietly fell back to an empty value, and the summary cell on the dashboard showed up blank. No exception, no alert — just a support teammate asking "why are summaries disappearing lately?". Since then I treat **evals** like a test suite: no evals, no prompt changes.</Lead>
+
+## Why "I tried a few and it looked fine" isn't enough
+
+Regular code tends to fail loudly: red tests, exceptions. LLM features fail differently:
+
+- **They're non-deterministic.** The same input can produce different outputs, so one correct run proves nothing.
+- **Real inputs have a long tail.** The ten examples you came up with are the ten examples in your head, not your users' distribution.
+- **Regressions are silent.** Changing a prompt to improve case A often breaks case B without anyone noticing — exactly the story above.
+- **Changing models changes behavior.** A new model can be better on benchmarks and worse at your specific job.
+
+So the right question isn't "is this output correct?" but "on a representative set of inputs, what share meets the bar, and how did that change from the previous version?". The layers I use:
+
+| Layer | What it catches | Cost | When it runs |
+| --- | --- | --- | --- |
+| Deterministic checks | Bad format, missing fields, leaked data, too long | Close to zero | Always, including production |
+| LLM-as-judge | Made-up facts, missed intent, tone | One model call per criterion | PRs touching prompt/model, nightly |
+| Pairwise | Whether the new version beats the old | Two calls per pair | Choosing between two variants |
+| Human review | Calibrating judges, finding new failure types | People's time | Periodically, on a small sample |
+| Online signals | Real quality with real users | Tracing infrastructure | Continuously |
+
+## A golden dataset from real usage
+
+A good eval set starts from real data. If the feature already runs (even as an internal beta), I sample from logs — after scrubbing personal data, in line with company data policy — and choose deliberately rather than purely at random:
+
+- **Common cases**, to make sure most users are fine.
+- **The long tail:** very long inputs, very short ones, mixed languages, code, tables, nearly empty input.
+- **Known failures:** every confirmed bug report or thumbs-down becomes a case. This is the most valuable part, just like regression tests.
+- **Adversarial input:** users pasting "ignore previous instructions" into the content.
+
+Start small: 50–100 cases you have personally read, one by one. A 1,000-case set nobody has read means nobody knows what it measures. The second important thing: **label with properties, not exact outputs**. LLM output is rarely identical word for word, so "must mention a refund", "must not contain the customer's email", "under 60 words" hold up far better than a reference answer.
+
+```ts
+export type Expectations = {
+  mustInclude?: string[];
+  mustExclude?: string[];
+  maxWords?: number;
+  expectedCategory?: "billing" | "bug" | "account" | "other";
+  rubric?: string;
+};
+
+export type EvalCase<Input> = {
+  id: string;
+  input: Input;
+  tags: string[];
+  expect: Expectations;
+};
+```
+
+Each case is a JSON file in the repo, next to the prompt it tests, so it gets reviewed in PRs:
+
+```json
+{
+  "id": "ticket-0142",
+  "tags": ["mixed-language", "long-input", "from-bug-report"],
+  "input": { "ticketText": "Hi team, mình bị trừ tiền hai lần cho order tháng trước..." },
+  "expect": {
+    "mustInclude": ["hoàn tiền"],
+    "mustExclude": ["@gmail.com"],
+    "maxWords": 60,
+    "expectedCategory": "billing",
+    "rubric": "The summary states what the customer is asking for and does not invent order numbers, amounts or dates."
+  }
+}
+```
+
+`tags` let you slice results: the overall score rising while the `mixed-language` group drops is something you need to see immediately.
+
+## Deterministic checks first
+
+Before reaching for LLM-as-judge, squeeze everything you can out of checks written in code. They're fast, free, not flaky, and catch most "broken" failures — like the missing-field JSON from the intro.
+
+```ts
+import { z } from "zod";
+
+export type CheckResult = { name: string; passed: boolean; detail?: string };
+
+export const ticketSummarySchema = z.object({
+  summary: z.string().min(1),
+  category: z.enum(["billing", "bug", "account", "other"]),
+  urgency: z.enum(["low", "normal", "high"]),
+});
+
+export type TicketSummary = z.infer<typeof ticketSummarySchema>;
+
+export function checkSchema(raw: string): { result: CheckResult; value?: TicketSummary } {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { result: { name: "schema", passed: false, detail: "not valid JSON" } };
+  }
+  const parsed = ticketSummarySchema.safeParse(json);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
+    return { result: { name: "schema", passed: false, detail } };
+  }
+  return { result: { name: "schema", passed: true }, value: parsed.data };
+}
+
+export function checkContent(value: TicketSummary, expect: Expectations): CheckResult[] {
+  const text = value.summary.toLowerCase();
+  const results: CheckResult[] = [];
+  for (const phrase of expect.mustInclude ?? []) {
+    results.push({ name: `includes:${phrase}`, passed: text.includes(phrase.toLowerCase()) });
+  }
+  for (const phrase of expect.mustExclude ?? []) {
+    results.push({ name: `excludes:${phrase}`, passed: !text.includes(phrase.toLowerCase()) });
+  }
+  if (expect.maxWords !== undefined) {
+    const words = value.summary.trim().split(/\s+/).length;
+    results.push({ name: "length", passed: words <= expect.maxWords, detail: `${words} words` });
+  }
+  if (expect.expectedCategory) {
+    results.push({ name: "category", passed: value.category === expect.expectedCategory, detail: value.category });
+  }
+  return results;
+}
+```
+
+String-matching `mustInclude` is crude: "hoàn tiền" (refund) fails if the model writes "trả lại tiền" (money back). I only use it for words that are truly mandatory (product names, error codes) and leave meaning to the judge. The schema check should run in production too (see also [structured outputs](/blog/structured-outputs-for-llm-features)): unparseable output is an error to log and count, not something to fall back to an empty string.
+
+## LLM-as-judge: rubrics, biases and calibration
+
+"Did it make anything up" or "did it answer what the user actually asked" are beyond a regex. Here I use another model as a grader, with some rules learned after many rounds of judges handing out meaningless scores:
+
+- **One criterion per call.** A judge grading five criteria at once lets them bleed into each other.
+- **Pass/fail instead of a 1–10 scale.** Long scales are hard to keep consistent, and nobody can say what separates a 7 from an 8. A binary rubric forces you to define what passing means.
+- **Reasoning before the verdict**, returned as JSON with a schema. The reasoning is also what you read when debugging.
+- **Domain-specific rubrics.** "Is the answer helpful" is a bad rubric. "Does not state any order number, amount or date that isn't in the ticket" is a good one.
+
+```ts
+type Complete = (request: { system: string; user: string; temperature?: number }) => Promise<string>;
+
+const verdictSchema = z.object({
+  reasoning: z.string(),
+  verdict: z.enum(["pass", "fail"]),
+});
+
+export async function judgeWithRubric(complete: Complete, rubric: string, input: string, output: string): Promise<CheckResult> {
+  const raw = await complete({
+    temperature: 0,
+    system: [
+      "You grade one output of an AI feature against a single criterion.",
+      "Judge only that criterion. Length and style do not matter unless the criterion mentions them.",
+      'Reply with JSON only: {"reasoning": string, "verdict": "pass" | "fail"}. Write the reasoning first.',
+    ].join("\n"),
+    user: `Criterion:\n${rubric}\n\nInput:\n${input}\n\nOutput to grade:\n${output}`,
+  });
+  try {
+    const { reasoning, verdict } = verdictSchema.parse(JSON.parse(raw));
+    return { name: "judge", passed: verdict === "pass", detail: reasoning };
+  } catch {
+    return { name: "judge", passed: false, detail: `unparseable judge reply: ${raw.slice(0, 200)}` };
+  }
+}
+```
+
+Put together, the grade function for the ticket summarizer runs the schema check first, stops early if the output doesn't parse, and only then calls the judge for cases that have a rubric:
+
+```ts
+import { completeWithJudgeModel } from "@/lib/ai";
+
+export async function gradeTicketSummary(
+  testCase: EvalCase<{ ticketText: string }>,
+  output: string,
+): Promise<CheckResult[]> {
+  const { result, value } = checkSchema(output);
+  if (!value) return [result];
+  const checks = [result, ...checkContent(value, testCase.expect)];
+  if (testCase.expect.rubric) {
+    checks.push(await judgeWithRubric(completeWithJudgeModel, testCase.expect.rubric, testCase.input.ticketText, value.summary));
+  }
+  return checks;
+}
+```
+
+A judge is a model too, so it has biases. The paper that introduced MT-Bench and Chatbot Arena (Zheng et al., 2023) describes three I keep running into: **position bias** (favoring the answer in a particular position when comparing), **verbosity bias** (favoring longer answers), and **self-enhancement bias** (favoring output from itself or its own model family). On top of that, judges tend to be lenient: they often pass outputs whose errors sit in small details.
+
+<Callout>
+  Don't trust a judge before you've measured it. I hand-label pass/fail for roughly 50–100 outputs, run the judge on the same set and look at agreement, especially cases I failed that the judge passed. If agreement is low, fix the judge's rubric — not the feature's prompt. Repeat whenever you change the judge model.
+</Callout>
+
+### Pairwise comparison
+
+When the question is "is the new prompt better than the old one", comparing two outputs directly is usually more stable than scoring each in absolute terms. To neutralize position bias, I ask twice with the order swapped and only count a win when both runs agree:
+
+```ts
+type Preference = "A" | "B" | "tie";
+
+async function askPreference(
+  complete: Complete,
+  rubric: string,
+  input: string,
+  responseA: string,
+  responseB: string,
+): Promise<Preference> {
+  const raw = await complete({
+    temperature: 0,
+    system: `Compare two responses using this rubric:\n${rubric}\nReply with exactly one token: A, B or tie.`,
+    user: `Input:\n${input}\n\nResponse A:\n${responseA}\n\nResponse B:\n${responseB}`,
+  });
+  const answer = raw.trim();
+  return answer === "A" || answer === "B" ? answer : "tie";
+}
+
+export async function comparePairwise(complete: Complete, rubric: string, input: string, baseline: string, candidate: string) {
+  const [forward, backward] = await Promise.all([
+    askPreference(complete, rubric, input, baseline, candidate),
+    askPreference(complete, rubric, input, candidate, baseline),
+  ]);
+  const forwardWinner = forward === "A" ? "baseline" : forward === "B" ? "candidate" : "tie";
+  const backwardWinner = backward === "A" ? "candidate" : backward === "B" ? "baseline" : "tie";
+  return forwardWinner === backwardWinner ? forwardWinner : "tie";
+}
+```
+
+If ties from disagreeing runs are frequent, the judge is choosing by position more than by content.
+
+## An eval runner: quality, cost and latency in one report
+
+The runner below runs each case several times (because outputs aren't deterministic), caps concurrent requests, and records tokens, cost and latency next to the pass rate. The file `evals/runner.ts`:
+
+```ts
+export type Generation = { output: string; inputTokens: number; outputTokens: number; latencyMs: number };
+
+export type Variant<Input> = {
+  name: string;
+  generate: (input: Input) => Promise<Generation>;
+  usdPerMillionTokens: { input: number; output: number };
+};
+
+type CaseRun = { caseId: string; passed: boolean; checks: CheckResult[]; generation?: Generation };
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function lane() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await worker(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return results;
+}
+
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
+}
+
+export async function runEval<Input>({
+  cases,
+  variant,
+  grade,
+  repeats = 3,
+  concurrency = 8,
+}: {
+  cases: EvalCase<Input>[];
+  variant: Variant<Input>;
+  grade: (testCase: EvalCase<Input>, output: string) => Promise<CheckResult[]>;
+  repeats?: number;
+  concurrency?: number;
+}) {
+  const jobs = cases.flatMap((testCase) => Array.from({ length: repeats }, () => testCase));
+  const runs = await mapWithConcurrency(jobs, concurrency, async (testCase): Promise<CaseRun> => {
+    try {
+      const generation = await variant.generate(testCase.input);
+      const checks = await grade(testCase, generation.output);
+      return { caseId: testCase.id, passed: checks.every((check) => check.passed), checks, generation };
+    } catch (error) {
+      return { caseId: testCase.id, passed: false, checks: [{ name: "generate", passed: false, detail: String(error) }] };
+    }
+  });
+
+  const generations = runs.flatMap((run) => (run.generation ? [run.generation] : []));
+  const { input: inputPrice, output: outputPrice } = variant.usdPerMillionTokens;
+  const passRateByCase = Object.fromEntries(
+    cases.map((testCase) => {
+      const caseRuns = runs.filter((run) => run.caseId === testCase.id);
+      return [testCase.id, caseRuns.filter((run) => run.passed).length / caseRuns.length];
+    }),
+  );
+
+  return {
+    variant: variant.name,
+    passRate: runs.filter((run) => run.passed).length / runs.length,
+    passRateByCase,
+    flakyCaseIds: Object.keys(passRateByCase).filter((id) => passRateByCase[id] > 0 && passRateByCase[id] < 1),
+    costUsd: generations.reduce((total, g) => total + (g.inputTokens * inputPrice + g.outputTokens * outputPrice) / 1_000_000, 0),
+    latencyMs: {
+      p50: percentile(generations.map((g) => g.latencyMs), 50),
+      p95: percentile(generations.map((g) => g.latencyMs), 95),
+    },
+    failures: runs.filter((run) => !run.passed),
+  };
+}
+
+export type EvalReport = Awaited<ReturnType<typeof runEval>>;
+
+export function findRegressions(baseline: EvalReport, current: EvalReport, tolerance = 0.03) {
+  const brokenCaseIds = Object.keys(current.passRateByCase).filter(
+    (id) => baseline.passRateByCase[id] === 1 && current.passRateByCase[id] === 0,
+  );
+  const overallDrop = baseline.passRate - current.passRate;
+  return { brokenCaseIds, overallDrop, failed: brokenCaseIds.length > 0 || overallDrop > tolerance };
+}
+```
+
+The CI script reads the committed baseline, compares, and exits non-zero on a regression:
+
+```ts
+import { readFile, writeFile } from "node:fs/promises";
+import { cases } from "./cases";
+import { currentVariant } from "./variants";
+import { gradeTicketSummary } from "./grade";
+import { findRegressions, runEval, type EvalReport } from "./runner";
+
+const report = await runEval({ cases, variant: currentVariant, grade: gradeTicketSummary });
+const baseline: EvalReport = JSON.parse(await readFile("evals/baseline.json", "utf8"));
+const { brokenCaseIds, overallDrop, failed } = findRegressions(baseline, report);
+
+await writeFile("evals/report.json", JSON.stringify(report, null, 2));
+console.log(
+  `pass ${(report.passRate * 100).toFixed(1)}% (drop ${(overallDrop * 100).toFixed(1)} pts), ` +
+    `cost $${report.costUsd.toFixed(2)}, p95 ${report.latencyMs.p95}ms`,
+);
+if (brokenCaseIds.length > 0) console.log(`broken: ${brokenCaseIds.join(", ")}`);
+process.exit(failed ? 1 : 0);
+```
+
+I configure CI to run this job only when a PR touches the prompt directory, the model config, retrieval code or the eval set itself — running it on every PR is slow and burns money for nothing. The full set with more repeats runs nightly. When a change is accepted, the new report becomes the baseline in the same PR, so reviewers see exactly how the numbers moved.
+
+<Callout>
+  Don't block a merge over a point or two: across a few hundred runs, that can be pure noise. What's worth blocking is a case that always passed and now always fails, and a pass-rate drop beyond an agreed threshold. The `flakyCaseIds` list deserves its own read — cases that pass sometimes and fail sometimes usually point at an ambiguous instruction in the prompt.
+</Callout>
+
+Cost and latency live in the same report because they're part of "working". A cheaper model that passes slightly less often but halves p95 may be right for autocomplete, but not for summarizing contracts. For streaming, I also measure time to first token.
+
+## Online signals and tracing
+
+Offline evals are only as good as their dataset. Production always has inputs you didn't think of, so you need signals from real users:
+
+- **Thumbs up/down:** very sparse, and skewed toward people who are annoyed. Use them to find bad cases, not as a standalone quality metric.
+- **Users editing the output:** if the UI lets people edit a summary before saving, the share of characters changed is a great implicit signal — 5% edited is polishing, 80% means the output was useless.
+- **Regenerate, copy, abandon:** hitting "regenerate" repeatedly almost certainly means dissatisfaction.
+
+These signals are only worth something if you can tie them to the exact request. Every model call records a trace:
+
+```ts
+export type LlmTrace = {
+  traceId: string;
+  feature: string;
+  promptVersion: string;
+  model: string;
+  input: string;
+  retrievedIds?: string[];
+  output: string;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+  timeToFirstTokenMs?: number;
+  error?: string;
+};
+
+export type FeedbackEvent =
+  | { traceId: string; kind: "thumb"; value: "up" | "down"; comment?: string }
+  | { traceId: string; kind: "edited"; changedCharRatio: number }
+  | { traceId: string; kind: "regenerated" };
+```
+
+`promptVersion` is the field I most regret not having from day one: without it you can't tell whether more thumbs-down come from the new prompt or new users. Inputs and outputs may contain sensitive data, so apply the same redaction and retention policy as your other logs. OpenTelemetry has semantic conventions for GenAI, but at the time of writing they're still in development status, not stable — usable, as long as you accept attribute names may change.
+
+The most important loop: a badly rated trace → a person reads and confirms it → it becomes a new case in the golden dataset. That's how the eval set grows in the right direction. If the feature uses RAG, the trace also tells you whether the failure was in retrieval or generation — see [RAG that answers correctly](/blog/rag-pipeline-in-practice).
+
+## Don't overfit your eval set
+
+When a number becomes a target, it stops being a good measure. Optimize a prompt against the same cases for a few months and you easily get a prompt that scores high on exactly those cases and is no better in the real world. How I keep the eval set honest:
+
+- **Split a dev set and a held-out set.** The dev set is for daily iteration, look at it freely. The held-out set only runs before a release, and nobody edits the prompt based on individual cases in it.
+- **Never put eval cases into few-shot examples.** Sounds obvious, but copying a "nice" example from the dataset into the prompt happens all the time.
+- **Refresh the dataset from new traffic** every month. Users change, the feature changes; last year's eval set measures last year's users.
+- **Don't optimize for the judge's quirks.** A new prompt scoring higher mainly because outputs got longer may just be verbosity bias. A person reading a few random outputs every week is irreplaceable.
+- **Compare scores on old cases versus newly added ones.** High on old cases and low on new ones is a clear sign of overfitting.
+
+## Summary
+
+<Checklist>
+
+- Treat evals like a test suite: measure the pass rate over a representative input set, not one run that looked fine.
+- Build the golden dataset from real usage, deliberately covering the long tail and known failures; label with properties, not exact outputs.
+- Exhaust deterministic checks first: schema, contains/excludes, length, category; run the schema check in production too.
+- LLM-as-judge: one criterion per call, pass/fail, reasoning before verdict, and calibrate against human labels before trusting it.
+- For pairwise comparisons, ask twice with the order swapped to neutralize position bias.
+- Run evals in CI when prompts, models or retrieval change; block clear regressions, not noise.
+- Report quality together with cost and latency; record traces with a prompt version and tie feedback to the exact trace.
+- Keep a held-out set, refresh the dataset regularly, and don't optimize for the judge's quirks.
+
+</Checklist>

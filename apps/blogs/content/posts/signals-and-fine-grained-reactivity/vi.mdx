@@ -1,0 +1,335 @@
+---
+title: "Signals và fine-grained reactivity: cơ chế bên dưới và khi nào thật sự cần"
+excerpt: "Signals theo dõi dependency thế nào, vì sao push-pull cho cập nhật không bị glitch, Solid, Preact, Angular và Vue dùng chúng ra sao, đề xuất TC39 đang ở đâu, React Compiler thay đổi được gì, và những cái bẫy khi chạy production — kèm một bản cài đặt signal nhỏ bằng TypeScript."
+---
+
+<Lead>Team mình từng có một dashboard giao dịch viết bằng React: khoảng 400 ô giá, mỗi ô cập nhật vài lần mỗi giây qua WebSocket. Mỗi tick đổi một giá trị trong store, kéo theo re-render cả một khối bảng, và Profiler cho thấy phần lớn frame dành để so sánh những props không đổi. `memo`, selector, tách context đều đỡ phần nào, nhưng chỉ là đường vòng quanh một sự thật: React chạy lại component, trong khi mình chỉ muốn đổi đúng một text node. Đó là bài toán signals giải. Bài này nói về cơ chế bên dưới, và về trường hợp phổ biến hơn: khi bạn không cần đến chúng.</Lead>
+
+## Hai mô hình: chạy lại component hay cập nhật binding
+
+Với React, state đổi thì React gọi lại hàm component, diff cây element mới với cây cũ, rồi commit phần khác biệt xuống DOM. Đơn vị cập nhật là **component**. Nếu một state nằm cao trong cây, mọi thứ bên dưới đều re-render, trừ khi bạn chặn lại bằng `memo` (hoặc compiler làm hộ bạn).
+
+Signals làm ngược lại. Một signal là một hộp chứa giá trị biết được **ai đã đọc nó**. Khi template, computed hay effect đọc signal, runtime ghi lại dependency; khi signal đổi, chỉ những nơi đó được báo. Trong Solid hay Vapor mode của Vue, component chỉ chạy **một lần** để dựng DOM và binding; sau đó thay đổi đi thẳng từ signal tới đúng text node hoặc attribute dùng nó, không diff cây.
+
+| | React (mô hình re-render) | Signals (fine-grained) |
+| --- | --- | --- |
+| Đơn vị cập nhật | Cây con của component | Từng binding/phép tính riêng lẻ |
+| Theo dõi dependency | Tường minh (props, mảng deps) hoặc do compiler suy ra | Tự động, lúc runtime, khi đọc |
+| Chi phí một lần cập nhật | Tỉ lệ với kích thước cây con | Tỉ lệ với số nơi phụ thuộc |
+| Bẫy chính | Re-render thừa | Dependency ẩn, effect khắp nơi |
+
+Không bên nào "đúng" tuyệt đối. Một lần render của React chỉ là lời gọi hàm, dễ suy luận cục bộ. Signals rẻ hơn khi cập nhật dày và hẹp, nhưng luồng dữ liệu nằm trong một đồ thị mà bạn không nhìn thấy khi đọc code.
+
+## Signals theo dõi dependency như thế nào
+
+Mọi thư viện signal mình từng đọc đều có ba primitive:
+
+- **State** (`signal`): một giá trị ghi được.
+- **Computed** (`computed`, `memo`, `derived`): giá trị suy ra từ các signal khác, được cache cho tới khi dependency đổi.
+- **Effect**: side effect chạy lại khi dependency đổi. Bản thân việc render cũng chỉ là một effect ghi xuống DOM.
+
+Việc theo dõi dựa vào một biến toàn cục kiểu "observer đang chạy": trong lúc một computed hoặc effect chạy, mọi signal nó đọc sẽ đăng ký nó làm subscriber. Vì vậy dependency là động — signal nằm trong nhánh `if` không được đi vào thì không phải dependency của lần chạy đó.
+
+### Push-pull và bài toán hình thoi
+
+Cách ngây thơ — signal đổi thì chạy lại ngay mọi thứ phụ thuộc — sẽ gãy với đồ thị hình thoi. Giả sử `subtotal` phụ thuộc `price`, `hasDiscount` phụ thuộc `subtotal`, còn `total` phụ thuộc cả hai. Đổi `price`, với cách push ngây thơ, `total` có thể tính lại lần đầu với `subtotal` mới nhưng `hasDiscount` cũ, ra một giá trị lẽ ra không bao giờ tồn tại. Đó gọi là **glitch**, và nếu effect nhìn thấy nó, bạn sẽ ghi sai DOM hoặc bắn sai request.
+
+Các thư viện hiện đại dùng **push-pull**:
+
+1. **Push:** khi một signal được ghi, duyệt đồ thị và chỉ *đánh dấu* các nơi phụ thuộc là stale. Chưa tính lại gì cả.
+2. **Pull:** khi một computed stale được đọc (hoặc một effect đã lên lịch bắt đầu chạy), nó hỏi các nguồn xem có thật sự đổi không, tính lại chúng đệ quy nếu cần, rồi mới tính lại chính nó.
+
+Vì việc tính lại luôn kéo từ dưới lên, computed không bao giờ thấy lẫn giá trị cũ và mới. Kèm theo là **equality cutoff**: nếu `hasDiscount` tính lại mà vẫn là `false`, version của nó không đổi, nên những gì chỉ phụ thuộc vào nó sẽ không chạy lại.
+
+## Một bản cài đặt signal nhỏ bằng TypeScript
+
+Cách tốt nhất mình tìm được để hiểu signals là tự viết một cái. Bản dưới đây chưa tới 200 dòng, theo kiểu push-pull, không glitch, có batching và equality cutoff. Nó bỏ qua xử lý lỗi và cây ownership, thứ mà thư viện thật phải lo.
+
+```ts
+type Source = { version: number; observers: Set<Observer>; refresh(): void };
+type Observer = { stale: boolean; sources: Map<Source, number>; markStale(): void };
+
+let currentObserver: Observer | null = null;
+let batchDepth = 0;
+let flushing = false;
+const queuedEffects = new Set<EffectNode>();
+
+function track(source: Source) {
+  if (!currentObserver) return;
+  currentObserver.sources.set(source, source.version);
+  source.observers.add(currentObserver);
+}
+
+function runTracked<T>(observer: Observer, fn: () => T): T {
+  for (const source of observer.sources.keys()) source.observers.delete(observer);
+  observer.sources.clear();
+  const previous = currentObserver;
+  currentObserver = observer;
+  try {
+    return fn();
+  } finally {
+    currentObserver = previous;
+  }
+}
+
+function anySourceChanged(observer: Observer): boolean {
+  for (const [source, seenVersion] of observer.sources) {
+    source.refresh();
+    if (source.version !== seenVersion) return true;
+  }
+  return false;
+}
+
+function flushEffects() {
+  if (batchDepth > 0 || flushing) return;
+  flushing = true;
+  try {
+    for (const effect of queuedEffects) {
+      queuedEffects.delete(effect);
+      effect.run();
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+class StateNode<T> implements Source {
+  version = 0;
+  observers = new Set<Observer>();
+  private value: T;
+
+  constructor(initial: T) {
+    this.value = initial;
+  }
+
+  get(): T {
+    track(this);
+    return this.value;
+  }
+
+  set(next: T) {
+    if (Object.is(next, this.value)) return;
+    this.value = next;
+    this.version++;
+    for (const observer of [...this.observers]) observer.markStale();
+    flushEffects();
+  }
+
+  refresh() {}
+}
+
+class ComputedNode<T> implements Source, Observer {
+  version = 0;
+  observers = new Set<Observer>();
+  sources = new Map<Source, number>();
+  stale = true;
+  private value: T | undefined;
+  private hasValue = false;
+  private compute: () => T;
+
+  constructor(compute: () => T) {
+    this.compute = compute;
+  }
+
+  markStale() {
+    if (this.stale) return;
+    this.stale = true;
+    for (const observer of [...this.observers]) observer.markStale();
+  }
+
+  refresh() {
+    if (!this.stale) return;
+    this.stale = false;
+    if (this.hasValue && !anySourceChanged(this)) return;
+    const next = runTracked(this, this.compute);
+    if (!this.hasValue || !Object.is(next, this.value)) {
+      this.value = next;
+      this.hasValue = true;
+      this.version++;
+    }
+  }
+
+  get(): T {
+    this.refresh();
+    track(this);
+    return this.value as T;
+  }
+}
+
+type EffectFn = () => void | (() => void);
+
+class EffectNode implements Observer {
+  stale = true;
+  sources = new Map<Source, number>();
+  private hasRun = false;
+  private disposed = false;
+  private cleanup: (() => void) | undefined;
+  private fn: EffectFn;
+
+  constructor(fn: EffectFn) {
+    this.fn = fn;
+  }
+
+  markStale() {
+    if (this.stale || this.disposed) return;
+    this.stale = true;
+    queuedEffects.add(this);
+  }
+
+  run() {
+    if (!this.stale || this.disposed) return;
+    this.stale = false;
+    if (this.hasRun && !anySourceChanged(this)) return;
+    this.hasRun = true;
+    this.cleanup?.();
+    const result = runTracked(this, this.fn);
+    this.cleanup = typeof result === "function" ? result : undefined;
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.cleanup?.();
+    for (const source of this.sources.keys()) source.observers.delete(this);
+    this.sources.clear();
+    queuedEffects.delete(this);
+  }
+}
+
+export const signal = <T>(initial: T) => new StateNode(initial);
+export const computed = <T>(compute: () => T) => new ComputedNode(compute);
+
+export function effect(fn: EffectFn): () => void {
+  const node = new EffectNode(fn);
+  node.run();
+  return () => node.dispose();
+}
+
+export function batch(fn: () => void) {
+  batchDepth++;
+  try {
+    fn();
+  } finally {
+    batchDepth--;
+    flushEffects();
+  }
+}
+```
+
+Đối chiếu với phần trước:
+
+- `track` là cơ chế tự đăng ký: observer nằm trong `currentObserver` sẽ subscribe vào thứ nó đọc, kèm **version** mà nó đã thấy.
+- `markStale` là pha push. Nó chỉ bật cờ và xếp effect vào hàng đợi, không bao giờ gọi code của người dùng.
+- `refresh` và `anySourceChanged` là pha pull: refresh các nguồn trước rồi so version; không có gì đổi thì bỏ qua bước tính lại.
+- `runTracked` xoá dependency cũ trước mỗi lần chạy, nên dependency là động.
+
+Đây là đồ thị hình thoi ở trên, chạy trên bản cài đặt này:
+
+```ts
+const price = signal(100);
+const quantity = signal(2);
+const subtotal = computed(() => price.get() * quantity.get());
+const hasDiscount = computed(() => subtotal.get() >= 500);
+const total = computed(() => (hasDiscount.get() ? subtotal.get() * 0.9 : subtotal.get()));
+
+const stop = effect(() => {
+  console.log(`total=${total.get()} discount=${hasDiscount.get()}`);
+});
+
+quantity.set(3);
+batch(() => {
+  price.set(200);
+  quantity.set(4);
+});
+price.set(200);
+stop();
+quantity.set(10);
+```
+
+Đoạn này log đúng ba dòng: `total=200`, `total=300`, rồi `total=720 discount=true`. Khối `batch` chỉ sinh một dòng log, set `price` về đúng giá trị cũ thì không log gì, và sau `stop()` không còn gì chạy. Không lúc nào effect nhìn thấy một `total` được tính từ `hasDiscount` cũ.
+
+<Callout>
+  Bản đồ chơi này giữ mọi computed subscribe vào nguồn của nó mãi mãi, kể cả khi không còn ai đọc. Thư viện production tách computed ra khi observer cuối cùng biến mất và gắn lại ở lần đọc sau. Tự viết lớp reactive thì đây là chỗ rò bộ nhớ đầu tiên bạn gặp.
+</Callout>
+
+## Các framework dùng signals ra sao
+
+- **Solid** xây toàn bộ mô hình trên signals: `createSignal` trả về cặp getter/setter, `createMemo` là computed, `createEffect` là effect. Component chỉ chạy một lần; JSX được biên dịch thành code tạo DOM kèm các effect gắn vào từng node cụ thể.
+- **Preact Signals** (`@preact/signals-core`) cung cấp `signal`, `computed`, `effect` và `batch` với accessor `.value`. Truyền thẳng signal vào JSX thì Preact cập nhật text node mà không re-render component.
+- **Angular** đã chuyển phần reactivity sang signals: `signal`, `computed`, `effect`, `linkedSignal`, signal inputs. `effect` và `linkedSignal` thành stable từ v20, và từ v21 project mới mặc định chạy zoneless.
+- **Vue** vốn dựa trên signals từ lâu dưới cái tên ref: `ref`, `computed`, `watchEffect`. Vue 3.6 viết lại lõi reactivity dựa trên thuật toán alien-signals, và thêm Vapor mode, biên dịch template thành các lệnh cập nhật DOM trực tiếp, không cần virtual DOM. Lúc viết bài, 3.6 vẫn đang ở giai đoạn release candidate nên mình chưa dùng Vapor cho production.
+- **Svelte 5** với runes (`$state`, `$derived`, `$effect`) thực chất là signals khoác cú pháp của compiler.
+
+### Đề xuất Signals của TC39
+
+Có một đề xuất đưa signals vào chính JavaScript, do người từ nhiều framework kể trên thúc đẩy. Nó định nghĩa `Signal.State` và `Signal.Computed` với `.get()`/`.set()`, cùng một API cấp thấp `Signal.subtle.Watcher` để framework tự xây effect và cơ chế lên lịch của mình. Đề xuất cố ý không có `effect` dựng sẵn, vì lên lịch effect là chỗ các framework bất đồng nhiều nhất.
+
+Tại thời điểm viết bài, đề xuất vẫn ở **Stage 1**. Nhóm champion muốn có polyfill chất lượng production và tích hợp thật vào framework trước khi xin lên Stage 2; package `signal-polyfill` đã có để thử nghiệm. Theo mình, đây là lớp tương thích hứa hẹn cho tác giả thư viện, nằm dưới framework, không phải thứ để xây ứng dụng trực tiếp lên.
+
+## Câu trả lời của React: compiler, không phải signals
+
+React không áp dụng signals; nó giữ mô hình re-render và đặt cược vào việc làm cho re-render rẻ đi. Câu trả lời của React là **React Compiler** (stable từ bản 1.0 hồi tháng 10/2025, và được hỗ trợ stable trong Next.js 16). Compiler phân tích component lúc build và tự memo JSX cùng các giá trị tính toán, nên cây con không đổi sẽ được bỏ qua mà không cần viết tay `memo`/`useMemo`/`useCallback`. Mình đã viết chi tiết trong bài [hiệu năng render của React](/blog/react-rendering-performance).
+
+Thứ compiler không thay đổi là đơn vị cập nhật: state đổi vẫn chạy lại component sở hữu nó và duyệt cây con; compiler chỉ làm cho lượt duyệt đó rẻ đi. Với đa số ứng dụng, vậy là đủ để thu hẹp khoảng cách. Với vài trăm ô cập nhật nhiều lần mỗi giây, khoảng cách hẹp lại nhưng không biến mất.
+
+Nếu cần cập nhật fine-grained bên trong ứng dụng React, ranh giới ổn định nhất là `useSyncExternalStore`. Với thư viện đồ chơi ở trên, cầu nối trông như sau:
+
+```tsx
+import { useCallback, useSyncExternalStore } from "react";
+import { effect } from "./signals";
+
+type Readable<T> = { get(): T };
+
+export function useSignalValue<T>(source: Readable<T>): T {
+  const subscribe = useCallback(
+    (onStoreChange: () => void) =>
+      effect(() => {
+        source.get();
+        onStoreChange();
+      }),
+    [source],
+  );
+  return useSyncExternalStore(subscribe, () => source.get(), () => source.get());
+}
+```
+
+Chỉ component đọc signal đó mới re-render. Có những adapter "ma thuật" hơn, nhưng chúng dựa vào Babel transform hoặc nội bộ React; mình chọn hook tường minh.
+
+## Khi nào fine-grained reactivity thật sự đáng giá
+
+Từ những gì mình đã ship, signals có lợi rõ khi:
+
+- **Cập nhật dày và hẹp:** giá realtime, con trỏ của người cùng chỉnh sửa, thanh tiến trình, bộ đếm giờ, toạ độ khi kéo thả.
+- **Cây lớn mà thay đổi nhỏ:** một ô trong lưới kiểu bảng tính lớn, trạng thái của một dòng trong danh sách dài.
+- **State dùng chung giữa các phần UI cách xa nhau**, và bạn đang vật lộn với re-render do context.
+
+Với màn hình CRUD và form, nơi cập nhật đến theo tốc độ tay người và compiler đã dẹp gần hết lãng phí, signals không tạo khác biệt đáng kể. Chọn framework chỉ vì signals khi ứng dụng chủ yếu là form là tối ưu sai chỗ.
+
+<Callout>
+  Trước khi đưa signals vào ứng dụng React, hãy đo. Nếu Profiler cho thấy commit chậm vì một cây con lớn re-render theo cập nhật tần suất cao, signal store sau `useSyncExternalStore` là cách sửa hợp lý. Nếu không, vấn đề nằm chỗ khác.
+</Callout>
+
+## Những cái bẫy mình đã gặp trên production
+
+**Effect khắp nơi.** Effect rẻ tới mức mọi người dùng nó để đồng bộ state: "khi `a` đổi thì set `b`". Kết quả là chuỗi effect nối đuôi, bug thứ tự chạy và lượt cập nhật thừa. Nếu `b` suy ra được từ `a`, nó là một `computed`. Effect chỉ dành cho việc bước ra khỏi thế giới reactive: DOM, network, storage, logging.
+
+**Đọc signal ngoài ngữ cảnh tracking.** Signal được đọc trong event handler, trong `setTimeout` hoặc sau một `await` sẽ không được theo dõi, vì lúc đó observer hiện tại đã không còn. Với code async, hãy đọc đồng bộ mọi dependency ngay đầu effect.
+
+**Debug một đồ thị vô hình.** Với signals, câu hỏi "vì sao cái này chạy lại?" chỉ có câu trả lời "thứ gì đó bạn đọc đã đổi", và danh sách dependency chỉ tồn tại lúc runtime. Giữ computed nhỏ, đặt tên theo ý nghĩa, tránh chuỗi effect dài, và khi nghi ngờ thì log ra những gì phép tính đã đọc ở lần chạy gần nhất.
+
+**Rò subscription.** Effect tạo trong vòng lặp, trong hook không cleanup, hoặc trong helper cấp module sẽ subscribe mãi và giữ closure cũ sống. Gắn mỗi effect với một owner (component, route, store) và dispose nó khi owner biến mất.
+
+**Mutate bên trong object.** `items.get().push(x)` không đổi identity của signal, nên với phép so sánh `Object.is` sẽ không ai được báo. Hoặc set mảng mới, hoặc dùng thư viện có proxy reactive sâu — và nhất quán một cách.
+
+## Tóm tắt
+
+<Checklist>
+
+- React cập nhật bằng cách chạy lại component; signals cập nhật đúng những binding đã đọc giá trị.
+- Signals tự theo dõi dependency khi đọc, nên dependency thay đổi theo từng lần chạy.
+- Push-pull (đánh dấu stale, rồi tính lại khi đọc) cho cập nhật không glitch và có equality cutoff.
+- Solid, Preact, Angular, Vue và Svelte đều dùng signals; TC39 Signals vẫn ở Stage 1 và nhắm tới tác giả framework.
+- React Compiler làm re-render rẻ đi nhưng vẫn giữ component là đơn vị cập nhật.
+- Dùng signals cho cập nhật dày, hẹp trong cây lớn — sau khi đã đo.
+- Dẫn xuất bằng computed, chỉ dùng effect cho side effect, đọc đồng bộ, và dispose mọi effect.
+
+</Checklist>

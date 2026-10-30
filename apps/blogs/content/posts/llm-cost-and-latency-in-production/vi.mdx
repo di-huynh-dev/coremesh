@@ -1,0 +1,315 @@
+---
+title: "Chi phí và độ trễ của LLM trên production: đếm token, caching, routing và fallback"
+excerpt: "Chuyện gì xảy ra với một tính năng LLM khi traffic thật đổ về: độ trễ thật sự đến từ đâu, bộ đếm token và chi phí theo từng tính năng kèm ngân sách theo tenant, cấu trúc prompt để tận dụng prompt caching của provider, exact và semantic caching, routing model, cắt gọt context, batch API, gọi song song, retry có fallback và circuit breaker, và dashboard mình theo dõi."
+---
+
+<Lead>Tính năng tóm tắt tài liệu trông rất rẻ lúc demo: cả team dùng thử chỉ tốn vài cent mỗi ngày. Ba tuần sau khi ra mắt, p95 latency khoảng mười hai giây và một khách hàng enterprise chiếm gần nửa chi phí vì integration của họ mỗi giờ lại tóm tắt lại đúng những tài liệu cũ. Không có gì hỏng; chỉ là bọn mình chưa từng đo tính năng này như mọi hệ thống production khác. Bài này là những gì mình làm bây giờ.</Lead>
+
+## Độ trễ thật sự đến từ đâu
+
+"Model chậm" hiếm khi là một chẩn đoán có ích. Một request LLM có nhiều pha khác nhau, và mỗi pha cần một cách sửa khác:
+
+| Pha | Yếu tố quyết định | Đòn bẩy chính |
+| --- | --- | --- |
+| Mạng và xếp hàng | Region, tải của provider | Keep-alive, region gần hơn |
+| Prefill (đến token đầu tiên) | Số token **input** | Context ngắn hơn, prompt caching |
+| Decode (sinh token) | Số token **output**, kích thước model | Model nhỏ hơn, câu trả lời ngắn hơn, structured output |
+| Round trip của tool | Mỗi tool call là thêm một request đầy đủ | Ít bước hơn, gọi tool song song, thiết kế tool tốt hơn |
+
+Hãy theo dõi riêng **time to first token** (TTFT) và **tổng thời gian**. Với chat UI có streaming, người dùng cảm nhận TTFT, vốn phụ thuộc chủ yếu vào kích thước input và hàng đợi. Job chạy nền chỉ quan tâm tổng thời gian, bị chi phối bởi token output vì decode là tuần tự. Nên mình nhìn độ dài output trước: bảo model trả lời 40 chữ thay vì 400 thường hiệu quả hơn cả đổi model. Nếu bạn chưa stream, [bài về streaming chat](/blog/streaming-ai-chat-ui) nói về phần UI.
+
+Với tính năng kiểu agent, năm bước tool nghĩa là năm lần prefill trên một context ngày càng dài. Khi thấy chậm, mình đếm round trip trước tiên.
+
+## Đo theo từng tính năng: bộ đếm token và chi phí
+
+Bạn không tối ưu được thứ mà bạn chỉ thấy là một dòng duy nhất trên hoá đơn của provider. Mọi lời gọi đều đi qua một hàm ghi lại tính năng, tenant, model, số token (kể cả token được cache) và latency. Giá nằm trong config, không bao giờ nằm trong code, vì giá thay đổi và khác nhau theo model.
+
+File `llm/meter.ts`:
+
+```ts
+export type TokenUsage = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+};
+
+export type ModelPricing = {
+  inputPerMillion: number;
+  cachedInputPerMillion: number;
+  outputPerMillion: number;
+};
+
+export type UsageRecord = TokenUsage & {
+  feature: string;
+  tenantId: string;
+  model: string;
+  costUsd: number;
+  ttftMs: number | null;
+  totalMs: number;
+  outcome: "ok" | "error" | "fallback";
+};
+
+export interface UsageSink {
+  write(record: UsageRecord): Promise<void>;
+  spentThisMonth(tenantId: string): Promise<number>;
+}
+
+export class BudgetExceededError extends Error {
+  constructor(readonly tenantId: string, readonly spentUsd: number, readonly limitUsd: number) {
+    super(`Tenant ${tenantId} spent ${spentUsd.toFixed(2)} of ${limitUsd.toFixed(2)} USD`);
+  }
+}
+
+export function computeCost(usage: TokenUsage, pricing: ModelPricing): number {
+  const uncachedInput = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
+  return (
+    (uncachedInput * pricing.inputPerMillion +
+      usage.cachedInputTokens * pricing.cachedInputPerMillion +
+      usage.outputTokens * pricing.outputPerMillion) /
+    1_000_000
+  );
+}
+
+export function createMeter(sink: UsageSink, pricingByModel: Record<string, ModelPricing>) {
+  return {
+    async assertWithinBudget(tenantId: string, monthlyLimitUsd: number) {
+      const spent = await sink.spentThisMonth(tenantId);
+      if (spent >= monthlyLimitUsd) throw new BudgetExceededError(tenantId, spent, monthlyLimitUsd);
+    },
+    async record(entry: Omit<UsageRecord, "costUsd">) {
+      const pricing = pricingByModel[entry.model];
+      const costUsd = pricing ? computeCost(entry, pricing) : 0;
+      await sink.write({ ...entry, costUsd });
+      return costUsd;
+    },
+  };
+}
+```
+
+Vài chi tiết mình mất một thời gian mới làm đúng:
+
+- **Chuẩn hoá usage theo từng provider.** Mỗi provider báo token được cache theo cách khác nhau: có nơi tính chúng nằm trong số input, có nơi báo cache read và cache write thành các field riêng bên cạnh phần input không được cache. Viết một adapter nhỏ cho mỗi provider và test với response thật.
+- **Ghi lại cả lời gọi thất bại.** Một request timeout sau khi đã stream 2.000 token vẫn tốn tiền.
+- **Ngân sách là quyết định sản phẩm.** Việc kiểm tra ngân sách là một cổng mềm trước lời gọi, không phải kế toán chính xác; các request song song có thể vượt một chút. Không sao: mục tiêu là integration chạy loạn sẽ chạm giới hạn và bắn alert. Mình vẫn giữ thêm rate limit theo user, vì nó giải một bài toán khác.
+
+<Callout type="warning">
+  Đừng ước lượng token từ số ký tự để tính tiền. Hãy dùng số usage mà provider trả về trong response. Chỉ ước lượng khi cần quyết định trước lời gọi, ví dụ có cần cắt bớt context hay không.
+</Callout>
+
+## Prompt caching của provider: thiết kế để có prefix ổn định
+
+Các provider lớn (OpenAI, Anthropic, Google Gemini) đều có prompt caching: nếu phần đầu prompt khớp chính xác với một request gần đây, provider dùng lại phần prefix đã xử lý, giúp giảm cả chi phí input lẫn time to first token. Cơ chế thì khác nhau: có nơi tự động áp dụng khi prompt vượt độ dài tối thiểu, Anthropic cần đánh dấu `cache_control`, và cache hết hạn sau vài phút không dùng. Hãy xem docs hiện tại của provider về độ dài tối thiểu, thời gian sống và mức giảm giá.
+
+Phần giống nhau ở mọi nơi: **đây là so khớp prefix**. Chỉ một ký tự thay đổi ở đầu prompt cũng làm vô hiệu mọi thứ phía sau. Vì vậy mình sắp xếp mọi prompt theo mức độ ổn định:
+
+1. Định nghĩa tool và system prompt — giống hệt nhau cho mọi request của một tính năng.
+2. Context dùng chung lớn — tài liệu sản phẩm, ví dụ few-shot, tài liệu dài mà người dùng đang hỏi nhiều câu về nó.
+3. Lịch sử hội thoại — chỉ append.
+4. Message mới của người dùng và mọi thứ động.
+
+Lỗi kinh điển là đặt timestamp hay request ID ở đầu system prompt, âm thầm giết chết tỉ lệ cache hit. Đưa giá trị động xuống cuối, serialize tool và JSON theo thứ tự key cố định, và đừng đổi thứ tự tài liệu retrieve được giữa các lượt. Rồi kiểm chứng bằng biểu đồ tỉ lệ cache hit theo tính năng từ meter; gần bằng 0 dù system prompt lớn nghĩa là prefix đang bị thay đổi.
+
+## Caching ở tầng ứng dụng: exact và semantic
+
+Cache nguyên response thì bỏ qua model hoàn toàn, nhưng rủi ro hơn.
+
+**Exact caching** dùng key là hash của mọi thứ ảnh hưởng đến output: model, version của prompt, tham số và input đã chuẩn hoá. Nó an toàn cho tác vụ có tính tất định như phân loại hay tóm tắt cùng một file không đổi. Key phải chứa version của prompt, nếu không một bản sửa prompt sẽ vô hình trong suốt TTL của cache.
+
+**Semantic caching** embed câu hỏi và trả về câu trả lời đã lưu khi một câu hỏi trước đó "đủ gần". Nó có thể tăng tỉ lệ hit cho traffic kiểu FAQ, nhưng mình luôn dè chừng:
+
+- "Làm sao để huỷ đơn hàng?" và "Làm sao để huỷ gói đăng ký?" có thể rất gần nhau trong không gian embedding nhưng cần câu trả lời khác nhau.
+- Câu trả lời phụ thuộc vào dữ liệu hoặc quyền của người dùng thì không bao giờ được chia sẻ giữa các user. Scope key cache theo tenant, và thường là theo cả user.
+- Ngưỡng similarity là một núm chỉnh chất lượng. Chọn nó bằng eval set, không phải bằng cảm tính; [bài về evaluation](/blog/evaluating-llm-features) nói cách mình xây một bộ như vậy.
+
+Mình chỉ dùng semantic caching cho nội dung công khai, không cá nhân hoá.
+
+## Route đến model rẻ nhất làm được việc
+
+Phần lớn traffic là dễ: một model nhỏ, nhanh xử lý tốt việc phân loại và trích xuất đơn giản, với chi phí và latency chỉ bằng một phần nhỏ. Router quyết định theo từng request, và cascade sẽ leo thang khi câu trả lời rẻ không qua được bước validate.
+
+File `llm/router.ts`, không phụ thuộc provider, model ID lấy từ config:
+
+```ts
+export type ModelTier = "small" | "large";
+
+export type CompletionRequest = {
+  feature: string;
+  system: string;
+  input: string;
+  maxOutputTokens: number;
+};
+
+export type CompletionResult = {
+  text: string;
+  model: string;
+  usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+};
+
+export type CompletionFn = (model: string, request: CompletionRequest) => Promise<CompletionResult>;
+
+type RouteRule = {
+  tier: ModelTier;
+  escalateWhen?: (result: CompletionResult) => boolean;
+};
+
+export function createRouter(options: {
+  complete: CompletionFn;
+  models: Record<ModelTier, string>;
+  rules: Record<string, RouteRule>;
+  estimateTokens: (text: string) => number;
+  largeContextThreshold: number;
+}) {
+  function pickTier(request: CompletionRequest): ModelTier {
+    const rule = options.rules[request.feature];
+    if (!rule) return "large";
+    const tooLong = options.estimateTokens(request.input) > options.largeContextThreshold;
+    return tooLong ? "large" : rule.tier;
+  }
+
+  return async function route(request: CompletionRequest): Promise<CompletionResult> {
+    const tier = pickTier(request);
+    const first = await options.complete(options.models[tier], request);
+    const rule = options.rules[request.feature];
+    const shouldEscalate = tier === "small" && rule?.escalateWhen?.(first) === true;
+    if (!shouldEscalate) return first;
+    return options.complete(options.models.large, request);
+  };
+}
+```
+
+Một rule như `escalateWhen: (result) => !isValidTicketLabel(result.text)` vừa rẻ vừa tất định: nếu model nhỏ trả về thứ không parse được theo schema, thử lại với model lớn. Leo thang dựa trên việc "model nghe có vẻ không chắc" kém tin cậy hơn nhiều. Request bị leo thang phải trả giá hai lần, nên hãy theo dõi tỉ lệ leo thang. Tính năng không có rule mặc định dùng model lớn: đúng trước, rẻ sau.
+
+## Tiêu ít token hơn: context, batch và song song
+
+**Cắt gọt context có chủ đích.** Mỗi lượt hội thoại lại gửi lại toàn bộ lịch sử. Mình giữ nguyên N lượt gần nhất, tóm tắt các lượt cũ hơn bằng model nhỏ, và bỏ kết quả tool chỉ cần cho một bước. Với RAG, ít chunk nhưng xếp hạng tốt thắng việc nhồi đầy context window. Viết lại lịch sử sẽ phá prefix đã cache, nên hãy tóm tắt thỉnh thoảng theo từng đợt lớn, đừng làm mỗi lượt.
+
+**Dùng batch API cho việc offline.** Gắn tag lại hàng đêm, backfill hay chạy eval lớn đều không cần câu trả lời trong hai giây. OpenAI, Anthropic và Google đều có endpoint batch nhận nhiều request một lúc và trả kết quả bất đồng bộ, thường trong vòng một ngày, với giá rẻ hơn so với lời gọi đồng bộ.
+
+**Song song hoá.** Nếu phân loại ticket và trích xuất entity không phụ thuộc nhau, hãy chạy chúng bằng `Promise.all` kèm giới hạn concurrency. Gọi tuần tự những việc độc lập là bug latency phổ biến nhất mình gặp khi review.
+
+## Timeout, fallback và rate limit
+
+Provider có sự cố và có rate limit. Wrapper của mình làm bốn việc: timeout cho mỗi lần thử, retry với exponential backoff và jitter chỉ cho lỗi có thể retry, tôn trọng `Retry-After` khi gặp 429, và một chuỗi model fallback (có thể ở provider khác) phía sau một circuit breaker đơn giản.
+
+File `llm/resilient.ts`:
+
+```ts
+export class ProviderError extends Error {
+  constructor(
+    message: string,
+    readonly status: number | null,
+    readonly retryAfterMs: number | null,
+  ) {
+    super(message);
+  }
+}
+
+type CircuitState = { failures: number; openUntil: number };
+
+const circuits = new Map<string, CircuitState>();
+const FAILURE_THRESHOLD = 5;
+const OPEN_DURATION_MS = 30_000;
+
+function isOpen(model: string, now: number) {
+  return (circuits.get(model)?.openUntil ?? 0) > now;
+}
+
+function recordFailure(model: string, now: number) {
+  const state = circuits.get(model) ?? { failures: 0, openUntil: 0 };
+  state.failures += 1;
+  if (state.failures >= FAILURE_THRESHOLD) {
+    state.openUntil = now + OPEN_DURATION_MS;
+    state.failures = 0;
+  }
+  circuits.set(model, state);
+}
+
+function recordSuccess(model: string) {
+  circuits.delete(model);
+}
+
+function isRetryable(error: unknown) {
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof ProviderError)) return false;
+  return error.status === null || error.status === 429 || error.status >= 500;
+}
+
+function backoffMs(attempt: number, error: unknown) {
+  if (error instanceof ProviderError && error.retryAfterMs !== null) return error.retryAfterMs;
+  const exponential = Math.min(8_000, 500 * 2 ** attempt);
+  return Math.random() * exponential;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function callWithFallback<T>(
+  models: string[],
+  call: (model: string, signal: AbortSignal) => Promise<T>,
+  options = { attemptsPerModel: 2, timeoutMs: 20_000 },
+): Promise<{ result: T; model: string; usedFallback: boolean }> {
+  let lastError: unknown = new Error("No model available");
+
+  for (const [index, model] of models.entries()) {
+    if (isOpen(model, Date.now())) continue;
+
+    for (let attempt = 0; attempt < options.attemptsPerModel; attempt++) {
+      try {
+        const result = await call(model, AbortSignal.timeout(options.timeoutMs));
+        recordSuccess(model);
+        return { result, model, usedFallback: index > 0 };
+      } catch (error) {
+        lastError = error;
+        if (!isRetryable(error)) throw error;
+        recordFailure(model, Date.now());
+        if (attempt < options.attemptsPerModel - 1) await sleep(backoffMs(attempt, error));
+      }
+    }
+  }
+
+  throw lastError;
+}
+```
+
+Vài bài học production đằng sau nó:
+
+- **Đừng retry lỗi 4xx trừ 429.** 400 nghĩa là request của bạn sai.
+- **Timeout phải hợp với tính năng.** Chat streaming nên timeout theo TTFT (không có token đầu tiên sau N giây), không phải theo tổng thời gian, nếu không câu trả lời dài sẽ bị cắt ngang. Wrapper trên hợp với lời gọi không streaming.
+- **Circuit breaker ở đây theo từng process;** chuyển state sang Redis nếu các instance cần dùng chung.
+- **Model fallback không phải là bản thay thế y hệt.** Chạy eval set với mọi model trong chuỗi, và ghi `outcome: "fallback"` vào meter để biết người dùng nhận câu trả lời "hạng hai" thường xuyên đến mức nào.
+
+<Callout type="danger">
+  Retry nhân tải lên đúng lúc provider đang gặp khó. Giới hạn số lần thử, thêm jitter, và nhớ rằng phần lớn SDK chính thức mặc định đã tự retry: chọn một tầng sở hữu việc retry và tắt tầng còn lại.
+</Callout>
+
+## Dashboard mình thật sự theo dõi
+
+Một dashboard, nhóm theo tính năng, lọc theo tenant và model:
+
+| Metric | Vì sao quan trọng |
+| --- | --- |
+| Chi phí mỗi ngày, theo tính năng, theo tenant | Tìm ra integration cứ tóm tắt lại cùng một tài liệu |
+| Chi phí trên mỗi kết quả thành công | Chi phí mỗi ticket được giải quyết có ý nghĩa hơn chi phí mỗi request |
+| TTFT p50 / p95 | Thứ người dùng streaming cảm nhận |
+| Tổng latency p50 / p95 / p99 | Thứ job chạy nền và SLA cảm nhận |
+| Token input / output mỗi request | Phát hiện context phình to và câu trả lời dài dòng |
+| Tỉ lệ cache hit của provider | Bắt được thay đổi prompt làm vỡ prefix |
+| Tỉ lệ leo thang và fallback | Sức khoẻ của router và của provider |
+| Tỉ lệ lỗi theo status (429, 5xx, timeout) | Phân biệt vấn đề quota của bạn với sự cố của họ |
+| Mức dùng ngân sách theo tenant | Báo trước khi giới hạn cứng chặn một khách hàng |
+
+Mình đặt cả alert theo tốc độ thay đổi: token input mỗi request tăng vọt sau một đêm thường là do một thay đổi prompt.
+
+## Tóm tắt
+
+<Checklist>
+
+- Tách latency thành mạng, prefill, decode và round trip của tool; độ dài output và số bước thường là đòn bẩy lớn nhất.
+- Cho mọi lời gọi đi qua một meter ghi lại tính năng, tenant, model, token (kể cả cache) và latency, với giá nằm trong config.
+- Áp ngân sách theo tenant và rate limit theo user, và ghi lại cả lời gọi thất bại.
+- Sắp xếp prompt từ ổn định đến động để prompt caching của provider hoạt động, và vẽ biểu đồ tỉ lệ cache hit để kiểm chứng.
+- Dùng exact caching thoải mái với version của prompt trong key; chỉ dùng semantic caching cho nội dung công khai, không cá nhân hoá.
+- Route tính năng dễ sang model nhỏ và leo thang khi validate tất định thất bại; theo dõi tỉ lệ leo thang.
+- Cắt gọt lịch sử và output của tool, đưa việc offline qua batch API, và song song hoá các lời gọi độc lập.
+- Chỉ retry lỗi có thể retry, với backoff, jitter và Retry-After, giữ một tầng retry duy nhất, và đánh giá mọi model fallback.
+
+</Checklist>

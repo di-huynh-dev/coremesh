@@ -1,0 +1,406 @@
+---
+title: "Đánh giá tính năng LLM: biết nó chạy đúng và giữ cho nó đúng"
+excerpt: "Xây golden dataset từ usage thật, kiểm tra deterministic trước, LLM-as-judge với rubric và các bias của nó, so sánh pairwise, chạy eval trong CI khi đổi prompt hay model, theo dõi chi phí và độ trễ cùng chất lượng, tín hiệu online, tracing, và cách tránh overfit bộ eval."
+---
+
+<Lead>Có lần mình sửa prompt của tính năng tóm tắt ticket support để câu tóm tắt ngắn gọn hơn. Thử khoảng mười ticket, kết quả đẹp, merge. Hai tuần sau mới phát hiện với những ticket dài viết lẫn tiếng Anh và tiếng Việt, model thỉnh thoảng trả về JSON thiếu trường `category`, parser lặng lẽ fallback về giá trị rỗng, và ô tóm tắt trên dashboard hiện trống. Không có exception, không có alert — chỉ có một chị bên support hỏi "sao dạo này tóm tắt hay mất thế?". Từ đó mình đối xử với **eval** như test suite: không có nó thì không đổi prompt.</Lead>
+
+## Vì sao "thử vài câu thấy ổn" không đủ
+
+Code thông thường hay sai ầm ĩ: test đỏ, exception. Tính năng LLM sai theo kiểu khác:
+
+- **Không deterministic.** Cùng input có thể ra output khác nhau, nên một lần chạy đúng chưa chứng minh gì.
+- **Input thật có đuôi dài.** Mười ví dụ bạn nghĩ ra là mười ví dụ nằm trong đầu bạn, không phải phân phối của người dùng.
+- **Regression im lặng.** Đổi prompt để cải thiện trường hợp A thường làm hỏng trường hợp B mà không ai để ý — đúng như chuyện ở trên.
+- **Đổi model là đổi hành vi.** Model mới có thể tốt hơn ở benchmark nhưng tệ hơn ở đúng việc của bạn.
+
+Vì vậy câu hỏi đúng không phải "output này đúng không?" mà là "trên một tập input đại diện, tỉ lệ đạt yêu cầu là bao nhiêu, và nó thay đổi thế nào so với phiên bản trước?". Các lớp kiểm tra mình dùng:
+
+| Lớp | Bắt được gì | Chi phí | Chạy khi nào |
+| --- | --- | --- | --- |
+| Deterministic check | Sai format, thiếu trường, lộ dữ liệu, quá dài | Gần như bằng 0 | Mọi lần, cả trong production |
+| LLM-as-judge | Bịa thông tin, sai ý, giọng văn | Một lần gọi model mỗi tiêu chí | PR đổi prompt/model, nightly |
+| Pairwise | Phiên bản mới có tốt hơn bản cũ không | Hai lần gọi mỗi cặp | Khi chọn giữa hai biến thể |
+| Người review | Hiệu chỉnh judge, phát hiện lỗi mới | Thời gian của người | Định kỳ, trên mẫu nhỏ |
+| Tín hiệu online | Chất lượng thật với người dùng thật | Hạ tầng tracing | Liên tục |
+
+## Golden dataset từ usage thật
+
+Bộ eval tốt bắt đầu từ dữ liệu thật. Nếu tính năng đã chạy (kể cả beta nội bộ), mình lấy mẫu từ log — sau khi xoá thông tin cá nhân, đúng chính sách dữ liệu của công ty — và chọn có chủ đích chứ không ngẫu nhiên thuần tuý:
+
+- **Trường hợp phổ biến**, để chắc phần lớn người dùng ổn.
+- **Đuôi dài:** input rất dài, rất ngắn, lẫn ngôn ngữ, có code, có bảng, gần như rỗng.
+- **Lỗi đã biết:** mỗi ticket bug hoặc lượt thumbs-down đã được xác nhận trở thành một case. Đây là phần giá trị nhất, giống regression test.
+- **Input đối kháng:** người dùng dán chỉ dẫn kiểu "bỏ qua hướng dẫn trước đó" vào nội dung.
+
+Bắt đầu nhỏ: 50–100 case mà chính bạn đã đọc từng cái. Một bộ 1.000 case không ai đọc thì không ai biết nó đang đo cái gì. Điều quan trọng thứ hai: **gán nhãn bằng thuộc tính, không bằng output chính xác**. Output LLM hiếm khi giống hệt nhau từng chữ, nên "phải nhắc đến hoàn tiền", "không được chứa email khách hàng", "dưới 60 từ" bền hơn nhiều so với một câu trả lời mẫu.
+
+```ts
+export type Expectations = {
+  mustInclude?: string[];
+  mustExclude?: string[];
+  maxWords?: number;
+  expectedCategory?: "billing" | "bug" | "account" | "other";
+  rubric?: string;
+};
+
+export type EvalCase<Input> = {
+  id: string;
+  input: Input;
+  tags: string[];
+  expect: Expectations;
+};
+```
+
+Mỗi case là một file JSON nằm trong repo, cạnh prompt mà nó kiểm tra, để review được trong PR:
+
+```json
+{
+  "id": "ticket-0142",
+  "tags": ["mixed-language", "long-input", "from-bug-report"],
+  "input": { "ticketText": "Hi team, mình bị trừ tiền hai lần cho order tháng trước..." },
+  "expect": {
+    "mustInclude": ["hoàn tiền"],
+    "mustExclude": ["@gmail.com"],
+    "maxWords": 60,
+    "expectedCategory": "billing",
+    "rubric": "The summary states what the customer is asking for and does not invent order numbers, amounts or dates."
+  }
+}
+```
+
+`tags` để cắt kết quả theo nhóm: tổng điểm tăng mà nhóm `mixed-language` giảm là thứ cần thấy ngay.
+
+## Kiểm tra deterministic trước
+
+Trước khi nghĩ đến LLM-as-judge, hãy vắt kiệt những gì kiểm tra được bằng code. Chúng nhanh, miễn phí, không flaky, và bắt được phần lớn lỗi "vỡ" — như lỗi JSON thiếu trường ở đầu bài.
+
+```ts
+import { z } from "zod";
+
+export type CheckResult = { name: string; passed: boolean; detail?: string };
+
+export const ticketSummarySchema = z.object({
+  summary: z.string().min(1),
+  category: z.enum(["billing", "bug", "account", "other"]),
+  urgency: z.enum(["low", "normal", "high"]),
+});
+
+export type TicketSummary = z.infer<typeof ticketSummarySchema>;
+
+export function checkSchema(raw: string): { result: CheckResult; value?: TicketSummary } {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { result: { name: "schema", passed: false, detail: "not valid JSON" } };
+  }
+  const parsed = ticketSummarySchema.safeParse(json);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
+    return { result: { name: "schema", passed: false, detail } };
+  }
+  return { result: { name: "schema", passed: true }, value: parsed.data };
+}
+
+export function checkContent(value: TicketSummary, expect: Expectations): CheckResult[] {
+  const text = value.summary.toLowerCase();
+  const results: CheckResult[] = [];
+  for (const phrase of expect.mustInclude ?? []) {
+    results.push({ name: `includes:${phrase}`, passed: text.includes(phrase.toLowerCase()) });
+  }
+  for (const phrase of expect.mustExclude ?? []) {
+    results.push({ name: `excludes:${phrase}`, passed: !text.includes(phrase.toLowerCase()) });
+  }
+  if (expect.maxWords !== undefined) {
+    const words = value.summary.trim().split(/\s+/).length;
+    results.push({ name: "length", passed: words <= expect.maxWords, detail: `${words} words` });
+  }
+  if (expect.expectedCategory) {
+    results.push({ name: "category", passed: value.category === expect.expectedCategory, detail: value.category });
+  }
+  return results;
+}
+```
+
+`mustInclude` theo kiểu so chuỗi khá thô: "hoàn tiền" sẽ trượt nếu model viết "trả lại tiền". Mình chỉ dùng nó cho những từ thật sự bắt buộc (tên sản phẩm, mã lỗi), còn ý nghĩa thì để cho judge. Schema check thì nên chạy cả trong production (xem thêm bài [structured output](/blog/structured-outputs-for-llm-features)): output không parse được là lỗi, cần được log và đếm, không phải fallback về chuỗi rỗng.
+
+## LLM-as-judge: rubric, bias và hiệu chỉnh
+
+"Có bịa thông tin không", "có trả lời đúng điều người dùng hỏi không" thì regex chịu. Ở đây mình dùng một model khác làm giám khảo, với vài nguyên tắc rút ra sau nhiều lần judge cho điểm vô nghĩa:
+
+- **Một tiêu chí mỗi lần gọi.** Judge chấm năm tiêu chí cùng lúc sẽ để chúng ảnh hưởng lẫn nhau.
+- **Pass/fail thay vì thang 1–10.** Thang điểm dài khó nhất quán, và "7 với 8 khác gì nhau?" không ai trả lời được. Rubric nhị phân buộc bạn định nghĩa rõ thế nào là đạt.
+- **Viết lý do trước khi kết luận**, và trả về JSON có schema. Lý do còn là thứ bạn đọc khi debug.
+- **Rubric cụ thể với domain.** "Câu trả lời có hữu ích không" là rubric tệ. "Không đưa ra mã đơn hàng, số tiền hay ngày tháng nào không có trong ticket" là rubric tốt.
+
+```ts
+type Complete = (request: { system: string; user: string; temperature?: number }) => Promise<string>;
+
+const verdictSchema = z.object({
+  reasoning: z.string(),
+  verdict: z.enum(["pass", "fail"]),
+});
+
+export async function judgeWithRubric(complete: Complete, rubric: string, input: string, output: string): Promise<CheckResult> {
+  const raw = await complete({
+    temperature: 0,
+    system: [
+      "You grade one output of an AI feature against a single criterion.",
+      "Judge only that criterion. Length and style do not matter unless the criterion mentions them.",
+      'Reply with JSON only: {"reasoning": string, "verdict": "pass" | "fail"}. Write the reasoning first.',
+    ].join("\n"),
+    user: `Criterion:\n${rubric}\n\nInput:\n${input}\n\nOutput to grade:\n${output}`,
+  });
+  try {
+    const { reasoning, verdict } = verdictSchema.parse(JSON.parse(raw));
+    return { name: "judge", passed: verdict === "pass", detail: reasoning };
+  } catch {
+    return { name: "judge", passed: false, detail: `unparseable judge reply: ${raw.slice(0, 200)}` };
+  }
+}
+```
+
+Ghép lại, hàm grade cho tính năng tóm tắt ticket chạy schema check trước, dừng sớm nếu output không parse được, rồi mới gọi judge cho những case có rubric:
+
+```ts
+import { completeWithJudgeModel } from "@/lib/ai";
+
+export async function gradeTicketSummary(
+  testCase: EvalCase<{ ticketText: string }>,
+  output: string,
+): Promise<CheckResult[]> {
+  const { result, value } = checkSchema(output);
+  if (!value) return [result];
+  const checks = [result, ...checkContent(value, testCase.expect)];
+  if (testCase.expect.rubric) {
+    checks.push(await judgeWithRubric(completeWithJudgeModel, testCase.expect.rubric, testCase.input.ticketText, value.summary));
+  }
+  return checks;
+}
+```
+
+Judge cũng là một model, nên nó có bias. Bài báo giới thiệu MT-Bench và Chatbot Arena (Zheng và cộng sự, 2023) mô tả ba loại mà mình gặp lại trong thực tế: **position bias** (ưu tiên câu trả lời đứng ở một vị trí nhất định khi so sánh), **verbosity bias** (ưu tiên câu trả lời dài hơn), và **self-enhancement bias** (ưu tiên output do chính nó hoặc model cùng họ sinh ra). Thêm vào đó, judge thường dễ dãi: nó hay cho "pass" khi lỗi nằm ở chi tiết nhỏ.
+
+<Callout>
+  Đừng tin judge trước khi đo nó. Mình tự gán nhãn pass/fail cho khoảng 50–100 output, chạy judge trên cùng tập đó và xem tỉ lệ đồng ý, đặc biệt là những case mình đánh fail mà judge cho pass. Nếu đồng ý thấp, sửa rubric của judge — không phải prompt của tính năng. Lặp lại mỗi khi đổi model judge.
+</Callout>
+
+### So sánh pairwise
+
+Khi câu hỏi là "prompt mới có tốt hơn prompt cũ không", so sánh trực tiếp hai output thường ổn định hơn chấm điểm tuyệt đối từng cái. Để trung hoà position bias, mình hỏi hai lần với thứ tự đảo ngược, và chỉ tính thắng khi hai lần đồng ý:
+
+```ts
+type Preference = "A" | "B" | "tie";
+
+async function askPreference(
+  complete: Complete,
+  rubric: string,
+  input: string,
+  responseA: string,
+  responseB: string,
+): Promise<Preference> {
+  const raw = await complete({
+    temperature: 0,
+    system: `Compare two responses using this rubric:\n${rubric}\nReply with exactly one token: A, B or tie.`,
+    user: `Input:\n${input}\n\nResponse A:\n${responseA}\n\nResponse B:\n${responseB}`,
+  });
+  const answer = raw.trim();
+  return answer === "A" || answer === "B" ? answer : "tie";
+}
+
+export async function comparePairwise(complete: Complete, rubric: string, input: string, baseline: string, candidate: string) {
+  const [forward, backward] = await Promise.all([
+    askPreference(complete, rubric, input, baseline, candidate),
+    askPreference(complete, rubric, input, candidate, baseline),
+  ]);
+  const forwardWinner = forward === "A" ? "baseline" : forward === "B" ? "candidate" : "tie";
+  const backwardWinner = backward === "A" ? "candidate" : backward === "B" ? "baseline" : "tie";
+  return forwardWinner === backwardWinner ? forwardWinner : "tie";
+}
+```
+
+Nếu tỉ lệ tie do hai lần không đồng ý cao, judge đang chọn theo vị trí hơn là nội dung.
+
+## Eval runner: chất lượng, chi phí, độ trễ trong cùng một báo cáo
+
+Runner dưới đây chạy mỗi case vài lần (vì output không deterministic), giới hạn số request đồng thời, và ghi lại token, chi phí, độ trễ cạnh tỉ lệ đạt. File `evals/runner.ts`:
+
+```ts
+export type Generation = { output: string; inputTokens: number; outputTokens: number; latencyMs: number };
+
+export type Variant<Input> = {
+  name: string;
+  generate: (input: Input) => Promise<Generation>;
+  usdPerMillionTokens: { input: number; output: number };
+};
+
+type CaseRun = { caseId: string; passed: boolean; checks: CheckResult[]; generation?: Generation };
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function lane() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await worker(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return results;
+}
+
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
+}
+
+export async function runEval<Input>({
+  cases,
+  variant,
+  grade,
+  repeats = 3,
+  concurrency = 8,
+}: {
+  cases: EvalCase<Input>[];
+  variant: Variant<Input>;
+  grade: (testCase: EvalCase<Input>, output: string) => Promise<CheckResult[]>;
+  repeats?: number;
+  concurrency?: number;
+}) {
+  const jobs = cases.flatMap((testCase) => Array.from({ length: repeats }, () => testCase));
+  const runs = await mapWithConcurrency(jobs, concurrency, async (testCase): Promise<CaseRun> => {
+    try {
+      const generation = await variant.generate(testCase.input);
+      const checks = await grade(testCase, generation.output);
+      return { caseId: testCase.id, passed: checks.every((check) => check.passed), checks, generation };
+    } catch (error) {
+      return { caseId: testCase.id, passed: false, checks: [{ name: "generate", passed: false, detail: String(error) }] };
+    }
+  });
+
+  const generations = runs.flatMap((run) => (run.generation ? [run.generation] : []));
+  const { input: inputPrice, output: outputPrice } = variant.usdPerMillionTokens;
+  const passRateByCase = Object.fromEntries(
+    cases.map((testCase) => {
+      const caseRuns = runs.filter((run) => run.caseId === testCase.id);
+      return [testCase.id, caseRuns.filter((run) => run.passed).length / caseRuns.length];
+    }),
+  );
+
+  return {
+    variant: variant.name,
+    passRate: runs.filter((run) => run.passed).length / runs.length,
+    passRateByCase,
+    flakyCaseIds: Object.keys(passRateByCase).filter((id) => passRateByCase[id] > 0 && passRateByCase[id] < 1),
+    costUsd: generations.reduce((total, g) => total + (g.inputTokens * inputPrice + g.outputTokens * outputPrice) / 1_000_000, 0),
+    latencyMs: {
+      p50: percentile(generations.map((g) => g.latencyMs), 50),
+      p95: percentile(generations.map((g) => g.latencyMs), 95),
+    },
+    failures: runs.filter((run) => !run.passed),
+  };
+}
+
+export type EvalReport = Awaited<ReturnType<typeof runEval>>;
+
+export function findRegressions(baseline: EvalReport, current: EvalReport, tolerance = 0.03) {
+  const brokenCaseIds = Object.keys(current.passRateByCase).filter(
+    (id) => baseline.passRateByCase[id] === 1 && current.passRateByCase[id] === 0,
+  );
+  const overallDrop = baseline.passRate - current.passRate;
+  return { brokenCaseIds, overallDrop, failed: brokenCaseIds.length > 0 || overallDrop > tolerance };
+}
+```
+
+Script chạy trong CI đọc baseline đã commit, so sánh, và trả exit code khác 0 nếu có regression:
+
+```ts
+import { readFile, writeFile } from "node:fs/promises";
+import { cases } from "./cases";
+import { currentVariant } from "./variants";
+import { gradeTicketSummary } from "./grade";
+import { findRegressions, runEval, type EvalReport } from "./runner";
+
+const report = await runEval({ cases, variant: currentVariant, grade: gradeTicketSummary });
+const baseline: EvalReport = JSON.parse(await readFile("evals/baseline.json", "utf8"));
+const { brokenCaseIds, overallDrop, failed } = findRegressions(baseline, report);
+
+await writeFile("evals/report.json", JSON.stringify(report, null, 2));
+console.log(
+  `pass ${(report.passRate * 100).toFixed(1)}% (drop ${(overallDrop * 100).toFixed(1)} pts), ` +
+    `cost $${report.costUsd.toFixed(2)}, p95 ${report.latencyMs.p95}ms`,
+);
+if (brokenCaseIds.length > 0) console.log(`broken: ${brokenCaseIds.join(", ")}`);
+process.exit(failed ? 1 : 0);
+```
+
+Mình cấu hình CI chỉ chạy job này khi PR đụng đến thư mục prompt, file cấu hình model, code retrieval hoặc chính bộ eval — chạy trên mọi PR thì tốn tiền và chậm vô ích. Bộ đầy đủ với nhiều lần lặp hơn chạy nightly. Khi một thay đổi được chấp nhận, report mới trở thành baseline trong cùng PR, để reviewer thấy rõ con số thay đổi.
+
+<Callout>
+  Đừng chặn merge vì chênh một hai điểm phần trăm: với vài trăm lần chạy, chừng đó có thể chỉ là nhiễu. Thứ đáng chặn là case trước đây luôn đạt nay luôn trượt, và tỉ lệ đạt giảm vượt ngưỡng đã thống nhất. Danh sách `flakyCaseIds` thì đáng đọc riêng — case lúc đạt lúc trượt thường chỉ ra một chỉ dẫn mơ hồ trong prompt.
+</Callout>
+
+Chi phí và độ trễ nằm cùng báo cáo vì chúng là một phần của "chạy đúng". Model rẻ hơn, đạt thấp hơn chút ít nhưng p95 giảm một nửa có thể đúng cho autocomplete, nhưng không đúng cho tóm tắt hợp đồng. Với streaming, mình đo thêm thời gian đến token đầu tiên.
+
+## Tín hiệu online và tracing
+
+Eval offline chỉ tốt bằng dataset của nó. Production luôn có những input bạn chưa nghĩ tới, nên cần tín hiệu từ người dùng thật:
+
+- **Thumbs up/down:** rất thưa, và nghiêng về người đang bực. Dùng để tìm case xấu, đừng dùng như một chỉ số chất lượng độc lập.
+- **Người dùng sửa output:** nếu UI cho sửa bản tóm tắt trước khi lưu, tỉ lệ ký tự bị sửa là tín hiệu ngầm rất tốt — sửa 5% là chỉnh câu chữ, sửa 80% là output vô dụng.
+- **Generate lại, copy, bỏ dở:** bấm "tạo lại" liên tục gần như chắc chắn là không hài lòng.
+
+Những tín hiệu này chỉ có giá trị khi gắn được về đúng request. Mỗi lần gọi model, mình ghi một trace:
+
+```ts
+export type LlmTrace = {
+  traceId: string;
+  feature: string;
+  promptVersion: string;
+  model: string;
+  input: string;
+  retrievedIds?: string[];
+  output: string;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+  timeToFirstTokenMs?: number;
+  error?: string;
+};
+
+export type FeedbackEvent =
+  | { traceId: string; kind: "thumb"; value: "up" | "down"; comment?: string }
+  | { traceId: string; kind: "edited"; changedCharRatio: number }
+  | { traceId: string; kind: "regenerated" };
+```
+
+`promptVersion` là trường mình hối hận nhất vì không có từ đầu: thiếu nó thì không biết thumbs-down tăng là do prompt mới hay người dùng mới. Input và output có thể chứa dữ liệu nhạy cảm, nên áp dụng cùng chính sách che và thời hạn lưu như log khác. OpenTelemetry có semantic conventions cho GenAI, nhưng tại thời điểm viết chúng vẫn ở trạng thái development, chưa stable — dùng được, miễn là bạn chấp nhận tên thuộc tính có thể đổi.
+
+Vòng lặp quan trọng nhất: trace bị đánh giá xấu → người đọc và xác nhận → trở thành case mới trong golden dataset. Đó là cách bộ eval lớn lên đúng hướng. Nếu tính năng có RAG, trace còn cho biết lỗi nằm ở retrieval hay generation — xem thêm bài [RAG trả lời đúng trong thực tế](/blog/rag-pipeline-in-practice).
+
+## Đừng overfit bộ eval
+
+Khi một con số trở thành mục tiêu, nó ngừng là thước đo tốt. Tối ưu prompt vài tháng theo cùng một bộ case, rất dễ ra một prompt đạt điểm cao trên đúng những case đó mà ngoài đời không hơn gì. Cách mình giữ bộ eval trung thực:
+
+- **Tách dev set và held-out set.** Dev set để lặp hằng ngày, xem thoải mái. Held-out chỉ chạy trước khi release, và không ai sửa prompt dựa trên từng case trong đó.
+- **Không đưa case eval vào few-shot example.** Nghe hiển nhiên, nhưng copy một ví dụ "hay" từ dataset vào prompt là chuyện xảy ra thường xuyên.
+- **Làm mới dataset từ traffic mới** mỗi tháng. Người dùng thay đổi, tính năng thay đổi; bộ eval năm ngoái đo người dùng năm ngoái.
+- **Đừng tối ưu theo tính khí của judge.** Prompt mới đạt cao hơn chủ yếu vì output dài hơn có thể chỉ là verbosity bias. Người đọc ngẫu nhiên vài output mỗi tuần là không thay thế được.
+- **So sánh điểm trên case cũ và case mới thêm.** Điểm trên case cũ cao mà case mới thấp là dấu hiệu overfit rõ ràng.
+
+## Tóm tắt
+
+<Checklist>
+
+- Đối xử với eval như test suite: đo tỉ lệ đạt trên một tập input đại diện, không phải một lần chạy thấy ổn.
+- Xây golden dataset từ usage thật, có chủ đích chọn đuôi dài và lỗi đã biết; gán nhãn bằng thuộc tính, không bằng output chính xác.
+- Vắt kiệt kiểm tra deterministic trước: schema, contains/excludes, độ dài, category; chạy schema check cả trong production.
+- LLM-as-judge: một tiêu chí mỗi lần gọi, pass/fail, lý do trước kết luận, và hiệu chỉnh với nhãn của người trước khi tin.
+- Pairwise thì hỏi hai lần với thứ tự đảo ngược để trung hoà position bias.
+- Chạy eval trong CI khi prompt, model hay retrieval thay đổi; chặn regression rõ ràng, không chặn vì nhiễu.
+- Báo cáo chất lượng cùng chi phí và độ trễ; ghi trace có prompt version và gắn feedback về đúng trace.
+- Tách held-out set, làm mới dataset định kỳ, và đừng tối ưu theo tính khí của judge.
+
+</Checklist>

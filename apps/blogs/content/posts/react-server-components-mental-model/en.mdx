@@ -1,0 +1,359 @@
+---
+title: "React Server Components: Rebuilding the Mental Model"
+excerpt: "Two module graphs instead of two kinds of components, why \"use client\" is really a boundary, serializable props, passing Server Components through children, the RSC payload, server functions as public RPC endpoints, the mistakes I see most, and caching with Cache Components in Next.js 16."
+---
+
+<Lead>In a review once, I saw a PR that added exactly one "Like" button to a blog post page, yet the JavaScript bundle for that route grew noticeably. The reason: to attach an `onClick`, the author put `"use client"` at the top of `page.tsx`. The markdown parser and syntax highlighter — things that used to run only on the server — followed it down to the browser. Nothing was syntactically wrong; the mental model was. This post is the model I use to explain React Server Components (RSC) to my team, and what it means in practice in Next.js 16.</Lead>
+
+## Not two kinds of components, but two module graphs
+
+The most common framing — and the most harmful one — is "there are Server Components and Client Components, two different kinds of thing". In reality, at build time the bundler constructs **two module graphs**: one for the server environment and one for the client. A file isn't "a server file" or "a client file"; which graph it belongs to depends on **who imports it**.
+
+A `formatCount` helper imported only by Server Components exists only on the server; imported by a client module, it gets bundled for the browser. Components work the same way: a component with no directive is a Server Component when rendered from the server tree, and a Client Component when imported from a client module.
+
+| | Server graph | Client graph |
+| --- | --- | --- |
+| Where it runs | Only on the server (at build or request time) | The server (for SSR to HTML) and the browser |
+| Can use | `async` components, databases, secrets, the file system | State, effects, event handlers, browser APIs |
+| Can't use | `useState`, `useEffect`, `onClick` | Secrets, server-only modules |
+| Ships JS to the browser? | No | Yes, the whole import tree |
+
+The last row matters most: the cost of a Client Component is **everything it drags along**.
+
+## `"use client"` marks a boundary, not a component type
+
+The `"use client"` directive tells the bundler: "from this module down, switch to the client graph". It is the **entry point** into the client graph, not a label you stick on each component. So:
+
+- You only need it on the module sitting right at the boundary — the one a Server Component imports. Everything that module imports is already in the client graph without a directive.
+- Putting `"use client"` on a module that is only ever imported by other client modules does nothing.
+- Client Components **are still rendered to HTML on the server** during SSR. "Client" means their code is shipped and hydrated, not "rendered only in the browser". Touching `window` in a component body still blows up during SSR.
+
+Back to the PR from the intro. The fix is to keep `page.tsx` a Server Component and split out exactly the interactive part into a module with its own boundary:
+
+```tsx
+import { getPost } from "@/data/posts";
+import { renderMarkdown } from "@/lib/markdown";
+import { LikeButton } from "./like-button";
+
+export default async function PostPage({ params }: PageProps<"/posts/[slug]">) {
+  const { slug } = await params;
+  const post = await getPost(slug);
+  const content = await renderMarkdown(post.body);
+
+  return (
+    <article>
+      <h1>{post.title}</h1>
+      {content}
+      <LikeButton postId={post.id} initialCount={post.likeCount} />
+    </article>
+  );
+}
+```
+
+`like-button.tsx` is the only file that needs the directive:
+
+```tsx
+"use client";
+
+import { useOptimistic, useTransition } from "react";
+import { formatCount } from "@/lib/format";
+import { likePost } from "./actions";
+
+export function LikeButton({ postId, initialCount }: { postId: string; initialCount: number }) {
+  const [optimisticCount, setOptimisticCount] = useOptimistic(initialCount);
+  const [isPending, startTransition] = useTransition();
+
+  function handleLike() {
+    startTransition(async () => {
+      setOptimisticCount(optimisticCount + 1);
+      await likePost(postId);
+    });
+  }
+
+  return (
+    <button type="button" onClick={handleLike} disabled={isPending}>
+      Like · {formatCount(optimisticCount)}
+    </button>
+  );
+}
+```
+
+`formatCount` is now in the client graph, along with whatever `lib/format.ts` imports. In review, I always read the import list of every `"use client"` file — that's where bundles grow.
+
+## Props crossing the boundary must be serializable
+
+A Server Component doesn't hand a Client Component a JavaScript object in the usual sense. Props are **serialized** into the payload, sent over the network and rebuilt on the client. So only certain types are allowed:
+
+| Allowed | Not allowed |
+| --- | --- |
+| string, number, bigint, boolean, `null`, `undefined` | Plain functions (callbacks, event handlers) |
+| Plain objects, Array, Map, Set, Date, TypedArray, ArrayBuffer | Instances of your own classes |
+| JSX (both Server and Client Component elements) | Objects with a `null` prototype |
+| `Promise` (read on the client with `use`) | Symbols not registered via `Symbol.for` |
+| Server functions (marked `"use server"`) | |
+
+The function error is easy to fix. The dangerous problem is the other direction: anything that **can** be serialized **will** be. Passing a raw `user` row from the database into a Client Component means every field — `passwordHash`, internal notes, whatever — is in the payload for anyone with DevTools. The component only displaying `displayName` changes nothing.
+
+My defense is returning a minimal DTO right at the data access layer, in a module that has `import "server-only"`:
+
+```ts
+import "server-only";
+import { db } from "@/lib/db";
+
+export type AuthorCard = {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  joinedAt: Date;
+};
+
+export async function getAuthorCard(authorId: string): Promise<AuthorCard> {
+  const author = await db.user.findUniqueOrThrow({ where: { id: authorId } });
+  return {
+    id: author.id,
+    displayName: author.displayName,
+    avatarUrl: author.avatarUrl,
+    joinedAt: author.createdAt,
+  };
+}
+```
+
+The type doubles as documentation: a reviewer can tell from it exactly what leaves the server.
+
+## Passing Server Components into Client Components via `children`
+
+A Client Component can't `import` a Server Component — that import would pull the module into the client graph. But it can **receive** an already-rendered Server Component through props, usually `children`. This is the pattern I use most:
+
+```tsx
+"use client";
+
+import { useState, type ReactNode } from "react";
+
+export function Collapsible({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <section>
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {title}
+      </button>
+      <div hidden={!open}>{children}</div>
+    </section>
+  );
+}
+```
+
+```tsx
+import { Collapsible } from "@/components/collapsible";
+import { CommentList } from "./comment-list";
+
+export function PostComments({ postId }: { postId: string }) {
+  return (
+    <Collapsible title="Comments">
+      <CommentList postId={postId} />
+    </Collapsible>
+  );
+}
+```
+
+`CommentList` is still a Server Component and can still query the database, because `PostComments` (server) imports and renders it. `Collapsible` only receives the rendered result. The parent–child relationship in the render tree doesn't decide where code runs; the import relationship does.
+
+An easy-to-miss consequence: `children` is rendered on the server **whether or not** the client shows it. A closed `Collapsible` still costs a query and payload bytes; load heavy, rarely-opened content on demand instead.
+
+## What actually travels: the RSC payload
+
+Rendering the server tree doesn't produce HTML; it produces a serialized format called the **RSC payload** (React calls the protocol Flight). Conceptually it carries three things:
+
+- **Server Component output**, flattened into ordinary host elements; the component function doesn't exist on the client.
+- **References to Client Components**: module identifier, export name and serialized props, so the client loads the right JS chunk.
+- **Holes** for content behind `Suspense` or a `Promise`, filled in later — which is why the payload can stream.
+
+A simplified picture (not the real wire format, which is line-based with references):
+
+```json
+{
+  "type": "article",
+  "children": [
+    { "type": "h1", "children": "React Server Components" },
+    {
+      "type": { "clientReference": "app/posts/like-button.tsx#LikeButton" },
+      "props": { "postId": "p_42", "initialCount": 128 }
+    }
+  ]
+}
+```
+
+In Next.js, the first load returns HTML **and** the payload embedded in script tags so React can hydrate. Client-side navigation fetches only the payload (a request with the `rsc: 1` header). Two consequences:
+
+- **Data gets sent twice on first load.** Client Component props sit in the payload, and what they render sits in the HTML. Passing a 5,000-item array to the client means paying for it twice.
+- **Server Components don't "re-render" on the client.** To update one, you have to ask the server to render again (via navigation, `router.refresh()`, or revalidation after a mutation).
+
+<Callout>
+The most compact model I know: a Server Component runs once and returns **data that describes UI**; a Client Component is **code** shipped down to keep running. Any "does this end up in the browser?" question can be answered by asking: is it data in the payload, or a module in the client graph?
+</Callout>
+
+## Server functions are public RPC endpoints
+
+`"use server"` does the opposite of `"use client"`: it marks functions the client is allowed to **call**. On the client side, the compiler replaces the function with a reference (an ID); when called, the framework sends a `POST` request with serialized arguments, and the server looks up the function and runs it. In other words, each server function is an **HTTP endpoint** — you just don't write the route yourself.
+
+And like any endpoint, anyone can call it without going through your UI. The things I treat as mandatory:
+
+- **Authenticate and authorize inside every function.** An auth check in `page.tsx` only decides which UI renders; it does not protect a server function defined in that page.
+- **Validate arguments at runtime.** TypeScript types vanish after the build; a forged request can send anything.
+- **Check ownership of the resource**, not just "is someone logged in", to avoid IDOR bugs.
+- **Return the minimum.** Return values are serialized to the client too.
+
+```ts
+"use server";
+
+import { z } from "zod";
+import { updateTag } from "next/cache";
+import { requireUser } from "@/data/auth";
+import { db } from "@/lib/db";
+
+const renameProjectInput = z.object({
+  projectId: z.string().min(1),
+  name: z.string().trim().min(1).max(80),
+});
+
+export async function renameProject(input: unknown) {
+  const user = await requireUser();
+  const { projectId, name } = renameProjectInput.parse(input);
+
+  const project = await db.project.findUnique({ where: { id: projectId } });
+  if (!project || project.ownerId !== user.id) {
+    throw new Error("Forbidden");
+  }
+
+  await db.project.update({ where: { id: projectId }, data: { name } });
+  updateTag(`project:${projectId}`);
+  return { ok: true as const };
+}
+```
+
+Next.js adds defense in depth — action IDs that change between builds, dropping unused actions, an `Origin` vs `Host` check against CSRF, encrypting closure variables captured by inline server functions — but none of it replaces authorization. Closure variables still round-trip through the client; don't keep secrets there.
+
+<Callout>
+The attack surface isn't only your code. In December 2025, React disclosed CVE-2025-55182: an unauthenticated remote code execution bug (CVSS 10.0) in how the `react-server-dom-*` packages decode payloads sent to server function endpoints, affecting Next.js and other RSC frameworks. A few DoS and source-exposure CVEs followed. The lesson: upgrading React/Next.js when a patch lands should take a day, not a sprint.
+</Callout>
+
+## The mistakes I see most
+
+| Mistake | Symptom | Fix |
+| --- | --- | --- |
+| Importing server code into a client module | Confusing build errors, or secrets and the ORM bundled for the client | `import "server-only"` in modules touching the DB or secrets |
+| A client boundary that's too big | `"use client"` on a layout or page, bloated bundle | Push the boundary down to the leaves |
+| A provider wrapping the whole app | `"use client"` on the root layout just to use context | Split the provider into a Client Component that takes `children` |
+| Reading context in a Server Component | Server Components have no context | Use React's `cache` to share data within a request |
+
+Theme, i18n and TanStack Query all need context, which only exists on the client. Don't turn the layout into a client module; wrap the provider in a small one:
+
+```tsx
+"use client";
+
+import { createContext, use, type ReactNode } from "react";
+
+type Theme = "light" | "dark";
+
+const ThemeContext = createContext<Theme>("light");
+
+export function ThemeProvider({ theme, children }: { theme: Theme; children: ReactNode }) {
+  return <ThemeContext value={theme}>{children}</ThemeContext>;
+}
+
+export function useTheme() {
+  return use(ThemeContext);
+}
+```
+
+The layout stays a Server Component and renders `ThemeProvider` around `children`, so child pages stay Server Components too. I also place providers **as deep as possible**: a dashboard-only provider lives in the dashboard layout, not the root.
+
+On the server side, the replacement for context is React's `cache` — memoized per request, so many components calling the same function only pay once:
+
+```ts
+import "server-only";
+import { cache } from "react";
+import { cookies } from "next/headers";
+import { verifySession } from "@/lib/session";
+
+export const getCurrentUser = cache(async () => {
+  const token = (await cookies()).get("session")?.value;
+  return token ? verifySession(token) : null;
+});
+```
+
+## Caching in Next.js 16: Cache Components
+
+The App Router caching model has changed significantly. Since Next.js 16, enabling `cacheComponents: true` makes **everything dynamic by default**, and you opt into caching with the `"use cache"` directive. The old `experimental.ppr` flag is gone; Partial Prerendering is now simply how Cache Components behaves. Without the flag, the app keeps the previous model. Newer 16.x releases also have a `partialPrefetching` option the docs recommend setting explicitly alongside it — read the docs for the version you run.
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+};
+
+export default nextConfig;
+```
+
+The core rule: during prerendering, a component that reads uncached data or uses a runtime API (`cookies()`, `headers()`, `searchParams`) must sit inside `Suspense` or be cached. Otherwise Next.js reports a "blocking route" error. Static and cached parts become the static shell; dynamic parts stream in afterwards.
+
+```tsx
+import { Suspense } from "react";
+import { cacheLife, cacheTag } from "next/cache";
+import { getCurrentUser } from "@/data/auth";
+import { db } from "@/lib/db";
+
+async function getProject(projectId: string) {
+  "use cache";
+  cacheLife("hours");
+  cacheTag(`project:${projectId}`);
+  return db.project.findUniqueOrThrow({ where: { id: projectId } });
+}
+
+async function ProjectHeader({ projectId }: { projectId: string }) {
+  const project = await getProject(projectId);
+  return <h1>{project.name}</h1>;
+}
+
+async function ViewerBadge() {
+  const user = await getCurrentUser();
+  return <span>{user ? user.displayName : "Guest"}</span>;
+}
+
+export default function ProjectPage({ params }: PageProps<"/projects/[id]">) {
+  return (
+    <>
+      <Suspense fallback={<h1>Loading…</h1>}>
+        {params.then(({ id }) => <ProjectHeader projectId={id} />)}
+      </Suspense>
+      <Suspense fallback={<span>…</span>}>
+        <ViewerBadge />
+      </Suspense>
+    </>
+  );
+}
+```
+
+What I learned moving to this model:
+
+- **Arguments and closure variables are the cache key**, so they must be serializable too — the same rule as props crossing the boundary.
+- **Don't read `cookies()` inside `"use cache"`.** Read it outside and pass the value in as an argument, or use the `"use cache: private"` variant for per-user data.
+- **The default cache lives in each instance's memory**, which may not survive between serverless requests. `"use cache: remote"` moves it to a shared handler, at the cost of a round trip.
+- **Invalidate by tag.** In a server function, `updateTag` gives read-your-own-writes; `revalidateTag(tag, "max")` gives stale-while-revalidate and can also be called from a Route Handler, such as a CMS webhook.
+
+The HTTP and CDN cache layers in front of all this are covered in my [caching post](/blog/caching-for-frontend-developers).
+
+## Key takeaways
+
+<Checklist>
+
+- Think in two module graphs: whether a file is server or client depends on who imports it.
+- `"use client"` is the entry point into the client graph; everything it imports ships to the browser.
+- Props crossing the boundary must be serializable, and anything serializable is exposed — return minimal DTOs from `server-only` modules.
+- Pass Server Components into Client Components through `children` instead of importing them.
+- Server functions are public `POST` endpoints: authenticate, authorize, validate and return the minimum in each one; patch React/Next.js as soon as an advisory lands.
+- Push client boundaries to the leaves; wrap providers in small client modules placed as deep as possible.
+- With Cache Components: dynamic by default, cache with `"use cache"` + `cacheLife` + `cacheTag`, read runtime APIs inside `Suspense`.
+
+</Checklist>

@@ -1,0 +1,237 @@
+---
+title: "Bundle Analysis and Tree Shaking: What's in Your Bundle and Why"
+excerpt: "How to read a bundle analyzer in 2026 (next analyze, rollup-plugin-visualizer, source-map-explorer), how tree shaking really works with ESM, sideEffects, barrel files and CommonJS, the usual traps like moment and lodash, duplicate dependencies, polyfills, and bundle budgets in CI with size-limit."
+---
+
+<Lead>A PR that only added a "last updated" label to a dashboard header made the page's client JavaScript noticeably heavier. The diff was a dozen lines. The cause was one import from a shared `utils` barrel file, which dragged in a date library with all its locales, plus a chart helper nobody on that page used. No reviewer could have spotted it by reading code. You can't reason about bundle size from source; you have to look at the module graph. This post is how I do that, and how I stop it from slipping through again.</Lead>
+
+Splitting and lazy loading are covered in [the code splitting post](/blog/code-splitting-and-lazy-loading-react). This one is the step before: finding *what* is in a chunk and *why*.
+
+## Pick the number before you pick the tool
+
+Bundle size isn't one number:
+
+- **Compressed size (gzip or Brotli)** is what crosses the network.
+- **Uncompressed size** is what the browser parses, compiles and executes. On a mid-range phone, that CPU cost often hurts more than the download.
+- **First-load JS per route** is what a user pays to open a page; the app-wide total matters much less.
+- **Client vs server:** server code never ships to the browser but affects cold starts. Don't optimize the wrong side.
+
+Also worth knowing: since Next.js 16, `next build` no longer prints JS size per route. If your team relied on that table, you now need an analyzer or a CI budget.
+
+## Analyzers that work today
+
+| Tool | Bundler | Strength | Caveat |
+| --- | --- | --- | --- |
+| `next analyze` | Turbopack (Next.js 16.1+) | Import chains, filter by route and client/server | Shipped as `next experimental-analyze` in 16.1; newer versions document it as `next analyze` |
+| `@next/bundle-analyzer` | webpack | Familiar treemap | Only works with `next build --webpack` |
+| `rollup-plugin-visualizer` | Vite 8 (Rolldown), Rollup | Treemap, sunburst, network graph, text reports | Version 7 requires Node 22+ |
+| `source-map-explorer` | Anything with source maps | Breaks down a single output file | Last release in 2022; only as accurate as your source maps |
+
+With Next.js 16 and Turbopack, I use the built-in analyzer. It serves an interactive UI on port 4000 by default:
+
+```bash
+npx next analyze
+npx next analyze --output --snapshot before-refactor
+npx next analyze export --snapshot before-refactor > bundle-graph.jsonl
+```
+
+The killer feature is the **import chain**: click a module to see the full path from your route to it, across the Server/Client Component boundary. `--output` writes the analysis to `.next/diagnostics/analyze` instead of serving it, `--snapshot` gives that capture a name, and since 16.4 `next analyze export` streams a saved snapshot as JSON Lines, handy for diffing before and after a refactor. Flags have moved between 16.x releases, so check `--help` on your version.
+
+For Vite, I keep the visualizer behind an environment variable:
+
+```ts
+import { defineConfig, type PluginOption } from "vite";
+import react from "@vitejs/plugin-react";
+import { visualizer } from "rollup-plugin-visualizer";
+
+export default defineConfig({
+  plugins: [
+    react(),
+    process.env.ANALYZE === "true" &&
+      (visualizer({ filename: "stats.html", template: "treemap", gzipSize: true, brotliSize: true }) as PluginOption),
+  ],
+});
+```
+
+The `network` template answers "why is this here?": it draws who imports whom, and greys out modules that were tree-shaken away.
+
+<Callout>
+  "How big is it?" is the less useful question. "Which import chain brought it in?" leads to a fix. A big module is fine if the route needs it; a small one arriving through the wrong barrel is usually the tip of something larger.
+</Callout>
+
+## How tree shaking actually works
+
+"Tree shaking" is really two different mechanisms, and they fail in different ways.
+
+**1. Dropping unused exports.** The bundler reads static `import` and `export` statements, marks which exports are used, and the minifier removes the rest. This needs exports to be statically visible, which is why ESM matters.
+
+**2. Skipping whole modules.** If nothing from a module is used, the bundler can skip it only if it knows the module has **no side effects**: no top-level code that registers a locale, patches a global or injects CSS on import. Look at this module:
+
+```tsx
+import { registerLocale } from "./locale-registry";
+import { formatCurrency } from "./format-currency";
+
+registerLocale("vi", { currency: "VND", decimalSeparator: "," });
+
+export function PriceTag({ amount }: { amount: number }) {
+  return <span>{formatCurrency(amount, "vi")}</span>;
+}
+```
+
+Even if no page uses `PriceTag`, the `registerLocale` call might matter, so a careful bundler keeps the module. Multiply that across hundreds of files.
+
+The `sideEffects` field in `package.json` is how a package promises the bundler which files are safe to skip:
+
+```json
+{
+  "name": "@acme/ui",
+  "sideEffects": ["*.css", "./src/register-locales.ts"]
+}
+```
+
+`"sideEffects": false` means every file is safe to drop if unused. It's a promise, not a hint: set `false` on a package that imports CSS and the CSS silently vanishes in production. For single expressions, the `/*#__PURE__*/` annotation marks a call as side-effect-free; libraries emit it, app code rarely needs it. In a monorepo, set `sideEffects` on internal packages too, or the bundler assumes the worst.
+
+## Barrel files: the convenient trap
+
+A barrel is an `index.ts` that re-exports everything (`export * from "./Button"`, `export * from "./DataGrid"`). Importing one thing from it forces the bundler to load and analyze every module behind it. Modules not provably side-effect-free stay, and even when tree shaking succeeds, the dev server and test runner still compile them all.
+
+In app code, I import from the real module path or expose subpaths via the `exports` field of internal packages. For libraries with huge barrels, Next.js has `optimizePackageImports`, which rewrites `import { X } from "pkg"` into a direct import of the module defining `X`.
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  experimental: {
+    optimizePackageImports: ["@acme/ui", "@acme/charts"],
+  },
+};
+
+export default nextConfig;
+```
+
+It's still `experimental`, but popular packages such as `lucide-react`, `date-fns`, `lodash-es`, `@mui/material`, `react-icons/*`, `recharts` and `rxjs` are optimized by default. You add your own, including workspace packages.
+
+## CommonJS: where tree shaking gives up
+
+`module.exports = ...`, conditional `require`, `exports[name] = ...`: none of these can be analyzed statically, so the bundler usually takes the whole CommonJS module. A CommonJS-only package won't tree shake however carefully you import. Before adding a dependency, I check its `package.json` for an `exports` field with an `import` condition, or a `module` field. In the analyzer, the tell is a package showing every file while you use one function. Lodash is the textbook case:
+
+| Import | What ends up in the bundle |
+| --- | --- |
+| `import { debounce } from "lodash"` | All of lodash (CommonJS) |
+| `import debounce from "lodash/debounce"` | `debounce` and its internal helpers |
+| `import { debounce } from "lodash-es"` | Only `debounce` (ESM) |
+| `import { debounce } from "es-toolkit"` | Only `debounce` (ESM, modern rewrite) |
+
+Sometimes the platform already has it: `structuredClone` instead of `cloneDeep`, `Intl` instead of a formatting library.
+
+## The usual suspects
+
+**moment.** Its own docs have called it a legacy project in maintenance mode for years. It's one big object with methods, so nothing tree shakes, and older webpack setups pulled in every locale. For formatting, `Intl` is often enough:
+
+```ts
+const orderTimeFormatter = new Intl.DateTimeFormat("vi-VN", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Asia/Ho_Chi_Minh",
+});
+const relativeDayFormatter = new Intl.RelativeTimeFormat("vi", { numeric: "auto" });
+
+export function formatOrderTime(isoString: string) {
+  return orderTimeFormatter.format(new Date(isoString));
+}
+
+export function formatDaysAgo(days: number) {
+  return relativeDayFormatter.format(-days, "day");
+}
+```
+
+For date arithmetic, `date-fns` (ESM functions) or `dayjs` (small core plus plugins) are the usual replacements. `Temporal` has shipped in Chrome and Firefox, but Safari only has it in Technology Preview as I write this, so production use still means a polyfill that isn't small.
+
+**Icons by name.** `import * as Icons from "lucide-react"` plus `Icons[name]` defeats every optimization: the bundler can't know which names you'll look up, so it keeps them all. Use an explicit map:
+
+```tsx
+import { Bell, Settings, User, type LucideIcon } from "lucide-react";
+
+export const navigationIcons = {
+  notifications: Bell,
+  settings: Settings,
+  profile: User,
+} satisfies Record<string, LucideIcon>;
+```
+
+**Work that belongs on the server.** Markdown parsers, syntax highlighters and big JSON lookups in Client Components ship to every visitor even when the output is static HTML. Move them into Server Components.
+
+## Duplicate dependencies and polyfills
+
+**Duplicates** appear when packages need incompatible ranges of the same dependency: the analyzer shows `date-fns` twice under different paths. Find who pulls each copy with `npm ls date-fns`, `pnpm why date-fns` or `bun why date-fns`. Then: upgrade the lagging dependency, try `npm dedupe` or `pnpm dedupe`, and only as a last resort force a version (npm and Bun read `overrides`, Yarn reads `resolutions`, pnpm has its own `overrides` setting).
+
+```json
+{
+  "overrides": {
+    "date-fns": "^4.1.0"
+  }
+}
+```
+
+Forcing a version runs a dependency against a version its authors didn't test, so read the changelog. For some packages duplication is a bug, not just bytes: two copies of React or a context-based library break hooks and context in confusing ways.
+
+**Polyfills.** Next.js targets Chrome, Edge and Firefox 111+ and Safari 16.4+ by default, serves its `fetch` and `URL` polyfills only to browsers that need them, and strips duplicate copies from dependencies. Polyfill weight I find usually comes from elsewhere: a dependency published as ES5 with `core-js` baked in, an old `import "core-js/stable"`, or a `browserslist` widened years ago. Search the analyzer for `core-js`, `regenerator-runtime`, `@babel/runtime` and `tslib`. Load needed polyfills conditionally; in the App Router, global ones go in `instrumentation-client.ts`.
+
+## Bundle budgets in CI with size-limit
+
+An analyzer explains a regression; a budget *catches* it. I use [size-limit](https://github.com/ai/size-limit) with the `@size-limit/file` plugin, which measures built files with Brotli by default. For a Vite app, in `package.json`:
+
+```json
+{
+  "size-limit": [
+    {
+      "name": "Entry chunk",
+      "path": "dist/assets/index-*.js",
+      "limit": "120 kB",
+      "message": "Open the bundle analyzer and explain the increase in the PR description."
+    },
+    {
+      "name": "All JavaScript",
+      "path": "dist/assets/*.js",
+      "limit": "380 kB"
+    }
+  ]
+}
+```
+
+For Next.js, `.next/static/chunks/**/*.js` gives a coarse total; it won't say which route grew, so I pair it with analyzer snapshots. The limits are illustrative: I set mine at current size plus a little headroom and ratchet them down after real improvements. In GitHub Actions, `andresz1/size-limit-action` compares the PR against the base branch and comments the difference:
+
+```yaml
+name: size
+on: pull_request
+permissions:
+  pull-requests: write
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: andresz1/size-limit-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+<Callout>
+  A budget doesn't forbid growth; it makes growth a conscious decision. Sometimes the right answer is "this feature is worth 15 kB, raise the limit", written in the PR where reviewers see it. What it prevents is the dozen-line PR that quietly adds a library nobody chose.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Know which number you track: compressed or not, per route or total, client or server.
+- Next.js 16 with Turbopack: `next analyze` and its import chains; `@next/bundle-analyzer` is webpack-only.
+- Vite: `rollup-plugin-visualizer`, with the `network` template for "why is this here".
+- Tree shaking needs ESM plus `sideEffects`; that field is a promise, so list CSS in it.
+- Avoid barrel imports in app code; use `optimizePackageImports` for barrel-heavy libraries.
+- Check `exports` and `module` before adding a dependency; CommonJS-only won't tree shake.
+- Swap moment and lodash for `Intl`, ESM libraries or platform APIs; no dynamic icon lookups.
+- Hunt duplicates with `npm ls`, `pnpm why` or `bun why`; `overrides` is a last resort.
+- Keep a size-limit budget in CI so every increase is deliberate.
+
+</Checklist>

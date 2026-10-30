@@ -1,0 +1,222 @@
+---
+title: "Quy trình làm frontend cùng AI mà vẫn trụ được trên production"
+excerpt: "Coding agent thật sự giúp được team frontend ở đâu và âm thầm hỏng ở đâu, cách cho chúng context bằng AGENTS.md và task nhỏ, lên plan trước khi code, vòng lặp kiểm chứng, review PR do AI viết, rủi ro supply chain như slopsquatting, và những kỹ năng nào quan trọng hơn với kỹ sư mid và senior."
+---
+
+<Lead>Cùng một tuần hồi mùa xuân năm nay, một coding agent giúp mình chuyển khoảng bốn mươi component khỏi một API nội bộ đã deprecated chỉ trong một buổi chiều, còn một phiên khác thì "sửa" một test chập chờn bằng cách tăng timeout, che mất một race condition thật và nó lọt lên tận staging. Hai PR trông tự tin y như nhau. Đó là cốt lõi của làm việc với AI trong team frontend: chất lượng output dao động rất lớn, còn cách trình bày thì không. Bài này là quy trình team mình chốt lại sau một năm dùng agent hằng ngày — giao gì, brief thế nào, kiểm tra ra sao.</Lead>
+
+## Agent đáng tiền ở đâu, và không ở đâu
+
+Sau một năm, quy luật đủ ổn định để mình đưa vào tài liệu onboarding:
+
+| Làm tốt | Hỏng một cách lặng lẽ |
+| --- | --- |
+| Dựng khung component, route hay file test theo một ví dụ có sẵn | Bug tinh vi về state và thời điểm: stale closure, thiếu cleanup trong effect, race condition |
+| Viết test cho code đã tồn tại và đang chạy đúng | Accessibility vượt mức cơ bản: quản lý focus, live region, bẫy bàn phím |
+| Refactor và migration cơ học có pattern trước/sau rõ ràng | Độ trung thành với design: spacing, các trường hợp responsive, chọn variant component "gần đúng" |
+| Giải thích code lạ, lần theo chuỗi gọi hàm, tóm tắt một module | Thay đổi API gần đây: gợi ý pattern từ phiên bản framework cũ |
+| Viết type cho một API response lộn xộn, viết codemod, script dùng một lần | Quyết định cần context sản phẩm mà agent không có |
+
+Cột trái có điểm chung: có pattern để bắt chước và cách rẻ để kiểm tra kết quả. Cột phải cần thông tin không nằm trong repo, hoặc phán đoán khó kiểm chứng bằng máy.
+
+API lỗi thời đáng nói riêng vì trông chúng hoàn toàn đúng. Agent vẫn gợi ý `forwardRef` trong code React 19, trong khi `ref` giờ đã là prop bình thường của function component, hoặc viết `middleware.ts` trong app Next.js 16, nơi convention này đã đổi tên thành `proxy.ts`. Cả hai đều không làm build lỗi ngay, và đó chính là lý do chúng lọt qua review.
+
+## Context giờ mới là phần việc chính
+
+Phần lớn output tệ mình gặp đến từ brief tệ, không phải model tệ. Agent đọc được code, nhưng không đọc được những gì trong đầu bạn: trong ba hàm xử lý ngày tháng thì cái nào đang dùng, thư mục `legacy/` đã bị đóng băng, phải dùng `Button` của design system chứ không dùng thẻ `button` thô.
+
+### File hướng dẫn cho dự án
+
+Những hiểu biết đó được đưa vào một file hướng dẫn cho dự án. `AGENTS.md` đã trở thành định dạng chung — hiện được Agentic AI Foundation thuộc Linux Foundation quản lý và được rất nhiều công cụ coding đọc. Một số công cụ dùng tên file riêng, như `CLAUDE.md` của Claude Code; mình giữ một nguồn duy nhất và trỏ file còn lại về đó, thay vì duy trì hai bản rồi để chúng lệch nhau dần. File của team mình cố tình ngắn và nhàm chán:
+
+```md
+## Commands
+- Install: bun install
+- Verify everything: bun run verify
+- Single test file: bun run test path/to/file.test.tsx
+
+## Conventions
+- UI components come from packages/ui. Never use raw button, input or dialog elements in apps.
+- Data fetching goes through the query hooks in src/queries, not fetch inside components.
+- Dates: use src/lib/dates.ts only. date-fns and dayjs are not dependencies.
+- No new dependencies without asking first.
+
+## Boundaries
+- Do not edit anything under src/legacy or generated files under src/api/generated.
+- Do not change snapshot or screenshot baselines to make a test pass.
+```
+
+Những dòng đáng có mặt là những chỗ agent từng làm sai: mỗi lần phải sửa cùng một lỗi hai lần, nó thành một dòng ở đây. Lời khuyên chung chung kiểu "viết code sạch" chẳng thay đổi gì mà còn tốn context.
+
+### Task nhỏ, có ranh giới
+
+Đòn bẩy thứ hai là kích thước task. "Làm trang settings" là lời mời agent tự bịa ra nửa sản phẩm. "Thêm form `NotificationPreferences` vào trang settings hiện có, theo cùng pattern với `ProfileForm`, lưu qua `useUpdateSettings`" cho nó một ví dụ để bắt chước, một ranh giới, và một định nghĩa hoàn thành rõ ràng. Task review được trong mười lăm phút là vừa; diff quá lớn để đọc kỹ thì cũng quá lớn để merge.
+
+## Lên plan trước, code sau
+
+Với mọi thứ lớn hơn một thay đổi nhỏ, mình yêu cầu plan trước khi có dòng code nào: file nào sẽ đổi, type mới trông ra sao, tái sử dụng những phần nào có sẵn, và cái gì nằm ngoài phạm vi. Nhiều công cụ giờ đã có chế độ lên plan riêng; nếu công cụ của bạn không có, chỉ cần nói "đề xuất plan, chưa sửa file nào" là đủ.
+
+Review plan rẻ hơn review diff rất nhiều. Các vấn đề quen thuộc lộ ra ngay: một helper mới trùng với helper đã có, state được đặt vào global store trong khi nó thuộc về URL, một migration đụng tới API contract. Sửa trong plan mười dòng mất một phút; sửa trong diff 600 dòng là làm lại từ đầu.
+
+Với việc lớn, mình giữ plan trong mô tả PR để người review đối chiếu code với ý định ban đầu — câu hỏi review quan trọng nhất.
+
+## Vòng lặp kiểm chứng để agent tự chạy
+
+Agent chạy được các bước kiểm tra và đọc được kết quả sẽ tự sửa phần lớn lỗi trước khi mình kịp thấy. Nên khoản đầu tư đáng giá nhất không phải kỹ thuật prompt, mà là một lệnh duy nhất kiểm tra mọi thứ thật nhanh. Của team mình nằm trong `package.json`:
+
+```json
+{
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:visual": "playwright test --project=visual",
+    "verify": "bun run typecheck && bun run lint && bun run test"
+  }
+}
+```
+
+Type và lint bắt được import bịa ra và prop sai hình dạng. Unit test bắt được logic bị hồi quy. Nhưng không cái nào bắt được "padding của card sai trên mobile ở dark mode", mà đó lại đúng là kiểu lỗi agent hay mắc. Cho việc này, team giữ một bộ nhỏ visual regression test cho những màn hình quan trọng:
+
+```ts
+import { test, expect } from "@playwright/test";
+
+const viewports = [
+  { name: "mobile", width: 390, height: 844 },
+  { name: "desktop", width: 1280, height: 800 },
+];
+
+for (const viewport of viewports) {
+  test(`pricing page matches baseline on ${viewport.name} in dark mode`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+    await page.goto("/pricing");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page).toHaveScreenshot(`pricing-${viewport.name}-dark.png`, {
+      fullPage: true,
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+}
+```
+
+Để ý quy tắc trong file hướng dẫn: agent không được cập nhật baseline để test pass. Thiếu nó, agent được bảo "làm cho test xanh" đôi khi sẽ làm đúng như thế. Muốn biết tầng test nào kiểm tra cái gì, xem bài [Chiến lược test frontend thực tế](/blog/frontend-testing-strategy).
+
+<Callout>
+  Check xanh chứng minh code compile được và khớp với những test đang có. Nó không chứng minh các test đó có ý nghĩa. Agent rất giỏi viết test pass; còn test đó có fail khi có bug thật hay không vẫn là câu hỏi của con người.
+</Callout>
+
+## Review PR do AI viết một cách khắt khe
+
+Mình review PR của agent như PR của một bạn mới vào làm rất nhanh, rất tự tin và không bao giờ hỏi lại. Các nguyên tắc chung về [code review](/blog/code-review-giving-and-receiving) vẫn áp dụng, nhưng có một nhóm dấu hiệu mình giờ tìm riêng:
+
+- **Test kiểm tra chính cái mock.** Assertion chỉ kiểm tra hàm bị mock được gọi với đúng tham số mà code truyền vào, không nói gì về hành vi.
+- **Vấn đề bị bịt miệng.** `as any`, non-null assertion, `eslint-disable`, `test.skip`, timeout bị tăng, `catch` rỗng.
+- **Tiện ích bị phát minh lại.** Một hàm `formatCurrency` mới nằm ngay cạnh hàm cũ, vì agent không tìm trước.
+- **Effect lẽ ra phải là derived state**, và effect khởi chạy việc bất đồng bộ mà không có cleanup.
+- **Phình phạm vi.** Những file không liên quan bị format lại hoặc "cải thiện" kèm theo thay đổi chính.
+
+Lỗi về effect là bug tinh vi mình gặp nhiều nhất. Đây là hình dạng điển hình — chạy ngon khi demo và hỏng khi người dùng gõ nhanh:
+
+```tsx
+useEffect(() => {
+  searchProducts(query).then(setResults);
+}, [query]);
+```
+
+Response có thể về sai thứ tự, nên kết quả cho "ca" ghi đè kết quả cho "cat". Cách sửa rất nhỏ, nhưng phải biết mà tìm:
+
+```tsx
+useEffect(() => {
+  const controller = new AbortController();
+  searchProducts(query, controller.signal)
+    .then(setResults)
+    .catch((error: unknown) => {
+      if (!controller.signal.aborted) setSearchError(error);
+    });
+  return () => controller.abort();
+}, [query]);
+```
+
+Mình cũng kiểm tra người mở PR có hiểu nó không. Đồng đội mở PR do agent viết thì chịu trách nhiệm y như tự tay gõ. "Phần đó AI làm" không phải câu trả lời cho một câu hỏi review.
+
+## Bảo mật: secret, quyền hạn và package bịa ra
+
+Agent có quyền dùng shell chạy với quyền của chính bạn: đọc được `.env`, gọi API bằng credential của bạn, chạy mọi install script mà dependency mang theo. Vài quy tắc team mình áp dụng:
+
+- **Không để secret production trên máy dev** nơi agent chạy. File `.env` local chỉ chứa key môi trường phát triển.
+- **Dùng phần cài đặt quyền của công cụ** để chặn đọc file chứa secret và bắt buộc phê duyệt cho các lệnh gọi mạng và cài đặt package, thay vì trông chờ agent tự giác.
+- **Không bao giờ dán secret, dữ liệu khách hàng hay token vào prompt**, kể cả "chỉ để debug".
+
+Rủi ro mới hơn là **slopsquatting**, thuật ngữ do Seth Larson đặt ra: model đôi khi bịa ra tên package nghe rất hợp lý, và các nghiên cứu đã thấy cùng những cái tên bịa đó lặp lại qua nhiều lần chạy. Kẻ tấn công có thể đăng ký sẵn những tên đó trên npm và chờ. Lỗi gõ nhầm của con người là ngẫu nhiên; tên package bị bịa ra thì đoán trước được.
+
+Cách phòng thủ của team là một bước CI đánh dấu mọi dependency mà PR thêm vào và đối chiếu với registry. Đó là một script bình thường, `scripts/check-new-deps.ts`, chạy bằng `bun scripts/check-new-deps.ts origin/main`:
+
+```ts
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+type Manifest = { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+type RegistryDocument = { time?: { created?: string }; repository?: { url?: string } };
+
+const minimumAgeInDays = 30;
+const baseRef = process.argv[2] ?? "origin/main";
+
+function dependencyNames(manifest: Manifest): Set<string> {
+  return new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.devDependencies ?? {})]);
+}
+
+const baseManifest: Manifest = JSON.parse(execFileSync("git", ["show", `${baseRef}:package.json`], { encoding: "utf8" }));
+const headManifest: Manifest = JSON.parse(readFileSync("package.json", "utf8"));
+const existingNames = dependencyNames(baseManifest);
+const addedNames = [...dependencyNames(headManifest)].filter((name) => !existingNames.has(name));
+
+async function findProblem(name: string): Promise<string | null> {
+  const response = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2F")}`);
+  if (response.status === 404) return `${name} does not exist on the npm registry`;
+  if (!response.ok) return `${name}: registry returned ${response.status}`;
+  const registryDocument = (await response.json()) as RegistryDocument;
+  const createdAt = registryDocument.time?.created;
+  if (!createdAt) return `${name} has no creation date`;
+  const ageInDays = (Date.now() - Date.parse(createdAt)) / 86_400_000;
+  if (ageInDays < minimumAgeInDays) return `${name} was first published ${Math.floor(ageInDays)} days ago`;
+  if (!registryDocument.repository?.url) return `${name} has no linked source repository`;
+  return null;
+}
+
+const problems = (await Promise.all(addedNames.map(findProblem))).filter((problem) => problem !== null);
+for (const problem of problems) console.error(problem);
+process.exitCode = problems.length > 0 ? 1 : 0;
+```
+
+Script không chặn package hợp lệ mãi mãi, nó chỉ buộc một người phải nhìn vào. Thêm vào đó, setting `minimumReleaseAge` của pnpm (và các tuỳ chọn tương tự ở package manager khác) từ chối những phiên bản vừa publish quá gần đây, giúp phòng các bản release vừa bị chiếm quyền. Bức tranh rộng hơn có trong bài [Bảo mật frontend thực chiến](/blog/frontend-security-in-practice).
+
+<Callout>
+  Cách phòng thủ supply chain rẻ nhất là một quy tắc trong file hướng dẫn cộng một bước CI: không có dependency mới nào nếu chưa có người duyệt. Agent thêm package rất tuỳ tiện; reviewer thì hay lướt qua diff lockfile.
+</Callout>
+
+## Điều gì thay đổi với kỹ sư mid và senior
+
+Tốc độ gõ phím chưa bao giờ là nút thắt, giờ lại càng không. Những kỹ năng quan trọng hơn trông rất giống những thứ vốn đã làm nên kỹ sư senior:
+
+- **Đặc tả công việc.** Chia một tính năng thành các task nhỏ, kiểm chứng được, có ranh giới rõ giờ là đầu vào chính cho công cụ của bạn, không chỉ cho đồng đội.
+- **Đọc code một cách phản biện.** Bạn review nhiều code hơn hẳn số code bạn viết. Nhanh chóng nhận ra race condition, cleanup bị thiếu, abstraction sai là kỹ năng cốt lõi.
+- **Xây dựng khả năng kiểm chứng.** Những team đã đầu tư vào type, test và visual check chạy nhanh nhận được nhiều giá trị từ agent hơn hẳn những team không làm.
+- **Gu ở những chỗ agent yếu**: accessibility, chi tiết tương tác, hiệu năng trong điều kiện thật, phán đoán về sản phẩm.
+
+Với kỹ sư mid-level có một cái bẫy thật: để agent làm đúng những phần mà bạn sẽ học được nhiều nhất. Mình vẫn thỉnh thoảng cố tình debug tay vấn đề khó, vì trực giác bắt bug khi review được xây lên đúng bằng cách đó. Dùng agent để đi nhanh hơn ở những gì bạn đã hiểu, và cố tình chậm lại ở những gì bạn chưa hiểu. Chặng chuyển đổi này mình có viết thêm trong bài [Từ mid-level lên senior frontend](/blog/mid-to-senior-frontend).
+
+## Tóm tắt
+
+<Checklist>
+
+- Giao cho agent việc có pattern để bắt chước và có cách kiểm chứng rẻ; giữ state tinh vi, accessibility và độ trung thành với design dưới sự review sát sao của con người.
+- Cảnh giác với API lỗi thời mà vẫn compile được, như `forwardRef` trong React 19 hay `middleware.ts` trong Next.js 16.
+- Duy trì một file hướng dẫn dự án ngắn, xây từ những lỗi có thật chứ không phải lời khuyên chung chung.
+- Giữ task đủ nhỏ để review trong một lần ngồi, và review plan trước khi review code.
+- Có một lệnh verify chạy nhanh cùng visual test, và cấm cập nhật baseline để test pass.
+- Review PR của AI để tìm test kiểm tra mock, lỗi bị bịt miệng, tiện ích bị viết lại và effect thiếu cleanup; người mở PR là người chịu trách nhiệm.
+- Giữ secret tránh xa agent, dùng cài đặt quyền hạn, và đối chiếu mọi dependency mới với registry.
+- Đầu tư vào đặc tả, đọc code phản biện và kiểm chứng — và vẫn tự học những phần khó.
+
+</Checklist>

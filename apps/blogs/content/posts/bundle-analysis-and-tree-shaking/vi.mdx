@@ -1,0 +1,237 @@
+---
+title: "Phân tích bundle và tree shaking: trong bundle có gì, vì sao nó ở đó"
+excerpt: "Cách đọc bundle analyzer năm 2026 (next analyze, rollup-plugin-visualizer, source-map-explorer), tree shaking thật sự hoạt động thế nào với ESM, sideEffects, barrel file và CommonJS, những cái bẫy quen thuộc như moment và lodash, dependency trùng lặp, polyfill, và đặt ngân sách bundle trong CI với size-limit."
+---
+
+<Lead>Một PR chỉ thêm dòng "cập nhật lần cuối" vào header của dashboard lại làm JavaScript phía client của trang nặng lên thấy rõ. Diff chỉ khoảng chục dòng. Thủ phạm là một import từ barrel file `utils` dùng chung, kéo theo cả một thư viện ngày tháng cùng toàn bộ locale của nó, cộng thêm một helper vẽ biểu đồ mà trang đó không hề dùng. Không reviewer nào nhìn code mà phát hiện được. Bạn không thể suy ra kích thước bundle từ source code; bạn phải nhìn vào module graph. Bài này là cách mình làm việc đó, và cách mình chặn để chuyện tương tự không lọt qua lần nữa.</Lead>
+
+Chia nhỏ bundle và lazy loading đã có trong [bài về code splitting](/blog/code-splitting-and-lazy-loading-react). Bài này là bước trước đó: tìm xem trong một chunk *có gì* và *vì sao* nó ở đó.
+
+## Chọn con số trước khi chọn công cụ
+
+Kích thước bundle không phải một con số duy nhất:
+
+- **Kích thước đã nén (gzip hoặc Brotli)** là thứ đi qua mạng.
+- **Kích thước chưa nén** là thứ trình duyệt phải parse, compile và thực thi. Trên điện thoại tầm trung, chi phí CPU này thường đau hơn cả thời gian tải.
+- **JS tải lần đầu theo từng route** là cái giá người dùng trả khi mở một trang; tổng JS của cả app ít quan trọng hơn nhiều.
+- **Client và server:** code server không bao giờ xuống trình duyệt nhưng ảnh hưởng tới cold start. Đừng tối ưu nhầm phía.
+
+Một thay đổi đáng biết: từ Next.js 16, `next build` không còn in kích thước JS theo route nữa. Nếu team bạn từng dựa vào bảng đó, giờ bạn cần một analyzer hoặc một ngân sách trong CI.
+
+## Các analyzer dùng được hiện nay
+
+| Công cụ | Bundler | Điểm mạnh | Lưu ý |
+| --- | --- | --- | --- |
+| `next analyze` | Turbopack (Next.js 16.1+) | Chuỗi import, lọc theo route và client/server | Ra mắt ở 16.1 với tên `next experimental-analyze`; tài liệu các bản mới ghi là `next analyze` |
+| `@next/bundle-analyzer` | webpack | Treemap quen thuộc | Chỉ chạy với `next build --webpack` |
+| `rollup-plugin-visualizer` | Vite 8 (Rolldown), Rollup | Treemap, sunburst, network graph, báo cáo dạng text | Bản 7 cần Node 22+ |
+| `source-map-explorer` | Bất kỳ bundler nào có source map | Mổ xẻ từng file output | Bản phát hành cuối từ 2022; chính xác tới đâu phụ thuộc source map |
+
+Với Next.js 16 và Turbopack, mình dùng analyzer có sẵn. Mặc định nó mở một giao diện tương tác ở cổng 4000:
+
+```bash
+npx next analyze
+npx next analyze --output --snapshot before-refactor
+npx next analyze export --snapshot before-refactor > bundle-graph.jsonl
+```
+
+Tính năng đáng giá nhất là **chuỗi import**: bấm vào một module là thấy toàn bộ đường đi từ route của bạn tới nó, xuyên qua cả ranh giới Server/Client Component. `--output` ghi kết quả phân tích vào `.next/diagnostics/analyze` thay vì mở server, `--snapshot` đặt tên cho lần chụp đó, và từ 16.4 `next analyze export` xuất một snapshot đã lưu ra JSON Lines, rất tiện để so sánh trước và sau khi refactor. Các flag thay đổi khá nhanh giữa các bản 16.x, nên hãy xem `--help` trên phiên bản của bạn.
+
+Với Vite, mình để visualizer sau một biến môi trường:
+
+```ts
+import { defineConfig, type PluginOption } from "vite";
+import react from "@vitejs/plugin-react";
+import { visualizer } from "rollup-plugin-visualizer";
+
+export default defineConfig({
+  plugins: [
+    react(),
+    process.env.ANALYZE === "true" &&
+      (visualizer({ filename: "stats.html", template: "treemap", gzipSize: true, brotliSize: true }) as PluginOption),
+  ],
+});
+```
+
+Template `network` trả lời câu hỏi "vì sao thứ này có mặt ở đây?": nó vẽ ai import ai, và tô xám những module đã bị tree shaking loại bỏ.
+
+<Callout>
+  "Nó nặng bao nhiêu?" là câu hỏi ít hữu ích hơn. "Chuỗi import nào kéo nó vào?" mới dẫn tới cách sửa. Một module lớn không sao nếu route thật sự cần nó; còn một module nhỏ đi vào qua nhầm barrel file thường chỉ là phần nổi của một thứ lớn hơn.
+</Callout>
+
+## Tree shaking thật sự hoạt động thế nào
+
+"Tree shaking" thật ra là hai cơ chế khác nhau, và chúng hỏng theo những cách khác nhau.
+
+**1. Bỏ các export không dùng.** Bundler đọc các câu lệnh `import` và `export` tĩnh, đánh dấu export nào được dùng, rồi minifier xoá phần còn lại. Điều này đòi hỏi export phải nhìn thấy được một cách tĩnh, và đó là lý do ESM quan trọng.
+
+**2. Bỏ qua nguyên một module.** Nếu không thứ gì trong một module được dùng, bundler chỉ bỏ qua được nó khi biết chắc module đó **không có side effect**: không có code top-level nào đăng ký locale, sửa biến global hay chèn CSS khi được import. Xem module này:
+
+```tsx
+import { registerLocale } from "./locale-registry";
+import { formatCurrency } from "./format-currency";
+
+registerLocale("vi", { currency: "VND", decimalSeparator: "," });
+
+export function PriceTag({ amount }: { amount: number }) {
+  return <span>{formatCurrency(amount, "vi")}</span>;
+}
+```
+
+Kể cả khi không trang nào dùng `PriceTag`, lời gọi `registerLocale` vẫn có thể quan trọng với ai đó, nên một bundler cẩn thận sẽ giữ module lại. Nhân chuyện đó lên hàng trăm file là bạn hiểu.
+
+Trường `sideEffects` trong `package.json` là cách một package cam kết với bundler rằng file nào bỏ đi được an toàn:
+
+```json
+{
+  "name": "@acme/ui",
+  "sideEffects": ["*.css", "./src/register-locales.ts"]
+}
+```
+
+`"sideEffects": false` nghĩa là mọi file đều bỏ được nếu không dùng. Đó là một lời cam kết, không phải gợi ý: đặt `false` cho một package có import CSS là CSS lặng lẽ biến mất trên production. Với từng biểu thức riêng lẻ, annotation `/*#__PURE__*/` đánh dấu một lời gọi hàm là không có side effect; thư viện thường tự sinh ra nó, code ứng dụng hiếm khi cần. Trong monorepo, hãy đặt `sideEffects` cho cả các package nội bộ, nếu không bundler sẽ giả định trường hợp xấu nhất.
+
+## Barrel file: cái bẫy tiện lợi
+
+Barrel là một file `index.ts` re-export mọi thứ (`export * from "./Button"`, `export * from "./DataGrid"`). Import một thứ từ nó buộc bundler phải nạp và phân tích mọi module phía sau. Module nào không chứng minh được là không có side effect thì ở lại, và kể cả khi tree shaking thành công, dev server lẫn test runner vẫn phải compile tất cả.
+
+Trong code ứng dụng, mình import thẳng từ đường dẫn module thật, hoặc mở các subpath qua trường `exports` của package nội bộ. Với thư viện có barrel khổng lồ, Next.js có `optimizePackageImports`, tự viết lại `import { X } from "pkg"` thành import trực tiếp từ module định nghĩa `X`.
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  experimental: {
+    optimizePackageImports: ["@acme/ui", "@acme/charts"],
+  },
+};
+
+export default nextConfig;
+```
+
+Tuỳ chọn này vẫn nằm trong `experimental`, nhưng nhiều package phổ biến như `lucide-react`, `date-fns`, `lodash-es`, `@mui/material`, `react-icons/*`, `recharts` và `rxjs` đã được tối ưu sẵn. Bạn tự thêm các package của mình, kể cả package trong workspace.
+
+## CommonJS: nơi tree shaking bó tay
+
+`module.exports = ...`, `require` nằm trong điều kiện, `exports[name] = ...`: không cái nào phân tích tĩnh được, nên bundler thường lấy nguyên cả module CommonJS. Một package chỉ có CommonJS thì bạn import khéo đến mấy cũng không tree shake được. Trước khi thêm dependency, mình mở `package.json` của nó xem có trường `exports` với điều kiện `import`, hoặc trường `module` hay không. Trong analyzer, dấu hiệu là một package hiện đủ mọi file trong khi bạn chỉ dùng một hàm. Lodash là ví dụ kinh điển:
+
+| Import | Thứ nằm trong bundle |
+| --- | --- |
+| `import { debounce } from "lodash"` | Toàn bộ lodash (CommonJS) |
+| `import debounce from "lodash/debounce"` | `debounce` và các helper nội bộ của nó |
+| `import { debounce } from "lodash-es"` | Chỉ `debounce` (ESM) |
+| `import { debounce } from "es-toolkit"` | Chỉ `debounce` (ESM, viết lại theo kiểu hiện đại) |
+
+Nhiều khi nền tảng đã có sẵn: `structuredClone` thay cho `cloneDeep`, `Intl` thay cho thư viện định dạng.
+
+## Những nghi phạm quen mặt
+
+**moment.** Chính tài liệu của moment đã gọi nó là dự án legacy ở chế độ bảo trì từ nhiều năm nay. Nó là một object lớn kèm method, nên không tree shake được gì, và các cấu hình webpack cũ còn kéo vào toàn bộ locale. Để định dạng, `Intl` thường là đủ:
+
+```ts
+const orderTimeFormatter = new Intl.DateTimeFormat("vi-VN", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Asia/Ho_Chi_Minh",
+});
+const relativeDayFormatter = new Intl.RelativeTimeFormat("vi", { numeric: "auto" });
+
+export function formatOrderTime(isoString: string) {
+  return orderTimeFormatter.format(new Date(isoString));
+}
+
+export function formatDaysAgo(days: number) {
+  return relativeDayFormatter.format(-days, "day");
+}
+```
+
+Để tính toán ngày tháng, `date-fns` (các hàm ESM) hoặc `dayjs` (lõi nhỏ cộng plugin) là lựa chọn thay thế quen thuộc. `Temporal` đã có trên Chrome và Firefox, nhưng Safari mới chỉ có trong Technology Preview tại thời điểm mình viết, nên dùng trên production vẫn cần polyfill, mà polyfill đó không nhỏ.
+
+**Lấy icon theo tên.** `import * as Icons from "lucide-react"` rồi `Icons[name]` phá hỏng mọi tối ưu: bundler không biết bạn sẽ tra tên nào, nên giữ lại tất cả. Hãy dùng một map tường minh:
+
+```tsx
+import { Bell, Settings, User, type LucideIcon } from "lucide-react";
+
+export const navigationIcons = {
+  notifications: Bell,
+  settings: Settings,
+  profile: User,
+} satisfies Record<string, LucideIcon>;
+```
+
+**Việc nên làm ở server.** Markdown parser, syntax highlighter và các bảng tra JSON lớn nằm trong Client Component sẽ được gửi tới mọi người dùng, dù kết quả chỉ là HTML tĩnh. Hãy chuyển chúng vào Server Component.
+
+## Dependency trùng lặp và polyfill
+
+**Trùng lặp** xảy ra khi các package cần những khoảng version không tương thích của cùng một dependency: analyzer hiện `date-fns` hai lần ở hai đường dẫn khác nhau. Tìm xem ai kéo từng bản bằng `npm ls date-fns`, `pnpm why date-fns` hoặc `bun why date-fns`. Sau đó: nâng cấp dependency đang tụt lại, thử `npm dedupe` hoặc `pnpm dedupe`, và chỉ khi hết cách mới ép version (npm và Bun đọc `overrides`, Yarn đọc `resolutions`, pnpm có thiết lập `overrides` riêng).
+
+```json
+{
+  "overrides": {
+    "date-fns": "^4.1.0"
+  }
+}
+```
+
+Ép version nghĩa là một dependency chạy với phiên bản mà tác giả của nó chưa test, nên hãy đọc changelog. Với một số package, trùng lặp là bug chứ không chỉ thừa byte: hai bản React hoặc hai bản một thư viện dựa trên context sẽ làm hook và context hỏng theo những cách rất khó hiểu.
+
+**Polyfill.** Next.js mặc định nhắm tới Chrome, Edge, Firefox 111+ và Safari 16.4+, chỉ gửi polyfill `fetch` và `URL` của nó cho trình duyệt cần, và loại bỏ các bản trùng mà dependency mang theo. Phần polyfill nặng mà mình gặp thường đến từ chỗ khác: một dependency phát hành dạng ES5 có sẵn `core-js` bên trong, một dòng `import "core-js/stable"` từ thời xa xưa, hoặc `browserslist` bị nới rộng từ nhiều năm trước. Hãy tìm trong analyzer các chữ `core-js`, `regenerator-runtime`, `@babel/runtime` và `tslib`. Polyfill thật sự cần thì nạp có điều kiện; với App Router, polyfill toàn cục đặt trong `instrumentation-client.ts`.
+
+## Ngân sách bundle trong CI với size-limit
+
+Analyzer giải thích một lần phình to; ngân sách thì *bắt được* nó. Mình dùng [size-limit](https://github.com/ai/size-limit) với plugin `@size-limit/file`, đo các file đã build và mặc định nén bằng Brotli. Với một app Vite, cấu hình đặt trong `package.json`:
+
+```json
+{
+  "size-limit": [
+    {
+      "name": "Entry chunk",
+      "path": "dist/assets/index-*.js",
+      "limit": "120 kB",
+      "message": "Open the bundle analyzer and explain the increase in the PR description."
+    },
+    {
+      "name": "All JavaScript",
+      "path": "dist/assets/*.js",
+      "limit": "380 kB"
+    }
+  ]
+}
+```
+
+Với Next.js, `.next/static/chunks/**/*.js` cho một con số tổng khá thô; nó không cho biết route nào phình ra, nên mình kết hợp với snapshot của analyzer. Các giới hạn ở trên chỉ để minh hoạ: mình đặt bằng kích thước hiện tại cộng một chút dư, rồi siết dần sau mỗi lần cải thiện thật. Trên GitHub Actions, `andresz1/size-limit-action` so sánh PR với nhánh gốc và comment phần chênh lệch:
+
+```yaml
+name: size
+on: pull_request
+permissions:
+  pull-requests: write
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: andresz1/size-limit-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+<Callout>
+  Ngân sách không cấm bundle lớn lên; nó biến việc lớn lên thành một quyết định có ý thức. Đôi khi câu trả lời đúng là "tính năng này đáng 15 kB, nâng giới hạn lên", viết ngay trong PR để reviewer thấy. Thứ nó ngăn được là cái PR chục dòng lặng lẽ thêm vào một thư viện mà không ai chọn.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Biết rõ mình đang theo dõi con số nào: nén hay chưa nén, theo route hay tổng, client hay server.
+- Next.js 16 với Turbopack: dùng `next analyze` và chuỗi import của nó; `@next/bundle-analyzer` chỉ dành cho webpack.
+- Vite: `rollup-plugin-visualizer`, dùng template `network` để biết "vì sao thứ này ở đây".
+- Tree shaking cần ESM cộng với `sideEffects`; trường đó là một lời cam kết, nên nhớ liệt kê CSS.
+- Tránh import qua barrel trong code ứng dụng; dùng `optimizePackageImports` cho thư viện nhiều barrel.
+- Kiểm tra `exports` và `module` trước khi thêm dependency; chỉ có CommonJS thì không tree shake được.
+- Thay moment và lodash bằng `Intl`, thư viện ESM hoặc API của nền tảng; không tra icon theo tên động.
+- Săn bản trùng bằng `npm ls`, `pnpm why` hoặc `bun why`; `overrides` là phương án cuối.
+- Giữ một ngân sách size-limit trong CI để mọi lần tăng đều là quyết định có chủ đích.
+
+</Checklist>

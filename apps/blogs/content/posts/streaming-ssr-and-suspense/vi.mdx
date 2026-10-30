@@ -1,0 +1,276 @@
+---
+title: "Streaming SSR và Suspense: chuyện gì thực sự xảy ra trên dây"
+excerpt: "Streaming HTML hoạt động thế nào ở tầng giao thức, cách đặt Suspense boundary, tránh waterfall, selective hydration, Partial Prerendering trong Next.js 16, tác động lên TTFB, LCP và CLS, những proxy âm thầm buffer stream và cách xử lý lỗi khi status 200 đã được gửi đi."
+---
+
+<Lead>Trang dashboard của team mình từng có TTFB đúng bằng thời gian của API chậm nhất — khối "gợi ý cho bạn" gọi một service ở xa, và cả trang phải chờ nó. Chuyển sang streaming, TTFB trên máy local giảm hẳn. Rồi hai chuyện xảy ra: LCP trên production gần như không nhúc nhích vì ảnh hero nằm trong một Suspense boundary, và trên staging chẳng có gì stream cả vì nginx gom hết response lại mới gửi. Bài này là những gì mình phải hiểu để streaming thật sự có tác dụng.</Lead>
+
+## Streaming HTML trên dây trông như thế nào
+
+Response streaming không có `Content-Length`: HTTP/1.1 dùng chunked transfer encoding, HTTP/2 và HTTP/3 gửi nhiều frame dữ liệu. Trình duyệt vốn parse HTML tăng dần, nên mảnh nào đến là vẽ được ngay.
+
+React tận dụng điều đó theo một trình tự cố định:
+
+1. **Shell đi trước.** Mảnh đầu tiên gồm `head` (CSS, script, preload), layout, và **fallback** của mọi Suspense boundary chưa xong. Mỗi fallback được đánh dấu bằng một placeholder có id.
+2. **Nội dung đến sau, không theo thứ tự.** Khi một boundary có dữ liệu, React gửi HTML hoàn chỉnh của nó vào một `div` bị ẩn ở cuối tài liệu, kèm một inline script nhỏ chuyển nội dung đó vào đúng chỗ fallback. Boundary nào xong trước thì đến trước, không phụ thuộc vị trí trong cây.
+3. **Payload để hydrate** cũng được stream song song, trong các thẻ script.
+
+Rút gọn, mảnh đầu tiên chứa phần này:
+
+```html
+<main>
+  <h1>Đơn hàng gần đây</h1>
+  <template id="B:0"></template>
+  <div class="orders-skeleton" style="min-height: 480px"></div>
+</main>
+```
+
+Vài trăm mili giây sau, ở cuối stream:
+
+```html
+<div hidden id="S:0">
+  <table class="orders">
+    <tr><td>#10231</td><td>Đã giao</td></tr>
+  </table>
+</div>
+<script>$RC("B:0", "S:0")</script>
+```
+
+Những cái tên như `$RC` là chi tiết nội bộ, đổi theo phiên bản; điều đáng nhớ là cơ chế. Script hoán đổi chạy **ngay khi tới**, không chờ bundle hay hydrate.
+
+Từ React 19.2, việc hiện nội dung của các boundary render trên server được **gom lại** trong một khoảng ngắn (docs hiện ghi tối đa một lần mỗi 300ms) để nhiều boundary xuất hiện cùng lúc, và React ngừng gom khi thời gian tải gần chạm 2,5 giây để không làm hại LCP.
+
+Hệ quả quan trọng nhất của streaming: **status code và header đã khoá từ byte đầu tiên.** Khi shell đi rồi, không thể đổi sang 404 hay 302 được nữa. Trong Next.js, `notFound()` gọi giữa stream sẽ chèn `meta name="robots" content="noindex"` thay cho status 404, còn `redirect()` trở thành redirect phía client.
+
+## Đặt Suspense boundary ở đâu
+
+Một Suspense boundary đồng thời là đơn vị **chờ**, đơn vị **hiển thị**, và đơn vị **hydrate**. Đặt sai, bạn hoặc chờ quá lâu, hoặc có một trang "bỏng ngô" — mười khối nhảy ra mười lần.
+
+Quy tắc mình dùng:
+
+- **Vẽ boundary theo nguồn dữ liệu và vùng hiển thị**, không theo từng component. Một lưới 12 thẻ sản phẩm cùng từ một query là một boundary, không phải 12.
+- **Giữ nội dung trên màn hình đầu tiên trong shell**, đặc biệt là phần tử LCP.
+- **Những thứ phải xuất hiện cùng nhau thì chung một boundary.** Bảng và bộ lọc của bảng đó không nên hiện lệch nhau.
+- **Fallback phải cùng kích thước** với nội dung thật — skeleton đúng chiều cao, hoặc container có `min-height`.
+- **Đẩy truy cập dynamic xuống thấp.** Đừng `await` ở đầu layout; truyền promise xuống cho component cần nó.
+
+```tsx
+import { Suspense } from "react";
+import { DashboardHeader } from "./dashboard-header";
+import { KpiCards, KpiCardsSkeleton } from "./kpi-cards";
+import { RecentOrders, RecentOrdersSkeleton } from "./recent-orders";
+import { Recommendations, RecommendationsSkeleton } from "./recommendations";
+
+export default function DashboardPage({ searchParams }: PageProps<"/dashboard">) {
+  return (
+    <>
+      <DashboardHeader />
+      <Suspense fallback={<KpiCardsSkeleton />}>
+        <KpiCards />
+      </Suspense>
+      <Suspense fallback={<RecentOrdersSkeleton />}>
+        <RecentOrders searchParams={searchParams} />
+      </Suspense>
+      <Suspense fallback={<RecommendationsSkeleton />}>
+        <Recommendations />
+      </Suspense>
+    </>
+  );
+}
+```
+
+`DashboardHeader` nằm trong shell; ba khối dữ liệu stream độc lập, và vì `searchParams` được truyền xuống dưới dạng promise nên chỉ `RecentOrders` phải chờ nó.
+
+## Tránh waterfall
+
+Streaming che được độ trễ, nhưng không làm request nhanh hơn. Nguồn waterfall phổ biến nhất trong Server Component là **lồng nhau sau `await`**: component con chỉ bắt đầu fetch khi component cha đã `await` xong.
+
+Các component anh em (sibling) thì không có vấn đề này — React bắt đầu render chúng song song, mỗi cái treo trong boundary của riêng nó. Rắc rối nằm ở chiều dọc:
+
+```tsx
+export default async function OrderPage({ params }: PageProps<"/orders/[id]">) {
+  const { id } = await params;
+  const order = await getOrder(id);
+
+  return (
+    <>
+      <OrderSummary order={order} />
+      <Suspense fallback={<ShipmentSkeleton />}>
+        <ShipmentStatus orderId={id} />
+      </Suspense>
+    </>
+  );
+}
+```
+
+`ShipmentStatus` chỉ được render — và chỉ bắt đầu gọi API vận chuyển — sau khi `getOrder` xong. Hai request độc lập bị xếp hàng nối tiếp. Cách sửa là bắt đầu request sớm và để component con nhận lại đúng promise đó. Mình dùng pattern preload với `cache` của React:
+
+```ts
+import "server-only";
+import { cache } from "react";
+
+export type Shipment = { carrier: string; status: string; eta: string | null };
+
+export const getShipment = cache(async (orderId: string): Promise<Shipment> => {
+  const response = await fetch(`${process.env.LOGISTICS_API_URL}/shipments/${orderId}`);
+  if (!response.ok) throw new Error(`Shipment ${orderId} failed with ${response.status}`);
+  return response.json();
+});
+
+export function preloadShipment(orderId: string) {
+  void getShipment(orderId);
+}
+```
+
+Trong `OrderPage`, gọi `preloadShipment(id)` **trước** `await getOrder(id)`. Khi `ShipmentStatus` gọi `getShipment(id)`, nó nhận lại promise đang chạy thay vì tạo request mới. Với dữ liệu độc lập trong cùng một component, `Promise.all` vẫn là cách đơn giản nhất.
+
+Waterfall cũng xảy ra với tài nguyên: ảnh hero, font, CSS chỉ được phát hiện khi HTML chứa chúng tới nơi. Trong shell, hãy khai báo sớm: `preload` và `preinit` của `react-dom` cho font và script, prop `preload` của `next/image` trong Next.js 16 cho ảnh LCP. Chúng nằm trong mảnh đầu, trình duyệt tải song song khi server còn đang render.
+
+## Selective hydration
+
+Mỗi Suspense boundary cũng là một **đơn vị hydrate** riêng. Thay vì hydrate cả trang trong một task dài, React hydrate từng boundary khi HTML và JS của nó đã sẵn sàng, xen kẽ trả quyền cho main thread. Nếu người dùng bấm vào một vùng chưa hydrate, React đẩy boundary đó lên ưu tiên cao nhất, hydrate nó trước rồi mới xử lý event.
+
+Có hai hệ quả thực tế:
+
+- **Phần nằm ngoài mọi boundary hydrate thành một khối.** Một Client Component khổng lồ bọc cả trang sẽ triệt tiêu lợi ích này, dù HTML vẫn stream đẹp.
+- **Hydration mismatch được khoanh vùng.** Khi HTML server không khớp với render ở client, React render lại phía client tới boundary gần nhất thay vì cả trang. Nó vẫn tốn một lần render lại, nên đừng bỏ qua cảnh báo.
+
+## Partial Prerendering trong Next.js 16
+
+Partial Prerendering (PPR) không còn là cờ thử nghiệm riêng. Next.js 16 gỡ `experimental.ppr`; PPR giờ là hành vi mặc định khi bật `cacheComponents: true`. Ở tầng React, 19.2 cũng công khai các API nền tảng (`prerender` và `resume`) cho framework.
+
+Cơ chế: khi build, Next.js render route cho tới khi gặp thứ không biết trước — dữ liệu chưa cache, `cookies()`, `headers()`, `searchParams`. Mọi thứ phía trên các "lỗ" đó, cộng với fallback của chúng, thành **static shell** phục vụ thẳng từ CDN. Khi có request, server render tiếp các lỗ và stream vào **cùng một response**. Bạn có TTFB của trang tĩnh và nội dung của trang dynamic.
+
+Đổi lại là kỷ luật: truy cập dynamic nằm ngoài `Suspense` sẽ bị báo lỗi "blocking route". Dữ liệu cache bằng `"use cache"` nằm trong shell, trừ khi thời gian sống quá ngắn — profile `seconds` hay `expire` dưới 5 phút biến nó thành lỗ dynamic. Về `"use cache"` và ranh giới server/client, xem [bài về RSC](/blog/react-server-components-mental-model).
+
+`loading.tsx` là cách nhanh nhất để có một boundary: Next.js bọc `page` trong `Suspense` với fallback là component đó, nằm bên trong `layout`. Nó cũng được prefetch làm fallback tức thì khi điều hướng. Nhưng nó thô:
+
+| | `loading.tsx` | `Suspense` tự đặt |
+| --- | --- | --- |
+| Phạm vi | Cả page | Bất kỳ component nào |
+| Điều hướng phía client | Fallback được prefetch, hiện ngay | Tuỳ cấu hình prefetch |
+| Hợp với | Trang không có gì đáng hiện trước khi có dữ liệu | Phần lớn các trang |
+| Rủi ro | Cả trang thành skeleton, mất shell có nội dung | Quá nhiều boundary, trang "bỏng ngô" |
+
+Mình dùng `loading.tsx` như lưới an toàn, còn lại đặt `Suspense` sát nơi truy cập dynamic.
+
+## TTFB, LCP, CLS: cái gì thật sự thay đổi
+
+Phần cơ bản về Core Web Vitals có ở [bài riêng](/blog/core-web-vitals); ở đây chỉ nói tác động của streaming.
+
+- **TTFB và FCP giảm** xuống bằng thời gian render shell, hoặc thời gian CDN trả shell với PPR. Nhưng TTFB đẹp không có nghĩa là trang nhanh.
+- **LCP chỉ cải thiện nếu phần tử LCP nằm trong shell.** Nếu nó nằm trong boundary, nó phải chờ dữ liệu, chờ HTML tới, rồi chờ script hoán đổi chạy. React cũng có thể "kích hoạt" một boundary chỉ vì HTML của nó lớn và đến chậm, kể cả khi không có gì suspend. Đây chính là cái bẫy ở đầu bài.
+- **CLS tăng nếu fallback lệch kích thước.** Mỗi lần hoán đổi là một lần reflow; skeleton thấp hơn nội dung thật sẽ đẩy mọi thứ bên dưới. Việc React gom các lần lộ nội dung giúp giảm số lần dịch chuyển nối tiếp, nhưng không cứu được fallback sai kích thước.
+
+<Callout>
+Mình đo streaming bằng hai câu hỏi thay vì một con số: phần tử LCP có nằm trong mảnh HTML đầu tiên không, và tổng chiều cao fallback có bằng nội dung thật không? Trả lời "có" cho cả hai thì TTFB thấp mới chuyển thành LCP thấp và CLS gần 0.
+</Callout>
+
+## Hạ tầng âm thầm giết streaming
+
+Bất kỳ lớp nào gom response trước khi chuyển tiếp đều xoá sạch lợi ích:
+
+- **Reverse proxy.** Nginx buffer response mặc định. Tắt bằng `proxy_buffering off` trong cấu hình, hoặc để app gửi header `X-Accel-Buffering: no`.
+- **CDN.** Một số CDN gom cả response trước khi gửi, hoặc chỉ stream ở gói hay cấu hình nhất định. Đọc docs của nhà cung cấp.
+- **Serverless.** AWS Lambda cần bật response streaming mode, mặc định không bật.
+- **Nén.** Gzip và Brotli cần đủ dữ liệu mới flush, có thể giữ lại mảnh đầu.
+- **Phía client.** Safari buffer tới khi nhận khoảng 1KB đầu; `curl` cũng buffer, kể cả với `-N` vẫn phụ thuộc ký tự xuống dòng.
+
+Header cho nginx có thể đặt ngay trong `next.config.ts`:
+
+```ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [{ key: "X-Accel-Buffering", value: "no" }],
+      },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
+Để kiểm tra, mình chạy một script nhỏ in thời điểm từng mảnh, trỏ vào URL đi qua đúng proxy và CDN của môi trường cần kiểm:
+
+```ts
+const targetUrl = process.argv[2] ?? "http://localhost:3000/dashboard";
+const startedAt = performance.now();
+const response = await fetch(targetUrl, { headers: { "Accept-Encoding": "identity" } });
+if (!response.body) throw new Error("Response has no body");
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let chunkIndex = 0;
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  const preview = decoder.decode(value, { stream: true }).replace(/\s+/g, " ").slice(0, 80);
+  console.log(`chunk ${chunkIndex++} +${elapsedMs}ms ${value.byteLength}B ${preview}`);
+}
+```
+
+Chỉ thấy một mảnh đến muộn nghĩa là có lớp nào đó đang buffer. Lưu ý thêm: Next.js cố ý **không** stream cho các bot chỉ đọc HTML, mà chờ metadata xong mới gửi để `head` đầy đủ. Danh sách này chỉnh qua `htmlLimitedBots`, nên test bằng user agent của bot sẽ thấy response nguyên khối.
+
+## Lỗi xảy ra khi stream đã bắt đầu
+
+Vì status 200 đã đi rồi, lỗi giữa stream phải được xử lý **trong HTML**. Ba lớp mình dựa vào:
+
+- **Kiểm tra sớm những gì cần status thật.** `notFound()` hay redirect do chưa đăng nhập nên chạy trước mọi `Suspense` — kể cả `loading.tsx` — hoặc đưa hẳn lên `proxy.ts`.
+- **`error.tsx` cho cả segment.** Lỗi từ Server Component được serialize và ném lại ở client, tại error boundary gần nhất. Trên production, message bị thay bằng thông báo chung kèm `digest` để đối chiếu log server. Từ Next.js 16.3, error component nhận prop `retry` để fetch và render lại segment; các bản trước dùng `reset`, vốn chỉ xoá trạng thái lỗi mà không fetch lại.
+- **Error boundary riêng cho widget rủi ro**, đặt bên ngoài `Suspense` của nó, để API gợi ý sập không kéo theo cả dashboard.
+
+```tsx
+"use client";
+
+import { Component, type ReactNode } from "react";
+
+type WidgetErrorBoundaryProps = { fallback: ReactNode; children: ReactNode };
+type WidgetErrorBoundaryState = { failed: boolean };
+
+export class WidgetErrorBoundary extends Component<WidgetErrorBoundaryProps, WidgetErrorBoundaryState> {
+  state: WidgetErrorBoundaryState = { failed: false };
+
+  static getDerivedStateFromError(): WidgetErrorBoundaryState {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+```
+
+```tsx
+<WidgetErrorBoundary fallback={<p>Chưa tải được gợi ý, thử lại sau nhé.</p>}>
+  <Suspense fallback={<RecommendationsSkeleton />}>
+    <Recommendations />
+  </Suspense>
+</WidgetErrorBoundary>
+```
+
+Một hành vi ít người biết: Client Component ném lỗi lúc SSR thì React không huỷ render mà gửi fallback của Suspense gần nhất, rồi thử render lại ở client. Nếu lần này thành công, người dùng không bao giờ thấy lỗi — nhưng bạn mất phần HTML đó cho SEO và LCP. Hãy log những lỗi "đã tự phục hồi" này, chúng là tín hiệu sớm.
+
+<Callout>
+Đừng bọc mọi widget bằng error boundary theo phản xạ. Mỗi boundary là một quyết định sản phẩm: khi phần này hỏng, người dùng nên thấy gì và có làm tiếp được không? Với luồng thanh toán, một khối trống im lặng còn tệ hơn một trang lỗi rõ ràng.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Streaming gửi shell trước, rồi chèn từng boundary vào bằng HTML ẩn và inline script, không theo thứ tự và không cần chờ hydrate.
+- Status code khoá từ byte đầu: kiểm tra 404, redirect, auth trước `Suspense` đầu tiên hoặc trong `proxy.ts`.
+- Vẽ boundary theo nguồn dữ liệu và vùng hiển thị; giữ phần tử LCP trong shell, fallback cùng kích thước nội dung thật.
+- Tránh waterfall dọc: bắt đầu request trước `await`, dùng preload với `cache`, khai báo sớm tài nguyên LCP.
+- Trong Next.js 16, PPR là hành vi mặc định của `cacheComponents`; `loading.tsx` là lưới an toàn, không phải chiến lược.
+- Kiểm tra streaming qua đúng proxy, CDN và lớp nén của production bằng script đo thời điểm từng mảnh.
+- Kết hợp error boundary với Suspense cho widget rủi ro; log cả lỗi SSR đã tự phục hồi.
+
+</Checklist>

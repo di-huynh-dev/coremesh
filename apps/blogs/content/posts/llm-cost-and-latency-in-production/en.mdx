@@ -1,0 +1,315 @@
+---
+title: "LLM Cost and Latency in Production: Token Accounting, Caching, Routing and Fallbacks"
+excerpt: "What happens to an LLM feature once real traffic arrives: where latency actually comes from, a per-feature token and cost meter with tenant budgets, structuring prompts for provider prompt caching, exact and semantic caching, model routing, trimming context, batch APIs, parallel calls, retries with fallback and circuit breakers, and the dashboard I watch."
+---
+
+<Lead>The summarisation feature looked cheap in the demo: a few cents a day across the whole team. Three weeks after launch, p95 latency sat around twelve seconds and one enterprise tenant caused almost half the spend because their integration re-summarised the same documents every hour. Nothing was broken; we had just never measured the feature like any other production system. This post is what I do now.</Lead>
+
+## Where latency actually comes from
+
+"The model is slow" is rarely a useful diagnosis. A single LLM request has several distinct phases, and each one responds to a different fix:
+
+| Phase | What drives it | Main lever |
+| --- | --- | --- |
+| Network and queueing | Region, provider load | Keep-alive, nearer region |
+| Prefill (until first token) | Number of **input** tokens | Shorter context, prompt caching |
+| Decode (token generation) | Number of **output** tokens, model size | Smaller model, shorter answers, structured output |
+| Tool round trips | Each tool call is a full extra request | Fewer steps, parallel tool calls, better tool design |
+
+Track **time to first token** (TTFT) and **total time** separately. In a streaming chat UI, users feel TTFT, which is dominated by input size and queueing. A background job only cares about total time, dominated by output tokens because decoding is sequential. So I look at output length first: asking for 40 words instead of 400 often helps more than switching models. If you haven't streamed yet, [the streaming chat post](/blog/streaming-ai-chat-ui) covers the UI side.
+
+In agent-style features, five tool steps means five prefill phases over a growing context. When a feature feels slow, I count round trips first.
+
+## Measure per feature: a token and cost meter
+
+You can't optimise what you only see as one line on the provider invoice. Every call goes through one function that records the feature, tenant, model, token counts (including cached tokens) and latency. Prices live in config, never in code, because they change and differ per model.
+
+The file `llm/meter.ts`:
+
+```ts
+export type TokenUsage = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+};
+
+export type ModelPricing = {
+  inputPerMillion: number;
+  cachedInputPerMillion: number;
+  outputPerMillion: number;
+};
+
+export type UsageRecord = TokenUsage & {
+  feature: string;
+  tenantId: string;
+  model: string;
+  costUsd: number;
+  ttftMs: number | null;
+  totalMs: number;
+  outcome: "ok" | "error" | "fallback";
+};
+
+export interface UsageSink {
+  write(record: UsageRecord): Promise<void>;
+  spentThisMonth(tenantId: string): Promise<number>;
+}
+
+export class BudgetExceededError extends Error {
+  constructor(readonly tenantId: string, readonly spentUsd: number, readonly limitUsd: number) {
+    super(`Tenant ${tenantId} spent ${spentUsd.toFixed(2)} of ${limitUsd.toFixed(2)} USD`);
+  }
+}
+
+export function computeCost(usage: TokenUsage, pricing: ModelPricing): number {
+  const uncachedInput = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
+  return (
+    (uncachedInput * pricing.inputPerMillion +
+      usage.cachedInputTokens * pricing.cachedInputPerMillion +
+      usage.outputTokens * pricing.outputPerMillion) /
+    1_000_000
+  );
+}
+
+export function createMeter(sink: UsageSink, pricingByModel: Record<string, ModelPricing>) {
+  return {
+    async assertWithinBudget(tenantId: string, monthlyLimitUsd: number) {
+      const spent = await sink.spentThisMonth(tenantId);
+      if (spent >= monthlyLimitUsd) throw new BudgetExceededError(tenantId, spent, monthlyLimitUsd);
+    },
+    async record(entry: Omit<UsageRecord, "costUsd">) {
+      const pricing = pricingByModel[entry.model];
+      const costUsd = pricing ? computeCost(entry, pricing) : 0;
+      await sink.write({ ...entry, costUsd });
+      return costUsd;
+    },
+  };
+}
+```
+
+A few details that took me a while to get right:
+
+- **Normalise usage per provider.** Providers report cached tokens differently: some include them inside the input count, others report cache reads and cache writes as separate fields next to the uncached input. Write one small adapter per provider and test it against real responses.
+- **Record failures too.** A request that times out after streaming 2,000 tokens still cost money.
+- **Budgets are a product decision.** The budget check is a soft gate before the call, not exact accounting; concurrent requests can overshoot a little. That's fine: the point is that a runaway integration hits a limit and an alert. I also keep per-user rate limits, which solve a different problem.
+
+<Callout type="warning">
+  Don't estimate tokens from character counts for billing. Use the usage numbers the provider returns in the response. Estimate only to decide things before the call, such as whether a context needs trimming.
+</Callout>
+
+## Provider prompt caching: design for a stable prefix
+
+The major providers (OpenAI, Anthropic, Google Gemini) all offer prompt caching: if the beginning of your prompt matches a recent request exactly, the provider reuses the processed prefix, which lowers both input cost and time to first token. The mechanics differ: some apply it automatically above a minimum prompt length, Anthropic needs `cache_control` markers, and entries expire after minutes of inactivity. Check your provider's current docs for minimums, lifetimes and discounts.
+
+The part that is the same everywhere: **it's a prefix match**. One changed character early in the prompt invalidates everything after it. So I structure every prompt in order of stability:
+
+1. Tool definitions and the system prompt — identical for every request of a feature.
+2. Large shared context — product docs, few-shot examples, the long document a user is asking several questions about.
+3. Conversation history — append-only.
+4. The new user message and anything dynamic.
+
+The classic mistake is a timestamp or request ID at the top of the system prompt, which silently kills the hit rate. Move dynamic values to the end, serialise tools and JSON in a deterministic key order, and don't reorder retrieved documents between turns. Then verify by charting the cache hit ratio per feature from the meter; near zero with a large system prompt means your prefix is changing.
+
+## Application-level caching: exact and semantic
+
+Caching the whole response skips the model entirely, but it's riskier.
+
+**Exact caching** keys on a hash of everything that affects the output: model, prompt version, parameters, and the normalised input. It's safe for deterministic-style tasks like classification or summarising the same unchanged file. The key must include the prompt version, or a prompt fix will be invisible for the cache TTL.
+
+**Semantic caching** embeds the query and returns a stored answer when a previous query is "close enough". It can raise the hit rate for FAQ-style traffic, but I treat it with suspicion:
+
+- "How do I cancel my order?" and "How do I cancel my subscription?" can be very close in embedding space and need different answers.
+- Answers that depend on the user's data or permissions must never be shared across users. Scope the cache key to tenant, and usually to user.
+- The similarity threshold is a quality knob. Pick it with an eval set, not intuition; [the evaluation post](/blog/evaluating-llm-features) covers how I build one.
+
+I use semantic caching only for public, non-personalised content.
+
+## Route to the cheapest model that can do the job
+
+Most traffic is easy: a small, fast model handles classification and simple extraction well, at a fraction of the cost and latency. The router decides per request, and a cascade escalates when the cheap answer fails validation.
+
+The file `llm/router.ts`, provider-agnostic, with model IDs coming from config:
+
+```ts
+export type ModelTier = "small" | "large";
+
+export type CompletionRequest = {
+  feature: string;
+  system: string;
+  input: string;
+  maxOutputTokens: number;
+};
+
+export type CompletionResult = {
+  text: string;
+  model: string;
+  usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+};
+
+export type CompletionFn = (model: string, request: CompletionRequest) => Promise<CompletionResult>;
+
+type RouteRule = {
+  tier: ModelTier;
+  escalateWhen?: (result: CompletionResult) => boolean;
+};
+
+export function createRouter(options: {
+  complete: CompletionFn;
+  models: Record<ModelTier, string>;
+  rules: Record<string, RouteRule>;
+  estimateTokens: (text: string) => number;
+  largeContextThreshold: number;
+}) {
+  function pickTier(request: CompletionRequest): ModelTier {
+    const rule = options.rules[request.feature];
+    if (!rule) return "large";
+    const tooLong = options.estimateTokens(request.input) > options.largeContextThreshold;
+    return tooLong ? "large" : rule.tier;
+  }
+
+  return async function route(request: CompletionRequest): Promise<CompletionResult> {
+    const tier = pickTier(request);
+    const first = await options.complete(options.models[tier], request);
+    const rule = options.rules[request.feature];
+    const shouldEscalate = tier === "small" && rule?.escalateWhen?.(first) === true;
+    if (!shouldEscalate) return first;
+    return options.complete(options.models.large, request);
+  };
+}
+```
+
+A rule like `escalateWhen: (result) => !isValidTicketLabel(result.text)` is cheap and deterministic: if the small model returns something that doesn't parse against the schema, retry on the large one. Escalating on "the model sounds unsure" is far less reliable. Escalated requests pay twice, so watch the escalation rate. Unknown features default to the large model: correct before cheap.
+
+## Spend fewer tokens: context, batches and parallelism
+
+**Trim context deliberately.** Every turn resends the entire history. I keep the last N turns verbatim, summarise older ones with the small model, and drop tool results that were only needed for one step. For RAG, fewer, better-ranked chunks beat stuffing the window. Rewriting history breaks the cached prefix, so summarise in occasional larger steps, not every turn.
+
+**Use batch APIs for offline work.** Nightly re-tagging, backfills and large evals don't need answers in two seconds. OpenAI, Anthropic and Google offer batch endpoints that accept many requests at once and return results asynchronously, typically within a day, at a discount compared to synchronous calls.
+
+**Parallelise.** If classifying a ticket and extracting entities don't depend on each other, run them with `Promise.all` behind a concurrency limit. Sequential independent calls are the most common latency bug I see in review.
+
+## Timeouts, fallbacks and rate limits
+
+Providers have incidents and rate limits. My wrapper does four things: a timeout per attempt, retry with exponential backoff and jitter on retryable errors only, respect for `Retry-After` on 429s, and a fallback chain of models (possibly at another provider) behind a simple circuit breaker.
+
+The file `llm/resilient.ts`:
+
+```ts
+export class ProviderError extends Error {
+  constructor(
+    message: string,
+    readonly status: number | null,
+    readonly retryAfterMs: number | null,
+  ) {
+    super(message);
+  }
+}
+
+type CircuitState = { failures: number; openUntil: number };
+
+const circuits = new Map<string, CircuitState>();
+const FAILURE_THRESHOLD = 5;
+const OPEN_DURATION_MS = 30_000;
+
+function isOpen(model: string, now: number) {
+  return (circuits.get(model)?.openUntil ?? 0) > now;
+}
+
+function recordFailure(model: string, now: number) {
+  const state = circuits.get(model) ?? { failures: 0, openUntil: 0 };
+  state.failures += 1;
+  if (state.failures >= FAILURE_THRESHOLD) {
+    state.openUntil = now + OPEN_DURATION_MS;
+    state.failures = 0;
+  }
+  circuits.set(model, state);
+}
+
+function recordSuccess(model: string) {
+  circuits.delete(model);
+}
+
+function isRetryable(error: unknown) {
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof ProviderError)) return false;
+  return error.status === null || error.status === 429 || error.status >= 500;
+}
+
+function backoffMs(attempt: number, error: unknown) {
+  if (error instanceof ProviderError && error.retryAfterMs !== null) return error.retryAfterMs;
+  const exponential = Math.min(8_000, 500 * 2 ** attempt);
+  return Math.random() * exponential;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function callWithFallback<T>(
+  models: string[],
+  call: (model: string, signal: AbortSignal) => Promise<T>,
+  options = { attemptsPerModel: 2, timeoutMs: 20_000 },
+): Promise<{ result: T; model: string; usedFallback: boolean }> {
+  let lastError: unknown = new Error("No model available");
+
+  for (const [index, model] of models.entries()) {
+    if (isOpen(model, Date.now())) continue;
+
+    for (let attempt = 0; attempt < options.attemptsPerModel; attempt++) {
+      try {
+        const result = await call(model, AbortSignal.timeout(options.timeoutMs));
+        recordSuccess(model);
+        return { result, model, usedFallback: index > 0 };
+      } catch (error) {
+        lastError = error;
+        if (!isRetryable(error)) throw error;
+        recordFailure(model, Date.now());
+        if (attempt < options.attemptsPerModel - 1) await sleep(backoffMs(attempt, error));
+      }
+    }
+  }
+
+  throw lastError;
+}
+```
+
+A few production lessons behind it:
+
+- **Don't retry 4xx errors other than 429.** A 400 means your request is wrong.
+- **Timeouts must match the feature.** A streaming chat should time out on TTFT (no first token within N seconds), not on total time, or long answers get killed halfway. The wrapper above suits non-streaming calls.
+- **The circuit breaker is per process;** move its state to Redis if instances must share it.
+- **Fallback models are not drop-in replacements.** Run your eval set against every model in the chain, and record `outcome: "fallback"` in the meter so you know how often users get the second-best answer.
+
+<Callout type="danger">
+  Retries multiply load exactly when the provider is struggling. Cap attempts, add jitter, and remember most official SDKs already retry by default: pick one layer to own retries and disable the other.
+</Callout>
+
+## The dashboard I actually watch
+
+One dashboard, grouped by feature, filterable by tenant and model:
+
+| Metric | Why it matters |
+| --- | --- |
+| Cost per day, per feature, per tenant | Finds the integration re-summarising the same documents |
+| Cost per successful outcome | Cost per resolved ticket beats cost per request |
+| TTFT p50 / p95 | What streaming users feel |
+| Total latency p50 / p95 / p99 | What background jobs and SLAs feel |
+| Input / output tokens per request | Detects context bloat and rambling answers |
+| Provider cache hit ratio | Catches a prompt change that broke the prefix |
+| Escalation and fallback rate | Router health and provider health |
+| Error rate by status (429, 5xx, timeout) | Distinguishes your quota problems from their incidents |
+| Budget utilisation per tenant | Alerts before a hard cap blocks a customer |
+
+I alert on rate of change too: input tokens per request jumping overnight usually means a prompt change.
+
+## Summary
+
+<Checklist>
+
+- Split latency into network, prefill, decode and tool round trips; output length and step count are usually the biggest levers.
+- Route every call through one meter that records feature, tenant, model, tokens (including cached) and latency, with prices in config.
+- Enforce per-tenant budgets and per-user rate limits, and record failed calls as well.
+- Order prompts from stable to dynamic so provider prompt caching works, and chart the cache hit ratio to verify it.
+- Use exact response caching freely with the prompt version in the key; restrict semantic caching to public, non-personalised content.
+- Route easy features to a small model and escalate on deterministic validation failures; watch the escalation rate.
+- Trim history and tool outputs, send offline work through batch APIs, and parallelise independent calls.
+- Retry only retryable errors with backoff, jitter and Retry-After, keep a single retry layer, and evaluate every fallback model.
+
+</Checklist>

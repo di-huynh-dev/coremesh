@@ -1,0 +1,313 @@
+---
+title: "Multimodal Input for LLM Features: Images, PDFs and Audio from the Browser"
+excerpt: "The frontend side of sending files to an LLM: file input, drag-and-drop and paste, sniffing types by magic bytes, downscaling images and stripping EXIF in the browser, HEIC from iPhones, PDFs, recording audio with MediaRecorder, presigned uploads with progress and cancellation, object URL cleanup, accessibility and what the server must still check."
+---
+
+<Lead>The first version of our "ask about this invoice" feature took any file and posted it straight to an API route. Within a week we had three kinds of bug report: a 14 MB iPhone photo that timed out on 4G, a screenshot pasted from the clipboard that did nothing at all, and a support ticket from a user who noticed their home's GPS coordinates were inside a photo we had stored. The model was fine. This post is what I now build for any feature that sends images, documents or audio to an LLM, provider-agnostic.</Lead>
+
+## Three ways in: picker, drop and paste
+
+Users bring files in three ways; miss one and the feature feels broken.
+
+- **File input.** Keep a real `input type="file"` in the DOM, even if you style a button on top. It gives you keyboard access, the native mobile picker and `accept` — a hint, not validation.
+- **Drag-and-drop.** Listen for `dragover` (and call `preventDefault`, otherwise `drop` never fires) and `drop`, then read `event.dataTransfer.files`.
+- **Paste.** For screenshots this is the main path: people press the screenshot shortcut and paste into the chat box. The `paste` event exposes `clipboardData.files`. No async Clipboard API or permission needed.
+
+All three should funnel into one function that takes a `File[]`, so validation and state live in a single place:
+
+```tsx
+import { useCallback, type ClipboardEvent, type DragEvent } from "react";
+
+export function useFileIntake(addFiles: (files: File[]) => void) {
+  const onPaste = useCallback(
+    (event: ClipboardEvent<HTMLElement>) => {
+      const files = Array.from(event.clipboardData.files);
+      if (files.length === 0) return;
+      event.preventDefault();
+      addFiles(files);
+    },
+    [addFiles],
+  );
+
+  const onDragOver = useCallback((event: DragEvent<HTMLElement>) => {
+    if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+  }, []);
+
+  const onDrop = useCallback(
+    (event: DragEvent<HTMLElement>) => {
+      event.preventDefault();
+      addFiles(Array.from(event.dataTransfer.files));
+    },
+    [addFiles],
+  );
+
+  return { onPaste, onDragOver, onDrop };
+}
+```
+
+Note that `onPaste` only calls `preventDefault` when there are files. Pasting plain text into the textarea has to keep working.
+
+## A state model for the attachment composer
+
+Each attachment goes through a small lifecycle: we read it, maybe transform it, upload it, and only then can the message be sent. Like in [state machines for UI](/blog/state-machines-for-ui), I model it as a discriminated union per attachment instead of a bag of flags:
+
+```ts
+export type AttachmentKind = "image" | "pdf" | "audio";
+
+export type Attachment =
+  | { id: string; status: "processing"; name: string; kind: AttachmentKind }
+  | { id: string; status: "rejected"; name: string; reason: string }
+  | { id: string; status: "uploading"; name: string; kind: AttachmentKind; previewUrl: string | null; progress: number }
+  | { id: string; status: "ready"; name: string; kind: AttachmentKind; previewUrl: string | null; fileRef: string }
+  | { id: string; status: "failed"; name: string; kind: AttachmentKind; previewUrl: string | null; message: string };
+
+export type ComposerEvent =
+  | { type: "ADDED"; id: string; name: string; kind: AttachmentKind }
+  | { type: "REJECTED"; id: string; name: string; reason: string }
+  | { type: "UPLOAD_STARTED"; id: string; previewUrl: string | null }
+  | { type: "PROGRESS"; id: string; progress: number }
+  | { type: "UPLOADED"; id: string; fileRef: string }
+  | { type: "UPLOAD_FAILED"; id: string; message: string }
+  | { type: "REMOVED"; id: string };
+
+export function composerReducer(attachments: Attachment[], event: ComposerEvent): Attachment[] {
+  switch (event.type) {
+    case "ADDED":
+      return [...attachments, { id: event.id, status: "processing", name: event.name, kind: event.kind }];
+    case "REJECTED":
+      return [...attachments, { id: event.id, status: "rejected", name: event.name, reason: event.reason }];
+    case "REMOVED":
+      return attachments.filter((attachment) => attachment.id !== event.id);
+    default:
+      return attachments.map((attachment) =>
+        attachment.id === event.id ? transitionAttachment(attachment, event) : attachment,
+      );
+  }
+}
+
+function transitionAttachment(attachment: Attachment, event: ComposerEvent): Attachment {
+  if (attachment.status === "processing" && event.type === "UPLOAD_STARTED") {
+    return { ...attachment, status: "uploading", previewUrl: event.previewUrl, progress: 0 };
+  }
+  if (attachment.status !== "uploading") return attachment;
+  switch (event.type) {
+    case "PROGRESS":
+      return { ...attachment, progress: event.progress };
+    case "UPLOADED":
+      return { id: attachment.id, status: "ready", name: attachment.name, kind: attachment.kind, previewUrl: attachment.previewUrl, fileRef: event.fileRef };
+    case "UPLOAD_FAILED":
+      return { id: attachment.id, status: "failed", name: attachment.name, kind: attachment.kind, previewUrl: attachment.previewUrl, message: event.message };
+    default:
+      return attachment;
+  }
+}
+
+export function canSend(attachments: Attachment[]): boolean {
+  return attachments.every((attachment) => attachment.status === "ready" || attachment.status === "rejected");
+}
+```
+
+Two decisions are encoded here. First, the message only references `fileRef`, an ID the server issued, never raw bytes, so retrying a message doesn't re-upload anything. Second, a late `PROGRESS` or `UPLOADED` for an attachment the user already removed simply finds nothing to update. Rejected items stay visible with a reason, because a file that silently vanishes is the worst feedback.
+
+## Client-side validation: sniff the bytes, don't trust the name
+
+`File.type` comes from the extension (or the OS), not from the content. A `.jpg` that is actually HEIC, or a PDF renamed to `.png`, is common in the wild. I read the first few bytes and check the magic numbers:
+
+```ts
+type SniffedType = "image/jpeg" | "image/png" | "image/webp" | "image/gif" | "image/heic" | "application/pdf";
+
+function startsWith(bytes: Uint8Array, signature: number[], offset = 0): boolean {
+  return signature.every((byte, index) => bytes[offset + index] === byte);
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number): string {
+  return String.fromCharCode(...bytes.subarray(start, end));
+}
+
+export async function sniffType(file: Blob): Promise<SniffedType | null> {
+  const bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47])) return "image/png";
+  if (ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 12) === "WEBP") return "image/webp";
+  if (ascii(bytes, 0, 4) === "GIF8") return "image/gif";
+  if (ascii(bytes, 0, 5) === "%PDF-") return "application/pdf";
+  if (ascii(bytes, 4, 8) === "ftyp" && ["heic", "heix", "mif1", "msf1"].includes(ascii(bytes, 8, 12))) return "image/heic";
+  return null;
+}
+```
+
+Size limits come in two layers: a hard cap on the raw file (I use something like 25 MB, mostly to protect the tab's memory) and the provider's limits on what actually gets sent, which are lower and vary by provider and file type. Keep them in one config object.
+
+<Callout type="warning">
+  Client-side validation is UX, not security. Anyone can call your upload endpoint with curl. Everything in this section must be repeated on the server, against the stored bytes.
+</Callout>
+
+## Downscaling images in the browser
+
+Vision models resize large images internally anyway, and many providers bill images by pixel area. Sending a 4032×3024 photo costs upload time on a mobile connection and buys you nothing. I downscale to a long edge of around 1500–2000 px before uploading (reading small print on a receipt needs more).
+
+Re-encoding also solves the privacy issue from the intro. Drawing to a canvas and exporting a new JPEG or WebP writes only pixels, so EXIF, GPS coordinates included, does not survive. That is the cheapest, most reliable way to strip metadata: don't parse EXIF, just don't copy it.
+
+```ts
+type DownscaleOptions = { maxEdge: number; mimeType: "image/jpeg" | "image/webp"; quality: number };
+
+export async function downscaleImage(file: Blob, options: DownscaleOptions): Promise<Blob> {
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  try {
+    const scale = Math.min(1, options.maxEdge / Math.max(bitmap.width, bitmap.height));
+    const width = Math.round(bitmap.width * scale);
+    const height = Math.round(bitmap.height * scale);
+
+    if (typeof OffscreenCanvas !== "undefined") {
+      const canvas = new OffscreenCanvas(width, height);
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("2D context unavailable");
+      context.imageSmoothingQuality = "high";
+      context.drawImage(bitmap, 0, 0, width, height);
+      return await canvas.convertToBlob({ type: options.mimeType, quality: options.quality });
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("2D context unavailable");
+    context.imageSmoothingQuality = "high";
+    context.drawImage(bitmap, 0, 0, width, height);
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("Encoding failed"))),
+        options.mimeType,
+        options.quality,
+      ),
+    );
+  } finally {
+    bitmap.close();
+  }
+}
+```
+
+A few details that cost me time:
+
+- **Orientation.** `imageOrientation: "from-image"` is the default today, so EXIF rotation is applied when decoding. I still pass it explicitly, because once EXIF is gone the pixels must already be upright.
+- **Unsupported output types fall back silently.** If the browser can't encode the type you ask for, `toBlob` and `convertToBlob` return PNG, which can be bigger than the original. Check `blob.type` after encoding and fall back to JPEG yourself. JPEG at quality 0.85 is my safe default.
+- **Transparency.** JPEG has no alpha channel; a PNG screenshot with transparency gets a black background. Keep PNG and WebP sources as WebP.
+- **Main thread.** Decoding a 48 MP photo can block the main thread. Because `createImageBitmap` and `OffscreenCanvas` both work in workers, the `OffscreenCanvas` branch of the function above moves into a worker almost unchanged; see [Web Workers](/blog/web-workers-off-main-thread).
+
+### HEIC from iPhones
+
+iPhones shoot HEIC by default. As of late 2026, Safari (17 and later) is the only major browser that decodes HEIC in web content; Chrome and Firefox do not, so `createImageBitmap` will reject on those. In my experience, iOS Safari often hands the page a JPEG when the file input's `accept` doesn't explicitly list HEIC, but desktop users who AirDrop photos to a Mac and drag them into Chrome will give you raw HEIC. If the browser can decode it, downscale as usual; if not, convert on the server (libheif-based tooling) or load a WASM decoder on demand. And never show a broken preview: sniffing already told you it's HEIC, so render a file chip instead of an `img`.
+
+## PDFs: send as-is or extract text?
+
+Many LLM APIs now accept PDFs directly and process both the text and the page images. Scans, tables and charts are handled better, at a higher token cost. The alternative is extracting text in the browser with pdf.js and sending plain text.
+
+| | Send the PDF | Extract text in the browser |
+| --- | --- | --- |
+| Scans, charts, tables | Handled by the model | Lost; scans give empty text |
+| Cost | Higher; often both text and page images | Text tokens only |
+| Bundle | Nothing extra | pdf.js is heavy; lazy-load it |
+| Page and size limits | Provider-specific | You control them |
+| Privacy | Whole file leaves the device | You can show and trim the text before sending |
+
+My default is to upload the PDF and let the server decide, because the server knows the current provider limits. Client-side extraction is worth it when users must review exactly what is sent. Either way, check the page count early and warn users instead of letting them wait on an upload that will be rejected.
+
+## Recording audio with MediaRecorder
+
+For voice input, `getUserMedia` plus `MediaRecorder` is enough, but there's no single container every browser records. Chromium records WebM with Opus; Safari historically recorded only MP4/AAC and only added WebM recording relatively recently; Firefox records WebM/Opus or Ogg. Don't hardcode a type: ask the browser.
+
+```ts
+const preferredAudioTypes = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"];
+
+export function pickAudioMimeType(): string | undefined {
+  return preferredAudioTypes.find((type) => MediaRecorder.isTypeSupported(type));
+}
+
+export async function recordAudio(signal: AbortSignal): Promise<Blob> {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mimeType = pickAudioMimeType();
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const chunks: Blob[] = [];
+
+  return new Promise<Blob>((resolve, reject) => {
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    });
+    recorder.addEventListener("stop", () => {
+      stream.getTracks().forEach((track) => track.stop());
+      resolve(new Blob(chunks, { type: recorder.mimeType }));
+    });
+    recorder.addEventListener("error", () => reject(new Error("Recording failed")));
+    signal.addEventListener("abort", () => recorder.stop(), { once: true });
+    recorder.start(1000);
+  });
+}
+```
+
+Send `recorder.mimeType` with the upload, not the type you requested, because the browser may refine it. If your speech-to-text step only takes one format, transcode on the server. Always stop the tracks, otherwise the recording indicator stays on and users rightly assume you're still listening. And cap the duration in the UI.
+
+## Uploading: presigned URLs, progress and cancellation
+
+There are two shapes. **Through your server**: the browser posts to your route, which forwards to storage. It's simple, but large bodies hit serverless request limits. **Direct to storage**: the browser asks your API for a short-lived presigned URL scoped to one object key, uploads straight to the bucket, then tells your API "done". Prefer a presigned POST policy (or your storage's equivalent) when you can, since it lets the storage enforce a content-length range and content type; a plain presigned PUT generally can't limit size by itself.
+
+`fetch` still has no upload progress events in browsers, so for a progress bar I use `XMLHttpRequest`, wrapped to accept an `AbortSignal`:
+
+```ts
+export function uploadWithProgress(
+  url: string,
+  body: Blob,
+  contentType: string,
+  onProgress: (fraction: number) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", url);
+    request.setRequestHeader("Content-Type", contentType);
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total);
+    });
+    request.addEventListener("load", () =>
+      request.status >= 200 && request.status < 300 ? resolve() : reject(new Error(`Upload failed: ${request.status}`)),
+    );
+    request.addEventListener("error", () => reject(new Error("Network error")));
+    request.addEventListener("abort", () => reject(new DOMException("Upload aborted", "AbortError")));
+    signal.addEventListener("abort", () => request.abort(), { once: true });
+    request.send(body);
+  });
+}
+```
+
+Start uploads as soon as a file is added, not when the user presses Send. Removing an attachment aborts its controller, and unmounting the composer aborts all of them. Put a lifecycle rule on the upload prefix to delete objects that were never confirmed.
+
+## Previews, object URLs and accessibility
+
+`URL.createObjectURL` gives you an instant preview without reading the file into memory as a data URL, but every URL pins its blob until you call `URL.revokeObjectURL` or the document unloads. I create the URL when the attachment enters `uploading` and revoke it on `REMOVED`, and for any remaining attachments when the composer unmounts. Preview the downscaled blob: it's what the model actually sees.
+
+For accessibility:
+
+- The drop zone is an enhancement, never the only path. The visible button triggers the real file input and is reachable by keyboard.
+- Each attachment chip has a text name, a remove button with an accessible name like "Remove invoice.pdf", and progress exposed as text ("Uploading, 40%") rather than only a bar.
+- Announce rejections in a polite live region: "photo.heic could not be read. Try JPEG or PNG."
+- The record button reflects its state with `aria-pressed` and a visible timer, and the composer shows clearly while the microphone is live.
+
+## What the server must still check
+
+The browser did the expensive, user-facing work; the server makes the decisions. Before a `fileRef` reaches a model, the server should verify the uploaded object exists and belongs to this user and conversation, re-sniff the stored bytes and check the size, enforce page and duration limits, and strip metadata again if the client was bypassed. It should also treat file contents as untrusted input to the model: text inside an image or PDF can carry instructions just like a web page can, which is exactly the indirect prompt injection described in [LLM application security](/blog/llm-app-security-prompt-injection). Finally, delete files on a schedule and say so in the UI.
+
+## Summary
+
+<Checklist>
+
+- Support the file picker, drag-and-drop and paste, all feeding one `addFiles` function.
+- Model each attachment as a discriminated union; send messages with server-issued file references, not bytes.
+- Sniff magic bytes instead of trusting `File.type`, and keep size and page limits in one config.
+- Downscale images before upload; re-encoding through a canvas strips EXIF and GPS for free.
+- Check `blob.type` after encoding, handle transparency, and move heavy decoding into a worker.
+- Detect HEIC up front; decode it where the browser can, convert elsewhere, never show a broken preview.
+- Pick the MediaRecorder type with `isTypeSupported`, send the actual `recorder.mimeType`, and always stop tracks.
+- Upload direct to storage with presigned URLs, use XHR for progress, abort on remove, expire orphans.
+- Revoke object URLs, keep a keyboard path, and announce progress and errors as text.
+- Repeat every check on the server and treat file contents as untrusted model input.
+
+</Checklist>

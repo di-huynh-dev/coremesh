@@ -1,0 +1,321 @@
+---
+title: "URL là state: filter, sort, phân trang và modal sống trên thanh địa chỉ"
+excerpt: "Khi nào state nên nằm trong URL thay vì useState hay cache server, cách parse và validate search params bằng schema, push hay replace, debounce ô tìm kiếm, đồng bộ với App Router của Next.js 16, nuqs, và những rắc rối về nút Back và SEO."
+---
+
+<Lead>Chị PM gửi vào group link "đơn hàng lỗi cần xử lý gấp". Mình bấm vào và thấy toàn bộ đơn hàng, không filter nào cả: bộ lọc nằm trong `useState` nên link chỉ là `/orders`. Cùng tuần đó, khách hàng phàn nàn rằng bấm Back sau khi xem chi tiết sản phẩm thì mất sạch bộ lọc. Hai bug, một nguyên nhân: mình đã coi URL như địa chỉ của trang, trong khi nó nên là **nguồn sự thật** cho một phần state của trang.</Lead>
+
+## Cái gì thuộc về URL, cái gì không
+
+URL là kho state duy nhất mà trình duyệt tự lưu lịch sử, tự khôi phục khi reload, và người dùng có thể copy, gửi cho người khác. Mình dùng ba câu hỏi để quyết định:
+
+1. Người dùng có muốn **chia sẻ hoặc bookmark** đúng trạng thái này không?
+2. Bấm **Back** có nên đưa họ về trạng thái trước đó không?
+3. **Server có cần** giá trị này để render đúng nội dung không?
+
+Trả lời "có" cho ít nhất một câu thì ứng viên số một là URL.
+
+| Loại state | Ví dụ | Đặt ở đâu |
+| --- | --- | --- |
+| Định danh tài nguyên | `/orders/123` | Path |
+| Cách xem danh sách | filter, sort, page, tab | Search params |
+| Modal xem chi tiết một item | `?order=123` | Search params |
+| Bản nháp đang gõ dở | chữ trong ô tìm kiếm trước khi debounce | Local state |
+| Trạng thái tương tác tạm | dropdown mở, hover, confirm dialog | Local state |
+| Dữ liệu từ server | danh sách đơn, tổng số trang | Server cache (RSC, TanStack Query) |
+| Tuỳ chọn cá nhân lâu dài | mật độ hiển thị, theme | Cookie, localStorage hoặc DB |
+| Dữ liệu nhạy cảm | token, email, số điện thoại | Không bao giờ ở URL |
+
+Hai dòng hay bị nhầm. **Dữ liệu server không thuộc về URL**: URL chỉ giữ *câu hỏi* (`status=failed&page=3`), *câu trả lời* nằm trong cache với key suy ra từ URL. Và **không phải modal nào cũng vào URL**: modal chi tiết đơn hàng thì nên, còn hộp thoại "Bạn chắc chắn muốn xoá?" thì không ai muốn mở lại từ một link.
+
+## URL là input không đáng tin: parse bằng schema
+
+Search params là input từ người dùng, giống body của một request: người ta sửa tay `page=abc`, link cũ chứa giá trị sort đã bị xoá, bot gửi `page=999999`. Thay vì ép kiểu rải rác trong component, mỗi trang danh sách có một schema trong file `listing-params.ts`, dùng chung cho server và client:
+
+```ts
+import { z } from "zod";
+
+export const SORT_OPTIONS = ["newest", "price-asc", "price-desc"] as const;
+export const TAB_OPTIONS = ["all", "in-stock", "on-sale"] as const;
+
+const firstValue = (value: unknown) => (Array.isArray(value) ? value[0] : value);
+const commaList = (value: unknown) =>
+  typeof firstValue(value) === "string" ? String(firstValue(value)).split(",").filter(Boolean) : [];
+
+export const listingParamsSchema = z.object({
+  q: z.preprocess(firstValue, z.string().trim().max(100)).catch(""),
+  page: z.preprocess(firstValue, z.coerce.number().int().min(1).max(500)).catch(1),
+  sort: z.preprocess(firstValue, z.enum(SORT_OPTIONS)).catch("newest"),
+  tab: z.preprocess(firstValue, z.enum(TAB_OPTIONS)).catch("all"),
+  brands: z.preprocess(commaList, z.array(z.string().max(40)).max(20)).catch([]),
+});
+
+export type ListingParams = z.infer<typeof listingParamsSchema>;
+export const DEFAULT_LISTING_PARAMS = listingParamsSchema.parse({});
+```
+
+Vài quyết định đáng chú ý:
+
+- **`.catch()` ở từng field, không phải ở cả object.** Một giá trị sort rác không nên làm mất luôn filter brand hợp lệ. Mỗi field tự rơi về default của nó.
+- **`firstValue`** xử lý `?page=2&page=3`: Next.js trả về mảng cho key lặp lại, mình lấy giá trị đầu.
+- **Mảng dạng `brands=a,b`** thay vì `brand=a&brand=b`: URL ngắn hơn và `Object.fromEntries` không làm rơi giá trị, đổi lại giá trị không được chứa dấu phẩy, và `URLSearchParams` sẽ encode dấu phẩy thành `%2C` (vẫn đọc lại đúng, chỉ kém đẹp hơn).
+- **Giới hạn trên** (`max(500)`, `max(20)`) để không ai tạo ra một query tốn kém chỉ bằng cách sửa URL.
+
+Chiều ngược lại cũng quan trọng không kém. Mình viết đúng một hàm để tạo URL, bỏ qua giá trị default và giữ thứ tự key cố định:
+
+```ts
+export function serializeListingParams(params: ListingParams): string {
+  const search = new URLSearchParams();
+  if (params.q) search.set("q", params.q);
+  if (params.sort !== DEFAULT_LISTING_PARAMS.sort) search.set("sort", params.sort);
+  if (params.tab !== DEFAULT_LISTING_PARAMS.tab) search.set("tab", params.tab);
+  if (params.brands.length > 0) search.set("brands", [...params.brands].sort().join(","));
+  if (params.page !== DEFAULT_LISTING_PARAMS.page) search.set("page", String(params.page));
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+export function listingHref(pathname: string, current: ListingParams, patch: Partial<ListingParams>) {
+  const changesResultSet = Object.keys(patch).some((key) => key !== "page");
+  const next = { ...current, ...patch, ...(changesResultSet ? { page: 1 } : {}) };
+  return pathname + serializeListingParams(next);
+}
+```
+
+Một trạng thái, đúng một URL. Nghe như chuyện thẩm mỹ, nhưng nó ảnh hưởng trực tiếp đến cache ở CDN, cache key phía client và canonical cho SEO. `listingHref` còn gói một quy tắc mình từng quên nhiều lần: **đổi filter thì về trang 1**, nếu không người đang ở trang 7 lọc thêm brand sẽ thấy một trang trống.
+
+<Callout>
+  Đừng rải `new URLSearchParams(...)` và `params.set(...)` khắp các component. Khi logic tạo URL nằm ở mười chỗ, chắc chắn sẽ có một chỗ quên reset page hoặc ghi giá trị default ra URL. Một cặp hàm parse và serialize có type là ranh giới duy nhất giữa chuỗi ký tự và state của bạn.
+</Callout>
+
+## Đọc ở server: `searchParams` là Promise
+
+Từ Next.js 15, `searchParams` của page là một Promise, và Next.js 16 đã bỏ hẳn kiểu truy cập đồng bộ từng được giữ lại để tương thích ngược. Helper `PageProps` được sinh tự động theo route, không cần import:
+
+```tsx
+import { Suspense } from "react";
+import { listingParamsSchema } from "./listing-params";
+import { ListingToolbar } from "./listing-toolbar";
+import { ProductGrid, ProductGridSkeleton } from "./product-grid";
+
+export default async function ProductsPage(props: PageProps<"/products">) {
+  const params = listingParamsSchema.parse(await props.searchParams);
+
+  return (
+    <>
+      <ListingToolbar />
+      <Suspense key={JSON.stringify(params)} fallback={<ProductGridSkeleton />}>
+        <ProductGrid params={params} />
+      </Suspense>
+    </>
+  );
+}
+```
+
+`key` trên `Suspense` là chi tiết nhỏ nhưng quan trọng. Điều hướng trong App Router chạy trong transition, nên mặc định React giữ nguyên UI cũ cho đến khi dữ liệu mới sẵn sàng. Không có `key`, người dùng bấm filter và không thấy gì thay đổi trong một hai giây. Có `key`, boundary được mount lại và skeleton hiện ra ngay. Tuỳ màn hình, mình chọn giữ dữ liệu cũ và làm mờ nó (dùng `isPending` ở phần dưới) hoặc hiện skeleton; điều cần tránh là không có phản hồi gì.
+
+Lưu ý: layout không nhận `searchParams`, và nếu bật Cache Components thì chỗ bạn `await searchParams` quyết định phần nào của trang còn prerender được, nên hãy đọc nó càng sâu trong cây càng tốt.
+
+## Ghi URL từ client: push hay replace
+
+Phía client, mình gói `useSearchParams`, `useRouter` và schema vào một hook. Lưu ý là component dùng `useSearchParams` trong một route prerender phải nằm trong `Suspense`, nếu không build production sẽ báo lỗi.
+
+```tsx
+"use client";
+
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useTransition } from "react";
+import { listingHref, listingParamsSchema, type ListingParams } from "./listing-params";
+
+type HistoryMode = "push" | "replace";
+
+export function useListingParams() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [isPending, startTransition] = useTransition();
+  const params = listingParamsSchema.parse(Object.fromEntries(searchParams));
+
+  function setParams(patch: Partial<ListingParams>, mode: HistoryMode = "push") {
+    const href = listingHref(pathname, params, patch);
+    startTransition(() => {
+      if (mode === "push") router.push(href, { scroll: false });
+      else router.replace(href, { scroll: false });
+    });
+  }
+
+  return { params, setParams, isPending };
+}
+```
+
+`scroll: false` để trang không nhảy lên đầu mỗi lần đổi sort. `isPending` dùng để làm mờ grid trong lúc server render lại.
+
+Câu hỏi khó hơn là **push hay replace**. Mỗi lần push là một bước người dùng có thể "undo" bằng nút Back, nên mình chỉ push những thay đổi mà họ coi là điều hướng có chủ đích.
+
+| Hành động | Lựa chọn | Lý do |
+| --- | --- | --- |
+| Chuyển trang | push | Back về trang trước là hành vi ai cũng mong đợi |
+| Đổi tab | push | Tab trông như điều hướng |
+| Mở modal chi tiết | push | Back để đóng modal, nhất là trên mobile |
+| Bấm một filter hoặc đổi sort | push | Back để bỏ filter vừa chọn |
+| Gõ vào ô tìm kiếm | replace | Không ai muốn bấm Back mười lần để xoá từng chữ |
+| Kéo slider giá, pan bản đồ | replace | Thay đổi liên tục, chỉ trạng thái cuối có nghĩa |
+| Sửa URL không hợp lệ thành dạng chuẩn | replace | Không tạo bước lịch sử "rác" |
+
+Filter là trường hợp gây tranh cãi nhất. Với hai mươi checkbox bị bật tắt liên tục, push từng cú click biến nút Back thành "undo từng checkbox". Khi đó mình gom filter vào một panel có nút "Áp dụng" và push một lần.
+
+## Ô tìm kiếm: local state, debounce và đồng bộ ngược
+
+Nếu `value` của input đọc thẳng từ URL, mỗi phím gõ là một lần điều hướng, server render lại, và trên máy chậm chữ sẽ bị giật. Vì vậy input giữ một **bản nháp** trong local state và chỉ ghi URL sau khi người dùng ngừng gõ.
+
+Phần khó là chiều ngược lại: khi URL đổi từ bên ngoài (bấm Back, bấm nút "Xoá filter"), input phải cập nhật theo. Cách ngây thơ là "URL đổi thì ghi đè bản nháp", và nó gây ra một bug khó chịu: người dùng gõ "ao kh", URL được commit, rồi trong lúc server đang render họ gõ tiếp "ao khoac". Khi URL "ao kh" về tới, input bị ghi đè và mất mấy chữ vừa gõ. Mình phân biệt thay đổi do chính input commit với thay đổi từ bên ngoài:
+
+```tsx
+"use client";
+
+import { useEffect, useEffectEvent, useState } from "react";
+
+type SearchBoxProps = {
+  urlQuery: string;
+  onCommit: (query: string) => void;
+};
+
+export function SearchBox({ urlQuery, onCommit }: SearchBoxProps) {
+  const [draft, setDraft] = useState(urlQuery);
+  const [seenUrlQuery, setSeenUrlQuery] = useState(urlQuery);
+  const [ownCommit, setOwnCommit] = useState<string | null>(null);
+
+  if (urlQuery !== seenUrlQuery) {
+    setSeenUrlQuery(urlQuery);
+    if (urlQuery !== ownCommit) setDraft(urlQuery);
+  }
+
+  const commit = useEffectEvent((query: string) => {
+    setOwnCommit(query);
+    onCommit(query);
+  });
+
+  useEffect(() => {
+    const query = draft.trim();
+    if (query === urlQuery) return;
+    const timer = setTimeout(() => commit(query), 300);
+    return () => clearTimeout(timer);
+  }, [draft, urlQuery]);
+
+  return (
+    <input
+      type="search"
+      aria-label="Search products"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+    />
+  );
+}
+```
+
+Ở toolbar, `onCommit` gọi `setParams({ q: query }, "replace")`. Đoạn `if` ngay trong thân component là pattern "điều chỉnh state khi prop đổi" mà tài liệu React khuyến nghị thay cho `useEffect`, nên không có một lần render với giá trị cũ. `useEffectEvent` (stable từ React 19.2) giúp effect không phải chạy lại mỗi khi parent truyền xuống một hàm `onCommit` mới.
+
+## nuqs: khi không muốn tự viết
+
+Tự viết giúp hiểu cơ chế, nhưng ở dự án thật mình thường dùng [nuqs](https://nuqs.dev): API giống `useState` nhưng lưu trong URL, parser có type, gom nhiều lần cập nhật trong cùng tick thành một lần ghi URL, và giới hạn tần suất ghi. Sau khi bọc app bằng `NuqsAdapter` từ `nuqs/adapters/next/app` ở root layout, mình khai báo parser trong một file dùng chung, import từ `nuqs/server` để file này không bị đánh dấu là client:
+
+```ts
+import {
+  createLoader,
+  parseAsArrayOf,
+  parseAsInteger,
+  parseAsString,
+  parseAsStringLiteral,
+} from "nuqs/server";
+import { SORT_OPTIONS, TAB_OPTIONS } from "./listing-params";
+
+export const listingSearchParams = {
+  q: parseAsString.withDefault(""),
+  page: parseAsInteger.withDefault(1),
+  sort: parseAsStringLiteral(SORT_OPTIONS).withDefault("newest"),
+  tab: parseAsStringLiteral(TAB_OPTIONS).withDefault("all"),
+  brands: parseAsArrayOf(parseAsString).withDefault([]),
+};
+
+export const loadListingParams = createLoader(listingSearchParams);
+```
+
+Page gọi `await loadListingParams(props.searchParams)`, còn ở client:
+
+```tsx
+"use client";
+
+import { debounce, useQueryStates } from "nuqs";
+import { listingSearchParams } from "./listing-search-params";
+
+export function ListingSearch() {
+  const [{ q }, setListing] = useQueryStates(listingSearchParams, {
+    shallow: false,
+    history: "push",
+  });
+
+  return (
+    <input
+      type="search"
+      aria-label="Search products"
+      value={q}
+      onChange={(event) =>
+        setListing(
+          { q: event.target.value, page: null },
+          { history: "replace", limitUrlUpdates: event.target.value ? debounce(300) : undefined },
+        )
+      }
+    />
+  );
+}
+```
+
+State trong hook cập nhật ngay nên input không giật, còn URL được debounce. `shallow: false` là bắt buộc nếu server component cần render lại theo params mới; mặc định nuqs chỉ cập nhật phía client. `page: null` xoá key khỏi URL, tương đương về default. Option `limitUrlUpdates` thay cho `throttleMs` đã deprecated từ bản 2.5. Một điểm cần nhớ: parser của nuqs kiểm tra *kiểu*, không kiểm tra *miền giá trị*. `page=-4` vẫn parse thành `-4`, nên mình vẫn kẹp giá trị trước khi đưa vào query.
+
+## Modal, nút Back và SEO
+
+**Modal trong URL.** Mở modal chi tiết bằng push `?order=123` thì Back đóng modal, đúng như người dùng mobile mong đợi. Nhưng nút X thì sao? Nếu modal được mở từ danh sách, X nên gọi `router.back()` để không để lại một bước lịch sử "modal đã đóng". Nếu người dùng vào thẳng từ một link được chia sẻ, `router.back()` sẽ đưa họ ra khỏi trang web. Mình giữ một ref đánh dấu "modal này do mình push"; có thì `back()`, không thì `replace` sang URL không có `order`. Khi modal là nội dung đáng có URL riêng cho SEO, intercepting route kết hợp parallel route của App Router là lựa chọn tốt hơn search param.
+
+**Back phải khôi phục đúng.** Mình luôn thử tay: lọc, sang trang 3, mở chi tiết, Back, Back. Mỗi bước phải khớp cả URL lẫn checkbox, input, tab. Bug hay gặp nhất là component giữ bản sao `useState(initialFromUrl)` và không bao giờ đồng bộ lại.
+
+**SEO và URL vô hạn.** Mỗi tổ hợp filter là một URL mới, và năm filter với vài giá trị mỗi cái đã đủ tạo ra hàng nghìn URL gần như trùng lặp để bot crawl. Những gì mình làm:
+
+```tsx
+import type { Metadata } from "next";
+import { DEFAULT_LISTING_PARAMS, listingParamsSchema } from "./listing-params";
+
+export async function generateMetadata(props: PageProps<"/products">): Promise<Metadata> {
+  const params = listingParamsSchema.parse(await props.searchParams);
+  const isFacetedView =
+    params.q !== "" ||
+    params.brands.length > 0 ||
+    params.sort !== DEFAULT_LISTING_PARAMS.sort ||
+    params.tab !== DEFAULT_LISTING_PARAMS.tab;
+
+  return {
+    alternates: { canonical: params.page > 1 ? `/products?page=${params.page}` : "/products" },
+    robots: isFacetedView ? { index: false, follow: true } : undefined,
+  };
+}
+```
+
+Trang phân trang trỏ canonical về chính nó, không phải về trang 1, vì nội dung trang 2 khác trang 1. Các view đã lọc thì `noindex` nhưng vẫn `follow` để bot đi tiếp tới sản phẩm. Nếu một tổ hợp filter thật sự có giá trị tìm kiếm (ví dụ "giày chạy bộ nữ"), nó nên được nâng lên thành một path riêng có nội dung riêng, thay vì hy vọng Google index một query string.
+
+<Callout>
+  URL nằm trong lịch sử trình duyệt, server log, công cụ analytics và ảnh chụp màn hình người dùng gửi cho support. Đừng bao giờ đưa token, email hay bất kỳ thứ gì bạn không muốn in ra giấy vào search params.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Đưa vào URL những state người dùng muốn chia sẻ, muốn Back khôi phục, hoặc server cần để render; dữ liệu server thì để trong cache với key suy ra từ URL.
+- Coi search params là input không đáng tin: parse bằng schema, `.catch()` từng field, giới hạn giá trị.
+- Một hàm serialize duy nhất: bỏ default, thứ tự key cố định, tự reset page khi filter đổi.
+- Next.js 16: `await props.searchParams` ở page, bọc component dùng `useSearchParams` trong `Suspense`, dùng `key` trên `Suspense` hoặc `isPending` để có phản hồi khi điều hướng.
+- Push cho bước điều hướng có chủ đích, replace cho thay đổi liên tục như gõ phím hay kéo slider.
+- Ô tìm kiếm giữ bản nháp local, debounce khi ghi URL, và chỉ ghi đè bản nháp khi URL đổi từ bên ngoài.
+- nuqs tiết kiệm nhiều code, nhưng nhớ `shallow: false` khi server cần render lại và tự kiểm tra miền giá trị.
+- Kiểm soát URL vô hạn: canonical cho trang phân trang, `noindex, follow` cho view đã lọc, không đưa dữ liệu nhạy cảm vào URL.
+
+</Checklist>

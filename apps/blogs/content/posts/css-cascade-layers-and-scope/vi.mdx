@@ -1,0 +1,233 @@
+---
+title: "Cascade layers và @scope: chấm dứt cuộc chiến specificity trong codebase lớn"
+excerpt: "Vì sao CSS của dự án lớn luôn trượt dần về !important, cách @layer thay đổi luật thắng thua của cascade, những bẫy như style không nằm trong layer và !important bị đảo ngược, @scope với donut scope và proximity, các gotcha của native nesting, và lộ trình đưa một codebase cũ vào layer."
+---
+
+<Lead>Có một commit mình vẫn nhớ: để đổi màu chữ của một nút trong modal, đồng nghiệp phải viết `#root .modal-wrapper .modal .footer .btn.btn-primary`, vì selector cũ của theme đã dài như vậy. Hai tuần sau, một người khác cần ghi đè lại và… thêm `!important`. Sáu tháng sau, file CSS có hơn ba trăm cái `!important`, và không ai dám xoá dòng nào. Đó không phải lỗi của ai cả — đó là hệ quả tự nhiên khi thứ tự ưu tiên duy nhất bạn điều khiển được là specificity. Cascade layers và `@scope` cho chúng ta thêm hai cái cần gạt khác, và sau khi đưa chúng vào một dự án legacy, mình không muốn quay lại nữa.</Lead>
+
+## Cuộc chiến specificity bắt đầu như thế nào
+
+Trước khi có layer, cascade quyết định style thắng theo thứ tự: origin và độ quan trọng (`!important`), rồi specificity, rồi thứ tự xuất hiện trong source. Trong một codebase lớn, hai tiêu chí cuối đều khó kiểm soát:
+
+- **Thứ tự source không ổn định.** Với bundler hiện đại, CSS được tách thành nhiều chunk theo route. Cùng một component có thể nhận thứ tự CSS khác nhau ở hai trang, nên "file nào load sau thì thắng" trở thành chuyện may rủi.
+- **Specificity bị thư viện bên thứ ba quyết định.** Một date picker viết `.react-datepicker__month .react-datepicker__day--selected` (0,2,0). Muốn đổi màu ngày được chọn, bạn phải viết selector mạnh ít nhất bằng chừng đó.
+
+Kết quả là ai cũng tăng specificity "cho chắc", và `!important` là bước cuối của cuộc chạy đua vũ trang đó:
+
+```css
+.button {
+  background: var(--color-primary);
+}
+
+.checkout-page .sidebar .button {
+  background: var(--color-success);
+}
+
+.promo-banner .button {
+  background: var(--color-warning) !important;
+}
+```
+
+Vấn đề không nằm ở từng dòng, mà ở chỗ *ý định* ("style của trang ghi đè style của component", "utility luôn thắng") không được biểu diễn ở đâu cả. Nó chỉ tồn tại ngầm trong độ dài của selector.
+
+## `@layer`: đưa ý định vào cascade
+
+Cascade layers chèn một tiêu chí mới vào **trước** specificity. Khi hai declaration nằm ở hai layer khác nhau, layer khai báo sau thắng, bất kể specificity. Specificity chỉ còn dùng để phân xử *bên trong* cùng một layer.
+
+```css
+@layer reset, vendor, base, components, utilities;
+
+@layer components {
+  .checkout-page .sidebar .button {
+    background: var(--color-success);
+  }
+}
+
+@layer utilities {
+  .bg-warning {
+    background: var(--color-warning);
+  }
+}
+```
+
+Ở đây `.bg-warning` (0,1,0) thắng selector (0,3,0) phía trên vì `utilities` được khai báo sau `components`. Không cần `!important`, không cần nhân đôi class.
+
+Dòng `@layer reset, vendor, base, components, utilities;` ở đầu là quan trọng nhất. Thứ tự layer được xác định bởi **lần đầu tiên** tên layer xuất hiện. Nếu một chunk CSS nào đó có `@layer components` load trước dòng khai báo này, thứ tự sẽ khác bạn nghĩ. Vì vậy mình luôn đặt câu khai báo thứ tự ở dòng đầu tiên của file CSS global được import sớm nhất (trong Next.js là file import ở root layout). Đây cũng là lợi ích lớn thứ hai của layer: thứ tự chunk CSS giữa các route không còn quyết định ai thắng nữa.
+
+Layer có thể lồng nhau (`components.forms`), và có thể gán khi import:
+
+```css
+@layer reset, vendor, base, components, utilities;
+
+@import url("modern-normalize.css") layer(reset);
+@import url("react-datepicker/dist/react-datepicker.css") layer(vendor);
+```
+
+Câu lệnh `@layer` dạng khai báo được phép đứng trước `@import`, nên file này hợp lệ. Hỗ trợ trình duyệt không còn là câu hỏi: cascade layers có trong Chrome 99, Firefox 97 và Safari 15.4 từ năm 2022.
+
+## Hai luật dễ làm bạn ngã
+
+### Style không nằm trong layer luôn thắng
+
+Mọi style không thuộc layer nào được gom vào một layer ngầm, đứng **sau tất cả** các layer bạn khai báo. Nghĩa là một selector `.card` trơn trọi ở đâu đó sẽ thắng mọi thứ trong `utilities`. Thứ hay bị bỏ quên nhất là style được inject lúc runtime: các thư viện CSS-in-JS chèn thẻ `style` không có layer, nên chúng thắng toàn bộ hệ thống layer của bạn. Một số thư viện có tuỳ chọn bọc output vào layer; nếu không có, hãy chấp nhận rằng chúng là tầng cao nhất và thiết kế quanh điều đó. Inline style (`style` attribute) thì vẫn thắng mọi layer như trước.
+
+### `!important` bị đảo ngược
+
+Với declaration thường, layer sau thắng layer trước. Với `!important`, thứ tự **đảo ngược**: `!important` trong layer khai báo *trước* thắng `!important` trong layer sau, và `!important` trong một layer bất kỳ thắng `!important` không nằm trong layer.
+
+| Tình huống | Bên thắng |
+| --- | --- |
+| Hai declaration thường ở `vendor` và `utilities` | `utilities` |
+| Declaration thường ở `utilities` và style không có layer | Style không có layer |
+| `!important` ở `vendor` và `!important` ở `utilities` | `vendor` |
+| `!important` ở `reset` và `!important` không có layer | `reset` |
+
+Thiết kế này có chủ đích: layer thấp (reset, vendor) dùng `!important` để nói "đừng ai ghi đè cái này", ví dụ `[hidden] { display: none !important; }` trong reset. Nhưng khi migrate, nó là cái bẫy thật sự. Nếu bạn bọc CSS legacy vào một layer thấp, mọi `!important` cũ trong đó bỗng trở nên *mạnh hơn* trước.
+
+<Callout>
+  Trước khi bọc một khối CSS cũ vào layer, hãy đếm số `!important` trong đó. Mỗi cái sẽ thắng mọi `!important` bạn viết ở layer cao hơn sau này. Mình xử lý bằng cách chuyển chúng ra một file riêng, giữ ngoài layer, và coi đó là danh sách nợ cần trả.
+</Callout>
+
+### Thoát ra một layer với `revert-layer`
+
+Keyword `revert-layer` trả giá trị của một property về những gì layer trước đó quyết định. Mình dùng nó cho các variant "trơn" của component, thay vì cố đoán lại giá trị gốc:
+
+```css
+@layer components {
+  .button {
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .button[data-variant="bare"] {
+    border-radius: revert-layer;
+    box-shadow: revert-layer;
+  }
+}
+```
+
+## Đưa reset, thư viện ngoài và Tailwind vào layer
+
+Tailwind v4 dùng cascade layers thật của trình duyệt: `@import "tailwindcss";` sinh ra `@layer theme, base, components, utilities;`. Điều đó có hai hệ quả mình đã gặp ngoài đời.
+
+Thứ nhất, CSS bạn viết ngoài layer sẽ thắng utility. Một dev viết `.card { padding: 24px; }` ở file global, sau đó thắc mắc vì sao `p-4` trên thẻ đó không có tác dụng. Với Tailwind v3 thì `p-4` có thể thắng nhờ thứ tự source; với v4 thì không bao giờ. Quy tắc trong team mình: mọi CSS tự viết đều phải nằm trong một layer.
+
+Thứ hai, bạn có thể chèn layer riêng vào giữa các layer của Tailwind, miễn là khai báo thứ tự trước khi import:
+
+```css
+@layer theme, base, vendor, components, utilities;
+
+@import "tailwindcss";
+@import "react-datepicker/dist/react-datepicker.css" layer(vendor);
+
+@layer components {
+  .react-datepicker__day--selected {
+    background: var(--color-primary);
+  }
+}
+```
+
+Bây giờ selector một class trong `components` thắng selector hai class của date picker, vì `vendor` đứng trước. Và utility như `bg-red-500` vẫn thắng cả hai. Cuộc chiến specificity với thư viện ngoài kết thúc chỉ bằng một dòng `layer(vendor)`.
+
+## `@scope`: giới hạn phạm vi và độ gần
+
+Layer trả lời câu hỏi "nhóm style nào ưu tiên hơn". `@scope` trả lời câu hỏi khác: "style này được phép chạm tới phần nào của DOM".
+
+```css
+@scope (.media-card) to (.media-card__slot) {
+  img {
+    border-radius: var(--radius-lg);
+    aspect-ratio: 16 / 9;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+```
+
+`.media-card` là **scope root**, `.media-card__slot` là **scope limit**. Style áp dụng cho `img` và `a` bên trong card, nhưng dừng lại ở slot, nơi component cha truyền nội dung tuỳ ý vào. Đó là "donut scope": cái vòng có lỗ ở giữa. Mặc định root được tính vào phạm vi, limit thì không.
+
+Hai chi tiết về specificity: selector trơn bên trong `@scope` như `img` không cộng thêm specificity của root (vẫn là 0,0,1), còn `:scope img` thì cộng thêm một pseudo-class (0,1,1). Hành vi của `&` bên trong `@scope` từng khác nhau giữa các engine, nên mình tránh dùng nó ở đây.
+
+### Proximity: phần tử gần hơn thắng
+
+Khi hai rule có cùng specificity và cùng layer, `@scope` thêm một tiêu chí trước thứ tự source: scope root nào **gần** phần tử hơn (ít bước đi lên DOM hơn) thì thắng.
+
+```css
+@scope (.theme-light) {
+  :scope { background: white; }
+  p { color: #111; }
+}
+
+@scope (.theme-dark) {
+  :scope { background: #111; }
+  p { color: #eee; }
+}
+```
+
+Một panel `.theme-light` lồng trong vùng `.theme-dark` sẽ có chữ tối, vì root sáng gần hơn. Viết bằng selector thường như `.theme-dark p`, kết quả chỉ phụ thuộc vào rule nào đứng sau trong file.
+
+Lưu ý: `@scope` giới hạn *selector*, không chặn *kế thừa*. `color` đặt trên root vẫn được kế thừa qua scope limit như bình thường.
+
+### Hỗ trợ trình duyệt
+
+Chromium hỗ trợ `@scope` từ bản 118, Safari từ 17.4, và Firefox là engine cuối cùng với bản 146 (tháng 12/2025). Trình duyệt không hiểu `@scope` bỏ qua cả khối, nên với người dùng còn ở Firefox cũ, style đó đơn giản là biến mất. Với component cốt lõi, mình vẫn đặt style nền ngoài `@scope` và chỉ dùng scope cho phần tinh chỉnh.
+
+Nếu codebase đã dùng CSS Modules hoặc Tailwind cho mọi component, `@scope` không thêm nhiều giá trị. Nơi nó tỏa sáng là nội dung bạn không kiểm soát class: HTML từ CMS, khối markdown, widget nhúng, và vùng `prose` của blog này.
+
+## Native nesting: những gotcha đáng biết
+
+CSS nesting đã chạy trên mọi trình duyệt lớn từ cuối 2023, và nhiều team đang bỏ Sass chỉ vì nó. Nhưng native nesting không phải Sass:
+
+```css
+#site-header,
+.drawer-nav {
+  & a {
+    color: var(--color-link);
+  }
+}
+
+.nav-list a {
+  color: var(--color-muted);
+}
+```
+
+`&` tính specificity giống `:is()`, tức lấy giá trị **cao nhất** trong danh sách selector cha. Nên `& a` ở đây là (1,0,1) ngay cả với link trong `.drawer-nav`, và `.nav-list a` (0,1,1) không bao giờ thắng được — dù `#site-header` không hề có trong trang đó. Đừng đặt id vào selector cha của khối nesting.
+
+- **Không nối chuỗi.** `&__title` trong Sass ra `.card__title`; trong CSS thuần, rule đó không hợp lệ và bị bỏ qua. Ai migrate từ Sass với BEM sẽ gặp lỗi này đầu tiên.
+- **Declaration đứng sau nested rule.** Trước Chrome 130 và Firefox 132, declaration viết sau một nested rule bị "kéo lên" đầu block, nên có thể bị chính `@media` lồng bên trong ghi đè ngược. Từ các bản đó (và Safari cũng đã theo), chúng giữ đúng vị trí nhờ `CSSNestedDeclarations`. Quy tắc an toàn: declaration trước, nested rule sau.
+- **Nesting sâu là specificity ẩn.** Ba cấp nesting là một selector ba phần. Nesting làm việc tăng specificity trở nên vô hình, nên mình giới hạn ở hai cấp.
+
+## Lộ trình migrate một codebase legacy
+
+Đây là các bước mình đã làm với một app khoảng 40 nghìn dòng CSS, chạy song song với việc phát triển tính năng, không có một big-bang PR nào:
+
+1. **Khai báo thứ tự layer** ở dòng đầu file entry: `@layer reset, vendor, legacy, components, utilities;`. Chưa đổi gì khác, và chưa có gì thay đổi về hiển thị.
+2. **Bọc thư viện ngoài vào `vendor`** bằng `@import ... layer(vendor)`. Chạy visual regression test. Thường sẽ có vài chỗ legacy đang dựa vào việc thua specificity của vendor; sửa chúng ngay.
+3. **Tách `!important` khỏi legacy.** Grep, chuyển từng cái ra file `legacy-important.css` để ngoài layer, kèm ticket theo dõi.
+4. **Bọc CSS legacy vào `legacy`.** Từ thời điểm này, mọi CSS mới trong `components` tự động thắng legacy, dù legacy dùng selector dài cỡ nào. Đây là bước làm cả team thở phào.
+5. **Di chuyển dần** từng phần từ `legacy` sang `components` khi chạm vào tính năng liên quan, và xoá các hack specificity trên đường đi.
+6. **Thêm lint rule** cấm CSS ngoài layer trong code mới, cấm `!important` ngoài `reset` và `utilities`.
+
+DevTools của Chrome và Firefox đều hiển thị layer của từng rule trong panel Styles, nên khi QA báo "style không ăn", câu hỏi đầu tiên mình hỏi là: rule đó nằm ở layer nào?
+
+<Callout>
+  Layer không thay thế quy ước đặt tên hay CSS Modules. Nó thay thế thứ mà trước đây ta dùng specificity để biểu đạt: thứ tự ưu tiên giữa các nhóm style. Khi thứ tự đó được viết ra trong một dòng `@layer`, specificity quay về đúng vai trò của nó — phân xử trong phạm vi nhỏ.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Specificity và thứ tự source không đủ để biểu đạt ý định trong codebase lớn; đó là lý do `!important` sinh sôi.
+- Khai báo thứ tự layer một lần, ở dòng đầu của file CSS được load sớm nhất; layer sau thắng layer trước bất kể specificity.
+- Style không nằm trong layer, CSS-in-JS runtime và inline style thắng mọi layer — đưa mọi CSS tự viết vào layer.
+- `!important` đảo ngược thứ tự layer: đếm và tách `!important` trước khi bọc CSS cũ vào layer thấp.
+- Đưa reset, thư viện ngoài vào layer bằng `@import ... layer()`; với Tailwind v4, chèn layer riêng giữa `base` và `components`.
+- Dùng `@scope` với scope limit cho nội dung bạn không kiểm soát class; proximity giải quyết theme lồng nhau.
+- Với native nesting: `&` tính specificity như `:is()`, không nối chuỗi kiểu BEM, đặt declaration trước nested rule.
+- Migrate theo từng bước: vendor, tách `!important`, bọc legacy, rồi chuyển dần sang `components`.
+
+</Checklist>

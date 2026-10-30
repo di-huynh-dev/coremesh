@@ -1,0 +1,321 @@
+---
+title: "The URL Is State: Filters, Sorting, Pagination and Modals in the Address Bar"
+excerpt: "When state belongs in the URL rather than useState or a server cache, parsing and validating search params with a schema, push vs replace, debouncing a search box, syncing with the Next.js 16 App Router, nuqs, and the back-button and SEO traps."
+---
+
+<Lead>Our PM dropped a link into the team chat: "failed orders, please handle ASAP". I clicked it and saw every order, no filters at all: the filters lived in `useState`, so the link was just `/orders`. The same week, a customer complained that pressing Back after viewing a product wiped out all their filters. Two bugs, one cause: I'd been treating the URL as the page's address, when it should be the **source of truth** for part of the page's state.</Lead>
+
+## What belongs in the URL, and what doesn't
+
+The URL is the only state store the browser keeps history for, restores on reload, and lets users copy and send to someone else. I use three questions to decide:
+
+1. Would the user want to **share or bookmark** exactly this state?
+2. Should **Back** take them to the previous state?
+3. Does the **server need** this value to render the right content?
+
+A "yes" to any of them makes the URL the prime candidate.
+
+| Kind of state | Example | Where it lives |
+| --- | --- | --- |
+| Resource identity | `/orders/123` | Path |
+| How a list is viewed | filter, sort, page, tab | Search params |
+| A detail modal for one item | `?order=123` | Search params |
+| A half-typed draft | search box text before debounce | Local state |
+| Transient interaction | open dropdown, hover, confirm dialog | Local state |
+| Data from the server | the order list, total pages | Server cache (RSC, TanStack Query) |
+| Long-lived preferences | density, theme | Cookie, localStorage or DB |
+| Sensitive data | tokens, emails, phone numbers | Never in the URL |
+
+Two rows are commonly confused. **Server data doesn't belong in the URL**: the URL holds the *question* (`status=failed&page=3`); the *answer* lives in a cache keyed by the URL. And **not every modal belongs in the URL**: an order detail modal should be there, but nobody wants to reopen "Are you sure you want to delete?" from a link.
+
+## The URL is untrusted input: parse it with a schema
+
+Search params are user input, just like a request body: people hand-edit `page=abc`, old links carry sort values you've since removed, bots send `page=999999`. Instead of casting values ad hoc inside components, each list page gets a schema in `listing-params.ts`, shared by server and client:
+
+```ts
+import { z } from "zod";
+
+export const SORT_OPTIONS = ["newest", "price-asc", "price-desc"] as const;
+export const TAB_OPTIONS = ["all", "in-stock", "on-sale"] as const;
+
+const firstValue = (value: unknown) => (Array.isArray(value) ? value[0] : value);
+const commaList = (value: unknown) =>
+  typeof firstValue(value) === "string" ? String(firstValue(value)).split(",").filter(Boolean) : [];
+
+export const listingParamsSchema = z.object({
+  q: z.preprocess(firstValue, z.string().trim().max(100)).catch(""),
+  page: z.preprocess(firstValue, z.coerce.number().int().min(1).max(500)).catch(1),
+  sort: z.preprocess(firstValue, z.enum(SORT_OPTIONS)).catch("newest"),
+  tab: z.preprocess(firstValue, z.enum(TAB_OPTIONS)).catch("all"),
+  brands: z.preprocess(commaList, z.array(z.string().max(40)).max(20)).catch([]),
+});
+
+export type ListingParams = z.infer<typeof listingParamsSchema>;
+export const DEFAULT_LISTING_PARAMS = listingParamsSchema.parse({});
+```
+
+A few decisions worth calling out:
+
+- **`.catch()` per field, not on the whole object.** A garbage sort value shouldn't also throw away a valid brand filter. Each field falls back to its own default.
+- **`firstValue`** handles `?page=2&page=3`: Next.js gives you an array for repeated keys, and I take the first value.
+- **Arrays as `brands=a,b`** rather than `brand=a&brand=b`: shorter URLs, and `Object.fromEntries` doesn't drop values; the price is that values can't contain commas, and `URLSearchParams` encodes the comma as `%2C` (it still round-trips, it's just less pretty).
+- **Upper bounds** (`max(500)`, `max(20)`) so nobody can trigger an expensive query just by editing the URL.
+
+The other direction matters just as much. I write exactly one function that builds URLs, omits default values and keeps key order stable:
+
+```ts
+export function serializeListingParams(params: ListingParams): string {
+  const search = new URLSearchParams();
+  if (params.q) search.set("q", params.q);
+  if (params.sort !== DEFAULT_LISTING_PARAMS.sort) search.set("sort", params.sort);
+  if (params.tab !== DEFAULT_LISTING_PARAMS.tab) search.set("tab", params.tab);
+  if (params.brands.length > 0) search.set("brands", [...params.brands].sort().join(","));
+  if (params.page !== DEFAULT_LISTING_PARAMS.page) search.set("page", String(params.page));
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+export function listingHref(pathname: string, current: ListingParams, patch: Partial<ListingParams>) {
+  const changesResultSet = Object.keys(patch).some((key) => key !== "page");
+  const next = { ...current, ...patch, ...(changesResultSet ? { page: 1 } : {}) };
+  return pathname + serializeListingParams(next);
+}
+```
+
+One state, exactly one URL. It sounds cosmetic, but it directly affects CDN caching, client-side cache keys and SEO canonicals. `listingHref` also encodes a rule I've forgotten more times than I'd like to admit: **changing a filter goes back to page 1**, otherwise someone on page 7 who adds a brand filter lands on an empty page.
+
+<Callout>
+  Don't scatter `new URLSearchParams(...)` and `params.set(...)` across components. When URL-building logic lives in ten places, one of them will forget to reset the page or will write default values into the URL. A typed parse/serialize pair is the single boundary between strings and your state.
+</Callout>
+
+## Reading on the server: `searchParams` is a Promise
+
+Since Next.js 15, a page's `searchParams` is a Promise, and Next.js 16 removed the synchronous access that had been kept for backwards compatibility. The `PageProps` helper is generated per route and is available globally, no import needed:
+
+```tsx
+import { Suspense } from "react";
+import { listingParamsSchema } from "./listing-params";
+import { ListingToolbar } from "./listing-toolbar";
+import { ProductGrid, ProductGridSkeleton } from "./product-grid";
+
+export default async function ProductsPage(props: PageProps<"/products">) {
+  const params = listingParamsSchema.parse(await props.searchParams);
+
+  return (
+    <>
+      <ListingToolbar />
+      <Suspense key={JSON.stringify(params)} fallback={<ProductGridSkeleton />}>
+        <ProductGrid params={params} />
+      </Suspense>
+    </>
+  );
+}
+```
+
+The `key` on `Suspense` is a small but important detail. App Router navigations run inside a transition, so by default React keeps the old UI on screen until the new data is ready. Without the `key`, the user clicks a filter and sees nothing change for a second or two. With it, the boundary remounts and the skeleton appears immediately. Depending on the screen, I either keep the old data and dim it (with `isPending`, below) or show a skeleton; what I avoid is no feedback at all.
+
+Note that layouts don't receive `searchParams`, and with Cache Components enabled, where you `await searchParams` decides how much of the page can still be prerendered, so read it as deep in the tree as you can.
+
+## Writing the URL from the client: push or replace
+
+On the client, I wrap `useSearchParams`, `useRouter` and the schema in one hook. A component that calls `useSearchParams` in a prerendered route must sit inside `Suspense`, or the production build fails.
+
+```tsx
+"use client";
+
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useTransition } from "react";
+import { listingHref, listingParamsSchema, type ListingParams } from "./listing-params";
+
+type HistoryMode = "push" | "replace";
+
+export function useListingParams() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [isPending, startTransition] = useTransition();
+  const params = listingParamsSchema.parse(Object.fromEntries(searchParams));
+
+  function setParams(patch: Partial<ListingParams>, mode: HistoryMode = "push") {
+    const href = listingHref(pathname, params, patch);
+    startTransition(() => {
+      if (mode === "push") router.push(href, { scroll: false });
+      else router.replace(href, { scroll: false });
+    });
+  }
+
+  return { params, setParams, isPending };
+}
+```
+
+`scroll: false` stops the page jumping to the top on every sort change. `isPending` dims the grid while the server re-renders.
+
+The harder question is **push or replace**. Every push is a step the user can "undo" with Back, so I only push changes they'd perceive as deliberate navigation.
+
+| Action | Choice | Why |
+| --- | --- | --- |
+| Changing page | push | Back to the previous page is what everyone expects |
+| Switching tabs | push | Tabs look like navigation |
+| Opening a detail modal | push | Back closes the modal, especially on mobile |
+| Clicking a filter or changing sort | push | Back removes the filter just applied |
+| Typing in the search box | replace | Nobody wants to press Back ten times to delete letters |
+| Dragging a price slider, panning a map | replace | Continuous change; only the final state matters |
+| Normalizing an invalid URL | replace | No "junk" history entry |
+
+Filters are the most debatable case. With twenty checkboxes toggled in quick succession, pushing every click turns Back into "undo one checkbox". In that case I collect filters in a panel with an "Apply" button and push once.
+
+## The search box: local state, debounce and syncing back
+
+If the input's `value` reads straight from the URL, every keystroke is a navigation, the server re-renders, and on slow devices typing stutters. So the input keeps a **draft** in local state and only writes to the URL once the user stops typing.
+
+The hard part is the other direction: when the URL changes from the outside (Back, a "Clear filters" button), the input must follow. The naive version, "URL changed, overwrite the draft", causes a nasty bug: the user types "winter ja", the URL is committed, and while the server renders they keep typing "winter jacket". When the "winter ja" URL arrives, the input is overwritten and the last few characters vanish. I distinguish changes the input committed itself from external ones:
+
+```tsx
+"use client";
+
+import { useEffect, useEffectEvent, useState } from "react";
+
+type SearchBoxProps = {
+  urlQuery: string;
+  onCommit: (query: string) => void;
+};
+
+export function SearchBox({ urlQuery, onCommit }: SearchBoxProps) {
+  const [draft, setDraft] = useState(urlQuery);
+  const [seenUrlQuery, setSeenUrlQuery] = useState(urlQuery);
+  const [ownCommit, setOwnCommit] = useState<string | null>(null);
+
+  if (urlQuery !== seenUrlQuery) {
+    setSeenUrlQuery(urlQuery);
+    if (urlQuery !== ownCommit) setDraft(urlQuery);
+  }
+
+  const commit = useEffectEvent((query: string) => {
+    setOwnCommit(query);
+    onCommit(query);
+  });
+
+  useEffect(() => {
+    const query = draft.trim();
+    if (query === urlQuery) return;
+    const timer = setTimeout(() => commit(query), 300);
+    return () => clearTimeout(timer);
+  }, [draft, urlQuery]);
+
+  return (
+    <input
+      type="search"
+      aria-label="Search products"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+    />
+  );
+}
+```
+
+In the toolbar, `onCommit` calls `setParams({ q: query }, "replace")`. The `if` in the component body is the "adjust state when a prop changes" pattern the React docs recommend over `useEffect`, so there's no extra render with the stale value. `useEffectEvent` (stable since React 19.2) keeps the effect from re-running every time the parent passes a new `onCommit` function.
+
+## nuqs: when you'd rather not hand-roll it
+
+Writing it yourself teaches the mechanics, but on real projects I usually reach for [nuqs](https://nuqs.dev): a `useState`-like API backed by the URL, typed parsers, batching of updates made in the same tick into one URL write, and rate limiting for those writes. After wrapping the app in `NuqsAdapter` from `nuqs/adapters/next/app` in the root layout, I declare parsers in a shared file, importing from `nuqs/server` so the file isn't marked as client code:
+
+```ts
+import {
+  createLoader,
+  parseAsArrayOf,
+  parseAsInteger,
+  parseAsString,
+  parseAsStringLiteral,
+} from "nuqs/server";
+import { SORT_OPTIONS, TAB_OPTIONS } from "./listing-params";
+
+export const listingSearchParams = {
+  q: parseAsString.withDefault(""),
+  page: parseAsInteger.withDefault(1),
+  sort: parseAsStringLiteral(SORT_OPTIONS).withDefault("newest"),
+  tab: parseAsStringLiteral(TAB_OPTIONS).withDefault("all"),
+  brands: parseAsArrayOf(parseAsString).withDefault([]),
+};
+
+export const loadListingParams = createLoader(listingSearchParams);
+```
+
+The page calls `await loadListingParams(props.searchParams)`, and on the client:
+
+```tsx
+"use client";
+
+import { debounce, useQueryStates } from "nuqs";
+import { listingSearchParams } from "./listing-search-params";
+
+export function ListingSearch() {
+  const [{ q }, setListing] = useQueryStates(listingSearchParams, {
+    shallow: false,
+    history: "push",
+  });
+
+  return (
+    <input
+      type="search"
+      aria-label="Search products"
+      value={q}
+      onChange={(event) =>
+        setListing(
+          { q: event.target.value, page: null },
+          { history: "replace", limitUrlUpdates: event.target.value ? debounce(300) : undefined },
+        )
+      }
+    />
+  );
+}
+```
+
+The hook's state updates immediately so the input never stutters, while the URL write is debounced. `shallow: false` is required if server components need to re-render with the new params; by default nuqs only updates on the client. `page: null` removes the key from the URL, i.e. back to the default. The `limitUrlUpdates` option replaces `throttleMs`, deprecated since 2.5. One thing to remember: nuqs parsers check the *type*, not the *range*. `page=-4` still parses to `-4`, so I still clamp values before they reach a query.
+
+## Modals, the Back button and SEO
+
+**Modals in the URL.** Opening a detail modal by pushing `?order=123` means Back closes it, exactly what mobile users expect. But what about the X button? If the modal was opened from the list, X should call `router.back()` so there's no leftover "modal closed" history entry. If the user arrived directly from a shared link, `router.back()` takes them off your site. I keep a ref that marks "I pushed this modal": if set, `back()`; otherwise `replace` with a URL without `order`. When the modal content deserves its own URL for SEO, App Router's intercepting plus parallel routes are a better fit than a search param.
+
+**Back must restore everything.** I always test by hand: filter, go to page 3, open a detail, Back, Back. Every step must match both the URL and the checkboxes, input and active tab. The most common bug is a component holding a copy in `useState(initialFromUrl)` that never syncs again.
+
+**SEO and infinite URLs.** Every filter combination is a new URL, and five filters with a few values each already produce thousands of near-duplicate URLs for bots to crawl. Here's what I do:
+
+```tsx
+import type { Metadata } from "next";
+import { DEFAULT_LISTING_PARAMS, listingParamsSchema } from "./listing-params";
+
+export async function generateMetadata(props: PageProps<"/products">): Promise<Metadata> {
+  const params = listingParamsSchema.parse(await props.searchParams);
+  const isFacetedView =
+    params.q !== "" ||
+    params.brands.length > 0 ||
+    params.sort !== DEFAULT_LISTING_PARAMS.sort ||
+    params.tab !== DEFAULT_LISTING_PARAMS.tab;
+
+  return {
+    alternates: { canonical: params.page > 1 ? `/products?page=${params.page}` : "/products" },
+    robots: isFacetedView ? { index: false, follow: true } : undefined,
+  };
+}
+```
+
+Paginated pages point their canonical at themselves, not at page 1, because page 2 has different content. Filtered views get `noindex` but keep `follow` so bots still reach the products. If a filter combination genuinely has search demand (say, "women's running shoes"), promote it to its own path with its own content instead of hoping Google indexes a query string.
+
+<Callout>
+  URLs end up in browser history, server logs, analytics tools and the screenshots users send to support. Never put tokens, emails or anything you wouldn't print on paper into search params.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Put state in the URL when users want to share it, Back should restore it, or the server needs it to render; keep server data in a cache keyed by the URL.
+- Treat search params as untrusted input: parse with a schema, `.catch()` per field, bound the values.
+- One serialize function: omit defaults, stable key order, reset the page when filters change.
+- Next.js 16: `await props.searchParams` in the page, wrap `useSearchParams` consumers in `Suspense`, use a `Suspense` `key` or `isPending` so navigation gives feedback.
+- Push for deliberate navigation steps, replace for continuous changes like typing or dragging a slider.
+- The search box keeps a local draft, debounces URL writes, and only overwrites the draft when the URL changes externally.
+- nuqs saves a lot of code, but remember `shallow: false` when the server must re-render, and validate ranges yourself.
+- Tame infinite URLs: self-referencing canonicals for pagination, `noindex, follow` for filtered views, and no sensitive data in URLs.
+
+</Checklist>

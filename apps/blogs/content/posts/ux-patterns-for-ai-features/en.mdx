@@ -1,0 +1,302 @@
+---
+title: "UX Patterns for AI Features: A Frontend Engineer's Guide to Probabilistic Interfaces"
+excerpt: "How I design and build UI for features whose output changes every time: latency budgets and streaming, suggestions that can be accepted, edited or rejected with a typed state model, undo and preview, honest sources, feedback wired to analytics, graceful failure and accessibility."
+---
+
+<Lead>The first AI feature I shipped was a "Generate description" button in a product admin. Usage spiked for a week, then dropped to almost nothing. When I watched session replays, the story was painfully clear: people clicked, stared at a spinner for eight seconds, got a wall of text that silently replaced their half-written draft, and Ctrl+Z did nothing. The model wasn't the problem. The interface treated a probabilistic output like a deterministic API response. This post is what I do differently now, from the frontend side.</Lead>
+
+## Start with the job, not the model
+
+The most common failure I see isn't a bad prompt, it's an "AI sprinkle": a sparkle icon added to a screen because the roadmap needed something AI-shaped. It doesn't sit on the path of any real task, and it quietly becomes dead code with an inference bill attached.
+
+Before I build anything, I want answers to three questions:
+
+- **What task does this shorten, and how is it done today?** If the manual path takes five seconds, a feature that takes ten seconds plus review time loses.
+- **What does a wrong answer cost?** A slightly off product description is cheap to fix. A wrong refund amount is not. That cost decides how much friction (preview, confirmation, sources) the UI must add.
+- **How will we know it works?** If we can't define "accepted", "edited" or "abandoned" as events, we'll end up arguing from anecdotes.
+
+## Expectations and latency budgets
+
+Users bring two wrong assumptions to AI features: that the output is correct, and that it will be instant. The UI has to correct both before the first click. I write the label to say what will happen ("Draft a description from the product specs") rather than a vague "Ask AI", and I put a short note near the output that it's a draft to review.
+
+Latency needs the same honesty. The old 0.1s / 1s / 10s response-time limits from Jakob Nielsen still hold up well, and I turn them into a budget per feature:
+
+| Expected wait | What the user should see |
+| --- | --- |
+| Under ~1s | The result appears inline, no special treatment |
+| 1–3s | An indicator exactly where the result will land, ideally a skeleton with the right shape |
+| 3–10s | Streaming text or real progress steps, plus a Stop button |
+| Over ~10s | A background job: the user can leave, and gets notified when it's done |
+
+I track two numbers per request: time to first output and total time. Streaming improves the first one dramatically, and that's the one users feel most.
+
+### Streaming without blocking the UI
+
+Most LLM backends can stream. On the client, a plain `fetch` with a readable body is enough, and an `AbortSignal` makes the Stop button real instead of cosmetic:
+
+```ts
+export class SuggestionRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`Suggestion request failed with status ${status}`);
+  }
+}
+
+export async function streamSuggestion(
+  input: { productId: string; tone: "neutral" | "playful" },
+  signal: AbortSignal,
+  onText: (textSoFar: string) => void,
+): Promise<string> {
+  const response = await fetch("/api/suggestions/description", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    signal,
+  });
+  if (!response.ok || !response.body) throw new SuggestionRequestError(response.status);
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let textSoFar = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return textSoFar;
+    textSoFar += value;
+    onText(textSoFar);
+  }
+}
+```
+
+Chunks can arrive dozens of times per second. Updating state on every chunk is usually fine for plain text, but if you render markdown or syntax-highlight the output, pass the text through `useDeferredValue` so typing and scrolling stay responsive while the expensive render catches up.
+
+Showing steps ("Searching your docs", "Reading 4 results", "Writing") helps for agent-style features, but only if those steps are real events from the server. Fake steps on a timer are a lie users spot quickly.
+
+## Suggestions, not decisions: a typed state model
+
+The fix for my admin feature was to stop *replacing* content and start *proposing* it. A suggestion can be accepted, edited, or rejected, and an applied change can be undone. That's a small state machine, and modeling it as a discriminated union keeps out states like "streaming and applied at the same time" (I covered the general approach in [State machines for UI](/blog/state-machines-for-ui)).
+
+```ts
+export type Citation = { id: string; title: string; url: string; quote: string };
+
+export type Suggestion = {
+  id: string;
+  text: string;
+  citations: Citation[];
+  promptVersion: string;
+};
+
+export type FailureReason = "timeout" | "rate_limited" | "blocked_output" | "network" | "unknown";
+
+export type SuggestionState =
+  | { status: "idle" }
+  | { status: "streaming"; requestId: string; partialText: string; startedAt: number }
+  | { status: "ready"; suggestion: Suggestion }
+  | { status: "editing"; suggestion: Suggestion; draft: string }
+  | { status: "applied"; suggestion: Suggestion; appliedText: string; previousText: string; appliedAt: number }
+  | { status: "failed"; reason: FailureReason };
+
+export type SuggestionEvent =
+  | { type: "REQUEST"; requestId: string; now: number }
+  | { type: "CHUNK"; requestId: string; partialText: string }
+  | { type: "COMPLETE"; requestId: string; suggestion: Suggestion }
+  | { type: "FAIL"; requestId: string; reason: FailureReason }
+  | { type: "START_EDIT" }
+  | { type: "EDIT"; draft: string }
+  | { type: "ACCEPT"; currentFieldText: string; now: number }
+  | { type: "REJECT" }
+  | { type: "UNDO" }
+  | { type: "CANCEL" };
+```
+
+The reducer switches on the state first, so each state only reacts to the events that make sense in it. Responses from a superseded request are ignored by comparing `requestId`:
+
+```ts
+export function suggestionReducer(state: SuggestionState, event: SuggestionEvent): SuggestionState {
+  const startStreaming = (requestId: string, now: number): SuggestionState => ({
+    status: "streaming",
+    requestId,
+    partialText: "",
+    startedAt: now,
+  });
+
+  switch (state.status) {
+    case "idle":
+    case "failed":
+      if (event.type === "REQUEST") return startStreaming(event.requestId, event.now);
+      if (event.type === "CANCEL") return { status: "idle" };
+      return state;
+    case "streaming":
+      if (event.type === "CANCEL") return { status: "idle" };
+      if (!("requestId" in event) || event.requestId !== state.requestId) return state;
+      if (event.type === "CHUNK") return { ...state, partialText: event.partialText };
+      if (event.type === "COMPLETE") return { status: "ready", suggestion: event.suggestion };
+      if (event.type === "FAIL") return { status: "failed", reason: event.reason };
+      return state;
+    case "ready":
+      if (event.type === "START_EDIT") return { status: "editing", suggestion: state.suggestion, draft: state.suggestion.text };
+      if (event.type === "ACCEPT")
+        return { status: "applied", suggestion: state.suggestion, appliedText: state.suggestion.text, previousText: event.currentFieldText, appliedAt: event.now };
+      if (event.type === "REJECT") return { status: "idle" };
+      if (event.type === "REQUEST") return startStreaming(event.requestId, event.now);
+      return state;
+    case "editing":
+      if (event.type === "EDIT") return { ...state, draft: event.draft };
+      if (event.type === "ACCEPT")
+        return { status: "applied", suggestion: state.suggestion, appliedText: state.draft, previousText: event.currentFieldText, appliedAt: event.now };
+      if (event.type === "CANCEL") return { status: "ready", suggestion: state.suggestion };
+      if (event.type === "REJECT") return { status: "idle" };
+      return state;
+    case "applied":
+      if (event.type === "UNDO") return { status: "ready", suggestion: state.suggestion };
+      if (event.type === "REQUEST") return startStreaming(event.requestId, event.now);
+      return state;
+  }
+}
+```
+
+Two decisions here are UX decisions written as types. Editing is a first-class state, not an afterthought: the user tweaks the draft *before* it touches their field. And `applied` keeps `previousText`, so undo doesn't depend on the browser's undo stack, which programmatic value changes usually break.
+
+## Undo and preview before applying
+
+Where the change lands depends on the cost of a mistake:
+
+- **Low cost, single field:** apply inline, then show an Undo action for a generous window. Keep it reachable by keyboard and don't auto-dismiss it while it has focus.
+- **Multiple fields or records:** show a preview as a diff, and let the user accept per item. "Rewrite all 40 product titles" must never be a single irreversible click.
+- **Destructive or external effects** (sending an email, changing a price): preview plus explicit confirmation, and the confirmation names the concrete effect ("Send to 312 customers"), not "Apply".
+
+The actions that wrap the reducer are where the side effects live: writing to the form field on accept, restoring it on undo, and reporting the outcome.
+
+```ts
+export function createSuggestionActions(
+  state: SuggestionState,
+  dispatch: (event: SuggestionEvent) => void,
+  field: { value: string; setValue: (next: string) => void },
+  report: (outcome: SuggestionOutcome, suggestion: Suggestion) => void,
+) {
+  return {
+    accept() {
+      if (state.status !== "ready" && state.status !== "editing") return;
+      const textToApply = state.status === "editing" ? state.draft : state.suggestion.text;
+      const textBeforeApply = field.value;
+      field.setValue(textToApply);
+      dispatch({ type: "ACCEPT", currentFieldText: textBeforeApply, now: Date.now() });
+      report(
+        textToApply === state.suggestion.text
+          ? { kind: "accepted_as_is" }
+          : { kind: "accepted_with_edits", changeRatio: changeRatio(state.suggestion.text, textToApply) },
+        state.suggestion,
+      );
+    },
+    undo() {
+      if (state.status !== "applied") return;
+      field.setValue(state.previousText);
+      dispatch({ type: "UNDO" });
+      report({ kind: "undone", secondsAfterApply: Math.round((Date.now() - state.appliedAt) / 1000) }, state.suggestion);
+    },
+    reject() {
+      if (state.status !== "ready" && state.status !== "editing") return;
+      dispatch({ type: "REJECT" });
+      report({ kind: "rejected" }, state.suggestion);
+    },
+  };
+}
+```
+
+## Presenting uncertainty and sources
+
+I don't show confidence percentages. A number the model reports about itself is not calibrated, and users read "92%" as a promise. What I show instead is *grounding*: which parts of the answer are backed by a source the user can open.
+
+Citations are only useful if they're real. Models can produce a citation ID that was never in the retrieved set, or a quote that isn't in the document. So the server checks them before the UI sees them:
+
+```ts
+type RetrievedDocument = { id: string; title: string; url: string; content: string };
+
+export function keepVerifiableCitations(
+  citations: Citation[],
+  retrieved: Map<string, RetrievedDocument>,
+): Citation[] {
+  return citations.filter((citation) => {
+    const document = retrieved.get(citation.id);
+    return document !== undefined && document.content.includes(citation.quote);
+  });
+}
+```
+
+Exact matching is strict; some valid quotes get dropped over whitespace or punctuation. I accept that trade: a missing citation is a minor UX loss; a fabricated one destroys trust in every other citation. On the UI side, each citation links to the source with the quote highlighted, and if an answer ends up with no verifiable sources, the UI says so plainly ("No sources found for this answer") instead of hiding the gap.
+
+<Callout>
+  Uncertainty is a design input, not a disclaimer. If the system can't ground an answer, change the interaction — ask a clarifying question, narrow the scope, or return search results — rather than showing the answer with a grey warning nobody reads.
+</Callout>
+
+## Feedback that actually reaches analytics
+
+Thumbs up/down are the obvious feedback and the weakest signal: few people click them, and those who do are usually annoyed. The strongest signals are implicit: did the user accept, edit, undo, or walk away? Every branch of the state machine above is already an analytics event waiting to be named.
+
+```ts
+export type SuggestionOutcome =
+  | { kind: "accepted_as_is" }
+  | { kind: "accepted_with_edits"; changeRatio: number }
+  | { kind: "rejected" }
+  | { kind: "undone"; secondsAfterApply: number }
+  | { kind: "abandoned"; stage: "streaming" | "ready" | "editing" };
+
+export type SuggestionOutcomeEvent = {
+  name: "ai_suggestion_outcome";
+  feature: "product_description";
+  suggestionId: string;
+  promptVersion: string;
+  outcome: SuggestionOutcome;
+};
+
+export function changeRatio(original: string, final: string): number {
+  if (original === final) return 0;
+  const longest = Math.max(original.length, final.length);
+  const shortest = Math.min(original.length, final.length);
+  let prefix = 0;
+  while (prefix < shortest && original[prefix] === final[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < shortest - prefix &&
+    original[original.length - 1 - suffix] === final[final.length - 1 - suffix]
+  ) suffix++;
+  return (longest - prefix - suffix) / longest;
+}
+```
+
+`changeRatio` is deliberately rough: it only measures the span between the common prefix and suffix, not a real diff. That's enough to tell "fixed a typo" from "rewrote everything".
+
+Three rules I follow for this data:
+
+- **Send IDs and numbers, not content.** User text and generated text stay out of analytics without explicit consent and a retention policy.
+- **Always attach `promptVersion`.** When someone changes the prompt or the model, you want acceptance rates split by version, otherwise you're comparing two different features under one name.
+- **Count "abandoned".** Fire it on unmount or navigation when the state is still `streaming`, `ready` or `editing`. A high abandon rate tells you something the thumbs never will.
+
+## Graceful failure, fallbacks and accessibility
+
+AI features fail more often and in more ways than normal endpoints: timeouts, rate limits, outputs blocked by a safety filter, malformed structured output. Each reason in `FailureReason` gets its own message and next step: "Try again" makes sense for a timeout, not for blocked output. I combine the user's Stop button with a hard timeout using `AbortSignal.any([userController.signal, AbortSignal.timeout(20_000)])`, which is supported in all modern browsers.
+
+The most important fallback is boring: the manual path must keep working. The field stays editable while a suggestion streams, the form submits without AI, and the whole feature sits behind a kill switch (see [Frontend feature flags](/blog/frontend-feature-flags)), so when the provider has a bad day, you turn it off instead of shipping an error state to every user.
+
+Accessibility is where streaming UIs most often go wrong:
+
+- **Don't put the streaming text in a live region.** A screen reader announcing every chunk is unusable. Keep the output region quiet and use a separate, visually hidden `role="status"` element that announces once: "Suggestion ready, 2 sources". Some teams rely on `aria-busy` to hold announcements until the stream ends; behavior varies across screen readers, so I don't rely on it alone.
+- **Don't steal focus** when the suggestion arrives. The user may still be typing. Put Accept, Edit and Discard right after the output in tab order instead.
+- **Label AI-generated content in text**, not only with a sparkle icon or a color.
+- **Respect `prefers-reduced-motion`** for typing cursors and shimmer skeletons.
+
+<Callout>
+  A quick test I run before every release: complete the whole flow — generate, edit, accept, undo — with the keyboard only, then again with a screen reader. Most accessibility bugs show up in the first two minutes.
+</Callout>
+
+## Key takeaways
+
+<Checklist>
+
+- Start from a real task and the cost of a wrong answer; skip features that only exist to look AI-powered.
+- Set expectations in the label and next to the output, and budget latency with streaming, real progress steps and a working Stop button.
+- Propose instead of replace: model suggestions as a typed state machine with accept, edit, reject and undo.
+- Keep the previous value yourself so undo doesn't depend on the browser; preview and confirm anything multi-item or irreversible.
+- Show grounding, not confidence percentages, and verify citations on the server before rendering them.
+- Treat accept, edit ratio, undo and abandon as the main feedback signals, tagged with a prompt version and free of user content.
+- Give every failure reason its own message, keep the manual path working, and keep the feature behind a kill switch.
+- Keep streamed text out of live regions, announce completion once, and never steal focus.
+
+</Checklist>

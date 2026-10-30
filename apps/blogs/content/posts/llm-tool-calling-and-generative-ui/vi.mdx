@@ -1,0 +1,486 @@
+---
+title: "Tool calling và generative UI: khi LLM gọi code của bạn và trả về component"
+excerpt: "Tool calling thật ra là một vòng lặp do code của bạn điều khiển. Bài này đi qua cách định nghĩa tool bằng schema, agent loop có giới hạn bước, xử lý args sai, message list với part có kiểu, stream args dở dang, render tool call thành component và bắt người dùng xác nhận trước những tool có side effect."
+---
+
+<Lead>Bản đầu tiên của trợ lý đặt bàn mà mình làm có một lỗi rất khó chịu: tool `createBooking` trả về lỗi validate vì thiếu số người, nhưng model vẫn vui vẻ trả lời "Mình đã đặt bàn cho bạn lúc 7 giờ tối nhé!". Người dùng tin, đến nhà hàng thì không có bàn. Bài học không phải là "viết prompt kỹ hơn", mà là **giao diện phải được dựng từ trạng thái thật của tool call, không phải từ lời kể của model**. Bài này là cách mình tổ chức tool calling ở cả server lẫn client sau sự cố đó: vòng lặp, schema, message có kiểu, và những component thay cho đoạn văn.</Lead>
+
+## Tool calling thật ra là một vòng lặp
+
+Model không chạy được code. Khi bạn gửi kèm danh sách tool, việc duy nhất model làm là trả về một **đề xuất**: "hãy gọi tool tên X với args là chuỗi JSON Y", kèm một id. Phần còn lại là việc của bạn:
+
+1. Gửi lịch sử hội thoại và danh sách tool (tên, mô tả, JSON Schema của args) lên model.
+2. Model trả về text, hoặc một hay nhiều tool call.
+3. Code của bạn validate args, chạy tool, rồi thêm kết quả vào lịch sử dưới dạng message vai trò `tool`, gắn đúng id của call.
+4. Gọi model lần nữa với lịch sử mới. Lặp lại cho đến khi model trả lời bằng text mà không gọi tool nào.
+
+Một lượt hỏi thời tiết trông như thế này khi viết ra dưới dạng message trung lập, không theo provider nào:
+
+```json
+[
+  { "role": "user", "content": "Cuối tuần này Đà Lạt có mưa không?" },
+  {
+    "role": "assistant",
+    "content": "",
+    "toolCalls": [{ "id": "call_1", "name": "getWeather", "argumentsJson": "{\"city\":\"Da Lat\",\"days\":2}" }]
+  },
+  {
+    "role": "tool",
+    "toolCallId": "call_1",
+    "isError": false,
+    "content": "{\"city\":\"Da Lat\",\"days\":[{\"date\":\"2026-07-04\",\"minC\":16,\"maxC\":23,\"summary\":\"Mưa rào buổi chiều\"}]}"
+  },
+  { "role": "assistant", "content": "Thứ Bảy chiều có mưa rào, bạn nên mang áo khoác.", "toolCalls": [] }
+]
+```
+
+Hai hệ quả quan trọng. Thứ nhất, **args là văn bản do model sinh ra**: có thể sai kiểu, thiếu trường, thậm chí không phải JSON hợp lệ. Một số provider có chế độ ép args khớp schema, nhưng server vẫn phải validate vì đó là ranh giới tin cậy của bạn. Thứ hai, **bạn kiểm soát vòng lặp**: chạy bao nhiêu bước, tool nào được tự chạy, tool nào phải hỏi người dùng — tất cả là quyết định của code, không phải của model.
+
+## Định nghĩa tool: schema là hợp đồng với model
+
+Mình định nghĩa mỗi tool một lần với Zod: schema dùng để sinh JSON Schema gửi cho model, cũng chính là schema để validate args khi model gọi, và là nguồn type cho cả client. File `ai/tools.ts`:
+
+```ts
+import { z } from "zod";
+
+export type ToolContext = { userId: string; toolCallId: string; signal: AbortSignal };
+
+type ToolDefinition<Input extends z.ZodType, Output> = {
+  description: string;
+  input: Input;
+  requiresApproval: boolean;
+  execute(input: z.infer<Input>, context: ToolContext): Promise<Output>;
+};
+
+function defineTool<Input extends z.ZodType, Output>(definition: ToolDefinition<Input, Output>) {
+  return definition;
+}
+
+declare function fetchForecast(city: string, days: number, signal: AbortSignal): Promise<{ city: string; days: { date: string; minC: number; maxC: number; summary: string }[] }>;
+declare function insertBooking(input: { restaurantId: string; partySize: number; startsAt: string; idempotencyKey: string; userId: string }): Promise<{ bookingId: string; status: "confirmed" | "waitlisted" }>;
+
+export const tools = {
+  getWeather: defineTool({
+    description: "Get the weather forecast for a city. Use when the user asks about weather or what to wear.",
+    input: z.object({
+      city: z.string().min(1).describe("City name, for example: Da Lat"),
+      days: z.number().int().min(1).max(7).default(1),
+    }),
+    requiresApproval: false,
+    execute: ({ city, days }, { signal }) => fetchForecast(city, days, signal),
+  }),
+  createBooking: defineTool({
+    description: "Book a table. Only call after the user has chosen a restaurant, a time and a party size.",
+    input: z.object({
+      restaurantId: z.string(),
+      partySize: z.number().int().min(1).max(20),
+      startsAt: z.iso.datetime({ offset: true }),
+    }),
+    requiresApproval: true,
+    execute: (input, { userId, toolCallId }) => insertBooking({ ...input, userId, idempotencyKey: toolCallId }),
+  }),
+};
+
+export type Tools = typeof tools;
+export type ToolName = keyof Tools;
+export type ToolInput<Name extends ToolName> = z.infer<Tools[Name]["input"]>;
+export type ToolOutput<Name extends ToolName> = Awaited<ReturnType<Tools[Name]["execute"]>>;
+
+export const providerToolSpecs = Object.entries(tools).map(([name, tool]) => ({
+  name,
+  description: tool.description,
+  parameters: z.toJSONSchema(tool.input, { io: "input" }),
+}));
+```
+
+Vài điều mình rút ra:
+
+- **`description` là prompt.** Model chọn tool dựa vào mô tả, nên hãy viết rõ *khi nào* nên gọi, không chỉ tool làm gì. Câu "chỉ gọi khi người dùng đã chọn nhà hàng, giờ và số người" giảm hẳn những lần model đặt bàn khi mới nghe nửa yêu cầu.
+- **`io: "input"` khi xuất JSON Schema.** Mặc định Zod 4 sinh schema theo kiểu *output*, nên trường có `.default(1)` sẽ bị đánh dấu là bắt buộc. Với args của tool, cái mình mô tả là *input* mà model được phép gửi.
+- **`requiresApproval` là thuộc tính của tool, không phải của prompt.** Tool nào ghi dữ liệu, tốn tiền hay gửi gì ra ngoài thì đánh dấu ngay tại định nghĩa. Mỗi provider đặt JSON Schema vào một trường có tên khác nhau, nên `providerToolSpecs` chỉ là hình dạng trung gian, adapter của từng provider sẽ chuyển tiếp.
+- **`toolCallId` làm idempotency key.** Nếu vòng lặp bị chạy lại, cùng một tool call sẽ không tạo ra hai lượt đặt bàn.
+
+## Agent loop có giới hạn bước
+
+Vòng lặp ở server, file `ai/agent.ts`. `streamModelTurn` là adapter gọi provider ở chế độ streaming: nó phát event cho client trong lúc chạy và trả về text cùng các tool call khi lượt đó kết thúc.
+
+```ts
+import { z } from "zod";
+import { tools, providerToolSpecs, type ToolContext, type ToolName } from "./tools";
+
+export type ToolCall = { id: string; name: string; argumentsJson: string };
+
+export type ModelMessage =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; toolCalls: ToolCall[] }
+  | { role: "tool"; toolCallId: string; content: string; isError: boolean };
+
+export type AgentEvent =
+  | { type: "text-delta"; text: string }
+  | { type: "tool-input-start"; toolCallId: string; toolName: ToolName }
+  | { type: "tool-input-delta"; toolCallId: string; inputTextDelta: string }
+  | { type: "tool-input-available"; toolCallId: string; input: unknown }
+  | { type: "tool-approval-requested"; toolCallId: string }
+  | { type: "tool-output-available"; toolCallId: string; output: unknown }
+  | { type: "tool-output-error"; toolCallId: string; errorText: string };
+
+type Emit = (event: AgentEvent) => void;
+type RunContext = Omit<ToolContext, "toolCallId">;
+type ToolMessage = Extract<ModelMessage, { role: "tool" }>;
+type ToolStepResult =
+  | { kind: "result"; message: ToolMessage }
+  | { kind: "pending-approval"; toolCallId: string; toolName: ToolName; input: unknown };
+
+declare function streamModelTurn(request: {
+  messages: ModelMessage[];
+  tools: typeof providerToolSpecs;
+  signal: AbortSignal;
+  emit: Emit;
+}): Promise<{ text: string; toolCalls: ToolCall[] }>;
+
+const maxSteps = 6;
+const maxToolErrors = 3;
+
+export async function runAgent(history: ModelMessage[], context: RunContext, emit: Emit) {
+  const messages = [...history];
+  let toolErrors = 0;
+
+  for (let step = 0; step < maxSteps; step++) {
+    const turn = await streamModelTurn({ messages, tools: providerToolSpecs, signal: context.signal, emit });
+    messages.push({ role: "assistant", content: turn.text, toolCalls: turn.toolCalls });
+    if (turn.toolCalls.length === 0) return { status: "done" as const, messages };
+
+    const results = await Promise.all(turn.toolCalls.map((call) => runToolCall(call, context, emit)));
+    const pending = results.filter((result) => result.kind === "pending-approval");
+    for (const result of results) {
+      if (result.kind === "result") messages.push(result.message);
+    }
+    if (pending.length > 0) return { status: "awaiting-approval" as const, messages, pending };
+
+    toolErrors += results.filter((result) => result.kind === "result" && result.message.isError).length;
+    if (toolErrors >= maxToolErrors) return { status: "too-many-tool-errors" as const, messages };
+  }
+  return { status: "step-limit" as const, messages };
+}
+```
+
+Những quyết định trong đoạn này:
+
+- **`maxSteps` luôn phải có.** Không có giới hạn, một model "bối rối" có thể gọi đi gọi lại cùng một tool, và mỗi bước là một lần trả tiền. Khi chạm giới hạn, mình trả về trạng thái `step-limit` để UI nói thật với người dùng, thay vì im lặng cắt ngang.
+- **Một lượt có thể có nhiều tool call.** Model hay đề xuất song song, ví dụ hỏi thời tiết hai thành phố một lúc. Tool chỉ đọc thì chạy song song bằng `Promise.all`; mỗi kết quả được ghép với call qua id.
+- **Tool cần xác nhận làm vòng lặp dừng lại.** Kết quả của những tool đã chạy vẫn được ghi vào lịch sử, còn call đang chờ được trả ra ngoài để lưu lại; vòng lặp tiếp tục khi người dùng quyết định.
+
+## Khi model gọi sai: args không hợp lệ và tool lỗi
+
+Phần còn lại của file là nơi xử lý mọi kiểu sai:
+
+```ts
+function isToolName(name: string): name is ToolName {
+  return Object.hasOwn(tools, name);
+}
+
+function parseJsonOrUndefined(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function toolError(toolCallId: string, errorText: string, emit: Emit): ToolStepResult {
+  emit({ type: "tool-output-error", toolCallId, errorText });
+  return { kind: "result", message: { role: "tool", toolCallId, content: errorText, isError: true } };
+}
+
+async function runToolCall(call: ToolCall, context: RunContext, emit: Emit): Promise<ToolStepResult> {
+  if (!isToolName(call.name)) {
+    return toolError(call.id, `Unknown tool "${call.name}". Available tools: ${Object.keys(tools).join(", ")}`, emit);
+  }
+  const tool = tools[call.name];
+  const parsed = tool.input.safeParse(parseJsonOrUndefined(call.argumentsJson));
+  if (!parsed.success) {
+    return toolError(call.id, `Invalid arguments for ${call.name}:\n${z.prettifyError(parsed.error)}`, emit);
+  }
+  emit({ type: "tool-input-available", toolCallId: call.id, input: parsed.data });
+
+  if (tool.requiresApproval) {
+    emit({ type: "tool-approval-requested", toolCallId: call.id });
+    return { kind: "pending-approval", toolCallId: call.id, toolName: call.name, input: parsed.data };
+  }
+
+  try {
+    const output = await executeTool(call.name, parsed.data, { ...context, toolCallId: call.id });
+    emit({ type: "tool-output-available", toolCallId: call.id, output });
+    return { kind: "result", message: { role: "tool", toolCallId: call.id, content: JSON.stringify(output), isError: false } };
+  } catch (error) {
+    console.error("tool failed", call.name, error);
+    return toolError(call.id, `${call.name} is temporarily unavailable. Tell the user and do not retry.`, emit);
+  }
+}
+
+type AnyTool = { execute(input: unknown, context: ToolContext): Promise<unknown> };
+
+function executeTool(name: ToolName, input: unknown, context: ToolContext) {
+  const tool: AnyTool = tools[name];
+  return tool.execute(input, context);
+}
+```
+
+Có ba kiểu lỗi và mình xử lý khác nhau:
+
+| Lỗi | Ví dụ | Cách xử lý |
+| --- | --- | --- |
+| Tool không tồn tại | Model bịa ra `searchRestaurants` | Trả lỗi kèm danh sách tool hợp lệ |
+| Args sai | JSON hỏng, `partySize: "bốn"`, thiếu `startsAt` | Trả lỗi validate ngắn gọn để model tự sửa ở bước sau |
+| Tool chạy thất bại | API thời tiết timeout | Log đầy đủ ở server, trả cho model một câu ngắn và dặn không thử lại |
+
+Với args sai, `z.prettifyError` cho ra thông báo dạng "expected number, received string → at partySize", vừa đủ để model sửa ở bước kế tiếp. Nhưng mình đếm số lỗi và dừng ở `maxToolErrors`, vì có những lúc model sửa mãi không đúng. Còn với lỗi thực thi, đừng đưa stack trace hay chi tiết nội bộ vào tool result: nội dung đó được gửi cho provider và có thể bị model nhắc lại nguyên văn cho người dùng.
+
+`executeTool` cần nới kiểu vì `tools[name]` là một union, TypeScript không liên kết được input của tool này với hàm `execute` của chính nó. Việc nới kiểu chỉ xảy ra *sau* khi schema đã validate, nên mình chấp nhận.
+
+## Message list với part có kiểu
+
+Ở client, một message của assistant không còn là một chuỗi. Nó là danh sách **part**: đoạn text, rồi một tool call, rồi lại text. Mỗi tool part có vòng đời riêng, và mình mô hình hoá nó bằng discriminated union theo cả tên tool lẫn trạng thái. File `ai/messages.ts`:
+
+```ts
+import type { ToolInput, ToolName, ToolOutput } from "./tools";
+
+type DeepPartial<T> = T extends object ? { [Key in keyof T]?: DeepPartial<T[Key]> } : T;
+
+type ToolPartState<Name extends ToolName> =
+  | { state: "input-streaming"; inputText: string; partialInput?: DeepPartial<ToolInput<Name>> }
+  | { state: "input-available"; input: ToolInput<Name> }
+  | { state: "approval-requested"; input: ToolInput<Name> }
+  | { state: "approval-responded"; input: ToolInput<Name>; approved: boolean }
+  | { state: "output-available"; input: ToolInput<Name>; output: ToolOutput<Name> }
+  | { state: "output-error"; errorText: string };
+
+export type ToolPart = {
+  [Name in ToolName]: { type: `tool-${Name}`; toolCallId: string } & ToolPartState<Name>;
+}[ToolName];
+
+export type MessagePart = { type: "text"; text: string } | ToolPart;
+export type UIMessage = { id: string; role: "user" | "assistant"; parts: MessagePart[] };
+```
+
+Nhờ mapped type, `part.type === "tool-getWeather"` sẽ thu hẹp `input` và `output` về đúng kiểu của tool thời tiết. Client chỉ `import type` từ file tool, nên code server không lọt vào bundle. Đây cũng là hình dạng mà AI SDK dùng cho message ở UI: part có `type` dạng `tool-<tên>` và các state như `input-streaming`, `input-available`, `output-available`, `output-error`, cùng nhóm state cho approval.
+
+### Stream args dở dang
+
+Khi model sinh args, nhiều provider stream chúng dưới dạng từng mẩu chuỗi JSON. Mình cộng dồn vào `inputText` và parse "dở dang" bằng thư viện `partial-json` để UI có gì đó hiển thị sớm. Phần reducer áp event từ stream vào message nằm cùng file:
+
+```ts
+import { parse, ALL } from "partial-json";
+import type { AgentEvent } from "./agent";
+
+function parsePartialInput(inputText: string) {
+  try {
+    return parse(inputText, ALL);
+  } catch {
+    return undefined;
+  }
+}
+
+function patchToolPart(message: UIMessage, toolCallId: string, patch: (part: ToolPart) => object): UIMessage {
+  return {
+    ...message,
+    parts: message.parts.map((part) =>
+      part.type !== "text" && part.toolCallId === toolCallId
+        ? ({ type: part.type, toolCallId, ...patch(part) } as ToolPart)
+        : part,
+    ),
+  };
+}
+
+export function applyAgentEvent(message: UIMessage, event: AgentEvent): UIMessage {
+  switch (event.type) {
+    case "text-delta": {
+      const last = message.parts.at(-1);
+      const parts: MessagePart[] =
+        last?.type === "text"
+          ? [...message.parts.slice(0, -1), { type: "text", text: last.text + event.text }]
+          : [...message.parts, { type: "text", text: event.text }];
+      return { ...message, parts };
+    }
+    case "tool-input-start": {
+      const part = { type: `tool-${event.toolName}`, toolCallId: event.toolCallId, state: "input-streaming", inputText: "" };
+      return { ...message, parts: [...message.parts, part as ToolPart] };
+    }
+    case "tool-input-delta":
+      return patchToolPart(message, event.toolCallId, (part) => {
+        if (part.state !== "input-streaming") return part;
+        const inputText = part.inputText + event.inputTextDelta;
+        return { state: "input-streaming", inputText, partialInput: parsePartialInput(inputText) };
+      });
+    case "tool-input-available":
+      return patchToolPart(message, event.toolCallId, () => ({ state: "input-available", input: event.input }));
+    case "tool-approval-requested":
+      return patchToolPart(message, event.toolCallId, (part) => ({ state: "approval-requested", input: "input" in part ? part.input : undefined }));
+    case "tool-output-available":
+      return patchToolPart(message, event.toolCallId, (part) => ({ state: "output-available", input: "input" in part ? part.input : undefined, output: event.output }));
+    case "tool-output-error":
+      return patchToolPart(message, event.toolCallId, () => ({ state: "output-error", errorText: event.errorText }));
+  }
+}
+```
+
+Nguyên tắc với args dở dang: **chỉ để hiển thị, không bao giờ để hành động**. `{"city": "Hà` có thể thành "Hà Nội" hay "Hà Giang"; đừng fetch, đừng validate, đừng bật nút gì dựa trên nó. Chỉ khi nhận `tool-input-available` — args đã được server validate — part mới có `input` thật. Các ép kiểu trong reducer là chỗ dữ liệu từ mạng đi vào; nếu muốn chặt hơn, validate lại event bằng schema ở đây.
+
+## Generative UI: render tool part thành component
+
+Generative UI nghe to tát, nhưng bản chất khá đơn giản: model chọn *component nào* thông qua việc chọn tool, và chọn *props* thông qua args; còn component, cách render và dữ liệu thật thuộc về code của bạn. `WeatherCard`, `BookingDraft`, `BookingReceipt` bên dưới chỉ là các component trình bày bình thường, nhận props.
+
+```tsx
+import { useState } from "react";
+import type { ToolPart } from "./messages";
+import type { ToolInput } from "./tools";
+
+export type ApprovalDecision = { toolCallId: string; approved: boolean; editedInput?: unknown };
+
+export function ToolPartView({ part, onDecide }: { part: ToolPart; onDecide: (decision: ApprovalDecision) => void }) {
+  switch (part.type) {
+    case "tool-getWeather":
+      switch (part.state) {
+        case "input-streaming":
+          return <WeatherCardSkeleton city={part.partialInput?.city} />;
+        case "output-available":
+          return <WeatherCard forecast={part.output} />;
+        case "output-error":
+          return <ToolErrorNotice text="Không lấy được thời tiết lúc này." />;
+        default:
+          return <WeatherCardSkeleton city={part.input.city} />;
+      }
+    case "tool-createBooking":
+      switch (part.state) {
+        case "input-streaming":
+          return <BookingDraft draft={part.partialInput} />;
+        case "input-available":
+        case "approval-responded":
+          return <BookingDraft draft={part.input} />;
+        case "approval-requested":
+          return <BookingConfirmation toolCallId={part.toolCallId} input={part.input} onDecide={onDecide} />;
+        case "output-available":
+          return <BookingReceipt booking={part.output} />;
+        case "output-error":
+          return <ToolErrorNotice text="Chưa đặt được bàn." />;
+      }
+  }
+}
+```
+
+Đây chính là cách sửa lỗi ở đầu bài. Biên nhận đặt bàn chỉ xuất hiện khi part ở `output-available`, với dữ liệu lấy từ kết quả tool. Model muốn kể gì trong phần text cũng được, nhưng người dùng nhìn vào card để biết chuyện gì đã thật sự xảy ra. Mình còn dặn trong system prompt rằng không cần nhắc lại số liệu đã có trong card, để câu trả lời ngắn và không mâu thuẫn với nó.
+
+`switch` lồng nhau theo `type` rồi `state` cho TypeScript kiểm tra exhaustive: thêm một tool mới hay một state mới mà quên render, compiler sẽ nhắc. AI SDK từng có hướng stream thẳng React Server Component từ model (AI SDK RSC), nhưng tài liệu của họ vẫn ghi nó là experimental và khuyên dùng AI SDK UI cho production — tức là đúng mô hình "dữ liệu có kiểu, client tự render" như trên.
+
+<Callout>
+  Generative UI không có nghĩa là để model sinh ra JSX hay HTML. Model chỉ chọn trong một tập component bạn đã viết sẵn và đã kiểm thử. Mọi thứ model đưa vào props vẫn là input không đáng tin, cần escape và validate như dữ liệu người dùng nhập.
+</Callout>
+
+## Human-in-the-loop cho tool có side effect
+
+Tool chỉ đọc thì cho model tự chạy. Tool ghi dữ liệu thì phải có người bấm. Khi part ở `approval-requested`, thay vì hỏi "bạn có chắc không?" bằng text, mình hiện một form đã điền sẵn từ args để người dùng xem lại và sửa trực tiếp:
+
+```tsx
+function BookingConfirmation({
+  toolCallId,
+  input,
+  onDecide,
+}: {
+  toolCallId: string;
+  input: ToolInput<"createBooking">;
+  onDecide: (decision: ApprovalDecision) => void;
+}) {
+  const [partySize, setPartySize] = useState(input.partySize);
+  const startsAtLabel = new Date(input.startsAt).toLocaleString("vi-VN", { dateStyle: "medium", timeStyle: "short" });
+
+  return (
+    <form
+      aria-label="Xác nhận đặt bàn"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onDecide({ toolCallId, approved: true, editedInput: { ...input, partySize } });
+      }}
+    >
+      <p>Đặt bàn lúc {startsAtLabel}</p>
+      <label>
+        Số người
+        <input type="number" min={1} max={20} value={partySize} onChange={(event) => setPartySize(event.target.valueAsNumber)} />
+      </label>
+      <button type="submit">Xác nhận đặt bàn</button>
+      <button type="button" onClick={() => onDecide({ toolCallId, approved: false })}>
+        Không đặt
+      </button>
+    </form>
+  );
+}
+```
+
+Ngay khi người dùng bấm, client chuyển part sang `approval-responded` để khoá form, tránh bấm hai lần. Quyết định được gửi lên server, nơi mọi thứ được kiểm tra lại từ đầu, file `ai/approval.ts`:
+
+```ts
+import { z } from "zod";
+import { tools, type ToolContext, type ToolName } from "./tools";
+import type { ModelMessage } from "./agent";
+
+export const approvalDecisionSchema = z.object({
+  toolCallId: z.string(),
+  approved: z.boolean(),
+  editedInput: z.unknown().optional(),
+});
+
+type PendingCall = { toolCallId: string; toolName: ToolName; input: unknown };
+declare const pendingCalls: { take(conversationId: string, toolCallId: string): Promise<PendingCall | null> };
+
+type AnyTool = { input: z.ZodType; execute(input: unknown, context: ToolContext): Promise<unknown> };
+
+export async function resolveApproval(
+  conversationId: string,
+  decision: z.infer<typeof approvalDecisionSchema>,
+  context: Omit<ToolContext, "toolCallId">,
+): Promise<Extract<ModelMessage, { role: "tool" }>> {
+  const pending = await pendingCalls.take(conversationId, decision.toolCallId);
+  if (!pending) throw new Error("No pending call with this id, or it was already resolved");
+
+  const toolCallId = pending.toolCallId;
+  if (!decision.approved) {
+    return { role: "tool", toolCallId, isError: false, content: "The user declined this action. Ask what they would like to change." };
+  }
+
+  const tool: AnyTool = tools[pending.toolName];
+  const parsed = tool.input.safeParse(decision.editedInput ?? pending.input);
+  if (!parsed.success) {
+    return { role: "tool", toolCallId, isError: true, content: z.prettifyError(parsed.error) };
+  }
+  const output = await tool.execute(parsed.data, { ...context, toolCallId });
+  return { role: "tool", toolCallId, isError: false, content: JSON.stringify(output) };
+}
+```
+
+Ba lớp bảo vệ ở đây:
+
+- **Server chỉ tin những gì chính nó đã lưu.** Pending call được lưu lúc vòng lặp dừng, gồm tên tool và args đã validate. Client chỉ gửi id và quyết định; một request giả mạo với id lạ sẽ không tìm thấy gì.
+- **`take` là thao tác nguyên tử**: lấy ra và xoá trong một bước. Hai request xác nhận đến cùng lúc thì chỉ một cái chạy được, và idempotency key là lưới an toàn thứ hai.
+- **Args người dùng sửa được validate lại bằng đúng schema đó.** Form ở client chỉ là gợi ý, ranh giới tin cậy vẫn ở server.
+
+Từ chối cũng là một tool result: model nhận được "người dùng không đồng ý" và có thể hỏi lại muốn đổi gì, thay vì treo ở đó. Sau khi có kết quả, server thêm nó vào lịch sử và gọi lại `runAgent` để model viết câu trả lời cuối.
+
+AI SDK cũng có sẵn cơ chế này. Bản 7 vừa ra cuối tháng 6 khai báo approval qua option `toolApproval` (thay cho `needsApproval` trên từng tool ở bản trước), client trả lời bằng `addToolApprovalResponse`, và có option experimental để server kiểm chứng rằng approval đó đúng là do nó phát ra. Dù dùng SDK hay tự viết, mô hình vẫn là một.
+
+<Callout>
+  Bước xác nhận không chỉ chống model hiểu nhầm. Kết quả của tool đọc dữ liệu bên ngoài — trang web, email, review nhà hàng — có thể chứa câu lệnh được cài sẵn để dụ model gọi tool khác. Với mọi tool có side effect, người dùng bấm nút là lớp phòng thủ cuối cùng.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Model chỉ đề xuất tool call; code của bạn validate, thực thi, gửi kết quả về và quyết định khi nào dừng.
+- Định nghĩa tool một lần bằng schema: dùng cho JSON Schema gửi model, cho validate ở server và cho type ở client.
+- Viết `description` như prompt, xuất JSON Schema theo kiểu input, và đánh dấu tool cần xác nhận ngay tại định nghĩa.
+- Luôn có `maxSteps` và giới hạn số lỗi; khi chạm giới hạn thì nói thật với người dùng.
+- Args sai thì trả lỗi ngắn gọn cho model tự sửa; lỗi thực thi thì log ở server, không đưa chi tiết nội bộ vào tool result.
+- Mô hình hoá message thành part có kiểu theo tên tool và trạng thái; args dở dang chỉ để hiển thị.
+- Render UI từ trạng thái tool part, không từ lời kể của model.
+- Tool có side effect phải dừng vòng lặp chờ người dùng; server chỉ tin pending call do nó lưu, lấy ra nguyên tử và validate lại args.
+
+</Checklist>

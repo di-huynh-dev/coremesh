@@ -1,0 +1,302 @@
+---
+title: "UX pattern cho tính năng AI: thiết kế giao diện cho kết quả xác suất từ góc nhìn frontend"
+excerpt: "Cách mình thiết kế và xây UI cho những tính năng mà mỗi lần chạy lại ra một kết quả khác: ngân sách độ trễ và streaming, gợi ý có thể chấp nhận, sửa hoặc bỏ qua với state model có type, undo và preview, nguồn trích dẫn trung thực, feedback nối vào analytics, xử lý lỗi và accessibility."
+---
+
+<Lead>Tính năng AI đầu tiên mình ship là nút "Tạo mô tả" trong trang quản trị sản phẩm. Tuần đầu lượt dùng tăng vọt, rồi gần như về không. Xem session replay thì mọi thứ rõ đến đau lòng: người dùng bấm nút, nhìn spinner tám giây, nhận về một bức tường chữ âm thầm ghi đè bản nháp đang viết dở, và Ctrl+Z không lấy lại được. Vấn đề không nằm ở model. Vấn đề là giao diện đối xử với một kết quả mang tính xác suất như thể nó là response của một API tất định. Bài này là những gì mình làm khác đi kể từ đó, nhìn từ phía frontend.</Lead>
+
+## Bắt đầu từ công việc, không phải từ model
+
+Lỗi phổ biến nhất mình thấy không phải prompt dở, mà là "rắc AI": thêm một icon lấp lánh vào màn hình vì roadmap cần thứ gì đó mang dáng dấp AI. Nó không nằm trên đường đi của tác vụ thật nào, và lặng lẽ thành code chết kèm hoá đơn inference.
+
+Trước khi xây bất cứ thứ gì, mình cần câu trả lời cho ba câu hỏi:
+
+- **Tính năng này rút ngắn tác vụ nào, và hôm nay người dùng làm nó ra sao?** Nếu làm tay mất năm giây thì tính năng tốn mười giây cộng thời gian đọc lại là thua.
+- **Một câu trả lời sai tốn bao nhiêu?** Một đoạn mô tả sản phẩm hơi lệch thì sửa rất rẻ. Một số tiền hoàn trả sai thì không. Cái giá đó quyết định UI phải thêm bao nhiêu ma sát: preview, xác nhận, nguồn.
+- **Làm sao biết nó hiệu quả?** Không định nghĩa được "chấp nhận", "đã sửa", "bỏ dở" thành event thì cả team sẽ tranh luận bằng cảm giác.
+
+## Kỳ vọng và ngân sách độ trễ
+
+Người dùng mang theo hai giả định sai khi gặp tính năng AI: kết quả sẽ đúng, và nó sẽ có ngay lập tức. UI phải sửa cả hai trước cú click đầu tiên. Mình viết label nói rõ chuyện gì sẽ xảy ra ("Viết nháp mô tả từ thông số sản phẩm") thay vì một câu mơ hồ "Hỏi AI", và đặt một dòng ngắn cạnh kết quả rằng đây là bản nháp cần đọc lại.
+
+Độ trễ cũng cần trung thực như vậy. Các ngưỡng 0,1s / 1s / 10s về thời gian phản hồi của Jakob Nielsen đến giờ vẫn đúng, và mình biến chúng thành ngân sách cho từng tính năng:
+
+| Thời gian chờ dự kiến | Người dùng nên thấy gì |
+| --- | --- |
+| Dưới ~1s | Kết quả hiện ngay tại chỗ, không cần xử lý gì đặc biệt |
+| 1–3s | Một chỉ báo đúng ngay vị trí kết quả sẽ xuất hiện, tốt nhất là skeleton đúng hình dạng |
+| 3–10s | Streaming text hoặc các bước tiến độ thật, kèm nút Dừng |
+| Trên ~10s | Chạy nền: người dùng có thể rời đi và được thông báo khi xong |
+
+Mình đo hai con số cho mỗi request: thời gian tới output đầu tiên và tổng thời gian. Streaming cải thiện mạnh con số đầu, và đó là thứ người dùng cảm nhận rõ nhất.
+
+### Streaming mà không làm đơ UI
+
+Phần lớn backend LLM đều stream được. Ở client, `fetch` với body dạng readable stream là đủ, và `AbortSignal` biến nút Dừng thành thật chứ không chỉ để trang trí:
+
+```ts
+export class SuggestionRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`Suggestion request failed with status ${status}`);
+  }
+}
+
+export async function streamSuggestion(
+  input: { productId: string; tone: "neutral" | "playful" },
+  signal: AbortSignal,
+  onText: (textSoFar: string) => void,
+): Promise<string> {
+  const response = await fetch("/api/suggestions/description", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    signal,
+  });
+  if (!response.ok || !response.body) throw new SuggestionRequestError(response.status);
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let textSoFar = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return textSoFar;
+    textSoFar += value;
+    onText(textSoFar);
+  }
+}
+```
+
+Chunk có thể về vài chục lần mỗi giây. Cập nhật state mỗi chunk vẫn ổn với text thuần, nhưng nếu render markdown hay highlight code, hãy đưa text qua `useDeferredValue` để gõ phím và cuộn trang vẫn mượt trong lúc phần render nặng đuổi theo.
+
+Hiển thị các bước ("Đang tìm trong tài liệu", "Đang đọc 4 kết quả", "Đang viết") rất có ích cho các tính năng kiểu agent, nhưng chỉ khi các bước đó là event thật từ server. Những bước giả chạy theo timer là một lời nói dối mà người dùng nhận ra rất nhanh.
+
+## Gợi ý, không phải quyết định: một state model có type
+
+Cách sửa cho tính năng trong trang quản trị là ngừng *ghi đè* nội dung và chuyển sang *đề xuất*. Gợi ý có thể được chấp nhận, chỉnh sửa hoặc bỏ qua, và thay đổi đã áp dụng thì undo được. Đó là một state machine nhỏ, và mô hình hoá nó bằng discriminated union giúp loại bỏ những trạng thái kiểu "đang streaming mà cũng đã áp dụng" (mình đã viết về cách tiếp cận chung trong bài [State machine cho UI](/blog/state-machines-for-ui)).
+
+```ts
+export type Citation = { id: string; title: string; url: string; quote: string };
+
+export type Suggestion = {
+  id: string;
+  text: string;
+  citations: Citation[];
+  promptVersion: string;
+};
+
+export type FailureReason = "timeout" | "rate_limited" | "blocked_output" | "network" | "unknown";
+
+export type SuggestionState =
+  | { status: "idle" }
+  | { status: "streaming"; requestId: string; partialText: string; startedAt: number }
+  | { status: "ready"; suggestion: Suggestion }
+  | { status: "editing"; suggestion: Suggestion; draft: string }
+  | { status: "applied"; suggestion: Suggestion; appliedText: string; previousText: string; appliedAt: number }
+  | { status: "failed"; reason: FailureReason };
+
+export type SuggestionEvent =
+  | { type: "REQUEST"; requestId: string; now: number }
+  | { type: "CHUNK"; requestId: string; partialText: string }
+  | { type: "COMPLETE"; requestId: string; suggestion: Suggestion }
+  | { type: "FAIL"; requestId: string; reason: FailureReason }
+  | { type: "START_EDIT" }
+  | { type: "EDIT"; draft: string }
+  | { type: "ACCEPT"; currentFieldText: string; now: number }
+  | { type: "REJECT" }
+  | { type: "UNDO" }
+  | { type: "CANCEL" };
+```
+
+Reducer switch theo trạng thái trước, nên mỗi trạng thái chỉ phản ứng với những event có nghĩa với nó. Response của một request đã bị thay thế sẽ bị bỏ qua nhờ so sánh `requestId`:
+
+```ts
+export function suggestionReducer(state: SuggestionState, event: SuggestionEvent): SuggestionState {
+  const startStreaming = (requestId: string, now: number): SuggestionState => ({
+    status: "streaming",
+    requestId,
+    partialText: "",
+    startedAt: now,
+  });
+
+  switch (state.status) {
+    case "idle":
+    case "failed":
+      if (event.type === "REQUEST") return startStreaming(event.requestId, event.now);
+      if (event.type === "CANCEL") return { status: "idle" };
+      return state;
+    case "streaming":
+      if (event.type === "CANCEL") return { status: "idle" };
+      if (!("requestId" in event) || event.requestId !== state.requestId) return state;
+      if (event.type === "CHUNK") return { ...state, partialText: event.partialText };
+      if (event.type === "COMPLETE") return { status: "ready", suggestion: event.suggestion };
+      if (event.type === "FAIL") return { status: "failed", reason: event.reason };
+      return state;
+    case "ready":
+      if (event.type === "START_EDIT") return { status: "editing", suggestion: state.suggestion, draft: state.suggestion.text };
+      if (event.type === "ACCEPT")
+        return { status: "applied", suggestion: state.suggestion, appliedText: state.suggestion.text, previousText: event.currentFieldText, appliedAt: event.now };
+      if (event.type === "REJECT") return { status: "idle" };
+      if (event.type === "REQUEST") return startStreaming(event.requestId, event.now);
+      return state;
+    case "editing":
+      if (event.type === "EDIT") return { ...state, draft: event.draft };
+      if (event.type === "ACCEPT")
+        return { status: "applied", suggestion: state.suggestion, appliedText: state.draft, previousText: event.currentFieldText, appliedAt: event.now };
+      if (event.type === "CANCEL") return { status: "ready", suggestion: state.suggestion };
+      if (event.type === "REJECT") return { status: "idle" };
+      return state;
+    case "applied":
+      if (event.type === "UNDO") return { status: "ready", suggestion: state.suggestion };
+      if (event.type === "REQUEST") return startStreaming(event.requestId, event.now);
+      return state;
+  }
+}
+```
+
+Có hai quyết định UX được viết thành type ở đây. Chỉnh sửa là một trạng thái chính thức chứ không phải thứ thêm vào sau: người dùng sửa bản nháp *trước khi* nó chạm vào field của họ. Và `applied` giữ lại `previousText`, nên undo không phụ thuộc vào undo stack của trình duyệt, thứ thường bị phá vỡ khi giá trị field được gán bằng code.
+
+## Undo và preview trước khi áp dụng
+
+Thay đổi được đặt vào đâu tuỳ thuộc vào cái giá của sai lầm:
+
+- **Rẻ, chỉ một field:** áp dụng tại chỗ, rồi hiện nút Undo trong một khoảng thời gian đủ rộng. Nút phải tới được bằng bàn phím và không tự biến mất khi đang được focus.
+- **Nhiều field hoặc nhiều bản ghi:** hiện preview dạng diff và cho chấp nhận từng mục. "Viết lại toàn bộ 40 tiêu đề sản phẩm" tuyệt đối không được là một cú click không thể quay lại.
+- **Có tác động phá huỷ hoặc ra bên ngoài** (gửi email, đổi giá): preview cộng xác nhận rõ ràng, và nút xác nhận phải gọi tên hậu quả cụ thể ("Gửi cho 312 khách hàng") chứ không phải "Áp dụng".
+
+Các action bọc quanh reducer là nơi chứa side effect: ghi vào field khi chấp nhận, khôi phục khi undo, và báo cáo kết quả.
+
+```ts
+export function createSuggestionActions(
+  state: SuggestionState,
+  dispatch: (event: SuggestionEvent) => void,
+  field: { value: string; setValue: (next: string) => void },
+  report: (outcome: SuggestionOutcome, suggestion: Suggestion) => void,
+) {
+  return {
+    accept() {
+      if (state.status !== "ready" && state.status !== "editing") return;
+      const textToApply = state.status === "editing" ? state.draft : state.suggestion.text;
+      const textBeforeApply = field.value;
+      field.setValue(textToApply);
+      dispatch({ type: "ACCEPT", currentFieldText: textBeforeApply, now: Date.now() });
+      report(
+        textToApply === state.suggestion.text
+          ? { kind: "accepted_as_is" }
+          : { kind: "accepted_with_edits", changeRatio: changeRatio(state.suggestion.text, textToApply) },
+        state.suggestion,
+      );
+    },
+    undo() {
+      if (state.status !== "applied") return;
+      field.setValue(state.previousText);
+      dispatch({ type: "UNDO" });
+      report({ kind: "undone", secondsAfterApply: Math.round((Date.now() - state.appliedAt) / 1000) }, state.suggestion);
+    },
+    reject() {
+      if (state.status !== "ready" && state.status !== "editing") return;
+      dispatch({ type: "REJECT" });
+      report({ kind: "rejected" }, state.suggestion);
+    },
+  };
+}
+```
+
+## Thể hiện sự không chắc chắn và nguồn
+
+Mình không hiển thị phần trăm độ tin cậy. Con số mà model tự báo về chính nó không được hiệu chỉnh, còn người dùng thì đọc "92%" như một lời hứa. Thứ mình hiển thị thay vào đó là *grounding*: phần nào của câu trả lời có nguồn mà người dùng mở ra kiểm tra được.
+
+Trích dẫn chỉ có ích khi nó có thật. Model có thể tạo ra một citation ID chưa từng nằm trong tập tài liệu đã truy xuất, hoặc một đoạn trích không hề có trong tài liệu. Vì vậy server kiểm tra chúng trước khi UI nhìn thấy:
+
+```ts
+type RetrievedDocument = { id: string; title: string; url: string; content: string };
+
+export function keepVerifiableCitations(
+  citations: Citation[],
+  retrieved: Map<string, RetrievedDocument>,
+): Citation[] {
+  return citations.filter((citation) => {
+    const document = retrieved.get(citation.id);
+    return document !== undefined && document.content.includes(citation.quote);
+  });
+}
+```
+
+So khớp chuỗi chính xác khá khắt khe, vài đoạn trích hợp lệ sẽ bị loại vì khác khoảng trắng hay dấu câu. Mình chấp nhận đánh đổi đó: thiếu một trích dẫn là mất mát UX nhỏ; một trích dẫn bịa đặt phá huỷ niềm tin vào mọi trích dẫn còn lại. Phía UI, mỗi trích dẫn link tới nguồn với đoạn trích được highlight, và nếu câu trả lời không còn nguồn nào kiểm chứng được, UI nói thẳng ra ("Không tìm thấy nguồn cho câu trả lời này") thay vì giấu khoảng trống đó đi.
+
+<Callout>
+  Sự không chắc chắn là đầu vào của thiết kế, không phải dòng miễn trừ trách nhiệm. Nếu hệ thống không tìm được căn cứ, hãy đổi cách tương tác — hỏi lại, thu hẹp phạm vi, hoặc trả về kết quả tìm kiếm — thay vì hiện câu trả lời kèm một dòng cảnh báo xám không ai đọc.
+</Callout>
+
+## Feedback phải thật sự chảy vào analytics
+
+Nút like/dislike là feedback ai cũng nghĩ tới, nhưng là tín hiệu yếu nhất: rất ít người bấm, và người bấm thường đang bực. Tín hiệu mạnh nhất là tín hiệu ngầm: người dùng chấp nhận, sửa, undo hay bỏ đi? Mỗi nhánh trong state machine ở trên vốn đã là một analytics event chỉ chờ được đặt tên.
+
+```ts
+export type SuggestionOutcome =
+  | { kind: "accepted_as_is" }
+  | { kind: "accepted_with_edits"; changeRatio: number }
+  | { kind: "rejected" }
+  | { kind: "undone"; secondsAfterApply: number }
+  | { kind: "abandoned"; stage: "streaming" | "ready" | "editing" };
+
+export type SuggestionOutcomeEvent = {
+  name: "ai_suggestion_outcome";
+  feature: "product_description";
+  suggestionId: string;
+  promptVersion: string;
+  outcome: SuggestionOutcome;
+};
+
+export function changeRatio(original: string, final: string): number {
+  if (original === final) return 0;
+  const longest = Math.max(original.length, final.length);
+  const shortest = Math.min(original.length, final.length);
+  let prefix = 0;
+  while (prefix < shortest && original[prefix] === final[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < shortest - prefix &&
+    original[original.length - 1 - suffix] === final[final.length - 1 - suffix]
+  ) suffix++;
+  return (longest - prefix - suffix) / longest;
+}
+```
+
+`changeRatio` cố tình làm thô: nó chỉ đo đoạn nằm giữa phần đầu chung và phần cuối chung, không phải một diff thật. Như vậy đủ để phân biệt "sửa lỗi chính tả" với "viết lại toàn bộ".
+
+Ba nguyên tắc mình giữ với dữ liệu này:
+
+- **Gửi ID và con số, không gửi nội dung.** Text của người dùng và text sinh ra không đi vào analytics nếu chưa có sự đồng ý và chính sách lưu trữ.
+- **Luôn đính kèm `promptVersion`.** Khi ai đó đổi prompt hay đổi model, bạn cần tỉ lệ chấp nhận tách theo phiên bản, nếu không bạn đang so sánh hai tính năng khác nhau dưới cùng một cái tên.
+- **Đếm cả "abandoned".** Bắn event này khi unmount hoặc chuyển trang mà trạng thái vẫn là `streaming`, `ready` hoặc `editing`. Tỉ lệ bỏ dở cao nói với bạn điều mà nút like không bao giờ nói.
+
+## Xử lý lỗi tử tế, phương án dự phòng và accessibility
+
+Tính năng AI lỗi thường xuyên hơn và theo nhiều kiểu hơn một endpoint bình thường: timeout, rate limit, output bị bộ lọc an toàn chặn, structured output sai định dạng. Mỗi lý do trong `FailureReason` có thông báo và bước tiếp theo riêng: "Thử lại" hợp lý với timeout, không hợp lý với output bị chặn. Mình kết hợp nút Dừng của người dùng với một timeout cứng bằng `AbortSignal.any([userController.signal, AbortSignal.timeout(20_000)])`, API này đã được hỗ trợ trên mọi trình duyệt hiện đại.
+
+Phương án dự phòng quan trọng nhất rất nhàm chán: luồng làm tay phải luôn chạy được. Field vẫn sửa được trong lúc gợi ý đang stream, form vẫn submit được khi không có AI, và cả tính năng nằm sau một kill switch (xem bài [Feature flag ở frontend](/blog/frontend-feature-flags)), để khi nhà cung cấp gặp sự cố, bạn tắt nó đi thay vì đẩy màn hình lỗi tới mọi người dùng.
+
+Accessibility là chỗ UI streaming hay sai nhất:
+
+- **Đừng đặt text đang stream trong live region.** Screen reader đọc từng chunk thì không ai dùng nổi. Giữ vùng output yên lặng và dùng một phần tử `role="status"` riêng, ẩn về mặt thị giác, chỉ thông báo một lần: "Đã có gợi ý, 2 nguồn". Một số team dựa vào `aria-busy` để giữ thông báo cho tới khi stream xong; hành vi này khác nhau giữa các screen reader nên mình không dựa vào nó một mình.
+- **Đừng cướp focus** khi gợi ý xuất hiện. Người dùng có thể vẫn đang gõ. Thay vào đó, đặt các nút Chấp nhận, Sửa, Bỏ qua ngay sau output trong thứ tự tab.
+- **Gắn nhãn nội dung do AI tạo bằng chữ**, không chỉ bằng icon lấp lánh hay màu sắc.
+- **Tôn trọng `prefers-reduced-motion`** với con trỏ gõ chữ và hiệu ứng shimmer của skeleton.
+
+<Callout>
+  Bài test nhanh mình chạy trước mỗi lần release: đi hết luồng — tạo, sửa, chấp nhận, undo — chỉ bằng bàn phím, rồi làm lại với screen reader. Phần lớn bug accessibility lộ ra trong hai phút đầu.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Bắt đầu từ một tác vụ thật và cái giá của câu trả lời sai; bỏ qua những tính năng chỉ tồn tại để trông có vẻ có AI.
+- Đặt kỳ vọng ngay trong label và cạnh kết quả, lập ngân sách độ trễ với streaming, các bước tiến độ thật và nút Dừng hoạt động thật.
+- Đề xuất thay vì ghi đè: mô hình hoá gợi ý thành state machine có type với chấp nhận, sửa, bỏ qua và undo.
+- Tự giữ giá trị cũ để undo không phụ thuộc trình duyệt; preview và xác nhận mọi thay đổi nhiều mục hoặc không thể quay lại.
+- Hiển thị grounding thay vì phần trăm độ tin cậy, và kiểm tra trích dẫn ở server trước khi render.
+- Coi chấp nhận, tỉ lệ chỉnh sửa, undo và bỏ dở là tín hiệu feedback chính, gắn prompt version và không chứa nội dung người dùng.
+- Mỗi lý do lỗi có thông báo riêng, luồng làm tay luôn chạy được, và tính năng nằm sau kill switch.
+- Không đặt text đang stream trong live region, chỉ thông báo một lần khi xong, và không bao giờ cướp focus.
+
+</Checklist>
