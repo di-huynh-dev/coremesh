@@ -72,18 +72,16 @@
     "latest": "Mới nhất"
   },
   "home": {
-    "eyebrow": "Huỳnh Tiến Dĩ / DiCodeWeb",
-    "title": "Code, hệ thống và những người xây dựng chúng.",
-    "lead": "Mình làm sản phẩm web và ghi lại những gì học được trên đường đi — ghi chép, bài giải thích và hướng dẫn về frontend, thiết kế hệ thống, công cụ và hành trình trưởng thành của một kỹ sư.",
-    "startHere": "Bắt đầu đọc",
-    "exploreTopics": "Xem các chủ đề",
-    "portraitRole": "Software Engineer · TP. Hồ Chí Minh",
+    "byline": "Software Engineer tại TP. Hồ Chí Minh",
+    "title": "Frontend, hệ thống và AI, viết từ kinh nghiệm production.",
+    "lead": "Bài viết chuyên sâu về React, Next.js, hiệu năng, kiến trúc và tích hợp LLM. Mỗi bài có code chạy được, nói rõ đánh đổi và những lỗi mình đã gặp, để bạn ra quyết định nhanh hơn trong dự án của chính mình.",
+    "startHere": "Đọc bài viết",
+    "exploreSeries": "Theo một chuỗi bài",
+    "featured": "Bài mới nhất",
     "stats": {
-      "since": "năm bắt đầu viết",
-      "posts": "bài viết & ghi chép",
-      "topics": "chủ đề",
-      "tags": "thẻ",
-      "minutes": "phút đọc"
+      "posts": "bài viết",
+      "hours": "giờ đọc",
+      "topics": "chủ đề"
     },
     "rhythm": {
       "title": "Nhịp viết theo tháng",

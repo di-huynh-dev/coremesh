@@ -1,6 +1,8 @@
 import { AUTHOR } from "@/lib/site";
 import { BLOG_TOPICS } from "@/lib/content/types";
 import { type WritingMonth } from "@repo/content/posts";
+import { formatPostDate } from "@repo/content/text";
+import type { BlogPostSummary } from "@/lib/content/types";
 import { topicStyles } from "@/lib/topic-style";
 import { cn } from "@/lib/utils";
 import { useLocale, useTranslations } from "next-intl";
@@ -105,19 +107,22 @@ function WritingRhythm({ months }: { months: WritingMonth[] }) {
 export function Hero({
   stats,
   months,
+  featured,
 }: {
   stats: HeroStats;
   months: WritingMonth[];
+  featured?: BlogPostSummary;
 }) {
   const locale = useLocale();
   const t = useTranslations("home");
+  const tCommon = useTranslations("common");
+  const tTopics = useTranslations("topics");
+  const topicTitle = (topic: BlogPostSummary["topic"]) => tTopics(`${topic}.title`);
 
   const statItems = [
-    { value: stats.firstYear, label: t("stats.since"), href: `/${locale}/blog?sort=oldest` },
     { value: stats.postCount, label: t("stats.posts"), href: `/${locale}/blog` },
+    { value: Math.round(stats.readingMinutes / 60), label: t("stats.hours"), href: "#archive" },
     { value: stats.topicCount, label: t("stats.topics"), href: "#topics" },
-    { value: stats.tagCount, label: t("stats.tags"), href: `/${locale}/blog` },
-    { value: stats.readingMinutes, label: t("stats.minutes"), href: "#archive" },
   ];
 
   return (
@@ -130,68 +135,84 @@ export function Hero({
         className="pointer-events-none absolute inset-0 opacity-[0.07] [background-image:linear-gradient(to_right,white_1px,transparent_1px),linear-gradient(to_bottom,white_1px,transparent_1px)] [background-size:48px_48px] [mask-image:radial-gradient(ellipse_at_top_right,black,transparent_70%)]"
       />
       <div className="wrap relative py-16 md:py-24" data-fx-head="hero">
-        <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid items-end gap-12 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-16">
           <div>
-            <p className="eyebrow" data-fx="item">
-              {t("eyebrow")}
-            </p>
+            <Link
+              href={AUTHOR.url}
+              className="inline-flex items-center gap-3 rounded-full py-1 pr-4 pl-1 text-sm ring-1 ring-white/15 transition-colors hover:bg-white/[0.06]"
+              data-fx="item"
+            >
+              <Image
+                src={AUTHOR.avatar}
+                alt=""
+                width={64}
+                height={64}
+                preload
+                className="size-8 rounded-full bg-[#e9e8ee] object-cover"
+              />
+              <span>
+                <span className="font-semibold">{AUTHOR.name}</span>
+                <span className="hidden text-white/55 sm:inline">, {t("byline")}</span>
+              </span>
+            </Link>
             <h1
               id="hero-title"
               data-fx="line"
-              className="mt-5 max-w-3xl text-[2.6rem] leading-[1.08] font-bold tracking-[-0.035em] text-balance sm:text-6xl"
+              className="mt-7 max-w-3xl text-[2.5rem] leading-[1.06] font-bold tracking-[-0.035em] text-balance sm:text-[3.6rem]"
             >
               {t("title")}
             </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-8 text-white/70" data-fx="item">
+            <p className="mt-6 max-w-[60ch] text-lg leading-8 text-white/70" data-fx="item">
               {t("lead")}
             </p>
             <div className="mt-8 flex flex-wrap gap-3" data-fx="item">
               <Link href={`/${locale}/blog`} className="btn btn-primary">
-                {t("startHere")} <span aria-hidden className="btn-arrow">→</span>
+                {t("startHere")}
               </Link>
-              <Link href="#topics" className="btn btn-ghost">
-                {t("exploreTopics")}
+              <Link href={`/${locale}/series`} className="btn btn-ghost">
+                {t("exploreSeries")}
               </Link>
             </div>
+            <ul className="mt-10 flex flex-wrap gap-x-10 gap-y-4" data-fx="fade">
+              {statItems.map((item) => (
+                <li key={item.label}>
+                  <Link href={item.href} className="group flex flex-col">
+                    <span className="text-3xl font-bold tracking-[-0.03em] tabular-nums">{item.value}</span>
+                    <span className="text-sm text-white/55 transition-colors group-hover:text-white/80">
+                      {item.label}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </div>
 
-          <figure
-            className="w-full max-w-[200px] sm:max-w-[260px] lg:max-w-none"
-            data-fx="fade"
-          >
-            <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#e9e8ee]">
-              <Image
-                src={AUTHOR.avatar}
-                alt={AUTHOR.name}
-                width={640}
-                height={640}
-                preload
-                sizes="(min-width: 1024px) 320px, 280px"
-                className="aspect-square w-full object-cover"
-              />
-            </div>
-            <figcaption className="mt-3 flex flex-col text-sm">
-              <span className="font-semibold">{AUTHOR.name}</span>
-              <span className="text-white/55">{t("portraitRole")}</span>
-            </figcaption>
-          </figure>
+          {featured ? (
+            <article
+              className="group relative rounded-2xl bg-white/[0.04] p-6 ring-1 ring-white/12 transition-colors hover:bg-white/[0.07] sm:p-7"
+              data-fx="fade"
+            >
+              <p className="text-sm text-white/55">{t("featured")}</p>
+              <p className="mt-4 inline-flex items-center gap-2 text-sm text-white/75">
+                <span className={cn("topic-dot", topicStyles[featured.topic].dot)} />
+                {topicTitle(featured.topic)}
+              </p>
+              <h2 className="mt-2 text-2xl leading-snug font-semibold tracking-[-0.02em] text-balance">
+                <Link
+                  href={`/${locale}/blog/${featured.slug}`}
+                  className="after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-none"
+                >
+                  {featured.title}
+                </Link>
+              </h2>
+              <p className="mt-3 line-clamp-4 leading-7 text-white/65">{featured.excerpt}</p>
+              <p className="mt-6 flex items-center justify-between text-sm text-white/55">
+                <time dateTime={featured.date}>{formatPostDate(featured.date, locale, "long")}</time>
+                <span>{tCommon("minRead", { minutes: featured.readingTime })}</span>
+              </p>
+            </article>
+          ) : null}
         </div>
-
-        <ul data-fx="fade" className="mt-14 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/10 bg-white/10 sm:grid-cols-5">
-          {statItems.map((item) => (
-            <li key={item.label} className="bg-night first:col-span-2 sm:first:col-span-1">
-              <Link
-                href={item.href}
-                className="flex h-full flex-col gap-1 px-5 py-5 transition-colors hover:bg-white/[0.04]"
-              >
-                <span className="text-3xl font-bold tracking-[-0.03em] tabular-nums">
-                  {item.value}
-                </span>
-                <span className="text-sm text-white/55">{item.label}</span>
-              </Link>
-            </li>
-          ))}
-        </ul>
 
         <WritingRhythm months={months} />
       </div>

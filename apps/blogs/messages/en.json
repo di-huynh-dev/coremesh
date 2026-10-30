@@ -72,18 +72,16 @@
     "latest": "Latest"
   },
   "home": {
-    "eyebrow": "Huỳnh Tiến Dĩ / DiCodeWeb",
-    "title": "Code, systems and the people who build them.",
-    "lead": "I build web products for a living and write down what I learn along the way — notes, explainers and guides on frontend engineering, system design, tooling and growing as an engineer.",
-    "startHere": "Start reading",
-    "exploreTopics": "Browse topics",
-    "portraitRole": "Software Engineer · Ho Chi Minh City",
+    "byline": "Software engineer in Ho Chi Minh City",
+    "title": "Frontend, systems and AI, written from production experience.",
+    "lead": "In-depth articles on React, Next.js, performance, architecture and LLM integration. Every post comes with working code, the trade-offs and the mistakes I made along the way, so you can make the call faster in your own codebase.",
+    "startHere": "Read the articles",
+    "exploreSeries": "Follow a series",
+    "featured": "Latest article",
     "stats": {
-      "since": "started writing",
-      "posts": "articles & notes",
-      "topics": "topics",
-      "tags": "tags",
-      "minutes": "minutes of reading"
+      "posts": "articles",
+      "hours": "hours of reading",
+      "topics": "topics"
     },
     "rhythm": {
       "title": "Writing rhythm by month",

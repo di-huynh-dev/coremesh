@@ -77,7 +77,7 @@ export default async function Home({
   return (
     <>
       <JsonLd data={jsonLd} />
-      <Hero stats={getBlogStats(locale)} months={getWritingRhythm(locale)} />
+      <Hero stats={getBlogStats(locale)} months={getWritingRhythm(locale)} featured={posts[0]} />
 
       <section aria-labelledby="latest-title" className="wrap pt-20 md:pt-28">
         <SectionHeading
@@ -87,7 +87,7 @@ export default async function Home({
           action={{ href: `/${locale}/blog`, label: tCommon("viewAll") }}
         />
         <div>
-          {posts.slice(0, 4).map((post) => (
+          {posts.slice(1, 5).map((post) => (
             <PostRow key={post.slug} post={post} />
           ))}
         </div>
