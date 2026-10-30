@@ -45,7 +45,7 @@ export async function generateMetadata({ params }: RoleMapPageProps): Promise<Me
   return pageMetadata({
     locale,
     path: `/roadmap/${roleMap.id}`,
-    title: `${roleMap.name} role map`,
+    title: `${roleMap.name} roadmap`,
     description: roleMap.summary,
     keywords: roleMap.ecosystem,
   });

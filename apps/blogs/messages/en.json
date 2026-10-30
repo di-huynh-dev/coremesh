@@ -11,7 +11,7 @@
     "skip": "Skip to content",
     "toggleTheme": "Toggle theme",
     "language": "Language",
-    "roleMaps": "Role map",
+    "roleMaps": "Roadmap",
     "guides": "Guides",
     "tools": "Tools",
     "series": "Series",
@@ -20,8 +20,8 @@
   },
   "search": {
     "title": "Search articles",
-    "placeholder": "Search posts, guides, role maps and tools…",
-    "empty": "Search across posts, guides, role maps and tools.",
+    "placeholder": "Search posts, guides, roadmaps and tools…",
+    "empty": "Search across posts, guides, roadmaps and tools.",
     "noResults": "No articles match “{query}”.",
     "hint": "to open",
     "close": "Close search",
@@ -30,7 +30,7 @@
       "post": "Post",
       "guide": "Guide",
       "chapter": "Chapter",
-      "role": "Role",
+      "role": "Roadmap",
       "stage": "Stage",
       "tool": "Tool",
       "series": "Series"
@@ -206,13 +206,13 @@
     "footerText": "These principles guide every article on this blog — not trends, but ways of thinking that scale over time."
   },
   "roleMap": {
-    "title": "Role map",
+    "title": "Roadmap",
     "lead": "Learning maps for each role on a software team, drawn from my own journey: frontend is what I do every day, the other roles are what I learned working next to teammates and digging in on my own.",
-    "breadcrumb": "Role map",
+    "breadcrumb": "Roadmap",
     "listTitle": "Pick a role",
     "listSubtitle": "Each bar is a role and each segment is a stage. Longer segments take more time.",
     "primary": "My main role",
-    "view": "Open the role map",
+    "view": "Open the roadmap",
     "stages": "{count} stages",
     "topics": "{count} topics",
     "weeks": "~{count} weeks",
@@ -222,7 +222,7 @@
       "advanced": "Advanced"
     },
     "legend": "Legend",
-    "readingTitle": "How I use a role map",
+    "readingTitle": "How I use a roadmap",
     "readingSteps": [
       {
         "title": "Read my take first",
@@ -271,7 +271,7 @@
       "weeks": "weeks, part-time"
     },
     "home": {
-      "title": "Role map",
+      "title": "Roadmap",
       "subtitle": "Learning maps for frontend, backend, mobile, QA, DevOps and AI engineering, drawn from my own journey."
     }
   },

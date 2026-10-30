@@ -11,7 +11,7 @@
     "skip": "Đi tới nội dung",
     "toggleTheme": "Đổi giao diện",
     "language": "Ngôn ngữ",
-    "roleMaps": "Role map",
+    "roleMaps": "Roadmap",
     "guides": "Guides",
     "tools": "Công cụ",
     "series": "Chuỗi bài",
@@ -20,8 +20,8 @@
   },
   "search": {
     "title": "Tìm bài viết",
-    "placeholder": "Tìm bài viết, guide, role map, công cụ…",
-    "empty": "Tìm trong bài viết, guide, role map và công cụ.",
+    "placeholder": "Tìm bài viết, guide, roadmap, công cụ…",
+    "empty": "Tìm trong bài viết, guide, roadmap và công cụ.",
     "noResults": "Không có bài nào khớp với “{query}”.",
     "hint": "để mở",
     "close": "Đóng tìm kiếm",
@@ -30,7 +30,7 @@
       "post": "Bài viết",
       "guide": "Guide",
       "chapter": "Chương",
-      "role": "Role",
+      "role": "Roadmap",
       "stage": "Chặng",
       "tool": "Công cụ",
       "series": "Chuỗi"
@@ -206,13 +206,13 @@
     "footerText": "Những nguyên lý định hướng mọi bài viết trên blog — không chạy theo xu hướng, mà là những lối tư duy bền vững theo thời gian."
   },
   "roleMap": {
-    "title": "Role map",
+    "title": "Roadmap",
     "lead": "Bản đồ học theo từng vai trò trong team phần mềm, vẽ lại từ chính hành trình của mình: frontend là việc mình làm mỗi ngày, các role còn lại là những gì mình học được khi làm cùng đồng đội và tự đào sâu.",
-    "breadcrumb": "Role map",
+    "breadcrumb": "Roadmap",
     "listTitle": "Chọn một role",
     "listSubtitle": "Mỗi thanh là một role, mỗi đoạn là một chặng học. Đoạn càng dài, chặng càng tốn thời gian.",
     "primary": "Role chính của mình",
-    "view": "Xem role map",
+    "view": "Xem roadmap",
     "stages": "{count} chặng",
     "topics": "{count} chủ đề",
     "weeks": "~{count} tuần",
@@ -222,7 +222,7 @@
       "advanced": "Nâng cao"
     },
     "legend": "Chú thích",
-    "readingTitle": "Cách mình dùng role map",
+    "readingTitle": "Cách mình dùng roadmap",
     "readingSteps": [
       {
         "title": "Đọc phần góc nhìn trước",
@@ -261,7 +261,7 @@
     "trendsSubtitle": "Những gì đang quan trọng lúc này và hướng đi trong vài năm tới.",
     "now": "Hiện tại",
     "next": "Sắp tới",
-    "outcomes": "Đi hết role map, bạn sẽ",
+    "outcomes": "Đi hết roadmap, bạn sẽ",
     "ecosystem": "Công cụ chính",
     "related": "Bài viết liên quan",
     "otherRoles": "Các role khác",
@@ -271,7 +271,7 @@
       "weeks": "tuần, học part-time"
     },
     "home": {
-      "title": "Role map",
+      "title": "Roadmap",
       "subtitle": "Bản đồ học cho frontend, backend, mobile, QA, DevOps và AI engineer, viết từ hành trình của mình."
     }
   },
