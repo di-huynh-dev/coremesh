@@ -61,10 +61,6 @@ export async function generateMetadata({
       "Developer Blog",
     ],
     authors: [{ name: AUTHOR.name, url: AUTHOR.url }],
-    icons: {
-      icon: [{ url: "/round-avatar.svg", type: "image/svg+xml" }],
-      apple: "/round-avatar.svg",
-    },
     // Fallbacks for routes without their own metadata (e.g. 404): no hreflang, since the
     // locale homes are not translations of an arbitrary page.
     alternates: {

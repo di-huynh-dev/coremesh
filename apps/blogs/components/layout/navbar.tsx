@@ -102,7 +102,7 @@ export function Navbar({ searchIndex }: { searchIndex: SearchEntry[] }) {
             onClick={() => setMobileMenuOpen(false)}
           >
             <Image
-              src="/round-avatar.svg"
+              src="/round-avatar.webp"
               alt=""
               width={28}
               height={28}
