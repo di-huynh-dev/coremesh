@@ -25,6 +25,9 @@
     "check-types": "next typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@fontsource-variable/playfair-display": "5.3.0",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
     "@marsidev/react-turnstile": "^1.6.3",
     "@react-three/fiber": "^9.8.2",
     "@repo/content": "*",

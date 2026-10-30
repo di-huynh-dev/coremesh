@@ -4,6 +4,12 @@
 
 @custom-variant dark (&:is(.dark *, .night *));
 
+:root {
+  --font-ibm-plex-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-ibm-plex-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-display-serif: "Playfair Display Variable";
+}
+
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));

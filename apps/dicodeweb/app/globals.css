@@ -35,8 +35,8 @@
 :root {
   color-scheme: light;
   --radius: 1.35rem;
-  --font-sans-stack: var(--font-poppins), 'Segoe UI', Arial, sans-serif;
-  --font-mono-stack: var(--font-jetbrains-mono), 'Cascadia Code', Consolas, monospace;
+  --font-sans-stack: 'Poppins', 'Segoe UI', Arial, sans-serif;
+  --font-mono-stack: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
   --background: #ffffff;
   --foreground: #171717;
   --card: #f8fafc;

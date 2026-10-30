@@ -1,28 +1,17 @@
 import { Analytics } from "@vercel/analytics/next";
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans, Playfair_Display } from "next/font/google";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
+import "@fontsource-variable/playfair-display/wght.css";
+import "@fontsource-variable/playfair-display/wght-italic.css";
 import "./globals.css";
 import { profile, SITE_URL, socials } from "@/lib/data/profile";
 import { siteTitle } from "@/lib/metadata";
 import { Providers } from "./providers";
-
-const ibmPlexSans = IBM_Plex_Sans({
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "500", "600"],
-  variable: "--font-ibm-plex-sans",
-});
-
-const displaySerif = Playfair_Display({
-  subsets: ["latin", "vietnamese"],
-  style: ["normal", "italic"],
-  variable: "--font-display-serif",
-});
-
-const ibmPlexMono = IBM_Plex_Mono({
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "500", "600"],
-  variable: "--font-ibm-plex-mono",
-});
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -62,7 +51,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} ${displaySerif.variable} antialiased font-sans`}
+        className="antialiased font-sans"
       >
         <Providers>{children}</Providers>
         <Analytics />

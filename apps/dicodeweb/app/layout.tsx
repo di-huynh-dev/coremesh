@@ -1,22 +1,16 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
-import { JetBrains_Mono, Poppins } from 'next/font/google';
+import '@fontsource/poppins/400.css';
+import '@fontsource/poppins/500.css';
+import '@fontsource/poppins/600.css';
+import '@fontsource/poppins/700.css';
+import '@fontsource/poppins/800.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/500.css';
+import '@fontsource/jetbrains-mono/600.css';
+import '@fontsource/jetbrains-mono/700.css';
 import './globals.css';
 import { Providers } from './providers';
-
-const poppins = Poppins({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700', '800'],
-  variable: '--font-poppins',
-  display: 'swap',
-});
-
-const jetBrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-jetbrains-mono',
-  display: 'swap',
-});
 
 const metaContent = {
   en: {
@@ -90,7 +84,6 @@ export default function RootLayout({
       lang="vi"
       suppressHydrationWarning
       data-scroll-behavior="smooth"
-      className={`${poppins.variable} ${jetBrainsMono.variable}`}
     >
       <body className="font-sans antialiased">
         <Providers>{children}</Providers>
