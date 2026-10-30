@@ -17,6 +17,13 @@ export const GUIDES_SOURCE = {
   license: "MIT",
 } as const;
 
+export interface AdaptedGuideSource {
+  name: string;
+  url: string;
+  license: string;
+  licenseUrl: string;
+}
+
 interface GuideFrontmatter {
   title: string;
   description?: string;
@@ -24,6 +31,7 @@ interface GuideFrontmatter {
   publishedAt?: string | Date;
   updatedAt?: string | Date;
   tags?: string[];
+  adaptedFrom?: AdaptedGuideSource;
 }
 
 interface PartFrontmatter {
@@ -50,6 +58,7 @@ export interface GuideSummary {
   tags: string[];
   readingTime: number;
   parts: GuidePartSummary[];
+  adaptedFrom: AdaptedGuideSource | null;
 }
 
 function splitFrontmatter<T>(source: string): { data: T; body: string } {
@@ -136,6 +145,7 @@ function loadGuides(locale = "en"): LoadedGuide[] {
         publishedAt: toIsoDate(meta.publishedAt),
         updatedAt: toIsoDate(meta.updatedAt ?? meta.publishedAt),
         tags: meta.tags ?? [],
+        adaptedFrom: meta.adaptedFrom ?? null,
         readingTime: parts.reduce((sum, part) => sum + part.readingTime, 0),
         parts,
         body: index.body,
@@ -188,4 +198,9 @@ export function getGuideCategories(locale = "en") {
     counts.set(category.slug, entry);
   });
   return [...counts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+export function guideCanonical(guide: GuideSummary, partSlug?: string) {
+  if (guide.adaptedFrom) return undefined;
+  return partSlug ? `${GUIDES_SOURCE.url}/${guide.slug}/${partSlug}` : `${GUIDES_SOURCE.url}/${guide.slug}`;
 }

@@ -2,7 +2,7 @@ import { CodeCopy } from "@/components/blog/code-copy";
 import { ReadingProgress } from "@/components/blog/reading-progress";
 import { TableOfContents } from "@/components/blog/table-of-contents";
 import { SourceNote } from "@/components/guides/source-note";
-import { GUIDES_SOURCE, getGuidePart, getGuides } from "@/lib/content/guides";
+import { getGuidePart, getGuides, guideCanonical } from "@/lib/content/guides";
 import { isBlogLocale } from "@/lib/content/text";
 import { pageMetadata } from "@/lib/seo";
 import { cn } from "@/lib/utils";
@@ -31,8 +31,7 @@ export async function generateMetadata({ params }: GuidePartPageProps): Promise<
     path: `/guides/${data.guide.slug}/${data.part.slug}`,
     title: `${data.part.title} · ${data.guide.title}`,
     description: data.part.description || data.guide.description,
-    // Republished content: point search engines at the original to avoid duplicate-content issues.
-    canonical: `${GUIDES_SOURCE.url}/${data.guide.slug}/${data.part.slug}`,
+    canonical: guideCanonical(data.guide, data.part.slug),
   });
 }
 
@@ -180,7 +179,8 @@ export default async function GuidePartPage({ params }: GuidePartPageProps) {
 
           <SourceNote
             namespace="guides"
-            originalUrl={`${GUIDES_SOURCE.url}/${guide.slug}/${data.part.slug}`}
+            originalUrl={guideCanonical(guide, data.part.slug)}
+            adaptedFrom={guide.adaptedFrom}
             className="mt-10 border-t border-line pt-6"
           />
         </article>

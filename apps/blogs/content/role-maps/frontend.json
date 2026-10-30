@@ -144,7 +144,7 @@
             { "title": "react.dev: Learn React", "url": "https://react.dev/learn", "kind": "docs" },
             { "title": "React 19.2 release notes", "url": "https://react.dev/blog/2025/10/01/react-19-2", "kind": "article" },
             { "title": "React Compiler", "url": "https://react.dev/learn/react-compiler", "kind": "docs" },
-            { "title": "Suspense reference", "url": "https://react.dev/reference/react/Suspense", "kind": "docs" }
+            { "title": "Suspense reference", "url": "https://react.dev/reference/react/Suspense", "kind": "docs" }, {"title": "DiCodeWeb: React Design Patterns (15 pattern)", "url": "https://blogs.nextdi.io.vn/vi/guides/react-design-patterns", "kind": "course"}
           ],
           "tags": ["React 19", "Hooks", "React Compiler"]
         },
@@ -515,7 +515,7 @@
             { "title": "react.dev: Learn React", "url": "https://react.dev/learn", "kind": "docs" },
             { "title": "React 19.2 release notes", "url": "https://react.dev/blog/2025/10/01/react-19-2", "kind": "article" },
             { "title": "React Compiler", "url": "https://react.dev/learn/react-compiler", "kind": "docs" },
-            { "title": "Suspense reference", "url": "https://react.dev/reference/react/Suspense", "kind": "docs" }
+            { "title": "Suspense reference", "url": "https://react.dev/reference/react/Suspense", "kind": "docs" }, {"title": "DiCodeWeb: React Design Patterns (15 patterns)", "url": "https://blogs.nextdi.io.vn/en/guides/react-design-patterns", "kind": "course"}
           ],
           "tags": ["React 19", "Hooks", "React Compiler"]
         },

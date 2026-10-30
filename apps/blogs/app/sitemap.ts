@@ -1,5 +1,6 @@
 import { locales } from "@/intl.config";
 import { ROLE_MAP_IDS } from "@/lib/content/role-maps";
+import { getGuides } from "@/lib/content/guides";
 import { getAllSeries, getSeries } from "@/lib/content/series";
 import { TOOLS } from "@/lib/content/tools";
 import type { BlogLocale } from "@/lib/content/types";
@@ -28,8 +29,17 @@ export default function sitemap(): MetadataRoute.Sitemap {
         changeFrequency: "monthly" as const,
         priority: 0.7,
       })),
-      // Individual guides canonicalize to DevOps Daily, so only the index is listed.
       { path: "/guides", changeFrequency: "weekly" as const, priority: 0.8 },
+      ...getGuides()
+        .filter((guide) => guide.adaptedFrom)
+        .flatMap((guide) => [
+          { path: `/guides/${guide.slug}`, changeFrequency: "monthly" as const, priority: 0.7 },
+          ...guide.parts.map((part) => ({
+            path: `/guides/${guide.slug}/${part.slug}`,
+            changeFrequency: "monthly" as const,
+            priority: 0.6,
+          })),
+        ]),
       { path: "/tools", changeFrequency: "monthly" as const, priority: 0.7 },
       ...TOOLS.map((tool) => ({
         path: `/tools/${tool.slug}`,

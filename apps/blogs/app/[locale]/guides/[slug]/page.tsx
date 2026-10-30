@@ -2,7 +2,7 @@ import { CodeCopy } from "@/components/blog/code-copy";
 import { SourceNote } from "@/components/guides/source-note";
 import { MotionController } from "@/components/motion/motion-controller";
 import { formatPostDate, isBlogLocale } from "@/lib/content/text";
-import { GUIDES_SOURCE, getGuide, getGuides } from "@/lib/content/guides";
+import { getGuide, getGuides, guideCanonical } from "@/lib/content/guides";
 import { pageMetadata } from "@/lib/seo";
 import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -27,8 +27,7 @@ export async function generateMetadata({ params }: GuidePageProps): Promise<Meta
     title: guide.title,
     description: guide.description,
     keywords: guide.tags,
-    // Republished content: point search engines at the original to avoid duplicate-content issues.
-    canonical: `${GUIDES_SOURCE.url}/${guide.slug}`,
+    canonical: guideCanonical(guide),
   });
 }
 
@@ -95,12 +94,12 @@ export default async function GuidePage({ params }: GuidePageProps) {
             id="guide-intro"
             lang={locale}
             className="article-body"
-            // Vendored MIT content from content/guides, sanitized in lib/markdown.ts.
             dangerouslySetInnerHTML={{ __html: guide.intro.contentHtml }}
           />
           <SourceNote
             namespace="guides"
-            originalUrl={`${GUIDES_SOURCE.url}/${guide.slug}`}
+            originalUrl={guideCanonical(guide)}
+            adaptedFrom={guide.adaptedFrom}
             className="mt-12 border-t border-line pt-6"
           />
         </div>
