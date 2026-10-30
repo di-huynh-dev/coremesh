@@ -1,0 +1,1555 @@
+{
+  "id": "backend",
+  "ecosystem": [
+    "Node.js",
+    "TypeScript",
+    "NestJS",
+    "PostgreSQL",
+    "Prisma",
+    "Redis",
+    "OpenTelemetry",
+    "Docker"
+  ],
+  "locales": {
+    "vi": {
+      "name": "Backend Engineer",
+      "tagline": "Thiết kế, xây dựng và vận hành API, dữ liệu và service phía sau mỗi sản phẩm",
+      "summary": "Lộ trình ưu tiên Node.js và TypeScript, đi từ nền tảng HTTP tới vận hành service phân tán trên production, với các khái niệm dùng được cho mọi ngôn ngữ. Dành cho dev frontend muốn sang backend và backend junior muốn đào sâu thiết kế API, PostgreSQL, auth, xử lý bất đồng bộ, testing và vận hành.",
+      "story": {
+        "intro": "Mình là dev frontend, không phải backend engineer chuyên trách, nhưng vài năm qua mình đã làm các service backend với NestJS, Prisma và PostgreSQL ở mức làm việc được. Bước qua ranh giới đó thay đổi cả cách mình viết frontend: mình thôi coi API là hộp đen. Map này là lộ trình mình ghép lại từ trải nghiệm đó, những lỗ hổng kiến thức mình gặp, và thứ tự mình sẽ đi nếu nghiêm túc bắt đầu backend từ hôm nay. Ở những phần mình chưa có chiều sâu production, nhất là scaling và hệ phân tán, mình dựa vào tài liệu chính thức và sách uy tín chứ không nhận là đã có kinh nghiệm.",
+        "lessons": [
+          "Database mới là sản phẩm. Thời gian bỏ vào mô hình dữ liệu, index và transaction đáng giá hơn nhiều so với học thêm một framework.",
+          "Authentication phần lớn đã được giải quyết; authorization mới là nơi bug thật nằm, nên hãy kiểm tra quyền sở hữu trên mọi object bạn trả về.",
+          "Mọi lời gọi mạng đều có thể lỗi, timeout hoặc bị retry, nên hãy thiết kế idempotency từ endpoint đầu tiên, đừng đợi tới lần thanh toán trùng đầu tiên.",
+          "Mock làm test của mình xanh còn query thì sai. Test trên PostgreSQL thật chạy trong container là bước ngoặt để mình tin vào code của mình."
+        ]
+      },
+      "trends": {
+        "now": [
+          {
+            "title": "TypeScript ở khắp nơi, runtime nhẹ hơn",
+            "detail": "Node 24 LTS chạy TypeScript qua type stripping, Bun và Deno đã trưởng thành, và ORM như Prisma 7 bỏ engine native để chuyển hẳn sang TypeScript. Kết quả là tooling gọn hơn, nhưng framework dựa vào decorator metadata như NestJS vẫn cần một bước compile thật."
+          },
+          {
+            "title": "PostgreSQL là database mặc định",
+            "detail": "PostgreSQL 18 thêm asynchronous I/O và uuidv7() có sẵn, còn các extension (pgvector, PostGIS, full text) giúp một database phủ được những workload trước đây cần nhiều hệ thống. Hiểu sâu Postgres giờ là kỹ năng cốt lõi của backend, không còn là chuyên môn riêng của DBA."
+          },
+          {
+            "title": "Hợp đồng và chuẩn thay cho code dán tạm",
+            "detail": "OpenAPI 3.2, RFC 9457 Problem Details, thực hành OAuth 2.1 cùng RFC 9700 và OpenTelemetry tạo ra ngôn ngữ chung giữa các team và công cụ. Sinh client, tài liệu và test từ hợp đồng giờ là điều được kỳ vọng chứ không còn là điểm cộng."
+          },
+          {
+            "title": "Phân quyền và lạm dụng API là rủi ro chính",
+            "detail": "OWASP API Top 10 vẫn xếp broken object level authorization đứng đầu, và việc bot lạm dụng luồng nghiệp vụ tiếp tục tăng. Phân quyền chi tiết, rate limiting và passkey đang chuyển từ chủ đề nâng cao thành mức cơ bản."
+          }
+        ],
+        "next": [
+          {
+            "title": "API được AI agent sử dụng",
+            "detail": "Ngày càng nhiều traffic sẽ đến từ LLM agent gọi API qua các giao thức tool như MCP, khiến schema rõ ràng, thông báo lỗi tốt, idempotency và token có phạm vi hẹp càng quan trọng. Chuẩn bị bằng cách viết mô tả OpenAPI chính xác và thiết kế các thao tác an toàn, giới hạn theo quyền."
+          },
+          {
+            "title": "Durable execution và workflow engine",
+            "detail": "Các công cụ như Temporal và những workflow engine bền vững khác lo retry, timer và tiến trình chạy dài mà trước đây team phải tự ghép từ queue và cron. Hãy nắm outbox, saga và idempotency trước để các engine này trở thành bước tiếp theo tự nhiên."
+          },
+          {
+            "title": "Phân quyền dạng policy-as-code",
+            "detail": "Engine dựa trên quan hệ và policy như OpenFGA, SpiceDB, Cedar và OPA đang phổ biến dần khi app thêm tính năng chia sẻ, multi-tenancy và quyền cho agent. Tập tách luật phân quyền khỏi handler và test chúng như dữ liệu."
+          },
+          {
+            "title": "Observability mặc định và platform engineering",
+            "detail": "OpenTelemetry đang thành lớp instrumentation mặc định, và internal developer platform che bớt phần lớn Kubernetes. Backend engineer sẽ được kỳ vọng tự chịu trách nhiệm SLO và hành vi production của service mình, nên hãy quen với việc đọc trace và định nghĩa alert."
+          }
+        ]
+      },
+      "outcomes": [
+        "Bạn thiết kế được REST API với OpenAPI, lỗi nhất quán, thao tác ghi idempotent và cursor pagination, và giải thích được khi nào GraphQL hay tRPC hợp hơn.",
+        "Bạn tổ chức được service NestJS với module gọn, guard, pipe, interceptor và config được validate.",
+        "Bạn mô hình hóa được schema PostgreSQL, đọc query plan, chọn isolation level và ship migration không downtime qua Prisma hoặc Drizzle.",
+        "Bạn làm được đăng nhập bằng session hoặc OIDC kèm passkey, và áp phân quyền cấp object có nhận biết tenant.",
+        "Bạn đẩy được việc chậm sang job BullMQ idempotent và publish event tin cậy bằng transactional outbox.",
+        "Bạn test được service bằng Testcontainers và contract test, và trace một request xuyên qua API, database và worker bằng OpenTelemetry.",
+        "Bạn container hóa, deploy và scale được một service stateless với health check, rate limiting và rollback an toàn."
+      ],
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Nền tảng HTTP và networking",
+          "goal": "Giải thích được chuyện gì xảy ra trên đường truyền từ lúc DNS lookup tới khi có response, và debug một request bằng curl lẫn tab Network của trình duyệt.",
+          "note": "Hồi làm frontend mình coi fetch như hộp đen, trả JSON hoặc throw lỗi. Lúc chuyển qua backend, phần lớn bug ban đầu của mình thật ra là bug HTTP: status code sai, thiếu cache header, CORS cấu hình sai phía server chứ không phải phía client.",
+          "topics": [
+            {
+              "title": "Đường đi của một request",
+              "detail": "DNS resolution, TCP handshake, TLS 1.3 handshake rồi mới tới trao đổi HTTP. Cần biết độ trễ đến từ đâu (số round trip, tái sử dụng kết nối qua keep-alive) và vì sao khi reverse proxy hay load balancer terminate TLS thì app của bạn thấy khác đi, ví dụ X-Forwarded-For và IP thật của client."
+            },
+            {
+              "title": "Ngữ nghĩa HTTP",
+              "detail": "Các method và tính safe, idempotent của chúng (GET, PUT, DELETE là idempotent, POST thì không), các nhóm status code, và khác biệt giữa 401 với 403 hay 400 với 422. RFC 9110 hiện là nguồn duy nhất cho phần ngữ nghĩa, tách khỏi các phiên bản giao thức trên đường truyền."
+            },
+            {
+              "title": "HTTP/1.1, HTTP/2 và HTTP/3",
+              "detail": "HTTP/2 multiplex nhiều stream trên một kết nối TCP, HTTP/3 chạy trên QUIC qua UDP và loại bỏ head-of-line blocking của TCP. Thực tế service Node của bạn thường nói HTTP/1.1 sau một proxy hoặc CDN, còn proxy đó nói HTTP/2 hay HTTP/3 với client."
+            },
+            {
+              "title": "Cache và conditional request",
+              "detail": "Cache-Control (max-age, s-maxage, no-store, private), ETag kèm If-None-Match, và Vary. Đặt đúng các header này cho API response thì CDN và trình duyệt gánh bớt tải trước khi nó chạm tới database."
+            },
+            {
+              "title": "CORS, cookie và các header quan trọng",
+              "detail": "CORS do trình duyệt thực thi, server chỉ khai báo policy qua Access-Control-Allow-*; request không phải simple request sẽ có preflight OPTIONS. Các thuộc tính cookie HttpOnly, Secure, SameSite và prefix __Host- quyết định phần lớn độ an toàn của session."
+            }
+          ],
+          "practices": [
+            "Tái hiện mọi bug bằng một lệnh curl -v thô trước khi sửa code.",
+            "Chọn status code có chủ đích và giữ một bảng ngắn liệt kê chúng trong README của dự án.",
+            "Đặt Cache-Control rõ ràng cho mọi API response, kể cả khi giá trị là no-store.",
+            "Chỉ tin forwarded header từ proxy bạn kiểm soát và cấu hình trust đó một cách tường minh."
+          ],
+          "pitfalls": [
+            "Trả 200 kèm một field error trong body, làm hỏng cache, retry và monitoring.",
+            "Sửa CORS bằng cách cho phép mọi origin kèm credentials thay vì liệt kê đúng các origin thật."
+          ],
+          "project": {
+            "title": "HTTP inspector tự viết",
+            "brief": "Viết một server nhỏ chỉ dùng node:http (không framework) trả lại method, header và body, hỗ trợ ETag với response 304, và cấu hình CORS đúng cho một origin được phép. Xong khi curl -v cho ra đúng 200/304/405 và preflight từ trình duyệt ở origin khác chỉ thành công với origin được phép."
+          },
+          "resources": [
+            {
+              "title": "MDN: HTTP",
+              "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP",
+              "kind": "docs"
+            },
+            {
+              "title": "RFC 9110: HTTP Semantics",
+              "url": "https://www.rfc-editor.org/rfc/rfc9110",
+              "kind": "docs"
+            },
+            {
+              "title": "High Performance Browser Networking",
+              "url": "https://hpbn.co/",
+              "kind": "book"
+            }
+          ],
+          "tags": [
+            "HTTP",
+            "TCP/TLS",
+            "DNS"
+          ]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Hiểu sâu runtime Node.js",
+          "goal": "Hiểu event loop, stream và worker thread đủ để giữ service phản hồi tốt khi tải cao.",
+          "note": "Mình biết async/await từ code React, nhưng chưa thật sự hiểu cái gì chặn event loop cho tới khi một vòng lặp nặng CPU làm đứng mọi request trong một side project. Học kỹ runtime là lúc Node hết là phép màu và trở thành công cụ.",
+          "topics": [
+            {
+              "title": "Các phase của event loop",
+              "detail": "Timers, pending callbacks, poll, check (setImmediate) và close, cộng với microtask queue (promise, queueMicrotask) và process.nextTick chạy xen giữa. Hiểu vì sao chỉ một lệnh JSON.parse đồng bộ trên payload lớn cũng làm khựng mọi request đang chạy song song, và đo nó bằng event loop delay trong perf_hooks."
+            },
+            {
+              "title": "Stream và backpressure",
+              "detail": "Readable, Writable, Transform, Duplex, stream.pipeline và async iteration với for await. Backpressure (write() trả về false, sự kiện drain) là thứ giữ cho upload file hay export CSV không nạp hết mọi thứ vào memory."
+            },
+            {
+              "title": "Worker thread và libuv pool",
+              "detail": "worker_threads cho việc nặng CPU như xử lý ảnh hay hash, khác với libuv thread pool vốn đã lo fs, dns.lookup và crypto. Muốn dùng nhiều core để xử lý request thì cách chính vẫn là cluster hoặc chạy nhiều process sau load balancer."
+            },
+            {
+              "title": "Tính năng Node hiện đại",
+              "detail": "Node 24 là dòng LTS đang active và type stripping TypeScript gốc đã stable ở đây, nhưng nó chỉ bỏ phần cú pháp có thể xóa: enum, parameter property và decorator metadata không được hỗ trợ, điều này ảnh hưởng tới NestJS. fetch có sẵn, node:test, --watch và --env-file giúp bớt nhiều dev dependency."
+            },
+            {
+              "title": "Bun và Deno, nói ngắn",
+              "detail": "Bun là runtime kiêm package manager và test runner rất nhanh, tương thích Node cao; Deno tập trung vào permission an toàn mặc định và API chuẩn web, có hỗ trợ npm. Nên học Node trước vì hệ sinh thái production, tài liệu và hosting vẫn mặc định là Node, rồi đánh giá hai cái kia theo từng dự án."
+            }
+          ],
+          "practices": [
+            "Dùng stream.pipeline thay vì tự nối pipe để lỗi và cleanup được lan truyền đúng.",
+            "Theo dõi event loop delay và heap usage ngay từ ngày đầu.",
+            "Đưa việc nặng CPU sang worker thread hoặc một queue worker riêng, không bao giờ làm trực tiếp trong request handler.",
+            "Xử lý unhandledRejection và SIGTERM tường minh, shutdown một cách graceful."
+          ],
+          "pitfalls": [
+            "Đọc cả file upload vào một Buffer trong khi dùng stream thì memory gần như cố định.",
+            "Nghĩ rằng code async là chạy CPU song song; thật ra nó chỉ chồng thời gian chờ I/O lên nhau."
+          ],
+          "project": {
+            "title": "CSV exporter dạng stream",
+            "brief": "Làm một endpoint stream một triệu dòng dữ liệu sinh ra dưới dạng CSV và một endpoint khác tính hash mật khẩu trong worker thread. Xong khi memory giữ phẳng trong lúc export, event loop delay vẫn thấp khi đang hash, và server tắt sạch khi nhận SIGTERM mà không rớt request đang xử lý."
+          },
+          "resources": [
+            {
+              "title": "Node.js: The Event Loop, Timers and process.nextTick()",
+              "url": "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick",
+              "kind": "docs"
+            },
+            {
+              "title": "Node.js API: Stream",
+              "url": "https://nodejs.org/api/stream.html",
+              "kind": "docs"
+            },
+            {
+              "title": "Node.js API: Worker threads",
+              "url": "https://nodejs.org/api/worker_threads.html",
+              "kind": "docs"
+            },
+            {
+              "title": "Bun docs",
+              "url": "https://bun.sh/docs",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "Node.js",
+            "Event loop",
+            "Streams"
+          ]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Thiết kế API bền vững",
+          "goal": "Thiết kế một API nhất quán, có tài liệu, lỗi rõ ràng, retry an toàn, phân trang ổn định và chính sách versioning.",
+          "note": "Là dev frontend, mình từng là người dùng API khổ sở vì response mỗi chỗ một kiểu và breaking change âm thầm. Chính nỗi khổ đó là người thầy tốt nhất: hãy thiết kế cái API mà ngày xưa bạn ước được nhận.",
+          "topics": [
+            {
+              "title": "Mô hình resource và quy ước REST",
+              "detail": "Dùng danh từ cho resource, sub-resource để thể hiện quan hệ sở hữu, đặt tên và casing nhất quán, filter, sort và sparse field qua query parameter. Dùng RFC 9457 Problem Details (application/problem+json) làm định dạng lỗi duy nhất để client xử lý lỗi một cách tổng quát."
+            },
+            {
+              "title": "OpenAPI là hợp đồng",
+              "detail": "OpenAPI 3.1 đã đồng bộ schema với JSON Schema, còn 3.2 (ra năm 2025) thêm media type dạng stream như SSE và JSON Lines, tag phân cấp và method QUERY. Chọn code-first (sinh spec từ decorator hoặc Zod schema) hay design-first đều được, nhưng luôn sinh typed client và lint spec trong CI."
+            },
+            {
+              "title": "Idempotency và retry an toàn",
+              "detail": "Client sẽ retry khi timeout, nên các endpoint POST tạo thanh toán hay đơn hàng cần header Idempotency-Key (một IETF draft theo đúng cách Stripe đã phổ biến). Lưu key cùng hash của request và response, trả lại kết quả cũ khi gửi lặp, và từ chối nếu cùng key nhưng body khác."
+            },
+            {
+              "title": "Phân trang",
+              "detail": "Offset pagination đơn giản nhưng chậm và không ổn định trên bảng lớn hoặc dữ liệu thay đổi liên tục. Cursor hay keyset pagination (WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC) ổn định và tận dụng được index; trả về một cursor mờ (opaque) cùng link next."
+            },
+            {
+              "title": "Versioning và tiến hóa API",
+              "detail": "Ưu tiên thay đổi kiểu bổ sung, tương thích ngược; khi buộc phải breaking thì version qua URL path hoặc header và báo trước việc gỡ bỏ bằng header Deprecation và Sunset. Contract test và changelog biến deprecation thành một quy trình chứ không phải bất ngờ."
+            },
+            {
+              "title": "Đánh đổi giữa GraphQL và tRPC",
+              "detail": "GraphQL hợp khi có nhiều client với nhu cầu dữ liệu khác nhau, nhưng kéo theo rủi ro N+1 (dùng DataLoader), giới hạn độ phức tạp query và khó cache HTTP hơn. tRPC cho type end-to-end gần như không tốn công trong monorepo TypeScript, nhưng không phải hợp đồng API public; REST kèm OpenAPI vẫn là lựa chọn mặc định an toàn cho bên ngoài."
+            }
+          ],
+          "practices": [
+            "Viết OpenAPI spec hoặc schema trước khi implement và review nó như review code.",
+            "Trả về một định dạng lỗi duy nhất ở mọi nơi, có type ổn định cho máy đọc và detail cho người đọc.",
+            "Bắt buộc idempotency key cho mọi endpoint không idempotent liên quan tới tiền hoặc tạo bản ghi quan trọng.",
+            "Mặc định dùng cursor pagination và giới hạn page size tối đa ở phía server."
+          ],
+          "pitfalls": [
+            "Để lộ tên cột database và ID nội bộ thẳng ra hợp đồng public.",
+            "Ship breaking change mà giữ nguyên version chỉ vì đang có đúng một client biết đến."
+          ],
+          "project": {
+            "title": "Hợp đồng API cho Orders",
+            "brief": "Thiết kế OpenAPI spec cho một service đơn hàng gồm list (cursor pagination), create (idempotency key) và lỗi dạng Problem Details, rồi sinh typed client TypeScript từ spec. Xong khi spec qua được linter, client compile được với spec, và gửi lại lệnh create với cùng key thì nhận về đúng đơn hàng ban đầu."
+          },
+          "resources": [
+            {
+              "title": "OpenAPI Specification v3.2.0",
+              "url": "https://spec.openapis.org/oas/v3.2.0.html",
+              "kind": "docs"
+            },
+            {
+              "title": "RFC 9457: Problem Details for HTTP APIs",
+              "url": "https://www.rfc-editor.org/rfc/rfc9457",
+              "kind": "docs"
+            },
+            {
+              "title": "Google API Improvement Proposals (AIP)",
+              "url": "https://google.aip.dev/",
+              "kind": "docs"
+            },
+            {
+              "title": "IETF draft: The Idempotency-Key HTTP Header Field",
+              "url": "https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "REST",
+            "OpenAPI",
+            "API design"
+          ]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Kiến trúc NestJS",
+          "goal": "Tổ chức một service NestJS thành các module gắn kết, có request lifecycle rõ ràng, validation chặt và provider dễ test.",
+          "note": "NestJS là cầu nối đưa mình từ lối nghĩ frontend kiểu Angular sang backend, và cũng là chỗ mình có nhiều thời gian thực hành nhất. Cái sai hồi đầu của mình là nhét business logic vào controller và tạo một shared module khổng lồ.",
+          "topics": [
+            {
+              "title": "Module và ranh giới",
+              "detail": "Tổ chức theo feature hoặc domain (orders, billing, users), chỉ export những gì module khác cần, và tránh import vòng thay vì giấu nó bằng forwardRef. Dynamic module (forRoot, forRootAsync, ConfigurableModuleBuilder) là cách làm phần hạ tầng tái sử dụng như module database hay mail."
+            },
+            {
+              "title": "Dependency injection",
+              "detail": "Provider mặc định là singleton; scope request và transient lan truyền theo chuỗi và tốn hiệu năng, nên ưu tiên AsyncLocalStorage (ví dụ qua nestjs-cls) cho context theo từng request. Custom provider với useFactory, useClass và injection token giúp thay implementation khi test."
+            },
+            {
+              "title": "Request lifecycle",
+              "detail": "Middleware, rồi guard (quyết định phân quyền), interceptor phần trước, pipe (validate và transform), handler, interceptor phần sau, và exception filter. Nắm thứ tự này là biết mỗi mối quan tâm thuộc về đâu: auth ở guard, log và đo thời gian ở interceptor, map lỗi ở filter."
+            },
+            {
+              "title": "Validation và DTO",
+              "detail": "ValidationPipe toàn cục với class-validator và class-transformer, bật whitelist và forbidNonWhitelisted để loại field lạ, hoặc dùng Zod schema qua custom pipe nếu muốn một schema vừa validate runtime vừa sinh type. Validate ở biên và để domain service làm việc với dữ liệu đã được tin cậy."
+            },
+            {
+              "title": "NestJS 11 trong thực tế",
+              "detail": "NestJS 11 yêu cầu Node 20 trở lên và mặc định dùng Express 5, Fastify là adapter thay thế khi cần throughput cao hơn. Vì Nest dựa vào decorator metadata được emit, hãy build bằng tsc hoặc SWC thay vì trông vào type stripping có sẵn của Node."
+            }
+          ],
+          "practices": [
+            "Giữ controller mỏng: chỉ map HTTP sang lời gọi service và ngược lại.",
+            "Bật ValidationPipe toàn cục với whitelist và transform ngay từ commit đầu tiên.",
+            "Nạp và validate config lúc khởi động, thiếu biến môi trường là fail ngay.",
+            "Dùng injection token và interface cho service bên ngoài để test có thể cung cấp bản giả."
+          ],
+          "pitfalls": [
+            "Chuyển provider sang request scope chỉ để đọc user hiện tại, làm chậm mọi request trong chuỗi phụ thuộc.",
+            "Catch lỗi ở mọi service rồi trả null thay vì throw domain error và để filter map ra HTTP."
+          ],
+          "project": {
+            "title": "Service NestJS chia module",
+            "brief": "Implement API orders từ stage trước bằng NestJS với các module orders, catalog và health tách riêng, một validation pipe toàn cục, một logging interceptor và một exception filter trả lỗi dạng Problem Details. Xong khi input sai trả 400 kèm lỗi từng field, field lạ bị từ chối, và mỗi module unit test được với provider giả."
+          },
+          "resources": [
+            {
+              "title": "NestJS documentation",
+              "url": "https://docs.nestjs.com/",
+              "kind": "docs"
+            },
+            {
+              "title": "NestJS: Request lifecycle",
+              "url": "https://docs.nestjs.com/faq/request-lifecycle",
+              "kind": "docs"
+            },
+            {
+              "title": "NestJS: Injection scopes",
+              "url": "https://docs.nestjs.com/fundamentals/injection-scopes",
+              "kind": "docs"
+            },
+            {
+              "title": "NestJS: Validation",
+              "url": "https://docs.nestjs.com/techniques/validation",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "NestJS",
+            "DI",
+            "TypeScript"
+          ]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 6,
+          "title": "PostgreSQL và mô hình dữ liệu",
+          "goal": "Mô hình hóa dữ liệu trên PostgreSQL, viết và index query hiệu quả, xử lý transaction đúng và ship migration an toàn qua ORM.",
+          "note": "Prisma giúp mình ship feature trước khi hiểu nó sinh ra SQL gì, và sau đó mình trả giá bằng query chậm và lỗi N+1. Stage này dài nhất là có chủ đích: database sống lâu hơn mọi framework bạn đặt phía trước nó.",
+          "topics": [
+            {
+              "title": "Mô hình hóa và constraint",
+              "detail": "Chuẩn hóa trước, rồi phi chuẩn hóa có chủ đích; ép các bất biến bằng NOT NULL, CHECK, UNIQUE và foreign key chứ không chỉ trong code ứng dụng. Dùng timestamptz, numeric cho tiền, và cân nhắc uuidv7() có sẵn từ PostgreSQL 18 làm primary key có thứ tự thời gian, index tốt hơn UUID ngẫu nhiên."
+            },
+            {
+              "title": "Index và query plan",
+              "detail": "B-tree cho so sánh bằng và khoảng, thứ tự cột trong composite index, partial index và expression index, GIN cho jsonb và full text. Đọc output EXPLAIN (ANALYZE, BUFFERS) để phát hiện sequential scan, ước lượng số dòng sai và sort bị tràn ra đĩa."
+            },
+            {
+              "title": "Transaction và isolation",
+              "detail": "Read Committed là mặc định và cho phép non-repeatable read; Repeatable Read cho snapshot isolation; Serializable chặn các anomaly như write skew nhưng bạn phải retry khi gặp serialization failure. Dùng SELECT ... FOR UPDATE hoặc optimistic concurrency với cột version cho counter và tồn kho."
+            },
+            {
+              "title": "Migration không downtime",
+              "detail": "Áp dụng expand and contract: thêm cột nullable, backfill theo batch, rồi thêm constraint với NOT VALID và VALIDATE sau, tạo index bằng CONCURRENTLY. Không bao giờ đổi tên hay xóa cột trong cùng release với lúc code ngừng dùng nó."
+            },
+            {
+              "title": "ORM: Prisma và Drizzle",
+              "detail": "Prisma 7 đã thay query engine viết bằng Rust bằng engine TypeScript và giờ dùng driver adapter như @prisma/adapter-pg, nhẹ hơn và chạy được ở edge. Drizzle gần SQL hơn, schema viết bằng TypeScript và không cần codegen; dùng cái nào cũng phải biết khi nào xuống raw SQL với tham số có type."
+            },
+            {
+              "title": "Kết nối và pooling",
+              "detail": "Mỗi kết nối PostgreSQL là một process, nên cần pool trong app và dùng PgBouncer hoặc pooler managed ở transaction mode khi chạy serverless hay nhiều replica. Đặt statement_timeout và idle_in_transaction_session_timeout để một bug không giữ lock mãi mãi."
+            }
+          ],
+          "practices": [
+            "Đặt bất biến nghiệp vụ vào constraint của database, không chỉ trong code validate.",
+            "Chạy EXPLAIN ANALYZE cho mọi query mới đụng tới bảng lớn trước khi merge.",
+            "Giữ transaction ngắn và không bao giờ gọi HTTP ra ngoài bên trong transaction.",
+            "Review SQL migration được sinh ra và thử nó trên bản sao dữ liệu cỡ production."
+          ],
+          "pitfalls": [
+            "Load relation trong vòng lặp qua ORM và tạo ra N+1 query.",
+            "Thêm index hoặc constraint NOT NULL trên bảng đang bận theo cách khóa ghi hàng phút.",
+            "Dựa vào kiểm tra ở tầng ứng dụng để đảm bảo unique, thứ sẽ bị race khi có request đồng thời."
+          ],
+          "project": {
+            "title": "Tồn kho chịu được đồng thời",
+            "brief": "Mô hình sản phẩm, đơn hàng và tồn kho trên PostgreSQL với Prisma hoặc Drizzle, rồi implement đặt hàng không bao giờ bán vượt tồn kho dưới 100 request đồng thời. Xong khi load test cho thấy không có tồn kho âm, các query nóng dùng index scan trong EXPLAIN, và có một thay đổi schema được ship bằng migration expand and contract."
+          },
+          "resources": [
+            {
+              "title": "PostgreSQL: Transaction Isolation",
+              "url": "https://www.postgresql.org/docs/current/transaction-iso.html",
+              "kind": "docs"
+            },
+            {
+              "title": "PostgreSQL: Indexes",
+              "url": "https://www.postgresql.org/docs/current/indexes.html",
+              "kind": "docs"
+            },
+            {
+              "title": "Use The Index, Luke",
+              "url": "https://use-the-index-luke.com/",
+              "kind": "book"
+            },
+            {
+              "title": "Prisma ORM docs",
+              "url": "https://www.prisma.io/docs",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "PostgreSQL",
+            "SQL",
+            "Prisma",
+            "Drizzle"
+          ]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Xác thực và phân quyền",
+          "goal": "Làm đăng nhập an toàn bằng session hoặc OIDC, hỗ trợ passkey, và áp phân quyền chi tiết trên từng resource.",
+          "note": "Nhìn từ frontend, auth chỉ là lưu token rồi gắn header. Tự làm phía backend dạy mình rằng authentication phần lớn đã được giải bằng chuẩn và thư viện, còn authorization mới là nơi bug thật sự nằm.",
+          "topics": [
+            {
+              "title": "Session hay token",
+              "detail": "Session phía server lưu trong store như Redis cùng cookie HttpOnly, Secure, SameSite thì đơn giản, thu hồi được và rất hợp với web app first-party. JWT access token hợp cho service-to-service và API bên thứ ba, nhưng giữ thời hạn ngắn, kiểm tra iss, aud, exp, alg và đừng lưu trong localStorage."
+            },
+            {
+              "title": "OAuth 2.1 và OpenID Connect",
+              "detail": "OAuth 2.1 vẫn là IETF draft nhưng gom lại các thực hành hiện hành: authorization code kèm PKCE cho mọi client, bỏ implicit và password grant, so khớp redirect URI chính xác. RFC 9700 là best practice bảo mật đã được công bố; OIDC thêm ID token và discovery để bạn giao việc đăng nhập cho identity provider."
+            },
+            {
+              "title": "Passkey và WebAuthn",
+              "detail": "Passkey là credential khóa công khai chống phishing, được nền tảng đồng bộ giữa các thiết bị; server lưu public key và xác minh challenge đã ký. Thư viện như SimpleWebAuthn lo phần registration và assertion; cần thiết kế luồng khôi phục tài khoản và giữ một yếu tố dự phòng."
+            },
+            {
+              "title": "RBAC, ABAC và phân quyền theo quan hệ",
+              "detail": "RBAC gán quyền theo role và đủ dùng cho nhiều app; ABAC thêm thuộc tính như tenant, chủ sở hữu hay khu vực; ReBAC (kiểu Zanzibar, như OpenFGA hoặc SpiceDB) mô hình hóa chia sẻ và phân cấp. Policy engine như Cedar hay OPA giúp đưa luật ra khỏi controller và test riêng được."
+            },
+            {
+              "title": "Kiểm tra cấp object và multi-tenancy",
+              "detail": "Mọi query phải giới hạn theo tenant hoặc quyền sở hữu của người gọi, không chỉ dựa vào guard ở route. Row-level security của PostgreSQL có thể ép cô lập tenant như một lớp phòng thủ thứ hai."
+            }
+          ],
+          "practices": [
+            "Dùng thư viện hoặc identity provider đã được kiểm chứng cho luồng đăng nhập thay vì tự viết crypto.",
+            "Kiểm tra quyền ở mọi lần truy cập object, gần dữ liệu nhất có thể, và mặc định là từ chối.",
+            "Hash mật khẩu bằng Argon2id hoặc bcrypt và rate limit các endpoint login, reset password.",
+            "Rotate refresh token và phát hiện việc dùng lại để bắt token bị đánh cắp."
+          ],
+          "pitfalls": [
+            "Tin user ID hay tenant ID gửi trong body thay vì lấy từ principal đã xác thực.",
+            "Phát JWT sống lâu mà không có cách thu hồi khi user đăng xuất hoặc bị khóa."
+          ],
+          "project": {
+            "title": "Auth đa tenant",
+            "brief": "Thêm đăng nhập OIDC qua một provider hosted hoặc tự host, đăng ký passkey như phương thức thứ hai, và phân quyền theo role kết hợp quyền sở hữu cho service orders. Xong khi test tự động chứng minh user của tenant A nhận 404 hoặc 403 trên mọi resource của tenant B và session bị thu hồi ngừng hoạt động ngay lập tức."
+          },
+          "resources": [
+            {
+              "title": "OAuth 2.1 overview (oauth.net)",
+              "url": "https://oauth.net/2.1/",
+              "kind": "docs"
+            },
+            {
+              "title": "RFC 9700: OAuth 2.0 Security Best Current Practice",
+              "url": "https://www.rfc-editor.org/rfc/rfc9700",
+              "kind": "docs"
+            },
+            {
+              "title": "passkeys.dev",
+              "url": "https://passkeys.dev/",
+              "kind": "docs"
+            },
+            {
+              "title": "OWASP Authorization Cheat Sheet",
+              "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "OAuth 2.1",
+            "OIDC",
+            "Passkeys",
+            "RBAC"
+          ]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Cache, queue và xử lý bất đồng bộ",
+          "goal": "Dùng Redis cho cache và trạng thái rate limit, đẩy việc chậm sang background job tin cậy, và publish event mà không mất dữ liệu.",
+          "note": "Mình từng nghĩ cache là tăng tốc miễn phí. Phần khó, mà mình học khá chậm, là invalidation và chuyện gì xảy ra khi cache hay queue bị sập.",
+          "topics": [
+            {
+              "title": "Các pattern cache",
+              "detail": "Cache-aside với TTL là mặc định; thêm jitter vào TTL và gộp request (single-flight) để tránh stampede khi một key nóng hết hạn. Chỉ cache thứ bạn chấp nhận được việc cũ đi, và đặt key có prefix version để invalidate cả một dạng dữ liệu cùng lúc."
+            },
+            {
+              "title": "Redis và Valkey",
+              "detail": "Không chỉ string: hash, sorted set cho bảng xếp hạng và sliding window, stream, và Lua hoặc function cho thao tác nhiều bước nguyên tử. Valkey là bản fork thuộc Linux Foundation ra đời sau khi Redis đổi license, các cloud managed giờ có cả hai nên hãy kiểm tra nền tảng của bạn đang chạy cái nào."
+            },
+            {
+              "title": "Background job với BullMQ",
+              "detail": "BullMQ cho queue chạy trên Redis với retry, exponential backoff, job delay và lặp lại, rate limit và flow (job cha, job con). NestJS tích hợp qua @nestjs/bullmq; mọi job handler phải idempotent vì at-least-once delivery nghĩa là chắc chắn sẽ có trùng lặp."
+            },
+            {
+              "title": "Transactional outbox",
+              "detail": "Ghi vào database và publish lên broker là hai hệ thống, nên một bên có thể lỗi sau khi bên kia đã thành công. Ghi event vào bảng outbox trong cùng transaction, rồi relay nó bằng poller hoặc CDC (Debezium, logical replication) sang queue hay broker."
+            },
+            {
+              "title": "Khi nào cần broker thật sự",
+              "detail": "Queue trên Redis hợp cho xử lý job trong một hệ thống; Kafka, Redpanda, NATS JetStream hay RabbitMQ hợp cho event stream bền vững, fan-out tới nhiều consumer và replay. Chọn dựa trên nhu cầu về thứ tự, thời gian lưu và consumer group, không theo trào lưu."
+            }
+          ],
+          "practices": [
+            "Làm mọi job và event consumer idempotent bằng key đánh dấu message đã xử lý hoặc unique constraint tự nhiên.",
+            "Đưa job lỗi vào dead-letter queue kèm đủ context để chạy lại.",
+            "Đặt TTL cho mọi cache entry và đo hit ratio trước khi thêm cache.",
+            "Giữ hệ thống đúng khi Redis không khả dụng, dù có chậm đi."
+          ],
+          "pitfalls": [
+            "Publish event ngay sau commit mà không có outbox, rồi âm thầm mất event khi process crash.",
+            "Dùng cache làm nguồn sự thật cho dữ liệu không được lưu ở đâu khác."
+          ],
+          "project": {
+            "title": "Pipeline đơn hàng",
+            "brief": "Khi có đơn hàng, ghi một dòng outbox trong cùng transaction, relay sang queue BullMQ, và để worker gửi email xác nhận cùng cập nhật bản tóm tắt đơn trong cache. Xong khi kill API hoặc worker giữa chừng mà mỗi đơn vẫn có đúng một email và cache được làm mới trong khoảng thời gian đã đặt."
+          },
+          "resources": [
+            {
+              "title": "Redis documentation",
+              "url": "https://redis.io/docs/latest/",
+              "kind": "docs"
+            },
+            {
+              "title": "BullMQ documentation",
+              "url": "https://docs.bullmq.io/",
+              "kind": "docs"
+            },
+            {
+              "title": "microservices.io: Transactional outbox",
+              "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+              "kind": "article"
+            }
+          ],
+          "tags": [
+            "Redis",
+            "BullMQ",
+            "Outbox"
+          ]
+        },
+        {
+          "id": "08",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Testing cho backend service",
+          "goal": "Xây bộ test nhanh và đáng tin gồm unit test, integration test với dependency thật và contract test.",
+          "note": "Ở frontend mình dựa nhiều vào component test và mock. Ở backend, mock database cho mình test xanh nhưng query hỏng trên production, nên integration test với PostgreSQL thật thành lớp mình tin nhất.",
+          "topics": [
+            {
+              "title": "Kim tự tháp test cho service",
+              "detail": "Unit test cho logic domain thuần, integration test cho repository, controller và queue handler, và một số ít luồng end-to-end. Nhiều team giờ chuộng hình testing trophy cho service, nơi integration test gánh phần lớn độ tin cậy."
+            },
+            {
+              "title": "Integration test với Testcontainers",
+              "detail": "Testcontainers khởi động PostgreSQL, Redis hay Kafka thật trong Docker cho mỗi lần chạy test, nên bạn test được SQL, constraint và migration thật. Chạy migration một lần, cô lập test bằng transaction hoặc truncate, và reuse container ở local để vòng lặp nhanh."
+            },
+            {
+              "title": "Tiện ích test của NestJS",
+              "detail": "Test.createTestingModule kèm overrideProvider giúp thay service bên ngoài, còn supertest gọi tầng HTTP của một app instance thật. Vitest hay Jest đều dùng được; Vitest kèm SWC khá phổ biến trong dự án TypeScript vì nhanh."
+            },
+            {
+              "title": "Contract testing",
+              "detail": "Consumer-driven contract với Pact xác minh provider vẫn đáp ứng đúng những gì consumer thật sự dùng, không cần một môi trường chung đầy đủ. Với team OpenAPI-first, kiểm tra theo schema và diff breaking change trong CI bắt được nhiều lỗi tương tự."
+            },
+            {
+              "title": "Test bất đồng bộ và thời gian",
+              "detail": "Dùng fake timer hoặc inject clock cho logic hết hạn, test queue handler bằng cách gọi trực tiếp cộng thêm một luồng integration qua queue thật. Test retry và idempotency một cách tường minh bằng cách gửi cùng một message hai lần."
+            }
+          ],
+          "practices": [
+            "Test trên cùng engine và phiên bản database với production.",
+            "Tạo dữ liệu test bằng các factory function nhỏ thay vì fixture dùng chung cồng kềnh.",
+            "Chạy toàn bộ integration test ở mọi pull request và giữ thời gian dưới vài phút.",
+            "Thêm regression test cho mọi bug production trước khi sửa."
+          ],
+          "pitfalls": [
+            "Mock ORM kỹ tới mức test đang kiểm tra mock chứ không phải query.",
+            "Test phụ thuộc thứ tự chạy hoặc dữ liệu dùng chung có thể thay đổi, rồi fail ngẫu nhiên trên CI."
+          ],
+          "project": {
+            "title": "Bộ test đáng tin",
+            "brief": "Thêm unit test cho logic tính giá, integration test dùng Testcontainers cho repository và API orders, và một bước kiểm tra Pact hoặc diff OpenAPI giữa service với client được sinh ra. Xong khi bộ test chạy trên CI dưới năm phút, bắt được một breaking change cố ý chèn vào, và tái hiện được race bán vượt tồn kho ở stage 05."
+          },
+          "resources": [
+            {
+              "title": "Testcontainers for Node.js",
+              "url": "https://node.testcontainers.org/",
+              "kind": "docs"
+            },
+            {
+              "title": "Pact documentation",
+              "url": "https://docs.pact.io/",
+              "kind": "docs"
+            },
+            {
+              "title": "Vitest",
+              "url": "https://vitest.dev/",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "Vitest",
+            "Testcontainers",
+            "Pact"
+          ]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Observability và bảo mật API",
+          "goal": "Làm cho service debug được trên production bằng log, trace và metric, và gia cố nó trước OWASP API Top 10.",
+          "note": "Mình gộp hai phần này vì cả hai đều nói về chuyện xảy ra sau khi deploy, lúc bạn không ngồi nhìn. Lần đầu thử debug lỗi production từ mấy dòng console.log không có cấu trúc, mình hiểu vì sao cả hai đều quan trọng.",
+          "topics": [
+            {
+              "title": "Structured logging",
+              "detail": "Log dạng JSON bằng Pino (nestjs-pino để tích hợp), gắn request ID hoặc trace ID trên mọi dòng, dùng level nhất quán. Không bao giờ log secret, token hay dữ liệu cá nhân; redact theo path ngay trong cấu hình logger."
+            },
+            {
+              "title": "Trace và metric với OpenTelemetry",
+              "detail": "OpenTelemetry là chuẩn trung lập với vendor cho trace, metric và log; Node SDK kèm auto-instrumentation phủ HTTP, PostgreSQL, Redis và nhiều thứ khác. Export qua OTLP tới Collector, rồi tới backend bất kỳ như Grafana, Jaeger, Honeycomb hay Datadog, và theo dõi RED metric (rate, errors, duration) cho từng route."
+            },
+            {
+              "title": "SLO và alerting",
+              "detail": "Đặt service level objective trên độ trễ và tỷ lệ lỗi mà người dùng cảm nhận, alert theo tốc độ đốt error budget thay vì mỗi lần CPU tăng vọt. Dashboard trả lời câu hỏi đã biết; trace với attribute high-cardinality trả lời câu hỏi chưa biết."
+            },
+            {
+              "title": "OWASP API Security Top 10",
+              "detail": "Bản 2023 vẫn là danh sách API hiện hành: broken object level authorization (BOLA), broken authentication, broken object property level authorization, unrestricted resource consumption, broken function level authorization, unrestricted access to sensitive business flows, SSRF, security misconfiguration, improper inventory management và unsafe consumption of APIs. BOLA đứng đầu là có lý do, nên hãy test nó trên mọi endpoint."
+            },
+            {
+              "title": "Gia cố service",
+              "detail": "Giới hạn kích thước body, timeout và rate limit, chặn SSRF bằng allowlist host gọi ra ngoài, đặt security header bằng Helmet. Scan dependency và container image trong CI, pin lockfile, và coi tấn công supply chain trên npm là rủi ro thật."
+            }
+          ],
+          "practices": [
+            "Truyền một trace ID duy nhất từ edge qua các lời gọi HTTP, queue và log.",
+            "Redact field nhạy cảm trong logger, không phải ở từng chỗ gọi log.",
+            "Với mỗi endpoint mới, thêm một test phân quyền thử truy cập resource ID của user khác.",
+            "Chạy scan dependency và image ở mọi build và fail khi có lỗ hổng critical."
+          ],
+          "pitfalls": [
+            "Log nguyên request body có mật khẩu hoặc token vào nền tảng log dùng chung.",
+            "Để field nội bộ như role hay isAdmin bị mass assignment qua DTO."
+          ],
+          "project": {
+            "title": "Telemetry sẵn sàng production",
+            "brief": "Instrument service bằng OpenTelemetry và Pino, export tới Collector chạy local cùng Grafana hoặc Jaeger, và định nghĩa một SLO độ trễ kèm alert. Xong khi một request đặt hàng hiện thành một trace xuyên suốt API, database và queue worker, và một checklist bảo mật map theo OWASP API Top 10 đều pass bằng test."
+          },
+          "resources": [
+            {
+              "title": "OpenTelemetry for JavaScript",
+              "url": "https://opentelemetry.io/docs/languages/js/",
+              "kind": "docs"
+            },
+            {
+              "title": "Pino logger",
+              "url": "https://getpino.io/",
+              "kind": "tool"
+            },
+            {
+              "title": "OWASP API Security Top 10 (2023)",
+              "url": "https://owasp.org/API-Security/editions/2023/en/0x11-t10/",
+              "kind": "docs"
+            },
+            {
+              "title": "Google SRE Book: Monitoring Distributed Systems",
+              "url": "https://sre.google/sre-book/monitoring-distributed-systems/",
+              "kind": "book"
+            }
+          ],
+          "tags": [
+            "OpenTelemetry",
+            "Pino",
+            "OWASP"
+          ]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 6,
+          "title": "Scaling, hệ phân tán và deploy",
+          "goal": "Scale service theo chiều ngang, lập luận được về consistency và lỗi, và deploy an toàn bằng container cùng health check.",
+          "note": "Đây là phần mình vẫn đang học nhiều nhất, chủ yếu qua đọc và làm side project chứ chưa vận hành hệ thống lớn. Điều mình muốn nói với bản thân ngày trước: phần lớn vấn đề scaling được giải bằng một query tốt hơn, một index hay một queue, rất lâu trước khi cần tới microservices.",
+          "topics": [
+            {
+              "title": "Consistency và mô hình lỗi",
+              "detail": "Hiểu linearizability, read-your-writes và eventual consistency, và rằng replica bị trễ nên đọc ngay sau khi ghi có thể ra dữ liệu cũ. Timeout, retry với exponential backoff và jitter, cùng circuit breaker giữ cho một dependency chậm không kéo sập cả hệ thống."
+            },
+            {
+              "title": "Rate limiting và load shedding",
+              "detail": "Token bucket hoặc sliding window counter trên Redis bảo vệ tài nguyên chung theo user, API key hay tenant, và trả 429 kèm Retry-After. Chủ động từ chối bớt tải sớm khi queue hay độ trễ tăng thay vì để mọi thứ cùng timeout."
+            },
+            {
+              "title": "Kiến trúc event-driven",
+              "detail": "Event giúp tách rời các service, nhưng bạn đổi transaction đơn giản lấy saga, consumer idempotent và eventual consistency. Bắt đầu bằng modular monolith với ranh giới module rõ ràng; chỉ tách service khi ranh giới team hoặc nhu cầu scale đòi hỏi."
+            },
+            {
+              "title": "Container và pipeline deploy",
+              "detail": "Docker multi-stage build với base Node gọn, user không phải root và chỉ production dependency; chạy migration như một bước riêng trước khi rollout. Nền tảng trải từ Kubernetes tới dịch vụ managed như Cloud Run, Fly.io hay Railway; chọn cái đơn giản nhất đáp ứng được nhu cầu."
+            },
+            {
+              "title": "Health, rollout và cấu hình",
+              "detail": "Tách riêng endpoint liveness và readiness, xử lý SIGTERM với khoảng drain, và rollout theo rolling, blue-green hoặc canary kèm feature flag. Theo twelve-factor cho config qua biến môi trường và secret manager, không bao giờ nhúng vào image."
+            }
+          ],
+          "practices": [
+            "Đo trước bằng load test (k6 hoặc autocannon) và sửa query chậm nhất trước khi thêm hạ tầng.",
+            "Giữ service stateless để instance nào cũng phục vụ được mọi request.",
+            "Đặt timeout cho mọi lời gọi ra ngoài, kể cả client database và Redis.",
+            "Làm deploy có thể đảo ngược: migration tương thích ngược và rollback bằng một lệnh."
+          ],
+          "pitfalls": [
+            "Tách microservices quá sớm và kết thúc với một distributed monolith phải deploy cùng nhau.",
+            "Retry ngay lập tức không có backoff, biến một sự cố nhỏ thành cơn bão retry.",
+            "Dùng chung một health endpoint cho cả liveness và readiness, khiến container bị restart mỗi khi dependency chập chờn."
+          ],
+          "project": {
+            "title": "Ship rồi thử phá",
+            "brief": "Container hóa service, deploy từ hai instance trở lên sau load balancer trên một nền tảng managed hoặc Kubernetes local, và thêm rate limit theo tenant. Xong khi test k6 cho thấy p95 latency ổn định ở mức tải mục tiêu, kill một instance không làm rớt request nào, và một bản release lỗi rollback được bằng một lệnh."
+          },
+          "resources": [
+            {
+              "title": "Designing Data-Intensive Applications",
+              "url": "https://dataintensive.net/",
+              "kind": "book"
+            },
+            {
+              "title": "Jepsen: Consistency Models",
+              "url": "https://jepsen.io/consistency",
+              "kind": "article"
+            },
+            {
+              "title": "Google Cloud: Rate-limiting strategies and techniques",
+              "url": "https://cloud.google.com/architecture/rate-limiting-strategies-techniques",
+              "kind": "article"
+            },
+            {
+              "title": "Kubernetes: Liveness, Readiness and Startup Probes",
+              "url": "https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "Distributed systems",
+            "Docker",
+            "Kubernetes"
+          ]
+        }
+      ]
+    },
+    "en": {
+      "name": "Backend Engineer",
+      "tagline": "Designs, builds and runs the APIs, data and services behind every product",
+      "summary": "A Node.js and TypeScript first path from HTTP fundamentals to running distributed services in production, with concepts that carry over to any language. It is for frontend developers crossing into backend and junior backend engineers who want depth in API design, PostgreSQL, auth, async work, testing and operations.",
+      "story": {
+        "intro": "I am a frontend developer, not a dedicated backend engineer, but over the past few years I have built backend services with NestJS, Prisma and PostgreSQL at a working level. Crossing that line changed how I write frontend code too: I stopped treating the API as a black box. This map is the path I pieced together from that experience, the gaps I hit, and the order I would follow if I started backend seriously today. Where I lack production depth, especially in scaling and distributed systems, I lean on official docs and well-known books rather than claim experience I do not have.",
+        "lessons": [
+          "The database is the product. Time spent on modeling, indexes and transactions paid off far more than time spent learning another framework.",
+          "Authentication is mostly a solved problem; authorization is where the real bugs are, so check ownership on every object you return.",
+          "Every network call can fail, time out or be retried, so design for idempotency from the first endpoint, not after the first duplicate payment.",
+          "Mocks made my tests green and my queries wrong. Testing against a real PostgreSQL in a container was the turning point for trusting my code."
+        ]
+      },
+      "trends": {
+        "now": [
+          {
+            "title": "TypeScript everywhere, with lighter runtimes",
+            "detail": "Node 24 LTS runs TypeScript via type stripping, Bun and Deno have matured, and ORMs like Prisma 7 dropped native engines for pure TypeScript. The practical result is simpler tooling, but frameworks that depend on decorator metadata like NestJS still need a real compile step."
+          },
+          {
+            "title": "PostgreSQL as the default database",
+            "detail": "PostgreSQL 18 added asynchronous I/O and a built-in uuidv7(), and its extensions (pgvector, PostGIS, full text) let one database cover workloads that used to need several. Knowing Postgres deeply is now a core backend skill, not a DBA specialty."
+          },
+          {
+            "title": "Contracts and standards over custom glue",
+            "detail": "OpenAPI 3.2, RFC 9457 Problem Details, OAuth 2.1 practices with RFC 9700 and OpenTelemetry give shared vocabulary across teams and tools. Generating clients, docs and tests from contracts is now expected rather than a nice extra."
+          },
+          {
+            "title": "Authorization and API abuse as the main risk",
+            "detail": "The OWASP API Top 10 still lists broken object level authorization first, and business-flow abuse by bots keeps rising. Fine-grained authorization, rate limiting and passkeys are moving from advanced topics to baseline."
+          }
+        ],
+        "next": [
+          {
+            "title": "APIs consumed by AI agents",
+            "detail": "More traffic will come from LLM agents calling APIs through tool protocols like MCP, which makes clear schemas, good error messages, idempotency and scoped tokens even more important. Prepare by writing precise OpenAPI descriptions and designing safe, permission-scoped operations."
+          },
+          {
+            "title": "Durable execution and workflow engines",
+            "detail": "Tools like Temporal and other durable workflow engines handle retries, timers and long-running processes that teams used to build from queues and cron. Learn the outbox, saga and idempotency patterns first so these engines feel like a natural next step."
+          },
+          {
+            "title": "Policy-as-code authorization",
+            "detail": "Relationship and policy based engines such as OpenFGA, SpiceDB, Cedar and OPA are becoming common as apps add sharing, multi-tenancy and agent permissions. Practice separating authorization rules from handlers and testing them as data."
+          },
+          {
+            "title": "Observability by default and platform engineering",
+            "detail": "OpenTelemetry is becoming the default instrumentation layer, and internal developer platforms abstract much of Kubernetes away. Backend engineers will be expected to own SLOs and production behavior of their services, so get comfortable reading traces and defining alerts."
+          }
+        ]
+      },
+      "outcomes": [
+        "You can design a REST API with OpenAPI, consistent errors, idempotent writes and cursor pagination, and explain when GraphQL or tRPC fits better.",
+        "You can structure a NestJS service with clean modules, guards, pipes, interceptors and validated configuration.",
+        "You can model a PostgreSQL schema, read query plans, pick isolation levels and ship zero-downtime migrations through Prisma or Drizzle.",
+        "You can implement session or OIDC login with passkeys and enforce object-level, tenant-aware authorization.",
+        "You can move slow work to idempotent BullMQ jobs and publish events reliably with a transactional outbox.",
+        "You can test services with Testcontainers and contract tests, and trace a request across API, database and workers with OpenTelemetry.",
+        "You can containerize, deploy and scale a stateless service with health checks, rate limiting and safe rollbacks."
+      ],
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "HTTP and networking fundamentals",
+          "goal": "Explain what happens on the wire from DNS lookup to response, and debug a request with curl and the browser network panel.",
+          "note": "On the frontend I treated fetch as a black box that returned JSON or threw. Crossing into backend, most of my early bugs were really HTTP bugs: wrong status codes, missing cache headers, CORS misconfigured on the server instead of the client.",
+          "topics": [
+            {
+              "title": "Request path end to end",
+              "detail": "DNS resolution, TCP handshake, TLS 1.3 handshake, then the HTTP exchange. Know where latency comes from (round trips, connection reuse via keep-alive) and why a reverse proxy or load balancer terminating TLS changes what your app sees, such as X-Forwarded-For and the real client IP."
+            },
+            {
+              "title": "HTTP semantics",
+              "detail": "Methods and their safety and idempotency guarantees (GET, PUT and DELETE are idempotent, POST is not), status code classes, and the difference between 401 and 403 or 400 and 422. RFC 9110 is the current single source for semantics, separate from the wire versions."
+            },
+            {
+              "title": "HTTP/1.1, HTTP/2 and HTTP/3",
+              "detail": "HTTP/2 multiplexes streams over one TCP connection, HTTP/3 runs over QUIC on UDP and removes TCP head-of-line blocking. In practice your Node service often speaks HTTP/1.1 behind a proxy or CDN that speaks HTTP/2 or HTTP/3 to clients."
+            },
+            {
+              "title": "Caching and conditional requests",
+              "detail": "Cache-Control (max-age, s-maxage, no-store, private), ETag with If-None-Match, and Vary. Getting these right on API responses lets CDNs and browsers absorb load before it ever reaches your database."
+            },
+            {
+              "title": "CORS, cookies and headers that matter",
+              "detail": "CORS is enforced by the browser, so the server only declares Access-Control-Allow-* policies; preflight OPTIONS requests happen for non-simple requests. Cookie attributes HttpOnly, Secure, SameSite and the __Host- prefix decide most of your session security."
+            }
+          ],
+          "practices": [
+            "Reproduce every bug with a raw curl -v command before touching code.",
+            "Pick status codes deliberately and keep a short table of them in the project README.",
+            "Set explicit Cache-Control on every API response, even if it is no-store.",
+            "Trust forwarded headers only from proxies you control and configure that trust explicitly."
+          ],
+          "pitfalls": [
+            "Returning 200 with an error field in the body, which breaks caches, retries and monitoring.",
+            "Fixing CORS by allowing every origin with credentials instead of listing real origins."
+          ],
+          "project": {
+            "title": "Hand-made HTTP inspector",
+            "brief": "Write a tiny server with node:http only (no framework) that echoes method, headers, and body, supports ETag with 304 responses, and sets proper CORS for one allowed origin. Done when curl -v shows correct 200/304/405 responses and a browser preflight from another origin succeeds only for the allowed one."
+          },
+          "resources": [
+            {
+              "title": "MDN: HTTP",
+              "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP",
+              "kind": "docs"
+            },
+            {
+              "title": "RFC 9110: HTTP Semantics",
+              "url": "https://www.rfc-editor.org/rfc/rfc9110",
+              "kind": "docs"
+            },
+            {
+              "title": "High Performance Browser Networking",
+              "url": "https://hpbn.co/",
+              "kind": "book"
+            }
+          ],
+          "tags": [
+            "HTTP",
+            "TCP/TLS",
+            "DNS"
+          ]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Node.js runtime in depth",
+          "goal": "Reason about the event loop, streams and worker threads well enough to keep a service responsive under load.",
+          "note": "I knew async/await from React code, but I did not really understand what blocks the event loop until a CPU-heavy loop froze every request on a side project. Learning the runtime is what turned Node from magic into a tool.",
+          "topics": [
+            {
+              "title": "Event loop phases",
+              "detail": "Timers, pending callbacks, poll, check (setImmediate) and close phases, plus the microtask queue (promises, queueMicrotask) and process.nextTick that run between them. Understand why one synchronous JSON.parse on a huge payload stalls every concurrent request, and measure it with event loop delay from perf_hooks."
+            },
+            {
+              "title": "Streams and backpressure",
+              "detail": "Readable, Writable, Transform and Duplex streams, stream.pipeline and async iteration with for await. Backpressure (write() returning false, the drain event) is what keeps a file upload or CSV export from loading everything into memory."
+            },
+            {
+              "title": "Worker threads and the libuv pool",
+              "detail": "worker_threads for CPU-bound work like image processing or hashing, versus the libuv thread pool that already handles fs, dns.lookup and crypto. Clustering or running several processes behind a load balancer is still the main way to use multiple cores for request handling."
+            },
+            {
+              "title": "Modern Node features",
+              "detail": "Node 24 is the active LTS line and native TypeScript type stripping is now stable there, but it only removes erasable syntax: enums, parameter properties and decorator metadata are not supported, which matters for NestJS. Built-in fetch, node:test, --watch and --env-file reduce the number of dev dependencies you need."
+            },
+            {
+              "title": "Bun and Deno, briefly",
+              "detail": "Bun offers a fast all-in-one runtime, package manager and test runner with high Node compatibility; Deno focuses on secure-by-default permissions and web standard APIs with npm support. Learn Node first because production ecosystems, docs and hosting still assume it, then evaluate the others per project."
+            }
+          ],
+          "practices": [
+            "Use stream.pipeline instead of manual pipe chains so errors and cleanup propagate.",
+            "Monitor event loop delay and heap usage from day one.",
+            "Move CPU-heavy work to worker threads or a separate queue worker, never inline in a request handler.",
+            "Handle unhandledRejection and SIGTERM explicitly and shut down gracefully."
+          ],
+          "pitfalls": [
+            "Reading an entire upload into a Buffer when a stream would use constant memory.",
+            "Assuming async code is parallel CPU work; it only overlaps I/O waiting."
+          ],
+          "project": {
+            "title": "Streaming CSV exporter",
+            "brief": "Build an endpoint that streams one million generated rows as CSV and a second endpoint that computes a password hash in a worker thread. Done when memory stays flat during the export, event loop delay stays low while hashes run, and the server shuts down cleanly on SIGTERM without dropping in-flight requests."
+          },
+          "resources": [
+            {
+              "title": "Node.js: The Event Loop, Timers and process.nextTick()",
+              "url": "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick",
+              "kind": "docs"
+            },
+            {
+              "title": "Node.js API: Stream",
+              "url": "https://nodejs.org/api/stream.html",
+              "kind": "docs"
+            },
+            {
+              "title": "Node.js API: Worker threads",
+              "url": "https://nodejs.org/api/worker_threads.html",
+              "kind": "docs"
+            },
+            {
+              "title": "Bun docs",
+              "url": "https://bun.sh/docs",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "Node.js",
+            "Event loop",
+            "Streams"
+          ]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "API design that lasts",
+          "goal": "Design a consistent, documented API with clear errors, safe retries, stable pagination and a versioning policy.",
+          "note": "As a frontend dev I was the API consumer who suffered from inconsistent shapes and silent breaking changes. That pain is the best teacher: design the API you wish you had been given.",
+          "topics": [
+            {
+              "title": "Resource modeling and REST conventions",
+              "detail": "Nouns for resources, sub-resources for ownership, consistent naming and casing, and filtering, sorting and sparse fields through query parameters. Use RFC 9457 Problem Details (application/problem+json) as the single error format so clients can handle errors generically."
+            },
+            {
+              "title": "OpenAPI as the contract",
+              "detail": "OpenAPI 3.1 aligned schemas with JSON Schema, and 3.2 (released in 2025) adds streaming media types like SSE and JSON Lines, hierarchical tags and the QUERY method. Choose code-first (generate the spec from decorators or Zod schemas) or design-first, but always generate typed clients and lint the spec in CI."
+            },
+            {
+              "title": "Idempotency and safe retries",
+              "detail": "Clients retry on timeouts, so POST endpoints that create payments or orders need an Idempotency-Key header (an IETF draft that mirrors what Stripe popularized). Store the key with the request hash and response, return the stored result on replay, and reject the same key with a different body."
+            },
+            {
+              "title": "Pagination",
+              "detail": "Offset pagination is simple but slow and unstable on large or changing tables. Cursor or keyset pagination (WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC) is stable and uses an index; return an opaque cursor and a next link."
+            },
+            {
+              "title": "Versioning and evolution",
+              "detail": "Prefer additive, backward-compatible changes; when breaking is unavoidable, version via URL path or a header and announce removal with the Deprecation and Sunset headers. Contract tests and a changelog make deprecation a process, not a surprise."
+            },
+            {
+              "title": "GraphQL and tRPC trade-offs",
+              "detail": "GraphQL fits many clients with different data needs but brings N+1 risk (use DataLoader), query cost limits and harder HTTP caching. tRPC gives end-to-end types with almost no ceremony inside a TypeScript monorepo, but it is not a public API contract; REST plus OpenAPI remains the safe default for external consumers."
+            }
+          ],
+          "practices": [
+            "Write the OpenAPI spec or schemas before the implementation and review them like code.",
+            "Return one error format everywhere, with a stable machine-readable type and a human-readable detail.",
+            "Require idempotency keys on every non-idempotent endpoint that moves money or creates important records.",
+            "Default to cursor pagination with a maximum page size enforced on the server."
+          ],
+          "pitfalls": [
+            "Leaking database column names and internal IDs straight into the public contract.",
+            "Shipping a breaking change under the same version because only one known client uses it."
+          ],
+          "project": {
+            "title": "Orders API contract",
+            "brief": "Design an OpenAPI spec for an orders service with list (cursor pagination), create (idempotency key), and Problem Details errors, then generate a typed TypeScript client from it. Done when the spec passes a linter, the client compiles against it, and replaying a create with the same key returns the original order."
+          },
+          "resources": [
+            {
+              "title": "OpenAPI Specification v3.2.0",
+              "url": "https://spec.openapis.org/oas/v3.2.0.html",
+              "kind": "docs"
+            },
+            {
+              "title": "RFC 9457: Problem Details for HTTP APIs",
+              "url": "https://www.rfc-editor.org/rfc/rfc9457",
+              "kind": "docs"
+            },
+            {
+              "title": "Google API Improvement Proposals (AIP)",
+              "url": "https://google.aip.dev/",
+              "kind": "docs"
+            },
+            {
+              "title": "IETF draft: The Idempotency-Key HTTP Header Field",
+              "url": "https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "REST",
+            "OpenAPI",
+            "API design"
+          ]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 3,
+          "title": "NestJS architecture",
+          "goal": "Structure a NestJS service into cohesive modules with clear request lifecycle, validation and testable providers.",
+          "note": "NestJS was my bridge from Angular-style frontend thinking into backend, and it is where I have the most hands-on time. What I got wrong early was putting business logic into controllers and creating one giant shared module.",
+          "topics": [
+            {
+              "title": "Modules and boundaries",
+              "detail": "Organize by feature or domain (orders, billing, users), export only what other modules need, and avoid circular imports instead of hiding them with forwardRef. Dynamic modules (forRoot, forRootAsync, ConfigurableModuleBuilder) are how you build reusable infrastructure like database or mail modules."
+            },
+            {
+              "title": "Dependency injection",
+              "detail": "Providers are singletons by default; request and transient scopes cascade and cost performance, so prefer AsyncLocalStorage (for example via nestjs-cls) for per-request context. Custom providers with useFactory, useClass and injection tokens let you swap implementations in tests."
+            },
+            {
+              "title": "Request lifecycle",
+              "detail": "Middleware, then guards (authorization decisions), interceptors before, pipes (validation and transformation), the handler, interceptors after, and exception filters. Knowing this order tells you where each concern belongs: auth in guards, logging and timing in interceptors, error mapping in filters."
+            },
+            {
+              "title": "Validation and DTOs",
+              "detail": "The global ValidationPipe with class-validator and class-transformer, whitelist and forbidNonWhitelisted to drop unknown fields, or Zod schemas through a custom pipe if you want one schema for runtime validation and types. Validate at the edge and keep domain services working with already-trusted types."
+            },
+            {
+              "title": "NestJS 11 in practice",
+              "detail": "NestJS 11 requires Node 20 or newer and uses Express 5 by default, with Fastify as an alternative adapter for higher throughput. Because Nest relies on emitted decorator metadata, compile with tsc or SWC rather than relying on Node's built-in type stripping."
+            }
+          ],
+          "practices": [
+            "Keep controllers thin: map HTTP to a service call and back, nothing else.",
+            "Enable a global ValidationPipe with whitelist and transform from the first commit.",
+            "Load and validate configuration at startup and fail fast on missing variables.",
+            "Use injection tokens and interfaces for external services so tests can provide fakes."
+          ],
+          "pitfalls": [
+            "Making providers request-scoped just to read the current user, which slows every request in the chain.",
+            "Catching errors in every service and returning null instead of throwing domain errors mapped by a filter."
+          ],
+          "project": {
+            "title": "Modular NestJS service",
+            "brief": "Implement the orders API from the previous stage in NestJS with separate orders, catalog and health modules, a global validation pipe, a logging interceptor, and an exception filter that emits Problem Details. Done when invalid input returns 400 with field errors, unknown fields are rejected, and each module can be unit tested with mocked providers."
+          },
+          "resources": [
+            {
+              "title": "NestJS documentation",
+              "url": "https://docs.nestjs.com/",
+              "kind": "docs"
+            },
+            {
+              "title": "NestJS: Request lifecycle",
+              "url": "https://docs.nestjs.com/faq/request-lifecycle",
+              "kind": "docs"
+            },
+            {
+              "title": "NestJS: Injection scopes",
+              "url": "https://docs.nestjs.com/fundamentals/injection-scopes",
+              "kind": "docs"
+            },
+            {
+              "title": "NestJS: Validation",
+              "url": "https://docs.nestjs.com/techniques/validation",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "NestJS",
+            "DI",
+            "TypeScript"
+          ]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 6,
+          "title": "PostgreSQL and data modeling",
+          "goal": "Model data in PostgreSQL, write and index efficient queries, handle transactions correctly and ship safe migrations through an ORM.",
+          "note": "Prisma let me ship features before I understood what SQL it generated, and that bit me later with slow queries and N+1 patterns. This is the longest stage on purpose: the database outlives every framework you put in front of it.",
+          "topics": [
+            {
+              "title": "Modeling and constraints",
+              "detail": "Normalize first, then denormalize deliberately; enforce invariants with NOT NULL, CHECK, UNIQUE and foreign keys rather than only in application code. Use timestamptz, numeric for money, and consider uuidv7(), built into PostgreSQL 18, for time-ordered primary keys that index better than random UUIDs."
+            },
+            {
+              "title": "Indexes and query plans",
+              "detail": "B-tree for equality and ranges, composite index column order, partial and expression indexes, GIN for jsonb and full text. Read EXPLAIN (ANALYZE, BUFFERS) output to spot sequential scans, bad row estimates and sorts that spill to disk."
+            },
+            {
+              "title": "Transactions and isolation",
+              "detail": "Read Committed is the default and allows non-repeatable reads; Repeatable Read gives snapshot isolation; Serializable prevents anomalies like write skew but requires retrying serialization failures. Use SELECT ... FOR UPDATE or optimistic concurrency with a version column for counters and inventory."
+            },
+            {
+              "title": "Migrations without downtime",
+              "detail": "Use expand and contract: add nullable columns, backfill in batches, then add constraints with NOT VALID and VALIDATE later, and create indexes CONCURRENTLY. Never rename or drop a column in the same release that stops using it."
+            },
+            {
+              "title": "ORMs: Prisma and Drizzle",
+              "detail": "Prisma 7 replaced the Rust query engine with a TypeScript one and now uses driver adapters such as @prisma/adapter-pg, which makes it lighter and edge-friendly. Drizzle stays close to SQL with schema-in-TypeScript and no codegen; either way, know when to drop to raw SQL with typed parameters."
+            },
+            {
+              "title": "Connections and pooling",
+              "detail": "Each PostgreSQL connection is a process, so pool in the app and use PgBouncer or a managed pooler in transaction mode for serverless or many replicas. Set statement_timeout and idle_in_transaction_session_timeout so a bug cannot hold locks forever."
+            }
+          ],
+          "practices": [
+            "Put business invariants in database constraints, not only in validation code.",
+            "Run EXPLAIN ANALYZE on every new query that touches a large table before merging.",
+            "Keep transactions short and never call external HTTP services inside one.",
+            "Review generated migration SQL and test it against a copy of production-sized data."
+          ],
+          "pitfalls": [
+            "Loading relations in a loop through the ORM and creating N+1 queries.",
+            "Adding an index or NOT NULL constraint on a busy table in a way that locks writes for minutes.",
+            "Relying on application-level checks for uniqueness, which race under concurrent requests."
+          ],
+          "project": {
+            "title": "Inventory with concurrency",
+            "brief": "Model products, orders and stock in PostgreSQL with Prisma or Drizzle, and implement order placement that never oversells under 100 concurrent requests. Done when a load test shows zero negative stock, the hot queries use index scans in EXPLAIN, and one schema change is shipped with an expand and contract migration."
+          },
+          "resources": [
+            {
+              "title": "PostgreSQL: Transaction Isolation",
+              "url": "https://www.postgresql.org/docs/current/transaction-iso.html",
+              "kind": "docs"
+            },
+            {
+              "title": "PostgreSQL: Indexes",
+              "url": "https://www.postgresql.org/docs/current/indexes.html",
+              "kind": "docs"
+            },
+            {
+              "title": "Use The Index, Luke",
+              "url": "https://use-the-index-luke.com/",
+              "kind": "book"
+            },
+            {
+              "title": "Prisma ORM docs",
+              "url": "https://www.prisma.io/docs",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "PostgreSQL",
+            "SQL",
+            "Prisma",
+            "Drizzle"
+          ]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Authentication and authorization",
+          "goal": "Implement secure login with sessions or OIDC, support passkeys, and enforce fine-grained authorization on every resource.",
+          "note": "From the frontend side, auth was storing a token and attaching a header. Owning it on the backend taught me that authentication is mostly solved by standards and libraries, while authorization is where real bugs live.",
+          "topics": [
+            {
+              "title": "Sessions versus tokens",
+              "detail": "Server-side sessions in a store like Redis with an HttpOnly, Secure, SameSite cookie are simple and revocable, and fit first-party web apps well. JWT access tokens suit service-to-service and third-party APIs, but keep them short-lived, validate iss, aud, exp and alg, and do not store them in localStorage."
+            },
+            {
+              "title": "OAuth 2.1 and OpenID Connect",
+              "detail": "OAuth 2.1 is still an IETF draft but consolidates current practice: authorization code with PKCE for every client, no implicit or password grants, exact redirect URI matching. RFC 9700 is the published security best practice; OIDC adds the ID token and discovery so you can delegate login to an identity provider."
+            },
+            {
+              "title": "Passkeys and WebAuthn",
+              "detail": "Passkeys are phishing-resistant public key credentials synced by platform providers; the server stores the public key and verifies signed challenges. Libraries such as SimpleWebAuthn handle registration and assertion; plan account recovery and keep a fallback factor."
+            },
+            {
+              "title": "RBAC, ABAC and relationship-based access",
+              "detail": "RBAC maps roles to permissions and is enough for many apps; ABAC adds attributes like tenant, owner or region; ReBAC (Zanzibar-style, as in OpenFGA or SpiceDB) models sharing and hierarchies. Policy engines like Cedar or OPA let you keep rules out of controller code and test them separately."
+            },
+            {
+              "title": "Object-level checks and multi-tenancy",
+              "detail": "Every query must scope by the caller's tenant or ownership, not just the route guard. PostgreSQL row-level security can enforce tenant isolation as a second line of defense."
+            }
+          ],
+          "practices": [
+            "Use a vetted library or identity provider for login flows instead of hand-rolling crypto.",
+            "Check authorization on every object access, close to the data, and deny by default.",
+            "Hash passwords with Argon2id or bcrypt and rate limit login and reset endpoints.",
+            "Rotate refresh tokens and detect reuse to catch stolen tokens."
+          ],
+          "pitfalls": [
+            "Trusting a user or tenant ID from the request body instead of the authenticated principal.",
+            "Issuing long-lived JWTs with no way to revoke them when a user logs out or is disabled."
+          ],
+          "project": {
+            "title": "Multi-tenant auth",
+            "brief": "Add OIDC login through a hosted or self-hosted provider, passkey registration as a second method, and role plus ownership-based authorization to the orders service. Done when automated tests prove that a user from tenant A gets 404 or 403 on every tenant B resource and that revoked sessions stop working immediately."
+          },
+          "resources": [
+            {
+              "title": "OAuth 2.1 overview (oauth.net)",
+              "url": "https://oauth.net/2.1/",
+              "kind": "docs"
+            },
+            {
+              "title": "RFC 9700: OAuth 2.0 Security Best Current Practice",
+              "url": "https://www.rfc-editor.org/rfc/rfc9700",
+              "kind": "docs"
+            },
+            {
+              "title": "passkeys.dev",
+              "url": "https://passkeys.dev/",
+              "kind": "docs"
+            },
+            {
+              "title": "OWASP Authorization Cheat Sheet",
+              "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "OAuth 2.1",
+            "OIDC",
+            "Passkeys",
+            "RBAC"
+          ]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Caching, queues and async work",
+          "goal": "Use Redis for caching and rate state, move slow work to reliable background jobs, and publish events without losing data.",
+          "note": "I used to think a cache was a free speedup. The hard part, which I learned slowly, is invalidation and what happens when the cache or the queue is down.",
+          "topics": [
+            {
+              "title": "Caching patterns",
+              "detail": "Cache-aside with TTLs is the default; add jitter to TTLs and request coalescing (single-flight) to avoid stampedes when a hot key expires. Cache only what you can afford to be stale and design keys with a version prefix so you can invalidate a whole shape at once."
+            },
+            {
+              "title": "Redis and Valkey",
+              "detail": "Beyond strings: hashes, sorted sets for leaderboards and sliding windows, streams, and Lua or functions for atomic multi-step operations. Valkey is the Linux Foundation fork created after Redis changed its license, and managed clouds now offer both, so check which one your platform runs."
+            },
+            {
+              "title": "Background jobs with BullMQ",
+              "detail": "BullMQ gives Redis-backed queues with retries, exponential backoff, delayed and repeatable jobs, rate limits and flows (parent and child jobs). NestJS integrates via @nestjs/bullmq; make every job handler idempotent because at-least-once delivery means duplicates will happen."
+            },
+            {
+              "title": "Transactional outbox",
+              "detail": "Writing to the database and publishing to a broker are two systems, so one can fail after the other succeeds. Write the event to an outbox table in the same transaction, then relay it with a poller or CDC (Debezium, logical replication) to the queue or broker."
+            },
+            {
+              "title": "When to use a real broker",
+              "detail": "Redis queues fit job processing inside one system; Kafka, Redpanda, NATS JetStream or RabbitMQ fit durable event streams, fan-out to many consumers and replay. Pick based on ordering, retention and consumer group needs, not hype."
+            }
+          ],
+          "practices": [
+            "Make every job and event consumer idempotent using a processed-message key or natural unique constraint.",
+            "Send failed jobs to a dead-letter queue with enough context to replay them.",
+            "Set TTLs on every cache entry and measure hit ratio before adding more caching.",
+            "Keep the system correct when Redis is unavailable, even if it becomes slower."
+          ],
+          "pitfalls": [
+            "Publishing an event right after a commit without an outbox and silently losing it on crash.",
+            "Using the cache as the source of truth for data that is not stored anywhere else."
+          ],
+          "project": {
+            "title": "Order pipeline",
+            "brief": "When an order is placed, write an outbox row in the same transaction, relay it to a BullMQ queue, and have workers send a confirmation email and update a cached order summary. Done when killing the API or a worker mid-flow still results in exactly one email per order and the cache is refreshed within a set time."
+          },
+          "resources": [
+            {
+              "title": "Redis documentation",
+              "url": "https://redis.io/docs/latest/",
+              "kind": "docs"
+            },
+            {
+              "title": "BullMQ documentation",
+              "url": "https://docs.bullmq.io/",
+              "kind": "docs"
+            },
+            {
+              "title": "microservices.io: Transactional outbox",
+              "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+              "kind": "article"
+            }
+          ],
+          "tags": [
+            "Redis",
+            "BullMQ",
+            "Outbox"
+          ]
+        },
+        {
+          "id": "08",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Testing backend services",
+          "goal": "Build a fast, trustworthy test suite with unit, integration against real dependencies, and contract tests.",
+          "note": "On the frontend I leaned on component tests and mocks. On the backend, mocking the database gave me green tests and broken production queries, so integration tests against real PostgreSQL became the layer I trust most.",
+          "topics": [
+            {
+              "title": "Test pyramid for services",
+              "detail": "Unit tests for pure domain logic, integration tests for repositories, controllers and queue handlers, and a small number of end-to-end flows. Many teams now favor a testing trophy shape for services, where integration tests carry most of the confidence."
+            },
+            {
+              "title": "Integration tests with Testcontainers",
+              "detail": "Testcontainers starts real PostgreSQL, Redis or Kafka in Docker per test run, so you test real SQL, constraints and migrations. Run migrations once, isolate tests with transactions or truncation, and reuse containers locally to keep the loop fast."
+            },
+            {
+              "title": "NestJS testing utilities",
+              "detail": "Test.createTestingModule with overrideProvider lets you swap external services, and supertest drives the HTTP layer of a real app instance. Vitest or Jest both work; Vitest with SWC is common for speed in TypeScript projects."
+            },
+            {
+              "title": "Contract testing",
+              "detail": "Consumer-driven contracts with Pact verify that a provider still satisfies what its consumers actually use, without a full shared environment. For OpenAPI-first teams, schema-based checks and breaking-change diffing in CI catch many of the same issues."
+            },
+            {
+              "title": "Testing async and time",
+              "detail": "Use fake timers or an injected clock for expiry logic, and test queue handlers by calling them directly plus one integration path through the real queue. Test retries and idempotency explicitly by delivering the same message twice."
+            }
+          ],
+          "practices": [
+            "Test against the same database engine and version as production.",
+            "Build test data with small factory functions instead of large shared fixtures.",
+            "Run the full integration suite on every pull request and keep it under a few minutes.",
+            "Add a regression test for every production bug before fixing it."
+          ],
+          "pitfalls": [
+            "Mocking the ORM so thoroughly that tests verify the mock instead of the query.",
+            "Tests that depend on execution order or shared mutable data and fail randomly in CI."
+          ],
+          "project": {
+            "title": "Confidence suite",
+            "brief": "Add unit tests for pricing logic, Testcontainers-based integration tests for the orders repository and API, and a Pact or OpenAPI diff check between the service and its generated client. Done when the suite runs in CI under five minutes, catches a deliberately introduced breaking change, and reproduces the oversell race from stage 05."
+          },
+          "resources": [
+            {
+              "title": "Testcontainers for Node.js",
+              "url": "https://node.testcontainers.org/",
+              "kind": "docs"
+            },
+            {
+              "title": "Pact documentation",
+              "url": "https://docs.pact.io/",
+              "kind": "docs"
+            },
+            {
+              "title": "Vitest",
+              "url": "https://vitest.dev/",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "Vitest",
+            "Testcontainers",
+            "Pact"
+          ]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Observability and API security",
+          "goal": "Make a service debuggable in production with logs, traces and metrics, and harden it against the OWASP API Top 10.",
+          "note": "I grouped these because both are about what happens after deploy, when you are not watching. The first time I tried to debug a production issue from unstructured console.log lines, I understood why both matter.",
+          "topics": [
+            {
+              "title": "Structured logging",
+              "detail": "Log JSON with Pino (nestjs-pino integrates it), include a request or trace ID on every line, and use levels consistently. Never log secrets, tokens or personal data; redact by path in the logger config."
+            },
+            {
+              "title": "OpenTelemetry traces and metrics",
+              "detail": "OpenTelemetry is the vendor-neutral standard for traces, metrics and logs; the Node SDK with auto-instrumentation covers HTTP, PostgreSQL, Redis and more. Export via OTLP to a Collector, then to any backend such as Grafana, Jaeger, Honeycomb or Datadog, and track RED metrics (rate, errors, duration) per route."
+            },
+            {
+              "title": "SLOs and alerting",
+              "detail": "Define service level objectives on user-facing latency and error rate, and alert on error budget burn rather than on every CPU spike. Dashboards answer known questions; traces with high-cardinality attributes answer the unknown ones."
+            },
+            {
+              "title": "OWASP API Security Top 10",
+              "detail": "The 2023 edition is still the current API list: broken object level authorization (BOLA), broken authentication, broken object property level authorization, unrestricted resource consumption, broken function level authorization, unrestricted access to sensitive business flows, SSRF, misconfiguration, improper inventory management and unsafe consumption of APIs. BOLA tops the list for a reason, so test it on every endpoint."
+            },
+            {
+              "title": "Hardening the service",
+              "detail": "Enforce body size limits, timeouts and rate limits, block SSRF by allowlisting outbound hosts, and set security headers with Helmet. Scan dependencies and container images in CI, pin lockfiles, and treat npm supply chain attacks as a real risk."
+            }
+          ],
+          "practices": [
+            "Propagate one trace ID from the edge through HTTP calls, queues and logs.",
+            "Redact sensitive fields in the logger, not at each call site.",
+            "Add an authorization test for every new endpoint that tries another user's resource ID.",
+            "Run dependency and image scanning on every build and fail on critical findings."
+          ],
+          "pitfalls": [
+            "Logging full request bodies with passwords or tokens into a shared log platform.",
+            "Exposing internal fields such as role or isAdmin to mass assignment through DTOs."
+          ],
+          "project": {
+            "title": "Production-ready telemetry",
+            "brief": "Instrument the service with OpenTelemetry and Pino, export to a local Collector with Grafana or Jaeger, and define one latency SLO with an alert. Done when a single order request is visible as one trace across API, database and queue worker, and a security checklist mapped to the OWASP API Top 10 passes with tests."
+          },
+          "resources": [
+            {
+              "title": "OpenTelemetry for JavaScript",
+              "url": "https://opentelemetry.io/docs/languages/js/",
+              "kind": "docs"
+            },
+            {
+              "title": "Pino logger",
+              "url": "https://getpino.io/",
+              "kind": "tool"
+            },
+            {
+              "title": "OWASP API Security Top 10 (2023)",
+              "url": "https://owasp.org/API-Security/editions/2023/en/0x11-t10/",
+              "kind": "docs"
+            },
+            {
+              "title": "Google SRE Book: Monitoring Distributed Systems",
+              "url": "https://sre.google/sre-book/monitoring-distributed-systems/",
+              "kind": "book"
+            }
+          ],
+          "tags": [
+            "OpenTelemetry",
+            "Pino",
+            "OWASP"
+          ]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 6,
+          "title": "Scaling, distributed systems and deploy",
+          "goal": "Scale a service horizontally, reason about consistency and failure, and deploy it safely with containers and health checks.",
+          "note": "This is where I am still learning the most, mostly by reading and building side projects rather than running large systems. What I would tell myself: most scaling problems are solved by a better query, an index or a queue long before you need microservices.",
+          "topics": [
+            {
+              "title": "Consistency and failure models",
+              "detail": "Understand linearizability, read-your-writes and eventual consistency, and that replicas lag so a read after write may be stale. Timeouts, retries with exponential backoff and jitter, and circuit breakers keep one slow dependency from taking down the whole system."
+            },
+            {
+              "title": "Rate limiting and load shedding",
+              "detail": "Token bucket or sliding window counters in Redis protect shared resources per user, key or tenant, and return 429 with Retry-After. Shed load early when queues or latency grow instead of letting everything time out together."
+            },
+            {
+              "title": "Event-driven architecture",
+              "detail": "Events decouple services, but you trade simple transactions for sagas, idempotent consumers and eventual consistency. Start with a modular monolith and clear module boundaries; extract services only when team or scaling boundaries demand it."
+            },
+            {
+              "title": "Containers and deploy pipelines",
+              "detail": "Multi-stage Docker builds with a slim Node base, a non-root user and only production dependencies; run migrations as a separate step before rolling out. Platforms range from Kubernetes to managed services like Cloud Run, Fly.io or Railway; pick the simplest one that meets your needs."
+            },
+            {
+              "title": "Health, rollout and configuration",
+              "detail": "Expose liveness and readiness endpoints separately, handle SIGTERM with a drain period, and roll out with rolling, blue-green or canary deploys behind feature flags. Follow twelve-factor config through environment variables and a secret manager, never baked into images."
+            }
+          ],
+          "practices": [
+            "Measure first with load tests (k6 or autocannon) and fix the slowest query before adding infrastructure.",
+            "Keep services stateless so any instance can serve any request.",
+            "Set a timeout on every outbound call, including database and Redis clients.",
+            "Make deploys reversible: backward-compatible migrations and a one-command rollback."
+          ],
+          "pitfalls": [
+            "Splitting into microservices early and ending up with a distributed monolith that must deploy together.",
+            "Retrying immediately without backoff and turning a small outage into a retry storm.",
+            "Using one health endpoint for both liveness and readiness, causing restarts during dependency blips."
+          ],
+          "project": {
+            "title": "Ship it and break it",
+            "brief": "Containerize the service, deploy two or more instances behind a load balancer on a managed platform or local Kubernetes, and add per-tenant rate limiting. Done when a k6 test shows stable p95 latency at target load, killing an instance drops no requests, and a bad release can be rolled back in one command."
+          },
+          "resources": [
+            {
+              "title": "Designing Data-Intensive Applications",
+              "url": "https://dataintensive.net/",
+              "kind": "book"
+            },
+            {
+              "title": "Jepsen: Consistency Models",
+              "url": "https://jepsen.io/consistency",
+              "kind": "article"
+            },
+            {
+              "title": "Google Cloud: Rate-limiting strategies and techniques",
+              "url": "https://cloud.google.com/architecture/rate-limiting-strategies-techniques",
+              "kind": "article"
+            },
+            {
+              "title": "Kubernetes: Liveness, Readiness and Startup Probes",
+              "url": "https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/",
+              "kind": "docs"
+            }
+          ],
+          "tags": [
+            "Distributed systems",
+            "Docker",
+            "Kubernetes"
+          ]
+        }
+      ]
+    }
+  }
+}

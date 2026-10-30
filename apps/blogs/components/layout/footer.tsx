@@ -76,8 +76,8 @@ export function Footer() {
                 </Link>
               </li>
               <li>
-                <Link href={`/${locale}/roadmap`} className="hover:text-white">
-                  {tNav("roadmaps")}
+                <Link href={`/${locale}/role-map`} className="hover:text-white">
+                  {tNav("roleMaps")}
                 </Link>
               </li>
               <li>

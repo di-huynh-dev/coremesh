@@ -11,7 +11,7 @@
     "skip": "Đi tới nội dung",
     "toggleTheme": "Đổi giao diện",
     "language": "Ngôn ngữ",
-    "roadmaps": "Lộ trình",
+    "roleMaps": "Role map",
     "guides": "Guides",
     "tools": "Công cụ",
     "series": "Chuỗi bài",
@@ -20,8 +20,8 @@
   },
   "search": {
     "title": "Tìm bài viết",
-    "placeholder": "Tìm bài viết, guide, lộ trình, công cụ…",
-    "empty": "Tìm trong bài viết, guide, lộ trình và công cụ.",
+    "placeholder": "Tìm bài viết, guide, role map, công cụ…",
+    "empty": "Tìm trong bài viết, guide, role map và công cụ.",
     "noResults": "Không có bài nào khớp với “{query}”.",
     "hint": "để mở",
     "close": "Đóng tìm kiếm",
@@ -30,7 +30,7 @@
       "post": "Bài viết",
       "guide": "Guide",
       "chapter": "Chương",
-      "roadmap": "Lộ trình",
+      "role": "Role",
       "stage": "Chặng",
       "tool": "Công cụ",
       "series": "Chuỗi"
@@ -205,69 +205,74 @@
     "item6Tag": "Sự đơn giản",
     "footerText": "Những nguyên lý định hướng mọi bài viết trên blog — không chạy theo xu hướng, mà là những lối tư duy bền vững theo thời gian."
   },
-  "roadmap": {
-    "title": "Lộ trình học",
-    "lead": "Hai lộ trình có thứ tự mình dùng để mentor và để giữ việc học của chính mình được rõ ràng: React cho giao diện, NestJS cho backend — rồi dùng project để nối cả hai.",
-    "breadcrumb": "Lộ trình",
-    "pathsTitle": "Chọn hướng đi",
-    "pathsSubtitle": "Mỗi lộ trình là một chuỗi chặng học, từ nền tảng đến mức làm việc ở production.",
-    "view": "Xem lộ trình",
+  "roleMap": {
+    "title": "Role map",
+    "lead": "Bản đồ học theo từng vai trò trong team phần mềm, vẽ lại từ chính hành trình của mình: frontend là việc mình làm mỗi ngày, các role còn lại là những gì mình học được khi làm cùng đồng đội và tự đào sâu.",
+    "breadcrumb": "Role map",
+    "listTitle": "Chọn một role",
+    "listSubtitle": "Mỗi thanh là một role, mỗi đoạn là một chặng học. Đoạn càng dài, chặng càng tốn thời gian.",
+    "primary": "Role chính của mình",
+    "view": "Xem role map",
     "stages": "{count} chặng",
-    "focusPoints": "{count} trọng tâm",
-    "practice": "{count} bài thực hành",
-    "comingSoon": "Sắp mở thêm",
-    "fullStackTitle": "Full-stack Project Path",
-    "fullStackSummary": "Nối React và NestJS qua các project thực tế: dashboard, hệ thống auth, blog CMS, e-commerce API và portfolio app.",
-    "fullStackItems": [
-      "Dashboard",
-      "Auth System",
-      "Blog CMS",
-      "E-commerce API",
-      "Portfolio Apps"
-    ],
-    "flowTitle": "Các lộ trình nối với nhau thế nào",
-    "flowSubtitle": "React dạy bạn xây giao diện. NestJS dạy bạn xây backend. Project dạy bạn nối cả hai.",
-    "flowSteps": [
-      "JavaScript / TypeScript",
-      "React Frontend",
-      "API Integration",
-      "NestJS Backend",
-      "Database + Auth",
-      "Full-stack Project",
-      "Interview / Portfolio"
-    ],
-    "flowNotes": [
-      "Nền tảng ngôn ngữ trước",
-      "Component, state, dữ liệu",
-      "Hợp đồng giữa front và back",
-      "Module, DI, validation",
-      "Lưu trữ, phiên, phân quyền",
-      "Một sản phẩm thật từ đầu đến cuối",
-      "Giải thích được các đánh đổi"
-    ],
-    "phases": [
-      "Dễ vào",
-      "Xây nền",
-      "Nâng cao"
-    ],
-    "overview": "Tổng quan hành trình",
-    "stagesTitle": "Các chặng học",
-    "start": "Bắt đầu từ chặng 01",
-    "stageLabel": "Chặng {step}",
-    "outcomes": "Bạn sẽ làm được",
-    "ecosystem": "Hệ sinh thái",
-    "skills": "Kỹ năng trên đường đi",
-    "otherPath": "Lộ trình còn lại",
-    "related": "Bài viết cho lộ trình này",
-    "home": {
-      "title": "Lộ trình học",
-      "subtitle": "Các lộ trình có thứ tự từ nền tảng đến production — frontend và backend."
+    "topics": "{count} chủ đề",
+    "weeks": "~{count} tuần",
+    "phases": {
+      "foundation": "Nền tảng",
+      "core": "Cốt lõi",
+      "advanced": "Nâng cao"
     },
+    "legend": "Chú thích",
+    "readingTitle": "Cách mình dùng role map",
+    "readingSteps": [
+      {
+        "title": "Đọc phần góc nhìn trước",
+        "detail": "Mỗi role mở đầu bằng những điều mình ước biết sớm hơn. Đọc nó để biết nên đầu tư sức vào đâu."
+      },
+      {
+        "title": "Đi theo chặng, không theo danh sách",
+        "detail": "Chặng sau dựa trên chặng trước. Bỏ qua chặng nào thì quay lại khi bị kẹt, đừng cố học hết một lần."
+      },
+      {
+        "title": "Chốt mỗi chặng bằng một project nhỏ",
+        "detail": "Project cuối chặng có tiêu chí rõ ràng. Làm xong nó thì mới tính là qua chặng."
+      }
+    ],
+    "storyTitle": "Góc nhìn của mình",
+    "lessonsTitle": "Điều mình ước biết sớm hơn",
+    "overview": "Các chặng",
+    "start": "Bắt đầu từ chặng 01",
+    "stageLabel": "Chặng {id}",
+    "stageWeeks": "{count} tuần",
+    "topicsTitle": "Kiến thức cần nắm",
+    "practicesTitle": "Nên làm",
+    "pitfallsTitle": "Dễ sai",
+    "projectTitle": "Project chốt chặng",
+    "resourcesTitle": "Tài liệu",
+    "resourceKinds": {
+      "docs": "Docs",
+      "book": "Sách",
+      "course": "Khoá học",
+      "article": "Bài viết",
+      "tool": "Công cụ"
+    },
+    "expandAll": "Mở tất cả",
+    "collapseAll": "Thu gọn",
+    "trendsTitle": "Xu hướng của role",
+    "trendsSubtitle": "Những gì đang quan trọng lúc này và hướng đi trong vài năm tới.",
+    "now": "Hiện tại",
+    "next": "Sắp tới",
+    "outcomes": "Đi hết role map, bạn sẽ",
+    "ecosystem": "Công cụ chính",
+    "related": "Bài viết liên quan",
+    "otherRoles": "Các role khác",
     "statLabels": {
-      "stages": "chặng học",
-      "focus": "trọng tâm",
-      "practice": "bài thực hành",
-      "weeks": "tuần"
+      "stages": "chặng",
+      "topics": "chủ đề",
+      "weeks": "tuần, học part-time"
+    },
+    "home": {
+      "title": "Role map",
+      "subtitle": "Bản đồ học cho frontend, backend, mobile, QA, DevOps và AI engineer, viết từ hành trình của mình."
     }
   },
   "guides": {

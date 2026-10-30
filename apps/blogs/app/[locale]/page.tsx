@@ -6,7 +6,7 @@ import { Principles } from "@/components/home/principles";
 import { SectionHeading } from "@/components/home/section-heading";
 import { TopicsSection } from "@/components/home/topics-section";
 import { MotionController } from "@/components/motion/motion-controller";
-import { RoadmapCard } from "@/components/roadmap/roadmap-card";
+import { RoleRow } from "@/components/role-map/role-row";
 import { SeriesCard } from "@/components/series/series-card";
 import { JsonLd } from "@/components/seo/json-ld";
 import { authorJsonLd, contentLanguage, pageMetadata } from "@/lib/seo";
@@ -14,7 +14,7 @@ import { AUTHOR, SITE_NAME, SITE_URL } from "@/lib/site";
 import { getBlogStats, getPostSummaries, getWritingRhythm } from "@repo/content/posts";
 import { isBlogLocale } from "@/lib/content/text";
 import { getGuides } from "@/lib/content/guides";
-import { getRoadmaps } from "@/lib/content/roadmaps";
+import { getRoleMaps } from "@/lib/content/role-maps";
 import { getAllSeries } from "@/lib/content/series";
 import { ArrowUpRight } from "lucide-react";
 import type { Metadata } from "next";
@@ -46,7 +46,7 @@ export default async function Home({
   const locale = isBlogLocale(rawLocale) ? rawLocale : "en";
   const t = await getTranslations({ locale, namespace: "home" });
   const tCommon = await getTranslations({ locale, namespace: "common" });
-  const tRoadmap = await getTranslations({ locale, namespace: "roadmap" });
+  const tRoleMap = await getTranslations({ locale, namespace: "roleMap" });
   const tFooter = await getTranslations({ locale, namespace: "footer" });
   const tSeries = await getTranslations({ locale, namespace: "series" });
 
@@ -109,16 +109,16 @@ export default async function Home({
         </section>
       ) : null}
 
-      <section aria-labelledby="roadmaps-title" className="wrap pt-20 md:pt-28">
+      <section aria-labelledby="role-maps-title" className="wrap pt-20 md:pt-28">
         <SectionHeading
-          id="roadmaps-title"
-          title={tRoadmap("home.title")}
-          subtitle={tRoadmap("home.subtitle")}
-          action={{ href: `/${locale}/roadmap`, label: tCommon("viewAll") }}
+          id="role-maps-title"
+          title={tRoleMap("home.title")}
+          subtitle={tRoleMap("home.subtitle")}
+          action={{ href: `/${locale}/role-map`, label: tCommon("viewAll") }}
         />
-        <div className="grid gap-5 lg:grid-cols-2">
-          {getRoadmaps(locale).map((roadmap, index) => (
-            <RoadmapCard key={roadmap.id} roadmap={roadmap} index={index} compact />
+        <div>
+          {getRoleMaps(locale).map((roleMap) => (
+            <RoleRow key={roleMap.id} roleMap={roleMap} compact />
           ))}
         </div>
       </section>

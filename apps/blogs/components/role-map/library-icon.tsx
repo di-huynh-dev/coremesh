@@ -22,7 +22,6 @@ export function LibraryIcon({
   );
 }
 
-/** Pill for a skill or tag, with the library logo when one is known. */
 export function SkillChip({ label, className }: { label: string; className?: string }) {
   const icon = findLibraryIcon(label);
 

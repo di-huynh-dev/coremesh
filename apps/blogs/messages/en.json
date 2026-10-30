@@ -11,7 +11,7 @@
     "skip": "Skip to content",
     "toggleTheme": "Toggle theme",
     "language": "Language",
-    "roadmaps": "Roadmaps",
+    "roleMaps": "Role map",
     "guides": "Guides",
     "tools": "Tools",
     "series": "Series",
@@ -20,8 +20,8 @@
   },
   "search": {
     "title": "Search articles",
-    "placeholder": "Search posts, guides, roadmaps and tools…",
-    "empty": "Search across posts, guides, roadmaps and tools.",
+    "placeholder": "Search posts, guides, role maps and tools…",
+    "empty": "Search across posts, guides, role maps and tools.",
     "noResults": "No articles match “{query}”.",
     "hint": "to open",
     "close": "Close search",
@@ -30,7 +30,7 @@
       "post": "Post",
       "guide": "Guide",
       "chapter": "Chapter",
-      "roadmap": "Roadmap",
+      "role": "Role",
       "stage": "Stage",
       "tool": "Tool",
       "series": "Series"
@@ -205,69 +205,74 @@
     "item6Tag": "Simplicity",
     "footerText": "These principles guide every article on this blog — not trends, but ways of thinking that scale over time."
   },
-  "roadmap": {
-    "title": "Learning roadmaps",
-    "lead": "Two ordered paths I use to mentor and to keep my own learning honest: React for the interface, NestJS for the backend — then projects to connect both.",
-    "breadcrumb": "Roadmaps",
-    "pathsTitle": "Pick a direction",
-    "pathsSubtitle": "Each path is a sequence of stages, from foundations to production-level work.",
-    "view": "View roadmap",
+  "roleMap": {
+    "title": "Role map",
+    "lead": "Learning maps for each role on a software team, drawn from my own journey: frontend is what I do every day, the other roles are what I learned working next to teammates and digging in on my own.",
+    "breadcrumb": "Role map",
+    "listTitle": "Pick a role",
+    "listSubtitle": "Each bar is a role and each segment is a stage. Longer segments take more time.",
+    "primary": "My main role",
+    "view": "Open the role map",
     "stages": "{count} stages",
-    "focusPoints": "{count} focus points",
-    "practice": "{count} practice items",
-    "comingSoon": "Coming next",
-    "fullStackTitle": "Full-stack Project Path",
-    "fullStackSummary": "Connect React and NestJS through real projects: dashboards, an auth system, a blog CMS, an e-commerce API and portfolio apps.",
-    "fullStackItems": [
-      "Dashboard",
-      "Auth System",
-      "Blog CMS",
-      "E-commerce API",
-      "Portfolio Apps"
-    ],
-    "flowTitle": "How the paths connect",
-    "flowSubtitle": "React teaches you to build the interface. NestJS teaches you to build the backend. Projects teach you to connect both.",
-    "flowSteps": [
-      "JavaScript / TypeScript",
-      "React Frontend",
-      "API Integration",
-      "NestJS Backend",
-      "Database + Auth",
-      "Full-stack Project",
-      "Interview / Portfolio"
-    ],
-    "flowNotes": [
-      "Language fundamentals first",
-      "Components, state, data",
-      "Contracts between front and back",
-      "Modules, DI, validation",
-      "Persistence, sessions, roles",
-      "One real product end to end",
-      "Explain the trade-offs you made"
-    ],
-    "phases": [
-      "Warm-up",
-      "Foundation",
-      "Advanced"
-    ],
-    "overview": "Journey overview",
-    "stagesTitle": "Stages",
-    "start": "Start at stage 01",
-    "stageLabel": "Stage {step}",
-    "outcomes": "What you'll be able to do",
-    "ecosystem": "Ecosystem",
-    "skills": "Skills along the way",
-    "otherPath": "The other path",
-    "related": "Articles for this path",
-    "home": {
-      "title": "Learning roadmaps",
-      "subtitle": "Ordered paths from foundations to production — frontend and backend."
+    "topics": "{count} topics",
+    "weeks": "~{count} weeks",
+    "phases": {
+      "foundation": "Foundation",
+      "core": "Core",
+      "advanced": "Advanced"
     },
+    "legend": "Legend",
+    "readingTitle": "How I use a role map",
+    "readingSteps": [
+      {
+        "title": "Read my take first",
+        "detail": "Each role opens with what I wish I had known earlier. Use it to decide where to spend your effort."
+      },
+      {
+        "title": "Follow the stages, not a checklist",
+        "detail": "Each stage builds on the one before. Skip ahead if you must, and come back when you get stuck."
+      },
+      {
+        "title": "Close every stage with a small project",
+        "detail": "Each stage ends with a project that has clear acceptance criteria. Finish it before moving on."
+      }
+    ],
+    "storyTitle": "My take",
+    "lessonsTitle": "What I wish I had known earlier",
+    "overview": "Stages",
+    "start": "Start at stage 01",
+    "stageLabel": "Stage {id}",
+    "stageWeeks": "{count} weeks",
+    "topicsTitle": "What to learn",
+    "practicesTitle": "Do",
+    "pitfallsTitle": "Watch out for",
+    "projectTitle": "Checkpoint project",
+    "resourcesTitle": "Resources",
+    "resourceKinds": {
+      "docs": "Docs",
+      "book": "Book",
+      "course": "Course",
+      "article": "Article",
+      "tool": "Tool"
+    },
+    "expandAll": "Expand all",
+    "collapseAll": "Collapse all",
+    "trendsTitle": "Where the role is going",
+    "trendsSubtitle": "What matters right now, and where things are heading in the next few years.",
+    "now": "Now",
+    "next": "Next",
+    "outcomes": "By the end of this map you can",
+    "ecosystem": "Key tools",
+    "related": "Related articles",
+    "otherRoles": "Other roles",
     "statLabels": {
       "stages": "stages",
-      "focus": "focus points",
-      "practice": "practice items",
-      "weeks": "weeks"
+      "topics": "topics",
+      "weeks": "weeks, part-time"
+    },
+    "home": {
+      "title": "Role map",
+      "subtitle": "Learning maps for frontend, backend, mobile, QA, DevOps and AI engineering, drawn from my own journey."
     }
   },
   "guides": {

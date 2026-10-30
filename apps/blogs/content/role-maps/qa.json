@@ -1,0 +1,1140 @@
+{
+  "id": "qa",
+  "ecosystem": ["Playwright", "TypeScript", "Bruno", "Pact", "k6", "axe-core", "Appium", "Maestro"],
+  "locales": {
+    "vi": {
+      "name": "QA / Test Engineer",
+      "tagline": "Tìm rủi ro trước người dùng và biến chất lượng thành thứ cả team đo được",
+      "summary": "Lộ trình đi từ tư duy kiểm thử và kỹ thuật thiết kế test case, qua API testing và automation với Playwright, tới kiểm thử phi chức năng, quality engineering và AI trong testing. Dành cho tester manual muốn chuyển sang automation/SDET, hoặc developer muốn hiểu nghề QA một cách nghiêm túc.",
+      "story": {
+        "intro": "Mình là frontend developer, không phải QA chuyên nghiệp. Mấy năm làm sản phẩm, mình làm việc sát với các bạn tester, đọc bug report của họ mỗi ngày, rồi tự viết test Playwright cho những luồng quan trọng của app. Chính lúc đó mình mới thấy viết được một test chạy xanh khác xa việc biết nên test cái gì. Map này là những gì mình học được từ đồng đội QA và từ việc tự đào sâu, cộng với con đường mình sẽ đi nếu bắt đầu làm QA/SDET hôm nay.",
+        "lessons": [
+          "Tool thay đổi mỗi vài năm, còn kỹ thuật thiết kế test như phân vùng tương đương hay giá trị biên thì dùng được cả đời, nên học nó trước khi học framework.",
+          "Một test flaky còn tệ hơn không có test, vì nó dạy cả team bỏ qua màu đỏ. Mình ước đã coi flaky là bug thật sớm hơn.",
+          "Bug report tốt là bug report mà developer tái hiện được trong một lần đọc. Bước tái hiện, kết quả mong đợi và bằng chứng quan trọng hơn mọi lời mô tả dài.",
+          "Automation không thay thế được exploratory testing. Script chỉ kiểm tra những gì mình đã nghĩ tới, còn người test giỏi tìm ra những gì chưa ai nghĩ tới."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Tư duy kiểm thử và các cấp độ test",
+          "goal": "Giải thích được vì sao và ở cấp độ nào nên test một tính năng, dựa trên rủi ro chứ không theo cảm tính.",
+          "note": "Hồi đầu mình nghĩ test là để chứng minh code chạy đúng. Đồng đội QA dạy mình rằng mục tiêu thật là tìm ra thông tin về rủi ro, kể cả thông tin không ai muốn nghe.",
+          "topics": [
+            {
+              "title": "Các cấp độ test",
+              "detail": "Unit, integration, component, end-to-end và acceptance test khác nhau ở phạm vi, tốc độ và chi phí bảo trì. Hiểu ranh giới giữa chúng giúp bạn đặt mỗi kiểm tra ở cấp rẻ nhất mà vẫn bắt được lỗi. Phân biệt thêm verification (làm đúng spec) với validation (làm đúng thứ người dùng cần)."
+            },
+            {
+              "title": "Test pyramid và testing trophy",
+              "detail": "Test pyramid của Mike Cohn khuyên nhiều unit test, ít E2E. Testing trophy của Kent C. Dodds dồn trọng tâm vào integration test vì chúng cho độ tự tin cao trên mỗi đơn vị chi phí. Cả hai là mô hình gợi ý, không phải luật: hình dạng phù hợp phụ thuộc kiến trúc và nơi lỗi thật hay xảy ra trong hệ thống của bạn."
+            },
+            {
+              "title": "Risk-based testing",
+              "detail": "Đánh giá rủi ro theo khả năng xảy ra nhân với mức độ ảnh hưởng, rồi phân bổ công sức test tương ứng. Luồng thanh toán, phân quyền và dữ liệu người dùng cần độ phủ sâu hơn trang giới thiệu. Một risk matrix đơn giản giúp bạn bảo vệ quyết định không test kỹ một phần nào đó."
+            },
+            {
+              "title": "Shift-left và QA trong agile",
+              "detail": "Shift-left nghĩa là QA tham gia từ lúc refine story: đặt câu hỏi về acceptance criteria, edge case và khả năng test được trước khi có dòng code nào. Các buổi three amigos (product, dev, QA) và acceptance criteria viết theo dạng Given/When/Then giúp lộ ra hiểu lầm sớm. QA hiện đại là người dẫn dắt chất lượng cho cả team, không phải cổng kiểm duyệt cuối sprint."
+            },
+            {
+              "title": "Bảy nguyên lý kiểm thử",
+              "detail": "Syllabus ISTQB CTFL v4.0 tóm tắt các nguyên lý như testing chỉ ra sự hiện diện của lỗi chứ không chứng minh không có lỗi, test toàn bộ là bất khả thi, và lỗi thường tập trung theo cụm. Những nguyên lý này nghe hiển nhiên nhưng giúp bạn tranh luận có cơ sở khi bị hỏi vì sao chưa test hết."
+            }
+          ],
+          "practices": [
+            "Đọc acceptance criteria và viết ra câu hỏi về edge case trước khi bắt đầu implement hoặc test.",
+            "Gắn mỗi test với một rủi ro cụ thể để biết nó tồn tại vì lý do gì.",
+            "Chọn cấp độ test thấp nhất vẫn bắt được loại lỗi bạn lo ngại.",
+            "Ghi lại những gì bạn quyết định không test và lý do."
+          ],
+          "pitfalls": [
+            "Đo chất lượng bằng số lượng test case thay vì rủi ro đã được giảm.",
+            "Coi QA là giai đoạn cuối sprint, để tester nhận build khi đã quá muộn để thay đổi thiết kế."
+          ],
+          "project": {
+            "title": "Risk map cho một tính năng thật",
+            "brief": "Chọn một tính năng như đăng ký tài khoản hoặc giỏ hàng của một app bạn dùng hằng ngày, liệt kê ít nhất 10 rủi ro và chấm điểm khả năng xảy ra, mức ảnh hưởng. Đạt yêu cầu khi mỗi rủi ro có cấp độ test đề xuất (unit, integration, E2E, manual) kèm một câu giải thích."
+          },
+          "resources": [
+            { "title": "The Practical Test Pyramid (Martin Fowler)", "url": "https://martinfowler.com/articles/practical-test-pyramid.html", "kind": "article" },
+            { "title": "The Testing Trophy and Testing Classifications", "url": "https://kentcdodds.com/blog/the-testing-trophy-and-testing-classifications", "kind": "article" },
+            { "title": "ISTQB Certified Tester Foundation Level v4.0", "url": "https://www.istqb.org/certifications/certified-tester-foundation-level-ctfl-v4-0/", "kind": "docs" }
+          ],
+          "tags": ["Test levels", "Risk-based", "Shift-left"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Thiết kế test case và exploratory testing",
+          "goal": "Thiết kế được bộ test case gọn mà phủ rủi ro tốt, chạy exploratory session có charter và viết bug report developer tái hiện được ngay.",
+          "note": "Đây là stage mình thấy developer hay bỏ qua nhất, kể cả mình. Lần đầu ngồi xem một bạn QA áp dụng giá trị biên lên một form, mình mới hiểu vì sao họ tìm ra bug nhanh như vậy.",
+          "topics": [
+            {
+              "title": "Phân vùng tương đương và giá trị biên",
+              "detail": "Equivalence partitioning chia input thành các nhóm mà hệ thống xử lý giống nhau, mỗi nhóm chỉ cần một đại diện. Boundary value analysis kiểm tra ngay tại và quanh ranh giới, ví dụ tuổi 17, 18, 65, 66 cho khoảng 18 đến 65. Đừng quên các phân vùng không hợp lệ như chuỗi rỗng, số âm, ký tự Unicode và giá trị quá dài."
+            },
+            {
+              "title": "Decision table và pairwise",
+              "detail": "Decision table liệt kê tổ hợp điều kiện và hành động tương ứng, cực hữu ích cho logic khuyến mãi hay phân quyền có nhiều nhánh. Khi tổ hợp bùng nổ, pairwise testing chọn tập con phủ mọi cặp giá trị, giảm mạnh số case mà vẫn bắt được phần lớn lỗi do tương tác hai tham số."
+            },
+            {
+              "title": "State transition testing",
+              "detail": "Vẽ sơ đồ trạng thái cho đối tượng có vòng đời như đơn hàng (draft, paid, shipped, cancelled) rồi test cả chuyển trạng thái hợp lệ lẫn không hợp lệ. Lỗi hay nằm ở các chuyển trạng thái bị cấm nhưng hệ thống vẫn cho phép, ví dụ huỷ đơn đã giao hoặc thanh toán hai lần."
+            },
+            {
+              "title": "Exploratory testing với charter",
+              "detail": "Exploratory testing là học, thiết kế và thực thi test đồng thời, có cấu trúc chứ không phải bấm lung tung. Một charter theo mẫu của Elisabeth Hendrickson có dạng: khám phá vùng X, với nguồn lực Y, để tìm thông tin Z. Session-based test management đóng khung mỗi phiên 60 đến 90 phút và kết thúc bằng ghi chú, bug và câu hỏi mở."
+            },
+            {
+              "title": "Bug report developer muốn đọc",
+              "detail": "Một bug report tốt có tiêu đề nêu triệu chứng và vị trí, bước tái hiện tối thiểu, kết quả thực tế so với mong đợi, môi trường (trình duyệt, build, tài khoản test) và bằng chứng như screenshot, video, HAR hoặc trace ID. Tách severity (mức ảnh hưởng kỹ thuật) khỏi priority (thứ tự xử lý theo business). Một bug, một report."
+            }
+          ],
+          "practices": [
+            "Với mỗi field input, liệt kê phân vùng hợp lệ, không hợp lệ và các giá trị biên trước khi viết case.",
+            "Viết charter trước mỗi exploratory session và ghi chú trong lúc test, không phải sau đó.",
+            "Rút gọn bước tái hiện tới mức tối thiểu trước khi gửi bug.",
+            "Đính kèm bằng chứng có thể kiểm chứng như video, HAR hoặc request ID."
+          ],
+          "pitfalls": [
+            "Viết hàng trăm test case gần giống nhau thay vì áp dụng phân vùng tương đương.",
+            "Bug report chỉ ghi 'không chạy' mà không có môi trường hay kết quả mong đợi."
+          ],
+          "project": {
+            "title": "Test suite cho một form đặt phòng",
+            "brief": "Dùng một app demo công khai như Restful Booker, thiết kế test case bằng phân vùng tương đương, giá trị biên và một decision table cho quy tắc giá. Chạy hai exploratory session có charter và nộp ít nhất ba bug report theo đúng mẫu, mỗi report tái hiện được trong năm bước trở xuống."
+          },
+          "resources": [
+            { "title": "Explore It! (Elisabeth Hendrickson)", "url": "https://pragprog.com/titles/ehxta/explore-it/", "kind": "book" },
+            { "title": "DevelopSense (Michael Bolton)", "url": "https://www.developsense.com/", "kind": "article" },
+            { "title": "Restful Booker, sân tập testing", "url": "https://restful-booker.herokuapp.com/", "kind": "tool" }
+          ],
+          "tags": ["Test design", "Exploratory", "Bug reports"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Web, HTTP và DevTools cho tester",
+          "goal": "Đọc được request, response, cookie và console để khoanh vùng bug nằm ở frontend, API hay hạ tầng.",
+          "note": "Từ phía frontend, mình thấy bug report giá trị nhất luôn đến từ các bạn QA biết mở tab Network. Chỉ cần ghi được status code và response body là thời gian debug giảm hẳn.",
+          "topics": [
+            {
+              "title": "HTTP căn bản",
+              "detail": "Nắm method (GET, POST, PUT, PATCH, DELETE), tính idempotent, status code theo nhóm 2xx, 3xx, 4xx, 5xx và các header hay gặp như Content-Type, Authorization, Cache-Control. Biết phân biệt 401 với 403, 404 với 410 giúp bạn chỉ đúng chỗ lỗi."
+            },
+            {
+              "title": "Cookie, session, token và CORS",
+              "detail": "Hiểu cookie có HttpOnly, Secure, SameSite, khác biệt giữa session cookie và JWT, và vì sao lỗi CORS xuất hiện ở trình duyệt nhưng gọi bằng API client thì vẫn chạy. Đây là nơi nhiều bug đăng nhập, hết hạn phiên và phân quyền ẩn nấp."
+            },
+            {
+              "title": "Chrome DevTools cho việc test",
+              "detail": "Tab Network để lọc request, xem payload, giả lập mạng chậm và export HAR. Tab Application để xem storage, cookie và service worker. Console để bắt lỗi JavaScript, còn Device Mode và Rendering giúp giả lập viewport, prefers-color-scheme và giảm chuyển động."
+            },
+            {
+              "title": "Rendering và trạng thái bất đồng bộ",
+              "detail": "App hiện đại render phía client, dữ liệu đến sau, nên có loading, empty, error và stale state. Biết cache của trình duyệt, CDN và các thư viện như TanStack Query hoạt động thế nào giúp bạn giải thích bug 'refresh thì hết'."
+            }
+          ],
+          "practices": [
+            "Mở DevTools ở mọi phiên test và giữ tab Network với tuỳ chọn Preserve log.",
+            "Đính kèm status code, request ID và response body vào bug liên quan đến API.",
+            "Test lại mỗi luồng quan trọng với mạng chậm và khi API trả lỗi."
+          ],
+          "pitfalls": [
+            "Báo lỗi giao diện trong khi nguyên nhân thật là API trả 500.",
+            "Bỏ qua lỗi đỏ trong Console vì màn hình trông vẫn bình thường."
+          ],
+          "project": {
+            "title": "Bản đồ request của một luồng",
+            "brief": "Chọn luồng đăng nhập rồi thêm vào giỏ hàng của một app demo, ghi lại toàn bộ request bằng HAR và vẽ sơ đồ ai gọi gì, trả gì. Đạt yêu cầu khi bạn chỉ ra được cookie hoặc token nào giữ phiên đăng nhập và mô tả điều gì xảy ra khi API giỏ hàng trả lỗi."
+          },
+          "resources": [
+            { "title": "MDN: An overview of HTTP", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Overview", "kind": "docs" },
+            { "title": "Chrome DevTools", "url": "https://developer.chrome.com/docs/devtools", "kind": "docs" }
+          ],
+          "tags": ["HTTP", "DevTools", "Debugging"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Lập trình cho tester với TypeScript",
+          "goal": "Viết được code test sạch bằng TypeScript: hàm, async/await, module, kiểu dữ liệu và một test runner.",
+          "note": "Nhiều bạn tester mình quen học thẳng framework automation mà bỏ qua ngôn ngữ, rồi kẹt ở async/await. Nếu team bạn dùng Python thì cứ theo Python, quan trọng là nắm chắc một ngôn ngữ.",
+          "topics": [
+            {
+              "title": "Chọn ngôn ngữ: TypeScript hay Python",
+              "detail": "TypeScript đi cùng Playwright, k6 và phần lớn frontend nên giúp bạn đọc được code của dev. Python mạnh với pytest, data và công cụ AI. Chọn theo stack của team, vì test nên sống cùng repo và cùng ngôn ngữ với sản phẩm khi có thể."
+            },
+            {
+              "title": "Async, Promise và lỗi bất đồng bộ",
+              "detail": "Gần như mọi thao tác UI và API trong automation đều bất đồng bộ. Hiểu Promise, async/await, Promise.all và hậu quả của việc quên await (test pass giả hoặc lỗi không đồng bộ) là kỹ năng sống còn."
+            },
+            {
+              "title": "Kiểu dữ liệu và cấu trúc code test",
+              "detail": "Dùng type cho test data và response giúp bắt lỗi trước khi chạy. Học cách tách helper, builder cho dữ liệu và module, nhưng giữ test dễ đọc theo mẫu Arrange, Act, Assert. Test là code production của QA, cần review và refactor như vậy."
+            },
+            {
+              "title": "Test runner và assertion",
+              "detail": "Làm quen với một unit test runner như Vitest hoặc pytest để hiểu describe, hooks, assertion, mock và snapshot. Đọc được unit test của dev cũng giúp bạn biết phần nào đã được phủ để không test trùng ở cấp E2E."
+            },
+            {
+              "title": "Git và quy trình review",
+              "detail": "Branch, commit nhỏ, pull request và giải quyết conflict là việc hằng ngày của SDET. Biết đọc diff của dev giúp bạn đoán vùng rủi ro mới thay đổi để tập trung test."
+            }
+          ],
+          "practices": [
+            "Bật strict mode trong TypeScript và lint rule cấm promise không được await.",
+            "Giữ mỗi test độc lập, không dựa vào thứ tự chạy.",
+            "Gửi code test qua pull request và nhờ developer review như code sản phẩm."
+          ],
+          "pitfalls": [
+            "Copy paste code test từ tutorial mà không hiểu async, dẫn đến test pass giả.",
+            "Trừu tượng hoá quá sớm khiến test khó đọc hơn chính tính năng."
+          ],
+          "project": {
+            "title": "Thư viện tính giá có unit test",
+            "brief": "Viết một module TypeScript tính tổng giỏ hàng với mã giảm giá và thuế, rồi viết unit test bằng Vitest dựa trên bảng quyết định từ stage 02. Đạt yêu cầu khi test chạy trong CI, có case cho giá trị biên và không có promise nào bị bỏ quên await."
+          },
+          "resources": [
+            { "title": "TypeScript Handbook", "url": "https://www.typescriptlang.org/docs/handbook/intro.html", "kind": "docs" },
+            { "title": "Vitest Guide", "url": "https://vitest.dev/guide/", "kind": "docs" },
+            { "title": "The Python Tutorial", "url": "https://docs.python.org/3/tutorial/", "kind": "docs" }
+          ],
+          "tags": ["TypeScript", "Python", "Vitest"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 4,
+          "title": "API testing và contract testing",
+          "goal": "Test API thủ công lẫn tự động, validate schema và giữ hợp đồng giữa frontend và backend bằng contract test.",
+          "note": "Phần lớn bug mình gặp khi tích hợp đến từ việc backend đổi shape của response mà frontend không biết. Contract testing là thứ mình ước team đã dùng sớm hơn.",
+          "topics": [
+            {
+              "title": "Postman và Bruno",
+              "detail": "Postman mạnh về collaboration trên cloud, workspace và mock server. Bruno lưu collection thành file text ngay trong repo nên review và version bằng Git rất tự nhiên, phù hợp team muốn mọi thứ nằm cạnh code. Dù dùng tool nào, hãy học biến môi trường, script trước và sau request, và chạy collection từ CLI trong CI."
+            },
+            {
+              "title": "Thiết kế test cho API",
+              "detail": "Ngoài happy path, test validation (400, 422), xác thực và phân quyền (401, 403, truy cập tài nguyên của người khác), idempotency, phân trang, rate limit và xử lý đồng thời. Lỗi phân quyền theo đối tượng (BOLA) là rủi ro hàng đầu trong OWASP API Security Top 10."
+            },
+            {
+              "title": "Schema validation",
+              "detail": "Dùng OpenAPI làm nguồn sự thật và validate response bằng JSON Schema (Ajv) hoặc Zod để bắt thay đổi kiểu, field bị thiếu hay null bất ngờ. Kiểm tra schema rẻ và bắt được nhiều lỗi tích hợp hơn việc so sánh từng giá trị."
+            },
+            {
+              "title": "Contract testing với Pact",
+              "detail": "Pact theo hướng consumer-driven: consumer ghi lại kỳ vọng thành file pact, provider verify lại trong pipeline của mình. Pact Broker lưu hợp đồng theo version và lệnh can-i-deploy cho biết hai bên có tương thích trước khi release. Contract test thay thế được nhiều E2E chậm chỉ để kiểm tra tích hợp."
+            },
+            {
+              "title": "API test bằng code",
+              "detail": "Playwright có request fixture (APIRequestContext) để gọi API trong cùng test runner, rất tiện để seed dữ liệu hoặc test API song song với UI. Kết hợp với schema validation và test data builder, bạn có bộ API test nhanh, ổn định hơn E2E nhiều lần."
+            }
+          ],
+          "practices": [
+            "Lưu collection API trong repo và chạy chúng trong CI ở mỗi pull request.",
+            "Validate schema của mọi response trước khi assert giá trị cụ thể.",
+            "Test phân quyền bằng cách dùng token của user A để truy cập dữ liệu của user B.",
+            "Chạy can-i-deploy trước khi release nếu dùng contract testing."
+          ],
+          "pitfalls": [
+            "Chỉ test status 200 mà không kiểm tra body và schema.",
+            "Dùng contract test để kiểm tra logic nghiệp vụ của provider, trong khi nó chỉ nên khoá hình dạng tương tác."
+          ],
+          "project": {
+            "title": "Bộ API test có contract",
+            "brief": "Viết collection Bruno và một bộ API test bằng Playwright cho Restful Booker hoặc API của chính bạn, có validate schema bằng Zod hoặc Ajv. Thêm một Pact consumer test cho một endpoint. Đạt yêu cầu khi cả hai chạy trong CI và có ít nhất ba case cho lỗi xác thực và phân quyền."
+          },
+          "resources": [
+            { "title": "Bruno Docs", "url": "https://docs.usebruno.com/", "kind": "tool" },
+            { "title": "Pact Docs", "url": "https://docs.pact.io/", "kind": "docs" },
+            { "title": "JSON Schema: Getting Started", "url": "https://json-schema.org/learn/getting-started-step-by-step", "kind": "docs" },
+            { "title": "Playwright API testing", "url": "https://playwright.dev/docs/api-testing", "kind": "docs" }
+          ],
+          "tags": ["API", "Pact", "Bruno", "Schema"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 5,
+          "title": "UI automation với Playwright",
+          "goal": "Xây được bộ E2E test bằng Playwright ổn định, dễ đọc, chạy song song và debug được bằng trace.",
+          "note": "Đây là phần mình tự tay làm nhiều nhất. Bài học lớn nhất là test flaky gần như luôn do mình viết sai cách chờ hoặc phụ thuộc dữ liệu, rất hiếm khi do Playwright.",
+          "topics": [
+            {
+              "title": "Locator theo hướng người dùng",
+              "detail": "Ưu tiên getByRole, getByLabel, getByText rồi mới đến getByTestId, tránh CSS selector dài và XPath gắn với cấu trúc DOM. Locator theo role vừa bền vừa gián tiếp kiểm tra accessibility. Locator trong Playwright là lazy và strict, nên khớp nhiều phần tử sẽ báo lỗi thay vì chọn bừa."
+            },
+            {
+              "title": "Auto-waiting và web-first assertion",
+              "detail": "Playwright tự chờ phần tử visible, enabled và stable trước khi thao tác. Assertion như toBeVisible hay toHaveText tự retry đến khi timeout. Vì vậy không cần waitForTimeout; nếu phải sleep cứng, đó là dấu hiệu test đang sai."
+            },
+            {
+              "title": "Fixtures và tách trạng thái",
+              "detail": "test.extend cho phép tạo fixture như user đã đăng nhập, dữ liệu seed hay page object, có setup và teardown rõ ràng. Dùng setup project kết hợp storageState để đăng nhập một lần rồi tái sử dụng. Mỗi test chạy trong browser context riêng nên độc lập và chạy song song được."
+            },
+            {
+              "title": "Page object và các lựa chọn khác",
+              "detail": "Page Object Model gom locator và hành động theo trang, hợp với bộ test lớn nhưng dễ phình thành lớp trừu tượng khó đọc. Các lựa chọn khác là fixture theo tính năng, helper theo hành động người dùng hoặc giữ locator ngay trong test khi test còn ít. Chọn mức trừu tượng vừa đủ cho kích thước suite."
+            },
+            {
+              "title": "Network mocking và thời gian",
+              "detail": "page.route cho phép mock hoặc chỉnh response để test trạng thái lỗi, empty và loading mà backend khó tái hiện. HAR replay giúp chạy test với dữ liệu ghi sẵn. page.clock kiểm soát thời gian cho các tính năng phụ thuộc ngày giờ như hết hạn phiên hay countdown."
+            },
+            {
+              "title": "Xử lý test flaky",
+              "detail": "Bật trace ở lần retry đầu tiên, mở Trace Viewer để xem DOM, network và console từng bước. Dùng --repeat-each để tái hiện flaky ở local. Nguyên nhân phổ biến là race với dữ liệu, phụ thuộc thứ tự test, animation và môi trường dùng chung; retry chỉ là băng cá nhân, cần cách ly và sửa tận gốc."
+            }
+          ],
+          "practices": [
+            "Dùng getByRole làm locator mặc định và thêm data-testid chỉ khi không có cách nào tốt hơn.",
+            "Không dùng waitForTimeout; dựa vào web-first assertion.",
+            "Đăng nhập qua setup project và storageState thay vì qua UI ở mỗi test.",
+            "Cấu hình trace: 'on-first-retry' và theo dõi tỉ lệ flaky theo từng test.",
+            "Quarantine test flaky có owner và hạn sửa, không để nó âm thầm bị skip mãi."
+          ],
+          "pitfalls": [
+            "Viết E2E cho mọi trường hợp biên trong khi chúng nên nằm ở unit hoặc API test.",
+            "Để các test chia sẻ cùng một tài khoản và dữ liệu, gây flaky khi chạy song song.",
+            "Tăng retry lên cao để pipeline xanh, che giấu bug race condition thật."
+          ],
+          "project": {
+            "title": "E2E suite cho một cửa hàng demo",
+            "brief": "Viết 10 đến 15 test Playwright cho Sauce Demo hoặc app của bạn, bao gồm đăng nhập qua storageState, checkout và các trạng thái lỗi bằng page.route. Đạt yêu cầu khi suite chạy song song, không có waitForTimeout và chạy --repeat-each=10 không có lần fail nào."
+          },
+          "resources": [
+            { "title": "Playwright: Locators", "url": "https://playwright.dev/docs/locators", "kind": "docs" },
+            { "title": "Playwright: Fixtures", "url": "https://playwright.dev/docs/test-fixtures", "kind": "docs" },
+            { "title": "Playwright: Best Practices", "url": "https://playwright.dev/docs/best-practices", "kind": "docs" },
+            { "title": "Playwright: Trace Viewer", "url": "https://playwright.dev/docs/trace-viewer", "kind": "docs" }
+          ],
+          "tags": ["Playwright", "E2E", "Flaky tests"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "CI, báo cáo, dữ liệu test và visual regression",
+          "goal": "Đưa test vào pipeline với sharding, báo cáo rõ ràng, dữ liệu test cách ly và kiểm tra giao diện bằng screenshot.",
+          "note": "Test chỉ có giá trị khi chạy tự động và kết quả được người khác đọc. Mình từng có bộ test chạy tốt ở máy nhưng không ai xem báo cáo, coi như không có.",
+          "topics": [
+            {
+              "title": "Test trong pipeline",
+              "detail": "Chạy test nhanh (lint, unit, API, contract) ở mỗi pull request, E2E smoke trước khi merge và bộ đầy đủ theo lịch hoặc trước release. Dùng container chính thức của Playwright để đồng nhất trình duyệt giữa local và CI. Cache dependency và chỉ cài trình duyệt cần dùng để pipeline nhanh."
+            },
+            {
+              "title": "Song song hoá và sharding",
+              "detail": "Playwright chạy song song theo worker trong một máy và chia shard qua nhiều máy bằng --shard. Dùng blob reporter ở mỗi shard rồi merge-reports để có một báo cáo HTML duy nhất. Test phải độc lập dữ liệu thì mới song song hoá an toàn."
+            },
+            {
+              "title": "Báo cáo và tín hiệu",
+              "detail": "Báo cáo cần trả lời nhanh: fail ở đâu, có phải flaky không, có trace hay video không. Đẩy kết quả JUnit vào CI để hiện ngay trên pull request, và theo dõi xu hướng thời gian chạy, tỉ lệ flaky theo thời gian thay vì chỉ xem một lần chạy."
+            },
+            {
+              "title": "Quản lý dữ liệu test",
+              "detail": "Tạo dữ liệu qua API hoặc factory cho từng test thay vì dùng chung một database được sửa tay. Faker với seed cố định cho dữ liệu ngẫu nhiên mà vẫn tái hiện được. Testcontainers dựng database tạm thời cho integration test, và luôn có chiến lược dọn dẹp hoặc dữ liệu có namespace riêng."
+            },
+            {
+              "title": "Visual regression",
+              "detail": "toHaveScreenshot của Playwright so sánh pixel với ảnh baseline, nên chụp ở môi trường cố định (container, font, viewport) và mask phần động như thời gian hay avatar. Với component, có thể test visual qua Storybook. ARIA snapshot (toMatchAriaSnapshot) là lựa chọn bổ sung, kiểm tra cấu trúc thay vì pixel nên ít nhiễu hơn."
+            }
+          ],
+          "practices": [
+            "Tách pipeline thành tầng nhanh và tầng đầy đủ, chặn merge bằng tầng nhanh.",
+            "Upload trace, video và báo cáo HTML làm artifact cho mọi lần chạy fail.",
+            "Sinh dữ liệu riêng cho từng test và không phụ thuộc dữ liệu có sẵn trên staging.",
+            "Cập nhật baseline screenshot qua pull request có review, không cập nhật hàng loạt mù quáng."
+          ],
+          "pitfalls": [
+            "Chụp baseline visual trên máy local rồi so sánh trên CI, dẫn đến khác biệt font và render.",
+            "Để một bộ E2E chạy 40 phút chặn mọi pull request."
+          ],
+          "project": {
+            "title": "Pipeline test hoàn chỉnh",
+            "brief": "Cấu hình GitHub Actions chạy API test, contract test và E2E Playwright chia 3 shard, merge thành một báo cáo HTML và upload trace khi fail. Thêm 3 visual test có mask phần động. Đạt yêu cầu khi pipeline dưới 10 phút và hai lần chạy liên tiếp cho cùng kết quả."
+          },
+          "resources": [
+            { "title": "Playwright: Setting up CI", "url": "https://playwright.dev/docs/ci-intro", "kind": "docs" },
+            { "title": "Playwright: Sharding", "url": "https://playwright.dev/docs/test-sharding", "kind": "docs" },
+            { "title": "Playwright: Visual comparisons", "url": "https://playwright.dev/docs/test-snapshots", "kind": "docs" },
+            { "title": "Testcontainers", "url": "https://testcontainers.com/", "kind": "tool" }
+          ],
+          "tags": ["CI", "Sharding", "Test data", "Visual"]
+        },
+        {
+          "id": "08",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Kiểm thử mobile căn bản",
+          "goal": "Hiểu đặc thù của test mobile và tự động hoá được vài luồng chính bằng Maestro hoặc Appium.",
+          "note": "Mình chỉ đứng cạnh các bạn mobile và QA mobile, nhưng đủ để thấy mobile có cả một lớp rủi ro mà web không có: quyền, mạng chập chờn, app bị kill giữa chừng.",
+          "topics": [
+            {
+              "title": "Đặc thù của mobile",
+              "detail": "Phân mảnh thiết bị và phiên bản OS, quyền truy cập (camera, vị trí, thông báo), vòng đời app (background, bị kill, khôi phục), deep link, mạng yếu và offline. Ma trận thiết bị nên dựa trên analytics người dùng thật, không phải danh sách máy đẹp nhất."
+            },
+            {
+              "title": "Maestro",
+              "detail": "Maestro viết flow bằng YAML, chạy trên release build mà không cần instrument code, có sẵn cơ chế chờ và retry nên ít flaky. Rất phù hợp để có smoke test nhanh cho app React Native, Flutter hay native. Khi logic phức tạp, YAML có thể trở nên khó bảo trì."
+            },
+            {
+              "title": "Appium",
+              "detail": "Appium dùng giao thức WebDriver với các driver tách riêng như UiAutomator2 cho Android và XCUITest cho iOS, viết test bằng nhiều ngôn ngữ. Linh hoạt và phổ biến trong doanh nghiệp, đổi lại setup phức tạp hơn và cần chú ý chiến lược chờ để tránh flaky."
+            },
+            {
+              "title": "Công cụ native và device cloud",
+              "detail": "Espresso (Android) và XCUITest (iOS) nhanh và ổn định nhất nhưng gắn với từng nền tảng, thường do dev mobile viết. Emulator và simulator cho phần lớn test, còn device cloud hoặc máy thật cho kiểm tra hiệu năng, cảm biến và các lỗi riêng của hãng."
+            }
+          ],
+          "practices": [
+            "Đặt accessibility identifier hoặc testID ổn định cho các phần tử cần tự động hoá.",
+            "Test các luồng gián đoạn như cuộc gọi đến, chuyển sang background và mất mạng.",
+            "Chọn ma trận thiết bị từ dữ liệu người dùng thật và xem lại mỗi quý."
+          ],
+          "pitfalls": [
+            "Chỉ test trên emulator mới nhất mà bỏ qua máy cấu hình thấp người dùng thật đang dùng.",
+            "Bê nguyên cách viết test web sang mobile mà không tính đến vòng đời app và quyền."
+          ],
+          "project": {
+            "title": "Smoke test mobile bằng Maestro",
+            "brief": "Viết 3 flow Maestro cho một app mẫu: mở app, đăng nhập, thực hiện một hành động chính và xử lý hộp thoại xin quyền. Đạt yêu cầu khi flow chạy được trên emulator Android trong CI và bạn viết được một trang so sánh khi nào nên dùng Appium thay thế."
+          },
+          "resources": [
+            { "title": "Maestro Docs", "url": "https://docs.maestro.dev/", "kind": "docs" },
+            { "title": "Appium Documentation", "url": "https://appium.io/docs/en/latest/", "kind": "docs" }
+          ],
+          "tags": ["Mobile", "Maestro", "Appium"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 5,
+          "title": "Hiệu năng, accessibility và bảo mật",
+          "goal": "Thiết kế và chạy được load test với k6, kiểm tra accessibility tự động lẫn thủ công và thực hiện các kiểm tra bảo mật cơ bản.",
+          "note": "Là frontend dev, mình học accessibility trước rồi mới thấy QA là người giữ nó không bị thoái lui. Phần hiệu năng và bảo mật mình vẫn đang học, và thấy chúng cần tư duy khác hẳn test chức năng.",
+          "topics": [
+            {
+              "title": "Load testing với k6",
+              "detail": "k6 viết kịch bản bằng JavaScript, cấu hình scenarios với executor như ramping-vus hay constant-arrival-rate, và đặt thresholds (ví dụ p95 dưới một ngưỡng, tỉ lệ lỗi dưới 1%) để test fail tự động. Phân biệt smoke, load, stress, spike và soak test, mỗi loại trả lời một câu hỏi khác nhau."
+            },
+            {
+              "title": "Đọc kết quả hiệu năng",
+              "detail": "Nhìn percentile (p95, p99) thay vì trung bình, tương quan với CPU, memory, connection pool và trace phía server. Chạy trên môi trường giống production về cấu hình, và với frontend, theo dõi Core Web Vitals (LCP, INP, CLS) qua Lighthouse và dữ liệu người dùng thật."
+            },
+            {
+              "title": "Accessibility testing",
+              "detail": "Chạy axe-core qua @axe-core/playwright để bắt lỗi tự động như thiếu label, contrast, ARIA sai, nhưng công cụ tự động chỉ phát hiện được một phần vấn đề. Phần còn lại cần test thủ công: chỉ dùng bàn phím, focus order, screen reader (NVDA, VoiceOver) và zoom 200%. Chuẩn tham chiếu là WCAG 2.2 mức AA, và European Accessibility Act đã khiến đây thành yêu cầu pháp lý với nhiều sản phẩm."
+            },
+            {
+              "title": "Bảo mật cơ bản cho tester",
+              "detail": "Nắm OWASP Top 10 và OWASP API Security Top 10: broken access control, injection, lỗi xác thực, cấu hình sai. Thử IDOR bằng cách đổi ID trong request, kiểm tra header bảo mật, và chạy quét DAST như ZAP baseline trong CI. Bảo mật sâu là việc của chuyên gia, nhưng tester bắt được rất nhiều lỗi phân quyền."
+            },
+            {
+              "title": "Chaos và độ bền",
+              "detail": "Test hành vi khi phụ thuộc chậm hoặc chết: timeout, retry, circuit breaker và thông báo lỗi cho người dùng. Bắt đầu nhỏ bằng mock lỗi mạng trong Playwright hoặc tắt một service ở staging trước khi nghĩ tới chaos engineering đầy đủ."
+            }
+          ],
+          "practices": [
+            "Định nghĩa mục tiêu hiệu năng bằng thresholds trong k6 trước khi chạy test.",
+            "Thêm kiểm tra axe vào E2E cho các trang chính và chặn merge khi có vi phạm mức serious.",
+            "Kiểm tra mọi tính năng mới bằng bàn phím trước khi coi là xong.",
+            "Chỉ chạy load test và quét bảo mật trên môi trường bạn được phép."
+          ],
+          "pitfalls": [
+            "Đọc thời gian phản hồi trung bình và bỏ qua đuôi p99.",
+            "Nghĩ rằng điểm axe sạch nghĩa là trang đã accessible.",
+            "Chạy load test vào production hoặc API bên thứ ba mà không báo trước."
+          ],
+          "project": {
+            "title": "Báo cáo chất lượng phi chức năng",
+            "brief": "Viết kịch bản k6 với hai scenario (load và spike) và thresholds cho một API của bạn, thêm kiểm tra axe vào ba trang chính và chạy ZAP baseline scan trong CI. Đạt yêu cầu khi có một trang báo cáo nêu rõ ngưỡng, kết quả, ba vấn đề lớn nhất và đề xuất sửa."
+          },
+          "resources": [
+            { "title": "Grafana k6 Docs", "url": "https://grafana.com/docs/k6/latest/", "kind": "docs" },
+            { "title": "Playwright: Accessibility testing", "url": "https://playwright.dev/docs/accessibility-testing", "kind": "docs" },
+            { "title": "WCAG Overview (W3C WAI)", "url": "https://www.w3.org/WAI/standards-guidelines/wcag/", "kind": "docs" },
+            { "title": "OWASP Web Security Testing Guide", "url": "https://owasp.org/www-project-web-security-testing-guide/", "kind": "docs" }
+          ],
+          "tags": ["k6", "Accessibility", "Security"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 5,
+          "title": "Quality engineering và AI trong testing",
+          "goal": "Đo chất lượng bằng số liệu có ý nghĩa, test an toàn trong production và dùng AI để tăng tốc test cũng như đánh giá tính năng AI.",
+          "note": "Phần AI mình tiếp cận từ phía tích hợp LLM vào sản phẩm, nên mình thấy rõ: test một tính năng AI khó hơn nhiều so với để AI viết test. Cả hai đều cần con người giữ phán đoán cuối cùng.",
+          "topics": [
+            {
+              "title": "Số liệu chất lượng",
+              "detail": "Theo dõi escaped defects, tỉ lệ flaky, thời gian feedback của pipeline và các chỉ số DORA như change failure rate, thời gian khôi phục. Code coverage chỉ cho biết dòng nào chưa được chạy, không nói test có tốt hay không. Chọn ít số liệu, gắn với quyết định cụ thể."
+            },
+            {
+              "title": "Observability và testing in production",
+              "detail": "OpenTelemetry giúp nối trace từ frontend tới backend, nên bug report có thể kèm trace ID thay vì mô tả mơ hồ. Synthetic monitoring chạy các luồng chính trên production theo lịch, kết hợp SLO và alert theo error budget. Testing in production không thay thế test trước release, mà bắt những gì staging không bao giờ tái hiện được."
+            },
+            {
+              "title": "Feature flag và release an toàn",
+              "detail": "Feature flag tách deploy khỏi release, cho phép canary, rollout theo phần trăm và kill switch. OpenFeature là chuẩn mở để không bị khoá vào một nhà cung cấp. QA cần test cả hai trạng thái của flag, tổ hợp flag quan trọng, và có kế hoạch dọn flag cũ."
+            },
+            {
+              "title": "Sinh test bằng LLM và agent",
+              "detail": "Playwright có test agents (planner, generator, healer) chạy trong các agent loop như VS Code, Claude Code, và Playwright MCP cho phép agent điều khiển trình duyệt qua accessibility tree. Chúng tăng tốc phần viết khung test, nhưng con người vẫn phải quyết định test cái gì và review assertion, vì AI hay sinh test đi theo hành vi hiện tại kể cả khi hành vi đó sai."
+            },
+            {
+              "title": "Self-healing test",
+              "detail": "Self-healing tự sửa locator hoặc bước khi UI đổi, giảm công bảo trì. Rủi ro là nó che mất bug thật, ví dụ nút bị đổi nhãn sai vẫn được coi là đúng. Hãy coi mọi thay đổi do healer đề xuất như một pull request cần review, không tự động merge."
+            },
+            {
+              "title": "Đánh giá tính năng AI",
+              "detail": "Output của LLM không tất định nên assertion so khớp chính xác không đủ. Cần bộ eval dataset từ case thật, chấm bằng rule, so sánh ngữ nghĩa hoặc LLM-as-judge đã được hiệu chỉnh với nhãn của người, và chạy eval như regression test trong CI với công cụ như promptfoo. Đừng quên red-teaming: prompt injection, lộ dữ liệu và hành vi ngoài phạm vi."
+            }
+          ],
+          "practices": [
+            "Đính kèm trace ID hoặc request ID vào mọi bug xảy ra trên môi trường có observability.",
+            "Test mỗi feature flag ở cả trạng thái bật và tắt trước khi rollout.",
+            "Review mọi test và mọi bản sửa do AI sinh ra như code của một đồng đội mới.",
+            "Xây eval dataset từ lỗi thật của người dùng và mở rộng nó mỗi khi có sự cố."
+          ],
+          "pitfalls": [
+            "Đặt KPI theo coverage hoặc số bug tìm được, khiến team tối ưu con số thay vì chất lượng.",
+            "Để healer tự sửa test mà không ai xem, biến bug thật thành test xanh.",
+            "Đánh giá tính năng AI bằng vài prompt thử tay rồi kết luận là ổn."
+          ],
+          "project": {
+            "title": "Quality dashboard và bộ eval",
+            "brief": "Dùng Playwright test agents để sinh thêm test cho app ở stage 06, review và ghi lại bao nhiêu phần phải sửa tay. Xây một bộ eval 30 case cho một tính năng LLM nhỏ (ví dụ tóm tắt hoặc phân loại) chạy trong CI. Đạt yêu cầu khi có một dashboard đơn giản hiển thị tỉ lệ flaky, thời gian pipeline và điểm eval theo thời gian."
+          },
+          "resources": [
+            { "title": "Playwright: Test Agents", "url": "https://playwright.dev/docs/test-agents", "kind": "docs" },
+            { "title": "Feature Toggles (Martin Fowler)", "url": "https://martinfowler.com/articles/feature-toggles.html", "kind": "article" },
+            { "title": "OpenTelemetry Docs", "url": "https://opentelemetry.io/docs/", "kind": "docs" },
+            { "title": "Demystifying evals for AI agents (Anthropic)", "url": "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents", "kind": "article" }
+          ],
+          "tags": ["Quality metrics", "Observability", "AI testing", "Evals"]
+        }
+      ],
+      "trends": {
+        "now": [
+          {
+            "title": "Playwright là mặc định cho web E2E",
+            "detail": "Với dự án web mới, Playwright gần như là lựa chọn mặc định nhờ auto-waiting, trace và chạy song song sẵn có. Selenium và Cypress vẫn còn nhiều trong các codebase cũ, nên biết đọc chúng vẫn có ích."
+          },
+          {
+            "title": "AI agent viết và sửa test",
+            "detail": "Test agents của Playwright và Playwright MCP đưa việc sinh, chạy, sửa test vào trong editor và agent loop. Kỹ năng quan trọng chuyển sang thiết kế test, viết yêu cầu rõ ràng và review output của AI."
+          },
+          {
+            "title": "QA thành quality engineer",
+            "detail": "Developer ngày càng tự viết test, còn QA tập trung vào chiến lược, hạ tầng test, exploratory testing và coaching. Ranh giới giữa SDET, QA và platform engineering mờ dần."
+          },
+          {
+            "title": "Accessibility thành yêu cầu bắt buộc",
+            "detail": "European Accessibility Act và các quy định tương tự khiến WCAG 2.2 AA trở thành tiêu chí release ở nhiều sản phẩm. Team cần cả kiểm tra tự động trong CI lẫn kiểm tra thủ công định kỳ."
+          }
+        ],
+        "next": [
+          {
+            "title": "Eval là một nhánh của QA",
+            "detail": "Khi ngày càng nhiều sản phẩm có tính năng LLM và agent, đánh giá output không tất định sẽ trở thành kỹ năng QA cốt lõi. Hãy học thiết kế eval dataset, LLM-as-judge và red-teaming từ bây giờ."
+          },
+          {
+            "title": "Agentic testing ở quy mô lớn",
+            "detail": "Agent sẽ khám phá app, đề xuất test và tự bảo trì suite ở mức nhiều hơn hiện nay. Giá trị của tester sẽ nằm ở việc định nghĩa rủi ro, oracle (thế nào là đúng) và kiểm soát để AI không hợp thức hoá bug."
+          },
+          {
+            "title": "Chất lượng dựa trên tín hiệu production",
+            "detail": "Observability, feature flag và progressive delivery khiến dữ liệu production trở thành một phần của chiến lược test. Học OpenTelemetry, SLO và cách đọc trace sẽ giúp tester làm việc ngang hàng với SRE."
+          },
+          {
+            "title": "Hợp đồng thay thế E2E chậm",
+            "detail": "Contract testing, schema-first API và component test sẽ gánh nhiều phần kiểm tra tích hợp, E2E chỉ giữ lại cho luồng quan trọng nhất. Chuẩn bị bằng cách nắm OpenAPI, Pact và tư duy chọn đúng cấp độ test."
+          }
+        ]
+      },
+      "outcomes": [
+        "Bạn có thể lập chiến lược test dựa trên rủi ro và giải thích vì sao mỗi test nằm ở cấp độ đó.",
+        "Bạn có thể thiết kế test case bằng phân vùng tương đương, giá trị biên, decision table, state transition và chạy exploratory session có charter.",
+        "Bạn có thể viết API test có schema validation và contract test với Pact chạy trong CI.",
+        "Bạn có thể xây và bảo trì bộ E2E Playwright ổn định, chạy song song, debug flaky bằng trace.",
+        "Bạn có thể chạy load test với k6, kiểm tra accessibility theo WCAG 2.2 và các kiểm tra bảo mật cơ bản.",
+        "Bạn có thể dùng AI agent để sinh test một cách có kiểm soát và xây bộ eval cho tính năng LLM.",
+        "Bạn có thể đo chất lượng bằng số liệu có ý nghĩa và dùng observability, feature flag để giảm rủi ro release."
+      ]
+    },
+    "en": {
+      "name": "QA / Test Engineer",
+      "tagline": "Find risk before users do and turn quality into something the team can measure",
+      "summary": "A path from testing mindset and test design techniques, through API testing and Playwright automation, to non-functional testing, quality engineering and AI in testing. For manual testers moving into automation or SDET work, and for developers who want to take the QA craft seriously.",
+      "story": {
+        "intro": "I am a frontend developer, not a QA specialist. Over the years I have worked closely with testers, read their bug reports every day, and written Playwright tests for the critical flows of the apps I build. That is when I realized that writing a test that goes green is very different from knowing what to test. This map collects what I learned from my QA teammates and from digging in myself, plus the path I would follow if I started as a QA engineer or SDET today.",
+        "lessons": [
+          "Tools change every few years, while test design techniques like equivalence partitioning and boundary values last a career, so learn them before any framework.",
+          "A flaky test is worse than no test, because it teaches the team to ignore red. I wish I had treated flakiness as a real bug much earlier.",
+          "A good bug report is one a developer can reproduce after reading it once. Steps, expected result and evidence matter more than a long description.",
+          "Automation does not replace exploratory testing. Scripts only check what we already thought of, while a good tester finds what nobody thought of yet."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Testing mindset and test levels",
+          "goal": "Explain why and at which level a feature should be tested, based on risk rather than gut feeling.",
+          "note": "Early on I thought testing was about proving the code works. My QA teammates taught me that the real goal is to surface information about risk, including information nobody wants to hear.",
+          "topics": [
+            {
+              "title": "Test levels",
+              "detail": "Unit, integration, component, end-to-end and acceptance tests differ in scope, speed and maintenance cost. Understanding the boundaries helps you place each check at the cheapest level that still catches the bug. Also separate verification (built to spec) from validation (built what users need)."
+            },
+            {
+              "title": "Test pyramid vs testing trophy",
+              "detail": "Mike Cohn's pyramid recommends many unit tests and few E2E tests. Kent C. Dodds' testing trophy puts the weight on integration tests because they give the most confidence per unit of cost. Both are heuristics, not laws: the right shape depends on your architecture and where real bugs tend to appear."
+            },
+            {
+              "title": "Risk-based testing",
+              "detail": "Rate each risk by likelihood times impact and spend testing effort accordingly. Payments, permissions and user data deserve deeper coverage than the about page. A simple risk matrix also lets you defend a decision not to test something deeply."
+            },
+            {
+              "title": "Shift-left and QA in agile",
+              "detail": "Shift-left means QA joins at story refinement: questioning acceptance criteria, edge cases and testability before any code exists. Three amigos sessions (product, dev, QA) and Given/When/Then acceptance criteria surface misunderstandings early. Modern QA leads quality for the whole team instead of acting as a gate at the end of the sprint."
+            },
+            {
+              "title": "The seven testing principles",
+              "detail": "The ISTQB CTFL v4.0 syllabus sums up principles such as testing shows the presence of defects, not their absence, exhaustive testing is impossible, and defects cluster together. They sound obvious but give you solid ground when someone asks why not everything was tested."
+            }
+          ],
+          "practices": [
+            "Read acceptance criteria and write down edge-case questions before implementation or testing starts.",
+            "Tie every test to a specific risk so you know why it exists.",
+            "Pick the lowest test level that still catches the kind of bug you worry about.",
+            "Record what you decided not to test and why."
+          ],
+          "pitfalls": [
+            "Measuring quality by the number of test cases instead of the risk reduced.",
+            "Treating QA as the last phase of the sprint, handing testers a build when it is too late to change the design."
+          ],
+          "project": {
+            "title": "Risk map for a real feature",
+            "brief": "Pick a feature such as sign-up or the cart in an app you use daily, list at least 10 risks and score likelihood and impact. It passes when every risk has a suggested test level (unit, integration, E2E, manual) with a one-sentence justification."
+          },
+          "resources": [
+            { "title": "The Practical Test Pyramid (Martin Fowler)", "url": "https://martinfowler.com/articles/practical-test-pyramid.html", "kind": "article" },
+            { "title": "The Testing Trophy and Testing Classifications", "url": "https://kentcdodds.com/blog/the-testing-trophy-and-testing-classifications", "kind": "article" },
+            { "title": "ISTQB Certified Tester Foundation Level v4.0", "url": "https://www.istqb.org/certifications/certified-tester-foundation-level-ctfl-v4-0/", "kind": "docs" }
+          ],
+          "tags": ["Test levels", "Risk-based", "Shift-left"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Test design and exploratory testing",
+          "goal": "Design a lean set of test cases with strong risk coverage, run chartered exploratory sessions and write bug reports developers can reproduce immediately.",
+          "note": "This is the stage developers skip most, me included. The first time I watched a QA teammate apply boundary values to a form, I understood why they found bugs so fast.",
+          "topics": [
+            {
+              "title": "Equivalence partitioning and boundary values",
+              "detail": "Equivalence partitioning groups inputs the system treats the same, so one representative per group is enough. Boundary value analysis tests at and around the edges, for example ages 17, 18, 65 and 66 for a range of 18 to 65. Do not forget invalid partitions such as empty strings, negative numbers, Unicode and overly long values."
+            },
+            {
+              "title": "Decision tables and pairwise",
+              "detail": "A decision table lists combinations of conditions and the resulting actions, ideal for discount rules or permission logic with many branches. When combinations explode, pairwise testing picks a subset that covers every pair of values, cutting case count sharply while still catching most two-parameter interaction bugs."
+            },
+            {
+              "title": "State transition testing",
+              "detail": "Draw a state diagram for objects with a lifecycle, such as an order (draft, paid, shipped, cancelled), then test both valid and invalid transitions. Bugs often hide in forbidden transitions the system still allows, like cancelling a delivered order or paying twice."
+            },
+            {
+              "title": "Exploratory testing with charters",
+              "detail": "Exploratory testing is simultaneous learning, test design and execution, structured rather than random clicking. A charter in Elisabeth Hendrickson's template reads: explore area X, with resources Y, to discover information Z. Session-based test management timeboxes each session to 60 to 90 minutes and ends with notes, bugs and open questions."
+            },
+            {
+              "title": "Bug reports developers want to read",
+              "detail": "A good bug report has a title naming symptom and location, minimal reproduction steps, actual versus expected result, environment (browser, build, test account) and evidence such as a screenshot, video, HAR or trace ID. Keep severity (technical impact) separate from priority (business order). One bug per report."
+            }
+          ],
+          "practices": [
+            "For every input field, list valid partitions, invalid partitions and boundary values before writing cases.",
+            "Write a charter before each exploratory session and take notes during it, not afterwards.",
+            "Reduce reproduction steps to the minimum before filing a bug.",
+            "Attach verifiable evidence such as a video, HAR file or request ID."
+          ],
+          "pitfalls": [
+            "Writing hundreds of near-identical test cases instead of applying equivalence partitioning.",
+            "Filing a bug that only says 'does not work' with no environment or expected result."
+          ],
+          "project": {
+            "title": "Test suite for a booking form",
+            "brief": "Using a public demo like Restful Booker, design test cases with equivalence partitioning, boundary values and a decision table for pricing rules. Run two chartered exploratory sessions and file at least three bug reports using the template, each reproducible in five steps or fewer."
+          },
+          "resources": [
+            { "title": "Explore It! (Elisabeth Hendrickson)", "url": "https://pragprog.com/titles/ehxta/explore-it/", "kind": "book" },
+            { "title": "DevelopSense (Michael Bolton)", "url": "https://www.developsense.com/", "kind": "article" },
+            { "title": "Restful Booker testing playground", "url": "https://restful-booker.herokuapp.com/", "kind": "tool" }
+          ],
+          "tags": ["Test design", "Exploratory", "Bug reports"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Web, HTTP and DevTools for testers",
+          "goal": "Read requests, responses, cookies and the console to narrow a bug down to the frontend, the API or the infrastructure.",
+          "note": "From the frontend side, the most valuable bug reports I received always came from testers who opened the Network tab. Just a status code and a response body cut debugging time dramatically.",
+          "topics": [
+            {
+              "title": "HTTP basics",
+              "detail": "Know methods (GET, POST, PUT, PATCH, DELETE), idempotency, status code families 2xx, 3xx, 4xx, 5xx and common headers like Content-Type, Authorization and Cache-Control. Telling 401 from 403 and 404 from 410 points the bug at the right place."
+            },
+            {
+              "title": "Cookies, sessions, tokens and CORS",
+              "detail": "Understand HttpOnly, Secure and SameSite cookies, the difference between session cookies and JWTs, and why a CORS error shows up in the browser while the same call works in an API client. Many login, session-expiry and permission bugs hide here."
+            },
+            {
+              "title": "Chrome DevTools for testing",
+              "detail": "Use the Network tab to filter requests, inspect payloads, throttle the network and export a HAR. The Application tab shows storage, cookies and service workers. The Console catches JavaScript errors, while Device Mode and Rendering emulate viewports, prefers-color-scheme and reduced motion."
+            },
+            {
+              "title": "Rendering and async state",
+              "detail": "Modern apps render on the client and data arrives later, so there are loading, empty, error and stale states. Knowing how browser cache, CDNs and libraries like TanStack Query behave helps you explain the classic 'it goes away after refresh' bug."
+            }
+          ],
+          "practices": [
+            "Keep DevTools open in every test session with Preserve log enabled in the Network tab.",
+            "Attach status code, request ID and response body to every API-related bug.",
+            "Re-test every critical flow on a slow network and when the API returns errors."
+          ],
+          "pitfalls": [
+            "Reporting a UI bug when the real cause is an API returning 500.",
+            "Ignoring red errors in the Console because the screen looks fine."
+          ],
+          "project": {
+            "title": "Request map of a user flow",
+            "brief": "Take the login then add-to-cart flow of a demo app, record every request as a HAR and diagram who calls what and what comes back. It passes when you can point to the cookie or token that holds the session and describe what happens when the cart API fails."
+          },
+          "resources": [
+            { "title": "MDN: An overview of HTTP", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Overview", "kind": "docs" },
+            { "title": "Chrome DevTools", "url": "https://developer.chrome.com/docs/devtools", "kind": "docs" }
+          ],
+          "tags": ["HTTP", "DevTools", "Debugging"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Programming for testers with TypeScript",
+          "goal": "Write clean test code in TypeScript: functions, async/await, modules, types and a test runner.",
+          "note": "Many testers I know jumped straight into an automation framework, skipped the language and got stuck on async/await. If your team uses Python, go with Python; what matters is knowing one language well.",
+          "topics": [
+            {
+              "title": "Choosing a language: TypeScript or Python",
+              "detail": "TypeScript pairs with Playwright, k6 and most frontends, so you can read your developers' code. Python shines with pytest, data work and AI tooling. Follow your team's stack, since tests should live in the same repo and language as the product when possible."
+            },
+            {
+              "title": "Async, promises and async bugs",
+              "detail": "Almost every UI and API action in automation is asynchronous. Understanding promises, async/await, Promise.all and what happens when you forget an await (false passes or detached errors) is a survival skill."
+            },
+            {
+              "title": "Types and structuring test code",
+              "detail": "Typing test data and responses catches mistakes before the run. Learn to extract helpers, data builders and modules, but keep tests readable with Arrange, Act, Assert. Test code is QA's production code and deserves the same review and refactoring."
+            },
+            {
+              "title": "Test runners and assertions",
+              "detail": "Get comfortable with a unit test runner like Vitest or pytest to understand describe blocks, hooks, assertions, mocks and snapshots. Reading developers' unit tests also tells you what is already covered so you do not duplicate it at the E2E level."
+            },
+            {
+              "title": "Git and review workflow",
+              "detail": "Branches, small commits, pull requests and resolving conflicts are daily SDET work. Reading a developer's diff helps you predict which areas just became risky and focus your testing there."
+            }
+          ],
+          "practices": [
+            "Enable TypeScript strict mode and a lint rule that forbids floating promises.",
+            "Keep every test independent of execution order.",
+            "Send test code through pull requests and ask developers to review it like product code."
+          ],
+          "pitfalls": [
+            "Copying test code from tutorials without understanding async, leading to false passes.",
+            "Abstracting too early so the tests are harder to read than the feature itself."
+          ],
+          "project": {
+            "title": "Price calculator with unit tests",
+            "brief": "Write a TypeScript module that computes a cart total with discount codes and tax, then unit test it with Vitest using the decision table from stage 02. It passes when tests run in CI, boundary cases are covered and no promise is left unawaited."
+          },
+          "resources": [
+            { "title": "TypeScript Handbook", "url": "https://www.typescriptlang.org/docs/handbook/intro.html", "kind": "docs" },
+            { "title": "Vitest Guide", "url": "https://vitest.dev/guide/", "kind": "docs" },
+            { "title": "The Python Tutorial", "url": "https://docs.python.org/3/tutorial/", "kind": "docs" }
+          ],
+          "tags": ["TypeScript", "Python", "Vitest"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 4,
+          "title": "API testing and contract testing",
+          "goal": "Test APIs manually and automatically, validate schemas and protect the frontend-backend contract with contract tests.",
+          "note": "Most integration bugs I have hit came from the backend changing a response shape without the frontend knowing. Contract testing is the thing I wish my teams had adopted earlier.",
+          "topics": [
+            {
+              "title": "Postman and Bruno",
+              "detail": "Postman is strong on cloud collaboration, workspaces and mock servers. Bruno stores collections as plain text files inside the repo, so reviewing and versioning them with Git feels natural for teams that want everything next to the code. Whichever you use, learn environment variables, pre and post request scripts, and running collections from the CLI in CI."
+            },
+            {
+              "title": "Designing API tests",
+              "detail": "Beyond the happy path, test validation (400, 422), authentication and authorization (401, 403, accessing someone else's resource), idempotency, pagination, rate limits and concurrency. Broken object level authorization (BOLA) tops the OWASP API Security Top 10."
+            },
+            {
+              "title": "Schema validation",
+              "detail": "Treat OpenAPI as the source of truth and validate responses with JSON Schema (Ajv) or Zod to catch type changes, missing fields and unexpected nulls. Schema checks are cheap and catch more integration bugs than comparing individual values."
+            },
+            {
+              "title": "Contract testing with Pact",
+              "detail": "Pact is consumer-driven: the consumer records its expectations in a pact file and the provider verifies it in its own pipeline. The Pact Broker versions contracts, and can-i-deploy tells you whether both sides are compatible before release. Contract tests replace many slow E2E tests that only existed to check integration."
+            },
+            {
+              "title": "API tests in code",
+              "detail": "Playwright's request fixture (APIRequestContext) calls APIs inside the same test runner, handy for seeding data or testing APIs alongside the UI. Combined with schema validation and test data builders, you get an API suite that is far faster and more stable than E2E."
+            }
+          ],
+          "practices": [
+            "Keep API collections in the repo and run them in CI on every pull request.",
+            "Validate the schema of every response before asserting specific values.",
+            "Test authorization by using user A's token to access user B's data.",
+            "Run can-i-deploy before every release when you use contract testing."
+          ],
+          "pitfalls": [
+            "Only checking for status 200 without validating the body and schema.",
+            "Using contract tests to check provider business logic, when they should only lock the shape of the interaction."
+          ],
+          "project": {
+            "title": "API suite with a contract",
+            "brief": "Write a Bruno collection and a Playwright API suite for Restful Booker or your own API, with schema validation via Zod or Ajv. Add one Pact consumer test for a single endpoint. It passes when both run in CI and include at least three authentication and authorization failure cases."
+          },
+          "resources": [
+            { "title": "Bruno Docs", "url": "https://docs.usebruno.com/", "kind": "tool" },
+            { "title": "Pact Docs", "url": "https://docs.pact.io/", "kind": "docs" },
+            { "title": "JSON Schema: Getting Started", "url": "https://json-schema.org/learn/getting-started-step-by-step", "kind": "docs" },
+            { "title": "Playwright API testing", "url": "https://playwright.dev/docs/api-testing", "kind": "docs" }
+          ],
+          "tags": ["API", "Pact", "Bruno", "Schema"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 5,
+          "title": "UI automation with Playwright",
+          "goal": "Build a Playwright E2E suite that is stable, readable, runs in parallel and can be debugged with traces.",
+          "note": "This is the part I have done most myself. The biggest lesson: flaky tests were almost always my fault for waiting the wrong way or sharing data, very rarely Playwright's.",
+          "topics": [
+            {
+              "title": "User-facing locators",
+              "detail": "Prefer getByRole, getByLabel and getByText, then getByTestId, and avoid long CSS selectors and XPath tied to DOM structure. Role-based locators are resilient and indirectly check accessibility. Playwright locators are lazy and strict, so matching several elements throws instead of silently picking one."
+            },
+            {
+              "title": "Auto-waiting and web-first assertions",
+              "detail": "Playwright waits for elements to be visible, enabled and stable before acting. Assertions like toBeVisible and toHaveText retry until the timeout. That is why you never need waitForTimeout; a hard sleep is a sign the test is wrong."
+            },
+            {
+              "title": "Fixtures and state isolation",
+              "detail": "test.extend lets you build fixtures such as a logged-in user, seeded data or page objects with clear setup and teardown. Use a setup project with storageState to log in once and reuse the session. Every test runs in its own browser context, so tests stay independent and parallelizable."
+            },
+            {
+              "title": "Page objects and alternatives",
+              "detail": "The Page Object Model groups locators and actions per page and suits large suites, but easily grows into an abstraction layer that is hard to read. Alternatives include feature-level fixtures, helpers named after user actions, or keeping locators inline while the suite is small. Choose just enough abstraction for the suite's size."
+            },
+            {
+              "title": "Network mocking and time",
+              "detail": "page.route lets you mock or modify responses to test error, empty and loading states the backend cannot easily reproduce. HAR replay runs tests against recorded data. page.clock controls time for date-dependent features like session expiry or countdowns."
+            },
+            {
+              "title": "Handling flaky tests",
+              "detail": "Record a trace on first retry and open Trace Viewer to inspect DOM, network and console step by step. Use --repeat-each to reproduce flakiness locally. Common causes are data races, order dependence, animations and shared environments; retries are a bandage, so isolate and fix the root cause."
+            }
+          ],
+          "practices": [
+            "Make getByRole your default locator and add data-testid only when nothing better exists.",
+            "Never use waitForTimeout; rely on web-first assertions.",
+            "Log in through a setup project and storageState instead of through the UI in every test.",
+            "Configure trace: 'on-first-retry' and track the flake rate per test.",
+            "Quarantine flaky tests with an owner and a deadline instead of letting them stay skipped forever."
+          ],
+          "pitfalls": [
+            "Writing E2E tests for every edge case that belongs in unit or API tests.",
+            "Letting tests share one account and dataset, which breaks under parallel runs.",
+            "Cranking up retries to keep the pipeline green and hiding real race-condition bugs."
+          ],
+          "project": {
+            "title": "E2E suite for a demo shop",
+            "brief": "Write 10 to 15 Playwright tests for Sauce Demo or your own app, covering login via storageState, checkout and error states via page.route. It passes when the suite runs in parallel, contains no waitForTimeout and survives --repeat-each=10 with zero failures."
+          },
+          "resources": [
+            { "title": "Playwright: Locators", "url": "https://playwright.dev/docs/locators", "kind": "docs" },
+            { "title": "Playwright: Fixtures", "url": "https://playwright.dev/docs/test-fixtures", "kind": "docs" },
+            { "title": "Playwright: Best Practices", "url": "https://playwright.dev/docs/best-practices", "kind": "docs" },
+            { "title": "Playwright: Trace Viewer", "url": "https://playwright.dev/docs/trace-viewer", "kind": "docs" }
+          ],
+          "tags": ["Playwright", "E2E", "Flaky tests"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "CI, reporting, test data and visual tests",
+          "goal": "Run tests in the pipeline with sharding, clear reports, isolated test data and screenshot-based UI checks.",
+          "note": "Tests only matter when they run automatically and someone reads the results. I once had a suite that ran fine locally but nobody looked at its report, which made it as good as absent.",
+          "topics": [
+            {
+              "title": "Tests in the pipeline",
+              "detail": "Run fast checks (lint, unit, API, contract) on every pull request, an E2E smoke set before merge and the full suite on a schedule or before release. Use the official Playwright container so browsers match between local and CI. Cache dependencies and install only the browsers you need."
+            },
+            {
+              "title": "Parallelization and sharding",
+              "detail": "Playwright runs workers in parallel on one machine and splits shards across machines with --shard. Use the blob reporter on each shard, then merge-reports into a single HTML report. Tests must be data-independent to parallelize safely."
+            },
+            {
+              "title": "Reporting and signal",
+              "detail": "A report should answer quickly: where did it fail, is it flaky, is there a trace or video. Publish JUnit results so failures show on the pull request, and track duration and flake rate over time instead of looking at single runs."
+            },
+            {
+              "title": "Test data management",
+              "detail": "Create data through APIs or factories per test instead of sharing a hand-edited database. Use Faker with a fixed seed for random yet reproducible data. Testcontainers spins up throwaway databases for integration tests, and you always need a cleanup strategy or namespaced data."
+            },
+            {
+              "title": "Visual regression",
+              "detail": "Playwright's toHaveScreenshot compares pixels against a baseline, so capture in a fixed environment (container, fonts, viewport) and mask dynamic regions like timestamps or avatars. Components can be visually tested through Storybook. ARIA snapshots (toMatchAriaSnapshot) complement this by checking structure instead of pixels, with far less noise."
+            }
+          ],
+          "practices": [
+            "Split the pipeline into a fast tier and a full tier, and gate merges on the fast tier.",
+            "Upload traces, videos and the HTML report as artifacts for every failed run.",
+            "Generate fresh data for each test and never depend on existing staging data.",
+            "Update screenshot baselines through a reviewed pull request, never blindly in bulk."
+          ],
+          "pitfalls": [
+            "Capturing visual baselines on a laptop and comparing on CI, causing font and rendering diffs.",
+            "Letting a 40-minute E2E suite block every pull request."
+          ],
+          "project": {
+            "title": "A complete test pipeline",
+            "brief": "Configure GitHub Actions to run API tests, contract tests and Playwright E2E across 3 shards, merge into one HTML report and upload traces on failure. Add 3 visual tests with masked dynamic regions. It passes when the pipeline finishes under 10 minutes and two consecutive runs give the same result."
+          },
+          "resources": [
+            { "title": "Playwright: Setting up CI", "url": "https://playwright.dev/docs/ci-intro", "kind": "docs" },
+            { "title": "Playwright: Sharding", "url": "https://playwright.dev/docs/test-sharding", "kind": "docs" },
+            { "title": "Playwright: Visual comparisons", "url": "https://playwright.dev/docs/test-snapshots", "kind": "docs" },
+            { "title": "Testcontainers", "url": "https://testcontainers.com/", "kind": "tool" }
+          ],
+          "tags": ["CI", "Sharding", "Test data", "Visual"]
+        },
+        {
+          "id": "08",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Mobile testing basics",
+          "goal": "Understand what makes mobile testing different and automate a few key flows with Maestro or Appium.",
+          "note": "I have only worked next to mobile developers and mobile testers, but that was enough to see that mobile adds a whole layer of risk the web does not have: permissions, flaky networks, the app being killed mid-flow.",
+          "topics": [
+            {
+              "title": "What is different on mobile",
+              "detail": "Device and OS fragmentation, permissions (camera, location, notifications), app lifecycle (background, killed, restored), deep links, poor networks and offline mode. Base your device matrix on real user analytics, not on the nicest phones."
+            },
+            {
+              "title": "Maestro",
+              "detail": "Maestro describes flows in YAML, runs against release builds without code instrumentation, and has built-in waiting and retries that reduce flakiness. It is a great fit for fast smoke tests on React Native, Flutter or native apps. When logic gets complex, YAML can become hard to maintain."
+            },
+            {
+              "title": "Appium",
+              "detail": "Appium uses the WebDriver protocol with separately installed drivers such as UiAutomator2 for Android and XCUITest for iOS, and supports many languages. It is flexible and common in enterprises, at the cost of heavier setup and careful waiting strategies to avoid flakiness."
+            },
+            {
+              "title": "Native tools and device clouds",
+              "detail": "Espresso (Android) and XCUITest (iOS) are the fastest and most stable but platform-specific, and are usually written by mobile developers. Emulators and simulators cover most tests, while device clouds or physical devices are needed for performance, sensors and vendor-specific bugs."
+            }
+          ],
+          "practices": [
+            "Add stable accessibility identifiers or testIDs to every element you need to automate.",
+            "Test interruptions such as incoming calls, backgrounding and losing the network.",
+            "Choose the device matrix from real user data and review it every quarter."
+          ],
+          "pitfalls": [
+            "Testing only on the newest emulator and ignoring the low-end devices real users have.",
+            "Porting web test habits to mobile without accounting for app lifecycle and permissions."
+          ],
+          "project": {
+            "title": "Mobile smoke tests with Maestro",
+            "brief": "Write 3 Maestro flows for a sample app: launch, log in, perform one key action and handle a permission dialog. It passes when the flows run on an Android emulator in CI and you can write one page comparing when Appium would be the better choice."
+          },
+          "resources": [
+            { "title": "Maestro Docs", "url": "https://docs.maestro.dev/", "kind": "docs" },
+            { "title": "Appium Documentation", "url": "https://appium.io/docs/en/latest/", "kind": "docs" }
+          ],
+          "tags": ["Mobile", "Maestro", "Appium"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 5,
+          "title": "Performance, accessibility and security",
+          "goal": "Design and run load tests with k6, check accessibility both automatically and manually, and perform basic security checks.",
+          "note": "As a frontend developer I learned accessibility first, then saw that QA is who keeps it from regressing. Performance and security I am still learning, and they demand a very different mindset from functional testing.",
+          "topics": [
+            {
+              "title": "Load testing with k6",
+              "detail": "k6 scripts are JavaScript; you configure scenarios with executors such as ramping-vus or constant-arrival-rate and set thresholds (for example p95 under a target, error rate under 1%) so the test fails automatically. Distinguish smoke, load, stress, spike and soak tests, since each answers a different question."
+            },
+            {
+              "title": "Reading performance results",
+              "detail": "Look at percentiles (p95, p99) rather than averages, and correlate with CPU, memory, connection pools and server-side traces. Test on an environment sized like production, and for the frontend track Core Web Vitals (LCP, INP, CLS) through Lighthouse and real user data."
+            },
+            {
+              "title": "Accessibility testing",
+              "detail": "Run axe-core via @axe-core/playwright to catch automatable issues like missing labels, contrast and invalid ARIA, but automated tools only find part of the problems. The rest needs manual testing: keyboard only, focus order, screen readers (NVDA, VoiceOver) and 200% zoom. The reference is WCAG 2.2 level AA, and the European Accessibility Act has made it a legal requirement for many products."
+            },
+            {
+              "title": "Security basics for testers",
+              "detail": "Know the OWASP Top 10 and OWASP API Security Top 10: broken access control, injection, authentication failures, misconfiguration. Try IDOR by changing IDs in requests, check security headers, and run a DAST scan such as the ZAP baseline in CI. Deep security work belongs to specialists, but testers catch a lot of authorization bugs."
+            },
+            {
+              "title": "Chaos and resilience",
+              "detail": "Test behavior when dependencies are slow or down: timeouts, retries, circuit breakers and the error message users see. Start small by mocking network failures in Playwright or stopping a service in staging before reaching for full chaos engineering."
+            }
+          ],
+          "practices": [
+            "Define performance goals as k6 thresholds before running the test.",
+            "Add axe checks to E2E for key pages and block merges on serious violations.",
+            "Check every new feature with the keyboard alone before calling it done.",
+            "Only run load tests and security scans against environments you are authorized to test."
+          ],
+          "pitfalls": [
+            "Reading the average response time and ignoring the p99 tail.",
+            "Assuming a clean axe score means the page is accessible.",
+            "Load testing production or a third-party API without warning anyone."
+          ],
+          "project": {
+            "title": "Non-functional quality report",
+            "brief": "Write a k6 script with two scenarios (load and spike) and thresholds for one of your APIs, add axe checks to three key pages and run a ZAP baseline scan in CI. It passes when a one-page report states thresholds, results, the top three issues and proposed fixes."
+          },
+          "resources": [
+            { "title": "Grafana k6 Docs", "url": "https://grafana.com/docs/k6/latest/", "kind": "docs" },
+            { "title": "Playwright: Accessibility testing", "url": "https://playwright.dev/docs/accessibility-testing", "kind": "docs" },
+            { "title": "WCAG Overview (W3C WAI)", "url": "https://www.w3.org/WAI/standards-guidelines/wcag/", "kind": "docs" },
+            { "title": "OWASP Web Security Testing Guide", "url": "https://owasp.org/www-project-web-security-testing-guide/", "kind": "docs" }
+          ],
+          "tags": ["k6", "Accessibility", "Security"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 5,
+          "title": "Quality engineering and AI in testing",
+          "goal": "Measure quality with meaningful metrics, test safely in production and use AI both to speed up testing and to evaluate AI features.",
+          "note": "I come to AI from the side of integrating LLMs into products, and that made one thing clear: testing an AI feature is much harder than letting AI write tests. Both still need a human holding the final judgment.",
+          "topics": [
+            {
+              "title": "Quality metrics",
+              "detail": "Track escaped defects, flake rate, pipeline feedback time and DORA metrics such as change failure rate and recovery time. Code coverage only tells you which lines never ran, not whether the tests are good. Pick a few metrics and tie each to a concrete decision."
+            },
+            {
+              "title": "Observability and testing in production",
+              "detail": "OpenTelemetry links traces from frontend to backend, so a bug report can carry a trace ID instead of a vague description. Synthetic monitoring runs key flows against production on a schedule, alongside SLOs and error-budget alerts. Testing in production does not replace pre-release testing; it catches what staging can never reproduce."
+            },
+            {
+              "title": "Feature flags and safe releases",
+              "detail": "Feature flags decouple deploy from release, enabling canaries, percentage rollouts and kill switches. OpenFeature is an open standard that avoids vendor lock-in. QA needs to test both states of a flag, the important flag combinations, and have a plan for removing stale flags."
+            },
+            {
+              "title": "LLM and agent test generation",
+              "detail": "Playwright ships test agents (planner, generator, healer) that run inside agent loops such as VS Code and Claude Code, and Playwright MCP lets agents drive the browser through the accessibility tree. They speed up writing test scaffolding, but humans still decide what to test and review assertions, because AI tends to encode current behavior even when that behavior is wrong."
+            },
+            {
+              "title": "Self-healing tests",
+              "detail": "Self-healing repairs locators or steps when the UI changes, cutting maintenance. The risk is masking real bugs, for example a button with a wrong new label still being accepted. Treat every healer change as a pull request that needs review, never an automatic merge."
+            },
+            {
+              "title": "Evaluating AI features",
+              "detail": "LLM output is non-deterministic, so exact-match assertions are not enough. You need an eval dataset from real cases, scoring with rules, semantic similarity or an LLM-as-judge calibrated against human labels, and evals running as regression tests in CI with tools like promptfoo. Do not forget red-teaming: prompt injection, data leakage and out-of-scope behavior."
+            }
+          ],
+          "practices": [
+            "Attach a trace ID or request ID to every bug found in an environment with observability.",
+            "Test every feature flag in both its on and off states before rollout.",
+            "Review every AI-generated test and fix as you would code from a new teammate.",
+            "Build eval datasets from real user failures and grow them after every incident."
+          ],
+          "pitfalls": [
+            "Setting KPIs on coverage or bug counts, so the team optimizes numbers instead of quality.",
+            "Letting a healer fix tests unattended and turning real bugs into green tests.",
+            "Judging an AI feature by trying a handful of prompts by hand and calling it fine."
+          ],
+          "project": {
+            "title": "Quality dashboard and eval suite",
+            "brief": "Use Playwright test agents to generate additional tests for the app from stage 06, review them and record how much needed manual fixing. Build a 30-case eval suite for a small LLM feature (such as summarization or classification) that runs in CI. It passes when a simple dashboard shows flake rate, pipeline duration and eval scores over time."
+          },
+          "resources": [
+            { "title": "Playwright: Test Agents", "url": "https://playwright.dev/docs/test-agents", "kind": "docs" },
+            { "title": "Feature Toggles (Martin Fowler)", "url": "https://martinfowler.com/articles/feature-toggles.html", "kind": "article" },
+            { "title": "OpenTelemetry Docs", "url": "https://opentelemetry.io/docs/", "kind": "docs" },
+            { "title": "Demystifying evals for AI agents (Anthropic)", "url": "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents", "kind": "article" }
+          ],
+          "tags": ["Quality metrics", "Observability", "AI testing", "Evals"]
+        }
+      ],
+      "trends": {
+        "now": [
+          {
+            "title": "Playwright is the default for web E2E",
+            "detail": "For new web projects Playwright is close to the default choice thanks to built-in auto-waiting, tracing and parallelism. Selenium and Cypress remain common in older codebases, so being able to read them still pays off."
+          },
+          {
+            "title": "AI agents write and fix tests",
+            "detail": "Playwright's test agents and Playwright MCP bring generating, running and repairing tests into the editor and agent loops. The key skills shift toward test design, writing clear intent and reviewing AI output."
+          },
+          {
+            "title": "QA becomes quality engineering",
+            "detail": "Developers increasingly write their own tests, while QA focuses on strategy, test infrastructure, exploratory testing and coaching. The lines between SDET, QA and platform engineering keep blurring."
+          },
+          {
+            "title": "Accessibility is mandatory",
+            "detail": "The European Accessibility Act and similar regulations have made WCAG 2.2 AA a release criterion for many products. Teams need both automated checks in CI and regular manual audits."
+          }
+        ],
+        "next": [
+          {
+            "title": "Evals become a QA discipline",
+            "detail": "As more products ship LLM and agent features, evaluating non-deterministic output will become a core QA skill. Start learning eval dataset design, LLM-as-judge and red-teaming now."
+          },
+          {
+            "title": "Agentic testing at scale",
+            "detail": "Agents will explore apps, propose tests and maintain suites far more than they do today. A tester's value will sit in defining risk, the oracle (what correct looks like) and the controls that stop AI from legitimizing bugs."
+          },
+          {
+            "title": "Quality driven by production signals",
+            "detail": "Observability, feature flags and progressive delivery make production data part of the test strategy. Learning OpenTelemetry, SLOs and how to read traces lets testers work as peers with SREs."
+          },
+          {
+            "title": "Contracts replace slow E2E",
+            "detail": "Contract testing, schema-first APIs and component tests will carry more of the integration checking, with E2E kept for the most critical journeys. Prepare by learning OpenAPI, Pact and the habit of choosing the right test level."
+          }
+        ]
+      },
+      "outcomes": [
+        "You can build a risk-based test strategy and explain why each test lives at its level.",
+        "You can design test cases with equivalence partitioning, boundary values, decision tables and state transitions, and run chartered exploratory sessions.",
+        "You can write API tests with schema validation and Pact contract tests that run in CI.",
+        "You can build and maintain a stable, parallel Playwright E2E suite and debug flakiness with traces.",
+        "You can run k6 load tests, audit accessibility against WCAG 2.2 and perform basic security checks.",
+        "You can use AI agents to generate tests under control and build an eval suite for an LLM feature.",
+        "You can measure quality with meaningful metrics and use observability and feature flags to reduce release risk."
+      ]
+    }
+  }
+}

@@ -1,0 +1,828 @@
+{
+  "id": "ai-engineer",
+  "ecosystem": ["TypeScript", "AI SDK", "MCP", "pgvector", "OpenTelemetry", "Langfuse", "promptfoo", "Ollama"],
+  "locales": {
+    "vi": {
+      "name": "AI Engineer",
+      "tagline": "Xây sản phẩm trên nền LLM: từ gọi API, RAG, agent đến eval và vận hành production",
+      "summary": "Map này dành cho developer muốn xây tính năng AI thật sự chạy được trong sản phẩm, không phải nghiên cứu hay train model từ đầu. Lộ trình đi từ cách LLM hoạt động ở mức thực dụng, qua model API, prompt và context, RAG, agent, eval, cho tới bảo mật, vận hành và governance. Phù hợp nhất với người đã vững web hoặc backend và muốn chuyển dần sang mảng AI engineering.",
+      "story": {
+        "intro": "Mình là frontend developer, không phải chuyên gia AI hay người làm nghiên cứu ML. Vài năm gần đây mình tích hợp tính năng LLM vào web app và side project: chat có streaming, trích xuất dữ liệu có cấu trúc, một ít retrieval, rồi viết lại trên blog này. Map này là con đường mình sẽ đi nếu bắt đầu làm AI Engineer từ hôm nay, gom từ những gì mình học được khi ship các tính năng đó, đọc docs chính thức và theo dõi những người làm mảng này toàn thời gian. Trọng tâm là xây sản phẩm trên nền model có sẵn, không phải train model.",
+        "lessons": [
+          "Điều mình ước biết sớm hơn là phải có bộ eval trước khi chỉnh prompt. Không có tập test cố định thì mình chỉ đang đổi chữ và cầu may.",
+          "Phần lớn việc khó là kỹ thuật phần mềm bình thường: schema, timeout, retry, logging, phân quyền. Lời gọi model chỉ là phần nhỏ.",
+          "Lúc mới làm mình hay lôi RAG và framework agent vào quá sớm, trong khi một prompt dài có prompt caching hoặc một chuỗi bước đơn giản đã giải quyết được bài toán.",
+          "Hãy coi mọi output của model và mọi tài liệu retrieve về là input không tin cậy, giống hệt cách mình xử lý dữ liệu người dùng nhập vào form."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "LLM hoạt động thế nào, ở mức thực dụng",
+          "goal": "Giải thích được token, context window, sampling và embedding đủ để dự đoán chi phí, độ trễ và kiểu lỗi của một tính năng AI.",
+          "note": "Lần đầu gọi LLM API mình coi nó như một hàm tất định và khá bất ngờ khi cùng một input lại ra output khác nhau. Hiểu cơ chế dự đoán token tiếp theo và sampling giúp mình hết bối rối phần lớn.",
+          "topics": [
+            { "title": "Token và tokenizer", "detail": "Model đọc token kiểu BPE chứ không đọc ký tự hay từ, và tiếng Việt thường tốn nhiều token hơn đáng kể so với cùng nội dung bằng tiếng Anh. Giá tiền, giới hạn context và độ trễ đều tính theo token, nên hãy tập đo bằng endpoint đếm token của provider hoặc một tokenizer playground thay vì ước lượng theo số chữ." },
+            { "title": "Transformer và dự đoán token tiếp theo", "detail": "Khi inference, model tính phân phối xác suất cho token kế tiếp, chọn một token, nối vào rồi lặp lại; cơ chế attention cho phép mỗi token nhìn các token trước đó. Đây là lý do độ trễ tăng theo độ dài output và vì sao time to first token với tokens per second là hai chỉ số khác nhau." },
+            { "title": "Context window và giới hạn thật của nó", "detail": "Context window chứa chung system prompt, lịch sử hội thoại, tài liệu retrieve, định nghĩa tool và cả output. Window dài không có nghĩa model chú ý đều mọi chỗ: chất lượng giảm khi context phình to và khi thông tin nằm lọt thỏm ở giữa (context rot), nên nhồi thêm context không tự động tốt hơn." },
+            { "title": "Sampling: temperature, top_p, stop sequence", "detail": "Temperature thấp hợp với trích xuất và phân loại, cao hơn cho brainstorm hoặc viết sáng tạo. Ngay cả temperature 0 trên API hosted cũng không đảm bảo tất định do batching và sai số dấu phẩy động, và một số reasoning model giới hạn hoặc bỏ qua các tham số này." },
+            { "title": "Embedding và độ tương đồng", "detail": "Embedding model biến đoạn text thành vector mà cosine similarity xấp xỉ mức gần nghĩa. Cần nắm số chiều, chuẩn hoá vector, và việc vector từ hai model khác nhau không so sánh được với nhau, đổi model là phải embed lại toàn bộ." },
+            { "title": "Các giai đoạn train và reasoning model", "detail": "Pretraining cho kiến thức, instruction tuning và preference tuning cho hành vi, còn reasoning model dùng thêm token suy nghĩ trước khi trả lời. Hiểu chuỗi này giải thích được knowledge cutoff, hallucination, và vì sao thinking budget là đánh đổi giữa độ chính xác với độ trễ và chi phí." }
+          ],
+          "practices": [
+            "Đo số token trên dữ liệu thật trước khi ước tính chi phí cho một tính năng.",
+            "Đọc model card, trang pricing và giới hạn rate limit trước khi chọn model.",
+            "Ghi lại time to first token và tổng thời gian cho từng lời gọi ngay từ prototype đầu tiên.",
+            "So sánh output trên nhiều lần chạy với cùng input để cảm nhận độ biến thiên."
+          ],
+          "pitfalls": [
+            "Mặc định model biết thông tin mới nhất trong khi nó chỉ biết tới knowledge cutoff.",
+            "Coi context window như bộ nhớ dùng thoải mái mà không tính chất lượng giảm khi context dài.",
+            "Tin rằng đặt temperature 0 là output sẽ luôn giống hệt nhau."
+          ],
+          "project": {
+            "title": "Token và cost explorer",
+            "brief": "Làm một trang nhỏ nhận text tiếng Việt và tiếng Anh, hiển thị số token qua API của provider, ước tính chi phí input/output cho 2-3 model, và cosine similarity giữa hai câu qua một embedding API. Đạt khi số liệu khớp với trường usage mà API trả về và trang giải thích được vì sao cùng nội dung tiếng Việt tốn nhiều token hơn."
+          },
+          "resources": [
+            { "title": "Neural Networks: Zero to Hero (Andrej Karpathy)", "url": "https://karpathy.ai/zero-to-hero.html", "kind": "course" },
+            { "title": "The Illustrated Transformer", "url": "https://jalammar.github.io/illustrated-transformer/", "kind": "article" },
+            { "title": "3Blue1Brown: Neural Networks", "url": "https://www.3blue1brown.com/topics/neural-networks", "kind": "course" },
+            { "title": "Tiktokenizer", "url": "https://tiktokenizer.vercel.app/", "kind": "tool" }
+          ],
+          "tags": ["LLM", "tokens", "embeddings"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Làm việc với model API",
+          "goal": "Gọi được model API từ server với streaming, structured output và tool calling, đồng thời kiểm soát được chi phí và độ trễ.",
+          "note": "Bản prototype đầu tiên của mình parse JSON từ text tự do bằng regex và vỡ liên tục. Chuyển sang structured output với schema rõ ràng là thay đổi đáng giá nhất ở giai đoạn này.",
+          "topics": [
+            { "title": "Messages API và streaming", "detail": "Các provider lớn đều theo mô hình danh sách message theo role, trả về qua server-sent events khi bật streaming. Cần hiểu các loại event (delta text, tool call, usage, stop reason) để xử lý đúng khi stream bị cắt giữa chừng hoặc dừng vì chạm max tokens." },
+            { "title": "Structured output", "detail": "Dùng JSON Schema (thường sinh từ Zod) để provider ép output đúng cấu trúc bằng constrained decoding thay vì chỉ dặn trong prompt. Vẫn phải validate phía server, vì model có thể từ chối, bị cắt do max tokens, hoặc trả về giá trị đúng kiểu nhưng sai nghĩa." },
+            { "title": "Tool calling", "detail": "Model không tự chạy tool: nó trả về tên tool và tham số, code của bạn thực thi rồi gửi kết quả lại trong message tiếp theo. Nắm parallel tool call, cách trả lỗi tool về cho model như một observation, và việc định nghĩa tool chiếm token trong mỗi request." },
+            { "title": "Prompt caching", "detail": "Đặt phần cố định (system prompt, tài liệu, định nghĩa tool) ở đầu và phần thay đổi ở cuối để tận dụng cache prefix, giúp giảm mạnh chi phí input và độ trễ. Có provider cache tự động, có provider cần đánh dấu breakpoint rõ ràng, nên hãy đọc trường cached tokens trong usage để biết cache có trúng hay không." },
+            { "title": "Ngân sách chi phí và độ trễ", "detail": "Output token thường đắt và chậm hơn input, nên giới hạn max output là cách tiết kiệm trực tiếp nhất. Dùng batch API cho việc chạy offline để được giảm giá, đặt timeout, retry với exponential backoff cho lỗi 429 và lỗi quá tải, và luôn tính chi phí theo request lẫn theo user." },
+            { "title": "Chọn model: hosted, tier nhỏ hay open-weight", "detail": "Model frontier hosted cho chất lượng cao nhất, tier nhỏ hơn của cùng hãng rẻ và nhanh hơn nhiều cho tác vụ hẹp, còn open-weight cho quyền kiểm soát dữ liệu và chi phí ở quy mô lớn. Một lớp trừu tượng provider như AI SDK hoặc một AI gateway giúp đổi model mà không phải viết lại code, và chỉ nên chọn dựa trên eval của chính bạn." }
+          ],
+          "practices": [
+            "Giữ API key ở server và không bao giờ gọi model API trực tiếp từ trình duyệt.",
+            "Định nghĩa schema ở một chỗ duy nhất và dùng chung cho structured output lẫn validation.",
+            "Đặt timeout và max output tokens tường minh cho mọi lời gọi.",
+            "Log trường usage (input, output, cached tokens) và độ trễ cho từng request.",
+            "Bọc lời gọi model sau một lớp trừu tượng để đổi provider chỉ bằng config."
+          ],
+          "pitfalls": [
+            "Parse JSON từ text tự do bằng regex thay vì dùng structured output.",
+            "Dùng model lớn nhất cho mọi lời gọi kể cả tác vụ phân loại đơn giản.",
+            "Chèn timestamp hoặc dữ liệu thay đổi vào đầu prompt làm prompt cache không bao giờ trúng."
+          ],
+          "project": {
+            "title": "Trích xuất hoá đơn có kiểu",
+            "brief": "Viết một route handler Next.js nhận text hoá đơn, trả về JSON có kiểu qua structured output, stream thêm một đoạn tóm tắt và log token, chi phí, độ trễ. Đạt khi output sai schema bị chặn và retry một lần, đổi provider chỉ cần sửa một dòng config, và có số liệu p95 latency cùng chi phí trung bình mỗi request."
+          },
+          "resources": [
+            { "title": "OpenAI: Structured outputs", "url": "https://platform.openai.com/docs/guides/structured-outputs", "kind": "docs" },
+            { "title": "Claude: Prompt caching", "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching", "kind": "docs" },
+            { "title": "AI SDK: Generating structured data", "url": "https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data", "kind": "docs" },
+            { "title": "Claude: Tool use overview", "url": "https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview", "kind": "docs" }
+          ],
+          "tags": ["API", "streaming", "tool calling"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Prompt và context engineering",
+          "goal": "Thiết kế được prompt và chiến lược đưa context vào model một cách có cấu trúc, có version và đo được.",
+          "note": "Mình từng viết prompt kiểu càng dài càng an toàn, toàn chữ in hoa và cấm đoán. Hoá ra prompt ngắn, rõ mục tiêu, có ví dụ tốt và context chọn lọc mới cho kết quả ổn định.",
+          "topics": [
+            { "title": "Cấu trúc một prompt tốt", "detail": "Tách rõ vai trò, nhiệm vụ, ràng buộc, định dạng output và dữ liệu đầu vào, thường bằng thẻ XML hoặc heading. Việc phân tách dữ liệu khỏi chỉ dẫn vừa giúp model hiểu đúng, vừa là bước đầu để giảm prompt injection." },
+            { "title": "Few-shot examples", "detail": "Ví dụ là cách mạnh nhất để chỉ định format và giọng văn, nhưng model sẽ bắt chước cả những điểm lặp lại không mong muốn. Chọn ví dụ đa dạng, sát dữ liệu thật và có cả trường hợp biên." },
+            { "title": "Context engineering", "detail": "Mỗi lượt gọi là quyết định đưa gì vào window: chỉ dẫn, tài liệu retrieve, bộ nhớ, kết quả tool. Các kỹ thuật chính gồm tóm tắt hoặc compact lịch sử dài, nạp tài liệu đúng lúc cần thay vì nạp hết từ đầu, và loại bỏ kết quả tool cũ không còn liên quan." },
+            { "title": "Prompt với reasoning model", "detail": "Reasoning model cần ít hướng dẫn từng bước hơn, nhưng cần mục tiêu, tiêu chí thành công và ràng buộc rõ ràng hơn. Hãy điều chỉnh mức thinking budget theo độ khó của tác vụ thay vì bật tối đa cho mọi request." },
+            { "title": "Prompt là code", "detail": "Lưu prompt trong repo hoặc prompt registry có version, review diff như code, và gắn mỗi thay đổi với kết quả eval. Template hoá phần biến đổi để phần cố định giữ nguyên, vừa dễ đọc vừa tận dụng được prompt caching." }
+          ],
+          "practices": [
+            "Viết tiêu chí thành công cho tác vụ trước khi viết prompt.",
+            "Bọc dữ liệu người dùng và tài liệu trong thẻ riêng, tách khỏi phần chỉ dẫn.",
+            "Đánh version cho prompt và ghi version vào log của mỗi request.",
+            "Chỉ đưa vào context những gì model cần cho lượt hiện tại."
+          ],
+          "pitfalls": [
+            "Viết chỉ dẫn mâu thuẫn nhau trong system prompt dài rồi đổ lỗi cho model.",
+            "Sửa prompt dựa trên một hai ví dụ lỗi mà không chạy lại trên bộ test chung."
+          ],
+          "project": {
+            "title": "Trợ lý soạn trả lời hỗ trợ khách hàng",
+            "brief": "Xây trợ lý gợi ý câu trả lời cho ticket hỗ trợ với ba phiên bản prompt, chạy trên cùng 20 input cố định gồm cả tiếng Việt và tiếng Anh. Đạt khi prompt nằm trong repo có version, có bảng so sánh output ba phiên bản, và ghi lại lý do chọn phiên bản cuối."
+          },
+          "resources": [
+            { "title": "Claude: Prompt engineering overview", "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview", "kind": "docs" },
+            { "title": "Effective context engineering for AI agents", "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents", "kind": "article" },
+            { "title": "Prompt Engineering Guide", "url": "https://www.promptingguide.ai/", "kind": "docs" }
+          ],
+          "tags": ["prompting", "context"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Trải nghiệm AI trong web app",
+          "goal": "Xây được giao diện AI có streaming, xử lý tool call, cho phép dừng, sửa và phản hồi, đồng thời thể hiện rõ mức độ không chắc chắn.",
+          "note": "Đây là phần mình thấy quen tay nhất vì gần với frontend. Điều mình nhận ra là UX tốt cho AI không nằm ở hiệu ứng gõ chữ, mà ở chỗ người dùng kiểm soát được và kiểm chứng được kết quả.",
+          "topics": [
+            { "title": "Streaming UI", "detail": "Dùng hook như useChat của AI SDK hoặc tự đọc stream qua ReadableStream để render text, message part và object có cấu trúc khi đang stream dở. Cần xử lý trạng thái lỗi giữa stream, retry, và giữ lịch sử hội thoại ổn định khi người dùng reload." },
+            { "title": "Generative UI và tool call trên giao diện", "detail": "Render từng tool call thành component riêng theo trạng thái đang chạy, có kết quả hoặc lỗi, ví dụ một card kết quả tìm kiếm thay vì một đoạn text dài. Với hành động có tác động, hiển thị bước xác nhận ngay trong luồng chat." },
+            { "title": "Thể hiện sự không chắc chắn", "detail": "Hiển thị nguồn trích dẫn có link tới đúng đoạn, cho người dùng sửa trước khi áp dụng, và có undo. Thiết kế để model nói được tôi không biết thay vì ép nó luôn trả lời." },
+            { "title": "Thiết kế cho độ trễ", "detail": "Có nút stop thật sự huỷ request upstream bằng AbortController để không tốn token vô ích, hiển thị tiến độ của các bước dài, và cân nhắc resumable stream cho tác vụ chạy lâu. Tác vụ nặng nên chạy nền và báo kết quả khi xong thay vì giữ người dùng chờ." },
+            { "title": "Render output an toàn và accessible", "detail": "Output của model là input không tin cậy: render markdown qua sanitizer, chặn HTML và link nguy hiểm. Dùng aria-live hợp lý để screen reader đọc kết quả thay vì đọc từng token." },
+            { "title": "Thu thập feedback", "detail": "Nút thích hoặc không thích, chỉnh sửa của người dùng và việc họ có dùng gợi ý hay không đều là tín hiệu eval quý. Gắn mỗi feedback với trace id để sau này tra lại đúng prompt, context và output." }
+          ],
+          "practices": [
+            "Cho phép người dùng dừng, sửa và thử lại ở mọi điểm trong luồng AI.",
+            "Sanitize mọi output của model trước khi render thành HTML.",
+            "Gắn trace id vào mỗi message để nối feedback với log phía server.",
+            "Ghi rõ trên giao diện khi nội dung do AI tạo ra."
+          ],
+          "pitfalls": [
+            "Nút stop chỉ ẩn text trên UI trong khi request phía server vẫn chạy và tính tiền.",
+            "Render markdown từ model bằng dangerouslySetInnerHTML mà không sanitize.",
+            "Thiết kế giao diện như thể model luôn đúng, không có chỗ cho nguồn hay chỉnh sửa."
+          ],
+          "project": {
+            "title": "Panel trợ lý viết trong Next.js",
+            "brief": "Xây panel gợi ý chỉnh sửa văn bản có streaming, nút stop, hiển thị gợi ý dạng diff với accept hoặc reject, và nút feedback lưu kèm trace id. Đạt khi stop huỷ được request upstream (kiểm tra qua usage), output render qua markdown đã sanitize, và screen reader đọc được kết quả cuối."
+          },
+          "resources": [
+            { "title": "AI SDK: Chatbot", "url": "https://ai-sdk.dev/docs/ai-sdk-ui/chatbot", "kind": "docs" },
+            { "title": "AI SDK: Tools and tool calling", "url": "https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling", "kind": "docs" },
+            { "title": "Google PAIR: People + AI Guidebook", "url": "https://pair.withgoogle.com/guidebook/", "kind": "docs" }
+          ],
+          "tags": ["Next.js", "AI SDK", "UX"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Evaluation: đo trước khi sửa",
+          "goal": "Xây được bộ eval gồm dữ liệu, grader và ngưỡng chạy trong CI để mọi thay đổi prompt hoặc model đều có số liệu.",
+          "note": "Mình xếp eval ngay sau phần UX vì đây là chỗ mình làm sai lâu nhất: chỉnh prompt theo cảm tính và chỉ thử vài câu quen thuộc. Có eval rồi thì việc đổi model hay sửa prompt mới hết đáng sợ.",
+          "topics": [
+            { "title": "Error analysis trước, metric sau", "detail": "Đọc 50 đến 100 trace thật, ghi chú và phân nhóm các kiểu lỗi, rồi mới viết eval cho từng nhóm. Metric chung chung như helpfulness score thường không chỉ ra được cần sửa gì." },
+            { "title": "Bộ dữ liệu eval", "detail": "Kết hợp mẫu từ traffic thật, trường hợp biên và input đối kháng, có nhãn hoặc tiêu chí đạt rõ ràng, và lưu có version như code. Cập nhật bộ eval mỗi khi gặp lỗi mới ở production để lỗi đó không quay lại." },
+            { "title": "Các loại grader", "detail": "Ưu tiên grader bằng code khi có thể: so khớp chính xác, kiểm tra schema, regex, chạy unit test cho code sinh ra. Dùng LLM-as-judge cho tiêu chí khó viết bằng code, và review của người cho phần quan trọng nhất." },
+            { "title": "Bẫy của LLM-as-judge", "detail": "Judge có position bias, verbosity bias và xu hướng ưu ái output của chính họ model. Dùng tiêu chí pass/fail nhị phân rõ ràng thay vì thang 1 đến 10, và hiệu chỉnh judge với nhãn của người bằng cách đo mức đồng thuận trước khi tin nó." },
+            { "title": "Regression test trong CI", "detail": "Chạy eval mỗi khi đổi prompt, model hoặc logic retrieval bằng công cụ như promptfoo hoặc Inspect, với ngưỡng chặn PR khi tỉ lệ đạt giảm. Lưu kết quả theo thời gian để thấy xu hướng thay vì chỉ nhìn một lần chạy." },
+            { "title": "Online eval", "detail": "Ở production, lấy mẫu trace để chạy grader tự động, theo dõi feedback người dùng, tỉ lệ từ chối, độ trễ và chi phí. A/B test giữa hai phiên bản prompt hoặc model khi thay đổi có ảnh hưởng lớn tới người dùng." }
+          ],
+          "practices": [
+            "Bắt đầu bằng việc đọc trace thật trước khi chọn metric.",
+            "Viết tiêu chí pass/fail cụ thể thay vì chấm điểm cảm tính.",
+            "Đo mức đồng thuận giữa LLM judge và người trước khi dùng judge để chặn release.",
+            "Thêm mỗi bug production thành một case trong bộ eval."
+          ],
+          "pitfalls": [
+            "Dựa vào benchmark công khai để chọn model cho bài toán riêng của mình.",
+            "Dùng LLM judge chưa hiệu chỉnh rồi tin tuyệt đối vào điểm số.",
+            "Bộ eval chỉ toàn câu dễ nên lúc nào cũng đạt gần như tuyệt đối."
+          ],
+          "project": {
+            "title": "Bộ eval cho trợ lý ở các giai đoạn trước",
+            "brief": "Xây bộ eval tối thiểu 50 case có nhãn cho trợ lý ở giai đoạn 02 hoặc 03, gồm grader bằng code và một LLM judge được hiệu chỉnh trên 30 case do người gán nhãn. Đạt khi báo cáo được mức đồng thuận của judge, và CI chặn PR khi tỉ lệ đạt giảm quá ngưỡng đã chọn."
+          },
+          "resources": [
+            { "title": "Hamel Husain: Your AI product needs evals", "url": "https://hamel.dev/blog/posts/evals/", "kind": "article" },
+            { "title": "promptfoo docs", "url": "https://www.promptfoo.dev/docs/intro/", "kind": "tool" },
+            { "title": "Judging LLM-as-a-Judge (paper)", "url": "https://arxiv.org/abs/2306.05685", "kind": "article" },
+            { "title": "Inspect (UK AI Security Institute)", "url": "https://inspect.aisi.org.uk/", "kind": "tool" }
+          ],
+          "tags": ["evals", "testing", "CI"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Retrieval và RAG",
+          "goal": "Xây được pipeline RAG có chunking, hybrid search, rerank và trích dẫn nguồn, đồng thời biết khi nào không nên dùng RAG.",
+          "note": "Mình từng nghĩ RAG là embed hết rồi tìm vector gần nhất. Thực tế phần quyết định chất lượng là chunking, metadata, tìm kiếm kết hợp từ khoá và việc đo retrieval tách riêng khỏi câu trả lời.",
+          "topics": [
+            { "title": "Khi nào không cần RAG", "detail": "Nếu tài liệu đủ nhỏ để nằm trong context, hãy đưa thẳng vào prompt kèm prompt caching. Nếu câu hỏi cần lọc hay tổng hợp dữ liệu có cấu trúc thì dùng SQL hoặc tool. RAG hợp nhất với kho tài liệu lớn, thay đổi thường xuyên và cần trích dẫn." },
+            { "title": "Chunking và metadata", "detail": "Chia theo cấu trúc tài liệu (heading, đoạn, bảng) thay vì cắt cứng theo số ký tự, cân nhắc kích thước chunk và overlap. Giữ metadata như nguồn, section, ngày cập nhật, quyền truy cập, và cân nhắc contextual retrieval: thêm vài câu mô tả ngữ cảnh tài liệu vào mỗi chunk trước khi embed." },
+            { "title": "Embedding và vector store", "detail": "Với hệ thống đã có PostgreSQL, pgvector với index HNSW thường là lựa chọn đầu tiên hợp lý, kèm filter theo metadata trong cùng câu query. Vector database chuyên dụng chỉ đáng khi quy mô hoặc yêu cầu vận hành vượt quá Postgres; chọn embedding model qua MTEB rồi kiểm chứng lại trên dữ liệu của mình, nhất là với tiếng Việt." },
+            { "title": "Hybrid search và rerank", "detail": "Kết hợp full-text search (BM25 hoặc tsvector của Postgres) với vector search rồi trộn bằng reciprocal rank fusion, vì từ khoá chính xác như mã lỗi hay tên riêng thường bị vector bỏ sót. Sau đó rerank top-k bằng cross-encoder hoặc rerank API trước khi đưa vào context." },
+            { "title": "Đo retrieval và đo câu trả lời", "detail": "Đo retrieval riêng bằng recall@k và MRR trên bộ câu hỏi có đoạn tài liệu đúng được gán nhãn. Sau đó đo câu trả lời về độ bám nguồn (groundedness), trích dẫn đúng chỗ và khả năng từ chối khi không có thông tin." },
+            { "title": "Phân quyền và độ tươi dữ liệu", "detail": "Lọc theo quyền của người dùng ngay lúc query, không lọc sau khi đã đưa vào prompt. Có pipeline cập nhật index khi tài liệu thay đổi và kế hoạch embed lại toàn bộ khi đổi embedding model." }
+          ],
+          "practices": [
+            "Thử giải pháp không cần RAG trước, chỉ thêm RAG khi có lý do rõ ràng.",
+            "Lưu metadata nguồn cho mọi chunk để trích dẫn được tới đúng section.",
+            "Đo recall@k trước và sau mỗi thay đổi về chunking, embedding hay rerank.",
+            "Áp quyền truy cập trong câu query retrieval, không phải trong prompt."
+          ],
+          "pitfalls": [
+            "Chỉ dùng vector search nên bỏ lỡ các truy vấn có từ khoá chính xác.",
+            "Chỉ đánh giá câu trả lời cuối nên không biết lỗi nằm ở retrieval hay ở generation.",
+            "Nhồi quá nhiều chunk vào context khiến model bị nhiễu và tốn chi phí."
+          ],
+          "project": {
+            "title": "Hỏi đáp trên chính các bài blog",
+            "brief": "Xây hỏi đáp trên các bài MDX song ngữ của blog với pgvector, full-text search của Postgres, reciprocal rank fusion và rerank, có trích dẫn link tới section. Đạt khi bộ 40 câu hỏi báo cáo recall@5 cho ba cấu hình vector, hybrid và hybrid cộng rerank, câu trả lời có nguồn, và hệ thống từ chối khi không tìm thấy đoạn liên quan."
+          },
+          "resources": [
+            { "title": "pgvector", "url": "https://github.com/pgvector/pgvector", "kind": "tool" },
+            { "title": "Anthropic: Contextual retrieval", "url": "https://www.anthropic.com/news/contextual-retrieval", "kind": "article" },
+            { "title": "PostgreSQL: Full text search", "url": "https://www.postgresql.org/docs/current/textsearch.html", "kind": "docs" },
+            { "title": "MTEB leaderboard", "url": "https://huggingface.co/spaces/mteb/leaderboard", "kind": "tool" }
+          ],
+          "tags": ["RAG", "pgvector", "search"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Agent, tool use và MCP",
+          "goal": "Thiết kế được workflow và agent có giới hạn rõ ràng, viết được MCP server và đưa con người vào vòng duyệt ở các bước quan trọng.",
+          "note": "Agent nghe rất hấp dẫn nên mình từng muốn biến mọi thứ thành agent. Bài học là bắt đầu từ workflow đơn giản nhất chạy được, và chỉ cho model tự quyết khi thật sự cần sự linh hoạt đó.",
+          "topics": [
+            { "title": "Workflow trước, agent sau", "detail": "Các pattern như prompt chaining, routing, parallelization, orchestrator-workers và evaluator-optimizer giải quyết được phần lớn bài toán với độ tin cậy cao hơn. Agent tự lập kế hoạch chỉ đáng dùng khi số bước và đường đi không thể biết trước." },
+            { "title": "Vòng lặp agent", "detail": "Agent là vòng lặp: model gọi tool, nhận kết quả, quyết định bước tiếp cho tới khi dừng. Luôn đặt giới hạn số bước, ngân sách token và thời gian, điều kiện dừng rõ ràng, và trả lỗi tool về cho model như một observation để nó tự điều chỉnh." },
+            { "title": "Thiết kế tool cho agent", "detail": "Ít tool nhưng tên và mô tả rõ, tham số chặt, output ngắn gọn có thông tin hữu ích, có phân trang và hành động idempotent khi có thể. Định nghĩa tool chiếm context nên quá nhiều tool làm agent chọn sai và tốn chi phí." },
+            { "title": "Model Context Protocol (MCP)", "detail": "MCP chuẩn hoá cách app (host và client) kết nối với server cung cấp tools, resources và prompts, qua transport stdio cho local hoặc Streamable HTTP cho remote, với cơ chế authorization dựa trên OAuth. MCP hiện thuộc Agentic AI Foundation của Linux Foundation, nên đáng học như một chuẩn chứ không phải tính năng của riêng một hãng." },
+            { "title": "Human-in-the-loop", "detail": "Hành động không đảo ngược được như gửi email, xoá dữ liệu, thanh toán phải có bước người duyệt. Kết hợp quyền tối thiểu cho từng tool, chế độ dry-run và audit log ghi lại ai duyệt gì." },
+            { "title": "Đánh đổi của multi-agent", "detail": "Subagent giúp cô lập context và chạy song song các nhánh nghiên cứu, nhưng nhân số token lên nhiều lần và khó debug hơn hẳn. Bắt đầu với một agent, chỉ tách khi đo được lợi ích; với chỉ dẫn dài hạn, cân nhắc các định dạng như AGENTS.md hoặc Agent Skills để nạp đúng lúc cần." }
+          ],
+          "practices": [
+            "Đặt giới hạn số bước, token và thời gian cho mọi vòng lặp agent.",
+            "Yêu cầu người duyệt trước mọi hành động ghi hoặc không đảo ngược được.",
+            "Trace mọi tool call kèm tham số, kết quả và thời gian.",
+            "Viết eval cho cả quỹ đạo của agent, không chỉ kết quả cuối."
+          ],
+          "pitfalls": [
+            "Cho agent quá nhiều tool với mô tả mơ hồ.",
+            "Dùng multi-agent khi một workflow cố định là đủ.",
+            "Cấp cho MCP server hoặc tool quyền rộng hơn mức tác vụ cần."
+          ],
+          "project": {
+            "title": "MCP server cho dữ liệu của app",
+            "brief": "Viết một MCP server với ba tool trên dữ liệu của app (tìm bài viết, lấy bài viết, tạo bản nháp tóm tắt) và một agent trong app dùng server đó. Đạt khi server chạy được với MCP Inspector, agent có giới hạn số bước, mọi tool call đều được trace, và hành động ghi chỉ chạy sau khi người dùng xác nhận."
+          },
+          "resources": [
+            { "title": "Anthropic: Building effective agents", "url": "https://www.anthropic.com/engineering/building-effective-agents", "kind": "article" },
+            { "title": "Model Context Protocol: Introduction", "url": "https://modelcontextprotocol.io/docs/getting-started/intro", "kind": "docs" },
+            { "title": "Anthropic: Writing effective tools for agents", "url": "https://www.anthropic.com/engineering/writing-tools-for-agents", "kind": "article" },
+            { "title": "MCP Inspector", "url": "https://modelcontextprotocol.io/docs/tools/inspector", "kind": "tool" }
+          ],
+          "tags": ["agents", "MCP", "tool use"]
+        },
+        {
+          "id": "08",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Production: observability, bảo mật, tin cậy",
+          "goal": "Vận hành được tính năng AI ở production với tracing, guardrail, phòng prompt injection, rate limit và fallback.",
+          "note": "Với mình đây là phần giống backend nhất nhưng có thêm một lớp rủi ro mới: dữ liệu đi vào model cũng có thể là mã độc. Mình học cách nghĩ về prompt injection từ những người làm bảo mật chứ không tự nghĩ ra.",
+          "topics": [
+            { "title": "Tracing và observability", "detail": "Theo semantic conventions GenAI của OpenTelemetry để trace mỗi lời gọi model, retrieval và tool call với token, chi phí, độ trễ. Công cụ như Langfuse giúp xem lại prompt, context, output và nối với feedback người dùng." },
+            { "title": "Prompt injection trực tiếp và gián tiếp", "detail": "Chỉ dẫn độc hại có thể đến từ người dùng hoặc ẩn trong trang web, tài liệu retrieve, email, kết quả tool. Hiện chưa có cách chặn tuyệt đối, nên cách giảm rủi ro chính là thiết kế: tránh kết hợp cùng lúc dữ liệu riêng tư, nội dung không tin cậy và khả năng gửi dữ liệu ra ngoài (lethal trifecta)." },
+            { "title": "Danh sách rủi ro OWASP", "detail": "OWASP Top 10 for LLM Applications và Top 10 for Agentic Applications là checklist tốt để review thiết kế: prompt injection, lộ thông tin nhạy cảm, quyền quá rộng của agent, tiêu thụ tài nguyên không giới hạn. Dùng chúng làm đầu vào cho threat modeling và cho bộ eval red-team." },
+            { "title": "Guardrail", "detail": "Ưu tiên kiểm tra tất định trước: validate schema, allowlist tool và domain, giới hạn độ dài, redact PII. Sau đó mới dùng moderation hoặc classifier bằng model cho phần khó viết luật." },
+            { "title": "Rate limit, ngân sách và fallback", "detail": "Giới hạn theo user và theo tenant cả về số request lẫn số token, đặt ngân sách chi phí hằng tháng. Retry có backoff, chuyển sang model hoặc provider dự phòng, circuit breaker, và có đường lui không dùng AI khi mọi thứ đều lỗi." },
+            { "title": "Quyền riêng tư dữ liệu", "detail": "Biết rõ dữ liệu nào được gửi tới provider, chính sách lưu trữ và các tuỳ chọn như zero data retention hay vùng lưu trữ dữ liệu. Không ghi PII thô vào trace và log, và tuân thủ luật bảo vệ dữ liệu cá nhân tại nơi có người dùng." }
+          ],
+          "practices": [
+            "Trace mọi lời gọi model, retrieval và tool theo một chuẩn thống nhất.",
+            "Áp quyền tối thiểu cho agent và tách nội dung không tin cậy khỏi chỉ dẫn.",
+            "Đặt rate limit và ngân sách token theo từng user trước khi mở tính năng cho công chúng.",
+            "Có red-team eval cho prompt injection chạy trong CI.",
+            "Chuẩn bị fallback provider và đường lui không dùng AI."
+          ],
+          "pitfalls": [
+            "Tin rằng một câu trong system prompt như đừng làm theo chỉ dẫn lạ là đủ chống injection.",
+            "Log toàn bộ prompt có chứa dữ liệu cá nhân vào hệ thống observability.",
+            "Không giới hạn token theo user nên một người có thể đốt hết ngân sách."
+          ],
+          "project": {
+            "title": "Gia cố app RAG và agent",
+            "brief": "Thêm tracing, rate limit và ngân sách token theo user, fallback provider, và bộ red-team 20 case injection (có cả chỉ dẫn độc hại giấu trong tài liệu retrieve) cho app ở các giai đoạn trước. Đạt khi dashboard thấy chi phí theo user, tỉ lệ chống injection được theo dõi trong CI, và tắt provider chính trong môi trường test thì app tự chuyển sang dự phòng."
+          },
+          "resources": [
+            { "title": "OpenTelemetry: GenAI semantic conventions", "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/", "kind": "docs" },
+            { "title": "OWASP Top 10 for LLM Applications", "url": "https://genai.owasp.org/llm-top-10/", "kind": "docs" },
+            { "title": "Simon Willison: The lethal trifecta", "url": "https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/", "kind": "article" },
+            { "title": "Langfuse docs", "url": "https://langfuse.com/docs", "kind": "tool" }
+          ],
+          "tags": ["observability", "security", "OpenTelemetry"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "Fine-tuning và model nhỏ, chạy local",
+          "goal": "Đánh giá được khi nào fine-tune hoặc dùng model open-weight nhỏ là đáng, và tự fine-tune, serve một model cho tác vụ hẹp.",
+          "note": "Mình chưa fine-tune gì cho production, phần này là những gì mình thử ở side project và học từ docs. Điều rõ nhất mình rút ra là fine-tune dùng để dạy hành vi và format, không phải để nhét thêm kiến thức.",
+          "topics": [
+            { "title": "Khi nào nên fine-tune", "detail": "Chỉ cân nhắc khi prompt, RAG và eval đã chững lại, và khi cần ổn định format, giọng văn, hoặc giảm chi phí và độ trễ cho một tác vụ hẹp lặp lại nhiều. Kiến thức thay đổi thường xuyên vẫn nên đi qua retrieval." },
+            { "title": "LoRA, QLoRA và PEFT", "detail": "Thay vì train lại toàn bộ trọng số, LoRA train các adapter nhỏ nên rẻ và nhanh, QLoRA kết hợp thêm lượng tử hoá để chạy trên GPU ít bộ nhớ. Chất lượng dữ liệu quan trọng hơn số lượng, và luôn giữ một tập eval tách riêng để so với baseline." },
+            { "title": "Distillation", "detail": "Dùng output của model lớn để tạo dữ liệu train cho model nhỏ thực hiện một tác vụ cụ thể. Phải đọc kỹ điều khoản sử dụng của provider và license của model trước khi làm." },
+            { "title": "Model open-weight và license", "detail": "Hugging Face Hub là nơi tìm và so sánh model open-weight; mỗi họ model có license riêng, có cái giới hạn mục đích thương mại hoặc quy mô người dùng. Đọc license trước khi đưa vào sản phẩm." },
+            { "title": "Inference local và serving", "detail": "Ollama tiện cho phát triển local, llama.cpp với định dạng GGUF cho phép lượng tử hoá 4-bit hoặc 8-bit đánh đổi chất lượng lấy bộ nhớ, còn vLLM phù hợp khi cần throughput cao. Hầu hết đều có endpoint tương thích OpenAI nên đổi qua lại dễ dàng." },
+            { "title": "Model nhỏ trên thiết bị và trình duyệt", "detail": "Model nhỏ làm rất tốt phân loại, routing, embedding và trích xuất đơn giản, có thể chạy trong trình duyệt qua WebGPU với Transformers.js. Kiến trúc kết hợp model nhỏ cho bước đơn giản và model lớn cho bước khó đang ngày càng phổ biến." }
+          ],
+          "practices": [
+            "Có baseline bằng prompt trên model hosted trước khi fine-tune.",
+            "So sánh trên cùng bộ eval về độ chính xác, độ trễ và chi phí mỗi nghìn request.",
+            "Đọc license model và điều khoản provider trước khi dùng dữ liệu hay trọng số."
+          ],
+          "pitfalls": [
+            "Fine-tune để thêm kiến thức thay vì dùng retrieval.",
+            "Chỉ nhìn điểm benchmark mà bỏ qua chi phí vận hành GPU và độ phức tạp khi tự host."
+          ],
+          "project": {
+            "title": "Model nhỏ phân loại ticket",
+            "brief": "Fine-tune một model open-weight nhỏ bằng LoRA để phân loại ticket hỗ trợ vào 8 nhóm, rồi so với model hosted dùng prompt trên cùng bộ eval. Đạt khi có bảng so sánh độ chính xác, độ trễ, chi phí mỗi nghìn request, và model được serve qua Ollama hoặc vLLM với endpoint tương thích OpenAI."
+          },
+          "resources": [
+            { "title": "Hugging Face PEFT", "url": "https://huggingface.co/docs/peft/index", "kind": "docs" },
+            { "title": "Hugging Face LLM Course", "url": "https://huggingface.co/learn/llm-course", "kind": "course" },
+            { "title": "Ollama", "url": "https://ollama.com/", "kind": "tool" },
+            { "title": "Transformers.js", "url": "https://huggingface.co/docs/transformers.js/index", "kind": "docs" }
+          ],
+          "tags": ["fine-tuning", "LoRA", "open-weight"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 2,
+          "title": "Responsible AI và governance",
+          "goal": "Đánh giá được rủi ro của một tính năng AI, ghi lại bằng system card và đưa các kiểm soát cần thiết vào quy trình phát triển.",
+          "note": "Ban đầu mình nghĩ phần này là việc của pháp chế. Thực tế nhiều quyết định như gửi dữ liệu gì cho provider hay có cần người duyệt không nằm ngay trong code mình viết.",
+          "topics": [
+            { "title": "Khung đánh giá rủi ro", "detail": "NIST AI RMF chia việc quản lý rủi ro thành govern, map, measure, manage, đủ thực dụng để áp vào từng tính năng. Dùng nó để trả lời ai chịu trách nhiệm, tác hại có thể là gì, đo bằng cách nào và xử lý ra sao." },
+            { "title": "Quy định pháp lý", "detail": "EU AI Act phân loại hệ thống theo mức rủi ro và có nghĩa vụ minh bạch như thông báo người dùng đang tương tác với AI và gắn nhãn nội dung do AI tạo, áp dụng theo từng giai đoạn. Kiểm tra cả quy định tại nơi có người dùng, ví dụ luật bảo vệ dữ liệu cá nhân của Việt Nam." },
+            { "title": "Công bằng và chất lượng theo nhóm", "detail": "Chia kết quả eval theo ngôn ngữ, nhóm người dùng và loại input để thấy chỗ model kém hơn, ví dụ tiếng Việt so với tiếng Anh. Một con số trung bình đẹp có thể che mất nhóm bị phục vụ tệ." },
+            { "title": "Minh bạch và tài liệu", "detail": "Viết system card cho tính năng: mục đích, phạm vi không hỗ trợ, dữ liệu đi đâu, kết quả eval, các kiểu lỗi đã biết. Hiển thị rõ trên giao diện khi nội dung do AI tạo và cân nhắc C2PA cho nguồn gốc của media được sinh ra." },
+            { "title": "Giám sát và phản ứng sự cố", "detail": "Mỗi tính năng AI cần một người chịu trách nhiệm, quy trình xử lý khi có output gây hại, và kill switch qua feature flag. Giữ trace đủ để điều tra lại một sự cố mà không vi phạm quyền riêng tư." }
+          ],
+          "practices": [
+            "Viết system card ngắn cho mỗi tính năng AI trước khi release.",
+            "Thêm checklist rủi ro AI vào template pull request.",
+            "Báo cáo kết quả eval theo từng ngôn ngữ và nhóm người dùng.",
+            "Đặt mọi tính năng AI sau feature flag có thể tắt ngay."
+          ],
+          "pitfalls": [
+            "Coi governance là tài liệu viết một lần rồi bỏ quên.",
+            "Chỉ báo cáo điểm trung bình mà không xem từng nhóm người dùng."
+          ],
+          "project": {
+            "title": "System card và checklist cho app",
+            "brief": "Viết system card một trang cho app RAG và agent đã xây, kèm checklist AI trong template PR gồm mục đích, phạm vi, dữ liệu gửi tới provider nào, kết quả eval theo ngôn ngữ, lỗi đã biết và người xử lý sự cố. Đạt khi kill switch đã được test thật và kết quả eval được tách riêng cho tiếng Việt và tiếng Anh."
+          },
+          "resources": [
+            { "title": "NIST AI Risk Management Framework", "url": "https://www.nist.gov/itl/ai-risk-management-framework", "kind": "docs" },
+            { "title": "EU Artificial Intelligence Act", "url": "https://artificialintelligenceact.eu/", "kind": "docs" },
+            { "title": "C2PA", "url": "https://c2pa.org/", "kind": "docs" }
+          ],
+          "tags": ["governance", "responsible AI"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "Eval là kỹ năng cốt lõi", "detail": "Các team làm AI nghiêm túc đã chuyển từ thử theo cảm tính sang eval có dữ liệu, grader và ngưỡng trong CI. LLM judge được hiệu chỉnh theo tiêu chí riêng của từng sản phẩm đang thay cho việc nhìn benchmark công khai." },
+          { "title": "Context engineering quan trọng hơn câu chữ prompt", "detail": "Chất lượng phụ thuộc nhiều vào việc đưa đúng thông tin vào đúng lúc: tài liệu, bộ nhớ, định nghĩa tool, kết quả tool. Biết compact, tóm tắt và nạp tài liệu đúng lúc cần là kỹ năng được đánh giá cao." },
+          { "title": "Agent ở production cần giới hạn rõ ràng", "detail": "Agent đã ra production nhưng đi kèm giới hạn bước, quyền tối thiểu, người duyệt và trace đầy đủ. MCP đã trở thành lớp kết nối phổ biến giữa model với tool và dữ liệu." },
+          { "title": "Kỹ thuật chi phí và độ trễ", "detail": "Prompt caching, batch API, routing giữa model lớn và nhỏ, giới hạn token theo user giờ là việc bình thường của AI engineer. Chi phí trên mỗi tác vụ thành công là chỉ số được theo dõi sát như latency." }
+        ],
+        "next": [
+          { "title": "Chuẩn mở cho agent hội tụ", "detail": "MCP, AGENTS.md, Agent Skills và A2A đang được gom về Agentic AI Foundation của Linux Foundation. Hãy học protocol và khái niệm nền thay vì gắn chặt vào một framework, vì framework sẽ còn thay đổi nhanh." },
+          { "title": "Bảo mật agent thành một chuyên ngành", "detail": "Khi agent cầm quyền thật, các vấn đề như định danh và phân quyền cho agent, chiếm quyền mục tiêu, đầu độc bộ nhớ sẽ cần quy trình riêng. Làm quen sớm với threat modeling và red-team eval sẽ là lợi thế." },
+          { "title": "Quy định và kiểm toán chặt hơn", "detail": "Nghĩa vụ của EU AI Act tiếp tục có hiệu lực theo giai đoạn và nhiều nước có luật riêng về AI và dữ liệu. Thói quen viết system card, lưu trace và eval theo nhóm người dùng sẽ trở thành yêu cầu chứ không còn là điểm cộng." },
+          { "title": "Đa model và model nhỏ chạy gần người dùng", "detail": "Hệ thống sẽ dùng nhiều model cùng lúc, kể cả model nhỏ chạy local hoặc trên thiết bị cho bước đơn giản. Xây kiến trúc không phụ thuộc provider và có eval để đổi model trong vài giờ thay vì vài tuần." }
+        ]
+      },
+      "outcomes": [
+        "Bạn có thể ước tính chi phí và độ trễ của một tính năng AI từ số token thật trước khi build.",
+        "Bạn có thể xây API dùng LLM với streaming, structured output, tool calling, prompt caching và fallback provider.",
+        "Bạn có thể xây pipeline RAG với hybrid search, rerank, trích dẫn và đo được recall của retrieval.",
+        "Bạn có thể thiết kế agent và MCP server có giới hạn bước, quyền tối thiểu và bước người duyệt.",
+        "Bạn có thể xây bộ eval có grader bằng code và LLM judge đã hiệu chỉnh, chạy trong CI.",
+        "Bạn có thể vận hành tính năng AI với tracing, rate limit, phòng prompt injection và system card."
+      ]
+    },
+    "en": {
+      "name": "AI Engineer",
+      "tagline": "Build products on top of LLMs: APIs, RAG, agents, evals and running it all in production",
+      "summary": "This map is for developers who want to ship AI features that actually work inside a product, not to do research or train models from scratch. It goes from how LLMs work at a practical level, through model APIs, prompts and context, RAG, agents and evals, to security, operations and governance. It fits best if you are already comfortable with web or backend work and want to move into AI engineering.",
+      "story": {
+        "intro": "I'm a frontend developer, not an AI specialist or an ML researcher. Over the last few years I've integrated LLM features into web apps and side projects: streaming chat, structured extraction, a bit of retrieval, and written about it on this blog. This map is the path I would follow if I started as an AI engineer today, pieced together from shipping those features, reading official docs and following people who do this full time. The focus is building products on top of existing models, not training them.",
+        "lessons": [
+          "What I wish I'd known earlier is to build an eval set before tweaking prompts. Without a fixed test set I was just changing words and hoping.",
+          "Most of the hard work is ordinary software engineering: schemas, timeouts, retries, logging, permissions. The model call is the small part.",
+          "When I started I reached for RAG and agent frameworks too early, when a long prompt with prompt caching or a simple chain of steps would have solved the problem.",
+          "Treat every model output and every retrieved document as untrusted input, exactly the way you treat what users type into a form."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "How LLMs work, practically",
+          "goal": "Explain tokens, context windows, sampling and embeddings well enough to predict the cost, latency and failure modes of an AI feature.",
+          "note": "The first time I called an LLM API I treated it like a deterministic function and was surprised when the same input gave different outputs. Understanding next-token prediction and sampling cleared up most of that confusion.",
+          "topics": [
+            { "title": "Tokens and tokenizers", "detail": "Models read BPE-style tokens, not characters or words, and Vietnamese text usually costs noticeably more tokens than the same content in English. Price, context limits and latency are all counted in tokens, so measure with the provider's token counting endpoint or a tokenizer playground instead of guessing from word counts." },
+            { "title": "Transformers and next-token prediction", "detail": "At inference time the model computes a probability distribution over the next token, picks one, appends it and repeats; attention lets each token look at the ones before it. That is why latency grows with output length and why time to first token and tokens per second are separate metrics." },
+            { "title": "The context window and its real limits", "detail": "The window holds the system prompt, conversation history, retrieved documents, tool definitions and the output, all together. A long window does not mean equal attention everywhere: quality drops as context grows and when information is buried in the middle (context rot), so more context is not automatically better." },
+            { "title": "Sampling: temperature, top_p, stop sequences", "detail": "Low temperature suits extraction and classification, higher values suit brainstorming or creative writing. Even temperature 0 on hosted APIs is not guaranteed to be deterministic because of batching and floating point effects, and some reasoning models restrict or ignore these parameters." },
+            { "title": "Embeddings and similarity", "detail": "Embedding models turn text into vectors where cosine similarity approximates closeness in meaning. Know the dimension, whether vectors are normalized, and that vectors from two different models are not comparable, so switching models means re-embedding everything." },
+            { "title": "Training stages and reasoning models", "detail": "Pretraining gives knowledge, instruction tuning and preference tuning shape behavior, and reasoning models spend extra thinking tokens before answering. Knowing this chain explains knowledge cutoffs, hallucination, and why a thinking budget trades latency and cost for accuracy." }
+          ],
+          "practices": [
+            "Measure token counts on real data before estimating the cost of a feature.",
+            "Read the model card, pricing page and rate limits before choosing a model.",
+            "Record time to first token and total duration for every call from the very first prototype.",
+            "Run the same input several times and compare outputs to get a feel for variance."
+          ],
+          "pitfalls": [
+            "Assuming the model knows current information when it only knows up to its knowledge cutoff.",
+            "Treating the context window as free memory without accounting for quality loss on long contexts.",
+            "Believing that temperature 0 guarantees identical output every time."
+          ],
+          "project": {
+            "title": "Token and cost explorer",
+            "brief": "Build a small page that takes Vietnamese and English text, shows token counts through a provider API, estimates input and output cost for 2-3 models, and computes cosine similarity between two sentences through an embedding API. It passes when the numbers match the usage fields the API returns and the page explains why the same content costs more tokens in Vietnamese."
+          },
+          "resources": [
+            { "title": "Neural Networks: Zero to Hero (Andrej Karpathy)", "url": "https://karpathy.ai/zero-to-hero.html", "kind": "course" },
+            { "title": "The Illustrated Transformer", "url": "https://jalammar.github.io/illustrated-transformer/", "kind": "article" },
+            { "title": "3Blue1Brown: Neural Networks", "url": "https://www.3blue1brown.com/topics/neural-networks", "kind": "course" },
+            { "title": "Tiktokenizer", "url": "https://tiktokenizer.vercel.app/", "kind": "tool" }
+          ],
+          "tags": ["LLM", "tokens", "embeddings"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Working with model APIs",
+          "goal": "Call model APIs from the server with streaming, structured outputs and tool calling while keeping cost and latency under control.",
+          "note": "My first prototype parsed JSON out of free text with a regex and broke constantly. Switching to structured outputs with a clear schema was the most valuable change at this stage.",
+          "topics": [
+            { "title": "Messages APIs and streaming", "detail": "The major providers all use a list of role-based messages and return server-sent events when streaming is on. Learn the event types (text deltas, tool calls, usage, stop reason) so you handle streams that are cut off mid-way or stop because they hit max tokens." },
+            { "title": "Structured outputs", "detail": "Use JSON Schema, often generated from Zod, so the provider enforces the shape through constrained decoding instead of just asking in the prompt. Still validate on the server, because the model can refuse, get truncated by max tokens, or return values that have the right type but the wrong meaning." },
+            { "title": "Tool calling", "detail": "The model does not run tools itself: it returns a tool name and arguments, your code executes it and sends the result back in the next message. Understand parallel tool calls, how to return tool errors to the model as observations, and that tool definitions cost tokens on every request." },
+            { "title": "Prompt caching", "detail": "Put the stable parts (system prompt, documents, tool definitions) first and the changing parts last so the prefix can be cached, which cuts input cost and latency significantly. Some providers cache automatically and others need explicit breakpoints, so check the cached token fields in the usage data to see whether the cache actually hits." },
+            { "title": "Cost and latency budgets", "detail": "Output tokens are usually more expensive and slower than input, so capping max output is the most direct saving. Use batch APIs for offline jobs to get discounted pricing, set timeouts, retry with exponential backoff on 429 and overload errors, and always track cost per request and per user." },
+            { "title": "Choosing models: hosted, smaller tiers or open-weight", "detail": "Hosted frontier models give the best quality, smaller tiers from the same vendor are much cheaper and faster for narrow tasks, and open-weight models give you control over data and cost at scale. A provider abstraction such as the AI SDK or an AI gateway lets you swap models without rewriting code, and the choice should rest on your own evals." }
+          ],
+          "practices": [
+            "Keep API keys on the server and never call model APIs directly from the browser.",
+            "Define each schema in one place and share it between structured outputs and validation.",
+            "Set explicit timeouts and max output tokens on every call.",
+            "Log usage fields (input, output, cached tokens) and latency for every request.",
+            "Wrap model calls behind an abstraction so switching providers is a config change."
+          ],
+          "pitfalls": [
+            "Parsing JSON out of free text with a regex instead of using structured outputs.",
+            "Using the largest model for every call, including simple classification.",
+            "Putting a timestamp or other changing data at the top of the prompt so the prompt cache never hits."
+          ],
+          "project": {
+            "title": "Typed invoice extractor",
+            "brief": "Write a Next.js route handler that takes invoice text, returns typed JSON via structured outputs, streams a short summary and logs tokens, cost and latency. It passes when output that fails the schema is rejected and retried once, switching providers takes a one-line config change, and you can report p95 latency and average cost per request."
+          },
+          "resources": [
+            { "title": "OpenAI: Structured outputs", "url": "https://platform.openai.com/docs/guides/structured-outputs", "kind": "docs" },
+            { "title": "Claude: Prompt caching", "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching", "kind": "docs" },
+            { "title": "AI SDK: Generating structured data", "url": "https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data", "kind": "docs" },
+            { "title": "Claude: Tool use overview", "url": "https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview", "kind": "docs" }
+          ],
+          "tags": ["API", "streaming", "tool calling"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Prompt and context engineering",
+          "goal": "Design prompts and a strategy for feeding context to the model that is structured, versioned and measurable.",
+          "note": "I used to write prompts on the theory that longer is safer, full of capital letters and prohibitions. It turned out that short prompts with a clear goal, good examples and selective context gave far more stable results.",
+          "topics": [
+            { "title": "Structure of a good prompt", "detail": "Separate role, task, constraints, output format and input data, usually with XML tags or headings. Keeping data apart from instructions helps the model understand the task and is a first step against prompt injection." },
+            { "title": "Few-shot examples", "detail": "Examples are the strongest way to specify format and tone, but the model will also copy unintended patterns in them. Pick examples that are varied, close to real data and include edge cases." },
+            { "title": "Context engineering", "detail": "Every call is a decision about what goes into the window: instructions, retrieved documents, memory, tool results. The main techniques are summarizing or compacting long histories, loading documents just in time instead of all upfront, and dropping stale tool results that no longer matter." },
+            { "title": "Prompting reasoning models", "detail": "Reasoning models need less step-by-step coaching but clearer goals, success criteria and constraints. Tune the thinking budget to the difficulty of the task instead of maxing it out on every request." },
+            { "title": "Prompts are code", "detail": "Keep prompts in the repo or a prompt registry with versions, review diffs like code, and tie every change to eval results. Template the variable parts so the fixed parts stay identical, which keeps them readable and cache friendly." }
+          ],
+          "practices": [
+            "Write success criteria for the task before writing the prompt.",
+            "Wrap user data and documents in their own tags, separate from instructions.",
+            "Version prompts and record the version in the log of every request.",
+            "Put only what the model needs for the current turn into the context."
+          ],
+          "pitfalls": [
+            "Writing contradictory instructions in a long system prompt and then blaming the model.",
+            "Editing a prompt based on one or two bad examples without rerunning a shared test set."
+          ],
+          "project": {
+            "title": "Support reply assistant",
+            "brief": "Build an assistant that drafts replies to support tickets with three prompt versions, run against the same 20 fixed inputs in both Vietnamese and English. It passes when the prompts live in the repo with versions, there is a side-by-side comparison of the three versions, and the reason for picking the final one is written down."
+          },
+          "resources": [
+            { "title": "Claude: Prompt engineering overview", "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview", "kind": "docs" },
+            { "title": "Effective context engineering for AI agents", "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents", "kind": "article" },
+            { "title": "Prompt Engineering Guide", "url": "https://www.promptingguide.ai/", "kind": "docs" }
+          ],
+          "tags": ["prompting", "context"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 3,
+          "title": "AI UX in web apps",
+          "goal": "Build AI interfaces that stream, handle tool calls, let users stop, edit and give feedback, and make uncertainty visible.",
+          "note": "This is the part that felt most familiar because it is close to frontend. What I learned is that good AI UX is not the typing effect, it is users being able to control and verify the result.",
+          "topics": [
+            { "title": "Streaming UI", "detail": "Use hooks like useChat from the AI SDK, or read the stream yourself through a ReadableStream, to render text, message parts and structured objects while they are still streaming. Handle errors mid-stream, retries, and keep conversation history stable when the user reloads." },
+            { "title": "Generative UI and tool calls in the interface", "detail": "Render each tool call as its own component based on whether it is running, done or failed, for example a search result card instead of a long block of text. For actions with side effects, show a confirmation step right inside the chat flow." },
+            { "title": "Making uncertainty visible", "detail": "Show citations that link to the exact passage, let users edit before applying, and provide undo. Design so the model can say it does not know instead of forcing it to always answer." },
+            { "title": "Designing for latency", "detail": "Have a stop button that actually cancels the upstream request with an AbortController so you stop paying for tokens, show progress for long steps, and consider resumable streams for long-running tasks. Heavy jobs should run in the background and notify on completion instead of holding the user in a spinner." },
+            { "title": "Safe and accessible rendering", "detail": "Model output is untrusted input: render markdown through a sanitizer and block dangerous HTML and links. Use aria-live carefully so screen readers announce the result instead of every token." },
+            { "title": "Capturing feedback", "detail": "Thumbs up or down, user edits and whether a suggestion was accepted are all valuable eval signals. Attach each piece of feedback to a trace id so you can later look up the exact prompt, context and output." }
+          ],
+          "practices": [
+            "Let users stop, edit and retry at every point in an AI flow.",
+            "Sanitize all model output before rendering it as HTML.",
+            "Attach a trace id to every message to connect feedback with server logs.",
+            "Label clearly in the UI when content is generated by AI."
+          ],
+          "pitfalls": [
+            "A stop button that only hides text in the UI while the server request keeps running and billing.",
+            "Rendering model markdown with dangerouslySetInnerHTML without sanitizing.",
+            "Designing the interface as if the model is always right, with no room for sources or edits."
+          ],
+          "project": {
+            "title": "Writing assistant panel in Next.js",
+            "brief": "Build a panel that suggests text edits with streaming, a stop button, suggestions shown as a diff with accept or reject, and feedback buttons stored with a trace id. It passes when stop cancels the upstream request (verified through usage), output is rendered through sanitized markdown, and a screen reader announces the final result."
+          },
+          "resources": [
+            { "title": "AI SDK: Chatbot", "url": "https://ai-sdk.dev/docs/ai-sdk-ui/chatbot", "kind": "docs" },
+            { "title": "AI SDK: Tools and tool calling", "url": "https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling", "kind": "docs" },
+            { "title": "Google PAIR: People + AI Guidebook", "url": "https://pair.withgoogle.com/guidebook/", "kind": "docs" }
+          ],
+          "tags": ["Next.js", "AI SDK", "UX"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Evaluation: measure before you fix",
+          "goal": "Build an eval suite with data, graders and thresholds that runs in CI so every prompt or model change comes with numbers.",
+          "note": "I put evals right after UX because this is where I was wrong the longest: tweaking prompts by feel and only trying a few familiar inputs. Once evals exist, changing models or prompts stops being scary.",
+          "topics": [
+            { "title": "Error analysis first, metrics second", "detail": "Read 50 to 100 real traces, take notes and group the failure types, then write evals for each group. Generic metrics like a helpfulness score rarely tell you what to fix." },
+            { "title": "The eval dataset", "detail": "Mix samples from real traffic, edge cases and adversarial inputs, each with labels or clear pass criteria, and version the set like code. Add to it every time a new failure shows up in production so that failure cannot come back silently." },
+            { "title": "Kinds of graders", "detail": "Prefer code-based graders whenever possible: exact match, schema checks, regex, running unit tests on generated code. Use LLM-as-judge for criteria that are hard to express in code, and human review for what matters most." },
+            { "title": "LLM-as-judge pitfalls", "detail": "Judges show position bias, verbosity bias and a tendency to favor output from their own model family. Use clear binary pass or fail criteria instead of a 1 to 10 scale, and calibrate the judge against human labels by measuring agreement before trusting it." },
+            { "title": "Regression testing in CI", "detail": "Run evals whenever the prompt, model or retrieval logic changes, using tools like promptfoo or Inspect, with a threshold that blocks the PR when the pass rate drops. Keep results over time so you see trends instead of a single run." },
+            { "title": "Online evals", "detail": "In production, sample traces for automated graders and track user feedback, refusal rate, latency and cost. A/B test two prompt or model versions when a change has a big impact on users." }
+          ],
+          "practices": [
+            "Start by reading real traces before choosing any metric.",
+            "Write concrete pass or fail criteria instead of scoring by feel.",
+            "Measure agreement between the LLM judge and humans before letting the judge gate a release.",
+            "Turn every production bug into a case in the eval set."
+          ],
+          "pitfalls": [
+            "Relying on public benchmarks to pick a model for your own problem.",
+            "Using an uncalibrated LLM judge and trusting its scores completely.",
+            "An eval set full of easy cases that always passes at close to 100 percent."
+          ],
+          "project": {
+            "title": "Eval suite for the earlier assistant",
+            "brief": "Build an eval suite of at least 50 labeled cases for the assistant from stage 02 or 03, with code-based graders and one LLM judge calibrated on 30 human-labeled cases. It passes when you report the judge's agreement rate and CI blocks a PR when the pass rate drops below the threshold you chose."
+          },
+          "resources": [
+            { "title": "Hamel Husain: Your AI product needs evals", "url": "https://hamel.dev/blog/posts/evals/", "kind": "article" },
+            { "title": "promptfoo docs", "url": "https://www.promptfoo.dev/docs/intro/", "kind": "tool" },
+            { "title": "Judging LLM-as-a-Judge (paper)", "url": "https://arxiv.org/abs/2306.05685", "kind": "article" },
+            { "title": "Inspect (UK AI Security Institute)", "url": "https://inspect.aisi.org.uk/", "kind": "tool" }
+          ],
+          "tags": ["evals", "testing", "CI"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Retrieval and RAG",
+          "goal": "Build a RAG pipeline with chunking, hybrid search, reranking and citations, and know when not to use RAG at all.",
+          "note": "I used to think RAG meant embedding everything and finding the nearest vectors. In practice quality is decided by chunking, metadata, combining keyword search, and measuring retrieval separately from the answer.",
+          "topics": [
+            { "title": "When you do not need RAG", "detail": "If the documents are small enough to fit in context, put them straight into the prompt with prompt caching. If the question needs filtering or aggregating structured data, use SQL or a tool. RAG fits best for large, frequently changing corpora that need citations." },
+            { "title": "Chunking and metadata", "detail": "Split along document structure (headings, paragraphs, tables) instead of fixed character counts, and weigh chunk size against overlap. Keep metadata such as source, section, updated date and access rights, and consider contextual retrieval: prepend a few sentences describing the document context to each chunk before embedding." },
+            { "title": "Embeddings and vector stores", "detail": "If you already run PostgreSQL, pgvector with an HNSW index is usually a sensible first choice, with metadata filters in the same query. A dedicated vector database is worth it only when scale or operational needs outgrow Postgres; shortlist embedding models with MTEB and then verify on your own data, especially for Vietnamese." },
+            { "title": "Hybrid search and reranking", "detail": "Combine full-text search (BM25 or Postgres tsvector) with vector search and merge with reciprocal rank fusion, because exact terms like error codes or names are often missed by vectors. Then rerank the top-k with a cross-encoder or a rerank API before putting results into context." },
+            { "title": "Measuring retrieval and answers", "detail": "Measure retrieval on its own with recall@k and MRR on a question set labeled with the correct passages. Then measure answers for groundedness, correct citations and the ability to refuse when the information is not there." },
+            { "title": "Permissions and freshness", "detail": "Filter by the user's permissions at query time, not after the chunks are already in the prompt. Have a pipeline that updates the index when documents change and a plan to re-embed everything when you switch embedding models." }
+          ],
+          "practices": [
+            "Try a solution without RAG first and add RAG only with a clear reason.",
+            "Store source metadata with every chunk so citations point to the exact section.",
+            "Measure recall@k before and after every change to chunking, embeddings or reranking.",
+            "Enforce access control in the retrieval query, not in the prompt."
+          ],
+          "pitfalls": [
+            "Using vector search only and missing queries that rely on exact keywords.",
+            "Evaluating only the final answer, so you cannot tell whether failures come from retrieval or generation.",
+            "Stuffing too many chunks into context, which adds noise and cost."
+          ],
+          "project": {
+            "title": "Q&A over this blog's posts",
+            "brief": "Build Q&A over the blog's bilingual MDX posts using pgvector, Postgres full-text search, reciprocal rank fusion and reranking, with citations linking to sections. It passes when a 40-question set reports recall@5 for vector-only, hybrid and hybrid plus rerank, answers cite their sources, and the system refuses when no relevant passage is found."
+          },
+          "resources": [
+            { "title": "pgvector", "url": "https://github.com/pgvector/pgvector", "kind": "tool" },
+            { "title": "Anthropic: Contextual retrieval", "url": "https://www.anthropic.com/news/contextual-retrieval", "kind": "article" },
+            { "title": "PostgreSQL: Full text search", "url": "https://www.postgresql.org/docs/current/textsearch.html", "kind": "docs" },
+            { "title": "MTEB leaderboard", "url": "https://huggingface.co/spaces/mteb/leaderboard", "kind": "tool" }
+          ],
+          "tags": ["RAG", "pgvector", "search"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Agents, tool use and MCP",
+          "goal": "Design workflows and agents with clear limits, write an MCP server, and keep a human in the loop for the steps that matter.",
+          "note": "Agents sound exciting, so I wanted to turn everything into one. The lesson was to start with the simplest workflow that works and only let the model decide when that flexibility is really needed.",
+          "topics": [
+            { "title": "Workflows first, agents second", "detail": "Patterns like prompt chaining, routing, parallelization, orchestrator-workers and evaluator-optimizer solve most problems with more reliability. A self-planning agent is worth it only when the number of steps and the path cannot be known in advance." },
+            { "title": "The agent loop", "detail": "An agent is a loop: the model calls a tool, gets the result and decides the next step until it stops. Always set limits on steps, token budget and time, define clear stop conditions, and return tool errors to the model as observations so it can adjust." },
+            { "title": "Designing tools for agents", "detail": "Few tools with clear names and descriptions, strict parameters, concise and informative output, pagination, and idempotent actions where possible. Tool definitions consume context, so too many tools make the agent choose wrongly and cost more." },
+            { "title": "Model Context Protocol (MCP)", "detail": "MCP standardizes how apps (hosts and clients) connect to servers that expose tools, resources and prompts, over stdio for local use or Streamable HTTP for remote servers, with OAuth-based authorization. MCP now sits under the Linux Foundation's Agentic AI Foundation, so it is worth learning as a standard rather than a single vendor's feature." },
+            { "title": "Human in the loop", "detail": "Irreversible actions such as sending email, deleting data or making payments need human approval. Combine that with least privilege per tool, a dry-run mode and an audit log of who approved what." },
+            { "title": "Multi-agent trade-offs", "detail": "Subagents isolate context and let research branches run in parallel, but they multiply token usage and make debugging much harder. Start with one agent and split only when you can measure the benefit; for long-lived instructions, consider formats like AGENTS.md or Agent Skills that load only when needed." }
+          ],
+          "practices": [
+            "Set limits on steps, tokens and time for every agent loop.",
+            "Require human approval before any write or irreversible action.",
+            "Trace every tool call with its arguments, result and duration.",
+            "Write evals for the agent's whole trajectory, not only the final answer."
+          ],
+          "pitfalls": [
+            "Giving an agent too many tools with vague descriptions.",
+            "Using multiple agents when a fixed workflow would do.",
+            "Granting an MCP server or tool broader permissions than the task needs."
+          ],
+          "project": {
+            "title": "MCP server for your app's data",
+            "brief": "Write an MCP server with three tools over your app's data (search posts, get a post, draft a summary) and an agent inside the app that uses it. It passes when the server works with MCP Inspector, the agent has a step limit, every tool call is traced, and write actions run only after the user confirms."
+          },
+          "resources": [
+            { "title": "Anthropic: Building effective agents", "url": "https://www.anthropic.com/engineering/building-effective-agents", "kind": "article" },
+            { "title": "Model Context Protocol: Introduction", "url": "https://modelcontextprotocol.io/docs/getting-started/intro", "kind": "docs" },
+            { "title": "Anthropic: Writing effective tools for agents", "url": "https://www.anthropic.com/engineering/writing-tools-for-agents", "kind": "article" },
+            { "title": "MCP Inspector", "url": "https://modelcontextprotocol.io/docs/tools/inspector", "kind": "tool" }
+          ],
+          "tags": ["agents", "MCP", "tool use"]
+        },
+        {
+          "id": "08",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Production: observability, security, reliability",
+          "goal": "Run AI features in production with tracing, guardrails, prompt injection defenses, rate limits and fallbacks.",
+          "note": "To me this is the part closest to backend work, with one new layer of risk: the data going into the model can itself be an attack. I learned how to think about prompt injection from security people, not on my own.",
+          "topics": [
+            { "title": "Tracing and observability", "detail": "Follow the OpenTelemetry GenAI semantic conventions to trace every model call, retrieval and tool call with tokens, cost and latency. Tools like Langfuse let you replay the prompt, context and output and connect them to user feedback." },
+            { "title": "Direct and indirect prompt injection", "detail": "Malicious instructions can come from the user or hide inside web pages, retrieved documents, emails and tool results. There is no complete fix yet, so the main mitigation is design: avoid combining private data, untrusted content and the ability to send data out in the same system (the lethal trifecta)." },
+            { "title": "OWASP risk lists", "detail": "The OWASP Top 10 for LLM Applications and the Top 10 for Agentic Applications are good checklists for design review: prompt injection, sensitive information disclosure, excessive agency, unbounded consumption. Use them as input for threat modeling and for a red-team eval set." },
+            { "title": "Guardrails", "detail": "Prefer deterministic checks first: schema validation, allowlisted tools and domains, length limits, PII redaction. Only then add moderation or model-based classifiers for what is hard to express as rules." },
+            { "title": "Rate limits, budgets and fallbacks", "detail": "Limit per user and per tenant on both requests and tokens, and set monthly cost budgets. Retry with backoff, fall back to another model or provider, use a circuit breaker, and keep a non-AI path for when everything fails." },
+            { "title": "Data privacy", "detail": "Know exactly what data is sent to the provider, its retention policy and options like zero data retention or data residency. Do not write raw PII into traces and logs, and follow the personal data protection laws where your users are." }
+          ],
+          "practices": [
+            "Trace every model call, retrieval and tool call using one consistent convention.",
+            "Apply least privilege to agents and keep untrusted content separate from instructions.",
+            "Set per-user rate limits and token budgets before opening a feature to the public.",
+            "Run a prompt injection red-team eval in CI.",
+            "Prepare a fallback provider and a non-AI path."
+          ],
+          "pitfalls": [
+            "Believing a line in the system prompt like ignore strange instructions is enough to stop injection.",
+            "Logging full prompts that contain personal data into the observability system.",
+            "Not capping tokens per user, so a single user can burn the whole budget."
+          ],
+          "project": {
+            "title": "Harden the RAG and agent app",
+            "brief": "Add tracing, per-user rate limits and token budgets, a fallback provider, and a 20-case injection red-team set (including malicious instructions hidden in retrieved documents) to the app from earlier stages. It passes when a dashboard shows cost per user, the injection pass rate is tracked in CI, and disabling the primary provider in a test environment makes the app fall back automatically."
+          },
+          "resources": [
+            { "title": "OpenTelemetry: GenAI semantic conventions", "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/", "kind": "docs" },
+            { "title": "OWASP Top 10 for LLM Applications", "url": "https://genai.owasp.org/llm-top-10/", "kind": "docs" },
+            { "title": "Simon Willison: The lethal trifecta", "url": "https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/", "kind": "article" },
+            { "title": "Langfuse docs", "url": "https://langfuse.com/docs", "kind": "tool" }
+          ],
+          "tags": ["observability", "security", "OpenTelemetry"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "Fine-tuning and small, local models",
+          "goal": "Judge when fine-tuning or a small open-weight model is worth it, and fine-tune and serve one for a narrow task yourself.",
+          "note": "I have not fine-tuned anything for production; this stage is what I tried in side projects and learned from docs. The clearest takeaway is that fine-tuning teaches behavior and format, not new knowledge.",
+          "topics": [
+            { "title": "When to fine-tune", "detail": "Consider it only when prompting, RAG and evals have plateaued, and when you need stable format or tone, or lower cost and latency for a narrow, high-volume task. Knowledge that changes often should still go through retrieval." },
+            { "title": "LoRA, QLoRA and PEFT", "detail": "Instead of retraining all weights, LoRA trains small adapters so it is cheap and fast, and QLoRA adds quantization to run on GPUs with less memory. Data quality matters more than quantity, and always keep a held-out eval set to compare against the baseline." },
+            { "title": "Distillation", "detail": "Use a large model's outputs to create training data for a small model on a specific task. Read the provider's terms of use and the model license carefully before doing it." },
+            { "title": "Open-weight models and licenses", "detail": "The Hugging Face Hub is where you find and compare open-weight models; each model family has its own license, and some restrict commercial use or user scale. Read the license before putting a model into a product." },
+            { "title": "Local inference and serving", "detail": "Ollama is convenient for local development, llama.cpp with the GGUF format lets you quantize to 4-bit or 8-bit trading quality for memory, and vLLM fits when you need high throughput. Most expose OpenAI-compatible endpoints, so switching between them is easy." },
+            { "title": "Small models on devices and in the browser", "detail": "Small models do very well at classification, routing, embeddings and simple extraction, and can run in the browser through WebGPU with Transformers.js. Architectures that use a small model for simple steps and a large one for hard steps are becoming common." }
+          ],
+          "practices": [
+            "Establish a prompting baseline on a hosted model before fine-tuning.",
+            "Compare on the same eval set for accuracy, latency and cost per thousand requests.",
+            "Read model licenses and provider terms before using their data or weights."
+          ],
+          "pitfalls": [
+            "Fine-tuning to add knowledge instead of using retrieval.",
+            "Looking only at benchmark scores and ignoring GPU operating cost and self-hosting complexity."
+          ],
+          "project": {
+            "title": "Small ticket classifier",
+            "brief": "Fine-tune a small open-weight model with LoRA to classify support tickets into 8 categories, then compare it with a prompted hosted model on the same eval set. It passes when you have a table of accuracy, latency and cost per thousand requests, and the model is served through Ollama or vLLM with an OpenAI-compatible endpoint."
+          },
+          "resources": [
+            { "title": "Hugging Face PEFT", "url": "https://huggingface.co/docs/peft/index", "kind": "docs" },
+            { "title": "Hugging Face LLM Course", "url": "https://huggingface.co/learn/llm-course", "kind": "course" },
+            { "title": "Ollama", "url": "https://ollama.com/", "kind": "tool" },
+            { "title": "Transformers.js", "url": "https://huggingface.co/docs/transformers.js/index", "kind": "docs" }
+          ],
+          "tags": ["fine-tuning", "LoRA", "open-weight"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 2,
+          "title": "Responsible AI and governance",
+          "goal": "Assess the risks of an AI feature, document them in a system card and build the needed controls into the development process.",
+          "note": "At first I thought this was the legal team's job. In reality many of these decisions, like what data goes to a provider or whether a human must approve, live right in the code I write.",
+          "topics": [
+            { "title": "Risk frameworks", "detail": "The NIST AI RMF splits risk management into govern, map, measure and manage, and is practical enough to apply per feature. Use it to answer who is accountable, what the possible harms are, how you measure them and how you respond." },
+            { "title": "Regulation", "detail": "The EU AI Act classifies systems by risk level and adds transparency duties such as telling users they are interacting with AI and labeling AI-generated content, phased in over time. Check the rules where your users are too, for example Vietnam's personal data protection law." },
+            { "title": "Fairness and quality per group", "detail": "Slice eval results by language, user group and input type to see where the model does worse, for example Vietnamese compared to English. A good average can hide a group that is served badly." },
+            { "title": "Transparency and documentation", "detail": "Write a system card for the feature: purpose, out-of-scope uses, where data goes, eval results and known failure modes. Show clearly in the UI when content is AI-generated and consider C2PA for the provenance of generated media." },
+            { "title": "Oversight and incident response", "detail": "Every AI feature needs an owner, a process for handling harmful output, and a kill switch behind a feature flag. Keep enough tracing to investigate an incident without violating privacy." }
+          ],
+          "practices": [
+            "Write a short system card for every AI feature before release.",
+            "Add an AI risk checklist to the pull request template.",
+            "Report eval results per language and per user group.",
+            "Put every AI feature behind a feature flag that can be turned off immediately."
+          ],
+          "pitfalls": [
+            "Treating governance as a document written once and forgotten.",
+            "Reporting only the average score without looking at each user group."
+          ],
+          "project": {
+            "title": "System card and checklist for the app",
+            "brief": "Write a one-page system card for the RAG and agent app you built, plus an AI checklist in the PR template covering purpose, scope, which provider receives which data, eval results per language, known failures and the incident owner. It passes when the kill switch has been tested for real and eval results are reported separately for Vietnamese and English."
+          },
+          "resources": [
+            { "title": "NIST AI Risk Management Framework", "url": "https://www.nist.gov/itl/ai-risk-management-framework", "kind": "docs" },
+            { "title": "EU Artificial Intelligence Act", "url": "https://artificialintelligenceact.eu/", "kind": "docs" },
+            { "title": "C2PA", "url": "https://c2pa.org/", "kind": "docs" }
+          ],
+          "tags": ["governance", "responsible AI"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "Evals are the core skill", "detail": "Serious AI teams have moved from trying things by feel to evals with datasets, graders and CI thresholds. LLM judges calibrated to each product's own criteria are replacing public benchmarks as the way to decide." },
+          { "title": "Context engineering matters more than prompt wording", "detail": "Quality depends heavily on putting the right information in at the right time: documents, memory, tool definitions, tool results. Knowing how to compact, summarize and load documents just in time is a highly valued skill." },
+          { "title": "Production agents need clear limits", "detail": "Agents are in production, but with step limits, least privilege, human approval and full tracing. MCP has become the common connection layer between models and tools or data." },
+          { "title": "Cost and latency engineering", "detail": "Prompt caching, batch APIs, routing between large and small models and per-user token caps are now routine work for an AI engineer. Cost per successful task is watched as closely as latency." }
+        ],
+        "next": [
+          { "title": "Open agent standards are converging", "detail": "MCP, AGENTS.md, Agent Skills and A2A are being gathered under the Linux Foundation's Agentic AI Foundation. Learn the protocols and underlying concepts rather than tying yourself to one framework, because frameworks will keep changing fast." },
+          { "title": "Agent security becomes its own discipline", "detail": "As agents hold real permissions, problems like agent identity and authorization, goal hijacking and memory poisoning will need their own processes. Getting comfortable with threat modeling and red-team evals early is an advantage." },
+          { "title": "Stricter regulation and audits", "detail": "EU AI Act obligations keep phasing in and more countries have their own AI and data laws. Habits like writing system cards, keeping traces and evaluating per user group will become requirements rather than nice-to-haves." },
+          { "title": "Multiple models and small models close to users", "detail": "Systems will use several models at once, including small models running locally or on device for simple steps. Build a provider-agnostic architecture with evals so you can swap models in hours instead of weeks." }
+        ]
+      },
+      "outcomes": [
+        "You can estimate the cost and latency of an AI feature from real token counts before building it.",
+        "You can build LLM-backed APIs with streaming, structured outputs, tool calling, prompt caching and provider fallback.",
+        "You can build a RAG pipeline with hybrid search, reranking and citations, and measure retrieval recall.",
+        "You can design agents and MCP servers with step limits, least privilege and human approval steps.",
+        "You can build an eval suite with code-based graders and a calibrated LLM judge that runs in CI.",
+        "You can run AI features with tracing, rate limits, prompt injection defenses and a system card."
+      ]
+    }
+  }
+}

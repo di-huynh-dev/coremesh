@@ -1,5 +1,5 @@
 import { locales } from "@/intl.config";
-import { ROADMAP_IDS } from "@/lib/content/roadmaps";
+import { ROLE_MAP_IDS } from "@/lib/content/role-maps";
 import { getAllSeries, getSeries } from "@/lib/content/series";
 import { TOOLS } from "@/lib/content/tools";
 import type { BlogLocale } from "@/lib/content/types";
@@ -22,9 +22,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
       { path: "", changeFrequency: "weekly" as const, priority: 1 },
       { path: "/blog", changeFrequency: "weekly" as const, priority: 0.8 },
       { path: "/series", changeFrequency: "weekly" as const, priority: 0.8 },
-      { path: "/roadmap", changeFrequency: "monthly" as const, priority: 0.8 },
-      ...ROADMAP_IDS.map((id) => ({
-        path: `/roadmap/${id}`,
+      { path: "/role-map", changeFrequency: "monthly" as const, priority: 0.8 },
+      ...ROLE_MAP_IDS.map((id) => ({
+        path: `/role-map/${id}`,
         changeFrequency: "monthly" as const,
         priority: 0.7,
       })),

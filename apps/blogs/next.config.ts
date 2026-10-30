@@ -17,6 +17,14 @@ const nextConfig: NextConfig = {
     "/[locale]": ["./content/**/*", "./assets/og/**/*"],
     "/[locale]/**": ["./content/**/*", "./assets/og/**/*"],
   },
+  async redirects() {
+    return [
+      { source: "/:locale(vi|en)/roadmap", destination: "/:locale/role-map", permanent: true },
+      { source: "/:locale(vi|en)/roadmap/react", destination: "/:locale/role-map/frontend", permanent: true },
+      { source: "/:locale(vi|en)/roadmap/nestjs", destination: "/:locale/role-map/backend", permanent: true },
+      { source: "/:locale(vi|en)/roadmap/:path*", destination: "/:locale/role-map", permanent: true },
+    ];
+  },
   turbopack: {
     root: path.join(configDir, "..", ".."),
   },

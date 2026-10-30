@@ -1,0 +1,738 @@
+{
+  "id": "mobile",
+  "ecosystem": ["React Native", "Expo", "TypeScript", "Swift / SwiftUI", "Kotlin / Jetpack Compose", "Flutter", "SQLite", "EAS"],
+  "locales": {
+    "vi": {
+      "name": "Mobile Engineer",
+      "tagline": "Xây app iOS và Android mượt, chạy được khi mất mạng và phát hành an toàn",
+      "summary": "Lộ trình này đi từ việc chọn hướng (React Native + Expo, Flutter hay native) qua nền tảng hệ điều hành, UI, dữ liệu offline, native module, hiệu năng, test, phát hành và bảo mật, kết thúc ở AI chạy trên thiết bị. Dành cho developer web, đặc biệt là người viết React, muốn chuyển sang mobile một cách nghiêm túc chứ không chỉ dừng ở mức chạy được demo.",
+      "story": {
+        "intro": "Mình là frontend developer, làm React và TypeScript hằng ngày, không phải mobile engineer chuyên nghiệp. Mình đã tự tìm hiểu React Native và Expo qua side project, và làm việc cùng các bạn mobile trong team khi tích hợp API, WebSocket và luồng đăng nhập dùng chung giữa web và app. Từ những lần đó mình thấy mobile khác web ở những chỗ rất cụ thể: vòng đời app, quyền truy cập, chữ ký build, review của store và việc không thể hotfix tùy ý. Lộ trình này là con đường mình sẽ đi nếu bắt đầu vai trò Mobile Engineer hôm nay, được kiểm tra lại với tài liệu chính thức tính đến cuối 2026.",
+        "lessons": [
+          "Điều mình ước biết sớm hơn là React Native không phải là web chạy trên điện thoại: không có DOM, không có CSS cascade, và mỗi lần chạm vào native là một thế giới khác.",
+          "Lúc mới học mình hay test trên simulator đời mới rồi yên tâm, trong khi người dùng thật đang cầm máy Android tầm trung với mạng chập chờn; hãy có một máy thật cấu hình thấp ngay từ đầu.",
+          "Phát hành app là một kỹ năng riêng: code signing, review của store, OTA update và staged rollout đáng được học bài bản như viết component.",
+          "Biết đọc một chút Swift và Kotlin giúp mình đỡ sợ native module và đọc được stack trace crash, kể cả khi phần lớn code vẫn viết bằng TypeScript."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Chọn hướng đi: cross-platform hay native",
+          "goal": "Chọn được stack phù hợp với đội và sản phẩm, và giải thích được trade-off của lựa chọn đó.",
+          "note": "Mình chọn React Native + Expo vì tận dụng được React và TypeScript, nhưng đó là lựa chọn theo bối cảnh chứ không phải câu trả lời đúng cho mọi người. Dành thời gian hiểu các hướng khác giúp mình nói chuyện với đồng nghiệp native dễ hơn nhiều.",
+          "topics": [
+            { "title": "React Native + Expo", "detail": "Viết UI bằng React và TypeScript, render ra view native thật, chia sẻ phần lớn code giữa iOS, Android và có thể cả web. Expo là framework được React Native khuyến nghị để bắt đầu dự án mới, lo phần build, routing, cập nhật OTA và thư viện native. Điểm yếu là bạn phụ thuộc vào hệ sinh thái thư viện và đôi khi vẫn phải xuống Swift hoặc Kotlin." },
+            { "title": "Flutter", "detail": "Dùng Dart và tự vẽ toàn bộ UI bằng engine Impeller, nên giao diện nhất quán giữa các nền tảng và hiệu năng animation tốt. Đổi lại, UI không phải component native của hệ điều hành, nên muốn đúng cảm giác iOS hay Android phải tự chăm chút, và đội phải học thêm một ngôn ngữ ít dùng ngoài Flutter." },
+            { "title": "Native: SwiftUI và Jetpack Compose", "detail": "SwiftUI và Jetpack Compose đều là UI khai báo (declarative), tư duy khá gần React: state đi xuống, sự kiện đi lên, UI là hàm của state. Native cho trải nghiệm và quyền truy cập API mới nhất ngay ngày đầu, phù hợp app cần đồ họa nặng, tích hợp sâu hệ điều hành hoặc đội đủ người cho hai nền tảng." },
+            { "title": "Kotlin Multiplatform", "detail": "KMP cho phép chia sẻ logic (networking, dữ liệu, nghiệp vụ) bằng Kotlin giữa Android và iOS trong khi UI vẫn có thể là native. Compose Multiplatform đã ổn định trên iOS, nên giờ có thể chia sẻ cả UI nếu muốn. Đây là lựa chọn tự nhiên cho đội đã mạnh Android." },
+            { "title": "Tiêu chí ra quyết định", "detail": "Hãy cân nhắc kỹ năng sẵn có của đội, mức độ cần API native, yêu cầu về UI theo chuẩn từng nền tảng, việc có cần web cùng codebase không, và chi phí bảo trì dài hạn. Một app nội bộ dạng form và danh sách khác hẳn một app camera hay bản đồ thời gian thực." }
+          ],
+          "practices": [
+            "Viết một trang quyết định ngắn (ADR) ghi lại vì sao chọn stack, kèm các điều kiện khiến bạn đổi ý.",
+            "Làm thử cùng một màn hình nhỏ bằng hai stack trước khi cam kết nếu đội còn phân vân.",
+            "Kiểm tra các thư viện bắt buộc (thanh toán, bản đồ, push) có hỗ trợ tốt stack đã chọn không trước khi bắt đầu."
+          ],
+          "pitfalls": [
+            "Chọn stack chỉ vì quen tay mà bỏ qua yêu cầu thật của sản phẩm như xử lý nền hay Bluetooth.",
+            "Tin rằng cross-platform nghĩa là không bao giờ phải đụng tới Xcode hay Android Studio."
+          ],
+          "project": { "title": "So sánh stack bằng một màn hình", "brief": "Dựng cùng một màn hình danh sách có pull-to-refresh và màn chi tiết bằng Expo và bằng một stack khác (Flutter, SwiftUI hoặc Compose). Đạt yêu cầu khi chạy được trên máy thật của cả hai nền tảng và có một bản ADR một trang so sánh DX, kích thước app và thời gian khởi động." },
+          "resources": [
+            { "title": "React Native: Get Started", "url": "https://reactnative.dev/docs/getting-started", "kind": "docs" },
+            { "title": "Flutter documentation", "url": "https://docs.flutter.dev/", "kind": "docs" },
+            { "title": "Kotlin Multiplatform", "url": "https://kotlinlang.org/docs/multiplatform.html", "kind": "docs" },
+            { "title": "Jetpack Compose", "url": "https://developer.android.com/compose", "kind": "docs" }
+          ],
+          "tags": ["React Native", "Flutter", "SwiftUI", "KMP"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Nền tảng hệ điều hành mobile",
+          "goal": "Hiểu vòng đời app, quyền, luồng xử lý và bộ nhớ trên iOS và Android để không bị bất ngờ khi app chạy thật.",
+          "note": "Từ web sang, mình quen với việc tab trình duyệt sống mãi. Trên mobile, hệ điều hành có thể tạm dừng hoặc giết app bất cứ lúc nào, và hiểu điều đó thay đổi cách mình thiết kế state.",
+          "topics": [
+            { "title": "Vòng đời app và màn hình", "detail": "Android có vòng đời Activity (onCreate, onStart, onResume, onPause, onStop) và process có thể bị kill khi thiếu bộ nhớ, sau đó khôi phục lại. iOS có trạng thái active, inactive, background, suspended, quản lý qua scene. Trong React Native, AppState cho biết app đang foreground hay background để bạn tạm dừng polling, lưu nháp hoặc làm mới dữ liệu khi quay lại." },
+            { "title": "Quyền truy cập (permissions)", "detail": "Quyền camera, vị trí, thông báo, ảnh đều được xin lúc runtime và người dùng có thể từ chối vĩnh viễn hoặc chỉ cấp một phần, ví dụ vị trí gần đúng hay chọn một vài ảnh. iOS bắt buộc chuỗi giải thích mục đích trong Info.plist; Android cần khai báo trong manifest và xử lý trường hợp phải mở Settings. Xin quyền đúng lúc người dùng cần tính năng, không xin hết khi mở app." },
+            { "title": "Luồng xử lý (threading)", "detail": "Cả hai nền tảng đều có main thread (UI thread) và chặn nó quá lâu sẽ gây giật hoặc ANR trên Android. Swift dùng async/await và actor, Kotlin dùng coroutine với Dispatchers. Trong React Native, JS chạy trên luồng riêng, còn các thư viện như Reanimated chạy animation trên UI thread qua worklet." },
+            { "title": "Bộ nhớ và tài nguyên", "detail": "Thiết bị tầm trung có ít RAM, ảnh lớn và danh sách dài dễ làm app bị hệ điều hành kill. iOS dùng ARC nên cần chú ý retain cycle; Android có garbage collector nhưng vẫn rò rỉ được qua context bị giữ lâu. Hãy resize ảnh, dọn listener khi unmount và theo dõi bộ nhớ bằng Xcode Instruments hoặc Android Studio Profiler." },
+            { "title": "Xử lý nền và thông báo", "detail": "Hệ điều hành giới hạn rất chặt việc chạy nền để tiết kiệm pin: iOS dùng BGTaskScheduler, Android dùng WorkManager. Push notification đi qua APNs và FCM, cần token, xử lý khi app đang mở, chạy nền hoặc đã tắt, và deep link từ thông báo vào đúng màn hình." }
+          ],
+          "practices": [
+            "Lưu trạng thái quan trọng như bản nháp form vào bộ nhớ bền vững thay vì tin rằng app sẽ không bị kill.",
+            "Xin quyền theo ngữ cảnh, kèm màn giải thích trước khi hiện hộp thoại của hệ điều hành.",
+            "Bật chế độ Don't keep activities trong Developer options của Android để thử khôi phục state.",
+            "Đẩy việc nặng như parse JSON lớn hoặc xử lý ảnh ra khỏi luồng UI."
+          ],
+          "pitfalls": [
+            "Xin tất cả quyền ngay màn hình đầu tiên khiến người dùng từ chối và khó xin lại.",
+            "Giả định app luôn ở foreground nên timer, WebSocket và polling chạy mãi khi app ở nền."
+          ],
+          "project": { "title": "App ghi chú bền bỉ", "brief": "Làm app ghi chú có chụp ảnh đính kèm và nhắc nhở bằng local notification. Đạt yêu cầu khi app khôi phục được bản nháp sau khi bị hệ điều hành kill, xử lý đủ các trường hợp từ chối quyền và WebSocket hoặc polling dừng khi app vào nền." },
+          "resources": [
+            { "title": "The activity lifecycle", "url": "https://developer.android.com/guide/components/activities/activity-lifecycle", "kind": "docs" },
+            { "title": "Managing your app's life cycle (Apple)", "url": "https://developer.apple.com/documentation/uikit/managing-your-app-s-life-cycle", "kind": "docs" },
+            { "title": "Request runtime permissions", "url": "https://developer.android.com/training/permissions/requesting", "kind": "docs" },
+            { "title": "React Native AppState", "url": "https://reactnative.dev/docs/appstate", "kind": "docs" }
+          ],
+          "tags": ["Lifecycle", "Permissions", "Threading"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "React Native New Architecture và Expo",
+          "goal": "Dựng và vận hành một dự án Expo hiện đại trên New Architecture, hiểu điều gì xảy ra bên dưới.",
+          "note": "Lúc đầu mình chỉ chạy Expo Go và nghĩ thế là đủ. Khi cần một thư viện native, mình mới hiểu vì sao development build và config plugin là cách làm chuẩn.",
+          "topics": [
+            { "title": "New Architecture: JSI, Fabric, TurboModules", "detail": "Từ React Native 0.82, New Architecture là kiến trúc duy nhất: bridge bất đồng bộ cũ được thay bằng JSI, cho JS gọi trực tiếp C++ đồng bộ. Fabric là renderer mới hỗ trợ tính năng concurrent của React, TurboModules là native module được tải lười và có type nhờ Codegen. Các thư viện chưa hỗ trợ New Architecture giờ là rủi ro thật, cần kiểm tra trước khi thêm." },
+            { "title": "Hermes", "detail": "Hermes là JS engine mặc định, biên dịch JS sang bytecode lúc build nên khởi động nhanh và tốn ít bộ nhớ hơn. Từ React Native 0.84, Hermes V1 là mặc định. Debug bằng React Native DevTools, giao diện dựa trên Chrome DevTools, thay cho các công cụ debug cũ." },
+            { "title": "Expo Router", "detail": "Routing dựa trên file trong thư mục app, giống tư duy Next.js: layout lồng nhau, stack, tab, modal, deep link và typed routes có sẵn. Các bản gần đây còn có native tabs dùng tab bar của hệ điều hành, data loader và API route. Mỗi màn hình tự có URL nên deep link và universal link gần như miễn phí." },
+            { "title": "Development build, CNG và config plugin", "detail": "Expo Go chỉ chạy được thư viện có sẵn trong nó; app thật nên dùng development build để thêm bất kỳ native code nào. Continuous Native Generation (prebuild) sinh thư mục ios và android từ app.config, còn config plugin là cách sửa Info.plist, AndroidManifest hay Gradle bằng code thay vì sửa tay. Nhờ vậy nâng cấp SDK nhẹ nhàng hơn nhiều." },
+            { "title": "EAS: Build, Submit, Update", "detail": "EAS Build build app trên cloud và quản lý chứng chỉ ký, EAS Submit đẩy lên App Store Connect và Google Play, EAS Update phát hành bản cập nhật JS qua OTA. Expo ra khoảng ba bản SDK mỗi năm, mỗi bản gắn với một phiên bản React Native, nên hãy có thói quen nâng cấp đều đặn." }
+          ],
+          "practices": [
+            "Dùng development build ngay khi dự án vượt khỏi demo thay vì cố giữ trong Expo Go.",
+            "Không commit thư mục ios và android sinh ra từ prebuild; mọi thay đổi native đi qua config plugin.",
+            "Chạy npx expo-doctor và npx expo install --check sau mỗi lần thêm thư viện hoặc nâng SDK.",
+            "Theo dõi changelog của Expo và React Native, nâng cấp từng SDK một thay vì nhảy nhiều bản."
+          ],
+          "pitfalls": [
+            "Sửa tay file native trong thư mục đã prebuild rồi mất hết thay đổi ở lần prebuild sau.",
+            "Thêm thư viện chưa hỗ trợ New Architecture mà không kiểm tra trên React Native Directory."
+          ],
+          "project": { "title": "Khung app Expo chuẩn", "brief": "Tạo app Expo với Expo Router (tab, stack, modal), TypeScript strict, development build và một config plugin tự viết thêm quyền camera. Đạt yêu cầu khi build được qua EAS cho cả hai nền tảng, deep link mở đúng màn chi tiết và prebuild --clean không làm mất cấu hình nào." },
+          "resources": [
+            { "title": "React Native: About the New Architecture", "url": "https://reactnative.dev/architecture/landing-page", "kind": "docs" },
+            { "title": "Expo Router introduction", "url": "https://docs.expo.dev/router/introduction/", "kind": "docs" },
+            { "title": "Expo development builds", "url": "https://docs.expo.dev/develop/development-builds/introduction/", "kind": "docs" },
+            { "title": "Expo config plugins", "url": "https://docs.expo.dev/config-plugins/introduction/", "kind": "docs" }
+          ],
+          "tags": ["Expo", "Fabric", "Hermes", "EAS"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "UI, điều hướng và accessibility",
+          "goal": "Xây giao diện cảm giác đúng chất từng nền tảng, điều hướng tự nhiên và dùng được với trình đọc màn hình.",
+          "note": "Lúc mới học, mình hay dựng màn hình mobile theo thói quen web và nó trông như một website thu nhỏ. Học HIG và Material 3 giúp mình hiểu vì sao back gesture, tab bar và cỡ chữ hệ thống quan trọng đến vậy.",
+          "topics": [
+            { "title": "Layout và styling trong React Native", "detail": "Layout dùng Flexbox qua Yoga với mặc định flexDirection là column, không có CSS cascade nên style được truyền tường minh qua component. Phải xử lý safe area, bàn phím che input và edge-to-edge, vốn đã bắt buộc trên Android mới. Có thể dùng StyleSheet, Unistyles hoặc NativeWind tùy đội, miễn là có design token thống nhất." },
+            { "title": "Quy ước nền tảng: HIG và Material 3", "detail": "Apple Human Interface Guidelines và Material 3 mô tả điều hướng, cỡ chữ, khoảng cách và vùng chạm tối thiểu (khoảng 44pt trên iOS, 48dp trên Android). iOS 26 mang ngôn ngữ thiết kế Liquid Glass, Android có Material 3 Expressive. Không cần hai giao diện khác nhau, nhưng các chi tiết như nút back, hộp thoại và picker nên theo đúng nền tảng." },
+            { "title": "Điều hướng và deep link", "detail": "Stack, tab và modal phải dùng native navigator để có gesture vuốt back và predictive back trên Android. Thiết kế URL cho mọi màn hình quan trọng, cấu hình universal link (iOS) và App Links (Android) để link từ web và thông báo mở thẳng vào app. Nhớ xử lý trường hợp deep link tới màn cần đăng nhập." },
+            { "title": "Animation và gesture", "detail": "Reanimated chạy animation trên UI thread nên vẫn mượt khi JS bận, Gesture Handler xử lý cử chỉ ở tầng native. Layout animation và shared element transition làm app có cảm giác native hơn. Tôn trọng tùy chọn Reduce Motion của người dùng." },
+            { "title": "Accessibility", "detail": "Dùng accessibilityLabel, accessibilityRole, accessibilityState và accessibilityHint để VoiceOver và TalkBack đọc đúng. Hỗ trợ Dynamic Type và font scale mà không vỡ layout, đủ tương phản màu và thứ tự focus hợp lý. Test thật bằng cách bật trình đọc màn hình và đi hết một luồng chính." }
+          ],
+          "practices": [
+            "Test mỗi màn hình với cỡ chữ hệ thống lớn nhất và với VoiceOver hoặc TalkBack.",
+            "Dùng component điều hướng native thay vì tự dựng stack bằng JS.",
+            "Định nghĩa design token (màu, khoảng cách, typography) hỗ trợ dark mode từ đầu.",
+            "Đảm bảo mọi vùng chạm đạt kích thước tối thiểu theo HIG và Material."
+          ],
+          "pitfalls": [
+            "Copy nguyên UI web sang mobile với hover, menu nhỏ và nút bấm quá sát nhau.",
+            "Khóa cứng chiều cao text khiến layout vỡ khi người dùng tăng cỡ chữ."
+          ],
+          "project": { "title": "App đọc tin tiếp cận được", "brief": "Xây app đọc tin có tab, danh sách, màn chi tiết, chia sẻ và deep link từ web. Đạt yêu cầu khi đi hết luồng chính chỉ bằng VoiceOver và TalkBack, không vỡ layout ở cỡ chữ lớn nhất, hỗ trợ dark mode và gesture back hoạt động đúng trên cả hai nền tảng." },
+          "resources": [
+            { "title": "Human Interface Guidelines", "url": "https://developer.apple.com/design/human-interface-guidelines/", "kind": "docs" },
+            { "title": "Material Design 3", "url": "https://m3.material.io/", "kind": "docs" },
+            { "title": "React Native Accessibility", "url": "https://reactnative.dev/docs/accessibility", "kind": "docs" },
+            { "title": "React Native Reanimated", "url": "https://docs.swmansion.com/react-native-reanimated/", "kind": "docs" }
+          ],
+          "tags": ["UI", "Navigation", "Accessibility"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Dữ liệu offline-first và networking",
+          "goal": "Thiết kế lớp dữ liệu chạy được khi mất mạng, đồng bộ lại khi có mạng và xử lý xung đột hợp lý.",
+          "note": "Trên web mình quen coi server là nguồn sự thật duy nhất. Trên mobile, mạng chập chờn là bình thường, nên mình phải học cách coi database local là nguồn dữ liệu chính cho UI.",
+          "topics": [
+            { "title": "Lưu trữ local", "detail": "expo-sqlite (hoặc op-sqlite) cho dữ liệu có cấu trúc, thường đi kèm Drizzle ORM để có schema và migration có type. MMKV cho key-value nhỏ và nhanh như cài đặt, thay cho AsyncStorage chậm. Dữ liệu nhạy cảm như token không để ở đây mà đưa vào Keychain hoặc Keystore." },
+            { "title": "Kiến trúc offline-first", "detail": "UI đọc từ database local, việc ghi được lưu vào local trước rồi xếp vào hàng đợi (outbox) để gửi lên server khi có mạng. Mỗi thao tác cần id do client tạo và idempotency key để retry không tạo bản ghi trùng. Theo dõi trạng thái mạng bằng NetInfo nhưng đừng tin nó tuyệt đối, cứ xử lý lỗi request như bình thường." },
+            { "title": "Đồng bộ và xử lý xung đột", "detail": "Đồng bộ delta theo mốc thời gian hoặc version thay vì tải lại toàn bộ. Chọn chiến lược xung đột rõ ràng: last-write-wins, merge theo trường, hoặc CRDT cho dữ liệu cộng tác. Các engine như PowerSync, WatermelonDB hay giải pháp dựa trên CRDT giúp tránh tự viết lại phần khó nhất." },
+            { "title": "Networking và cache", "detail": "TanStack Query trên React Native cần nối focusManager với AppState và onlineManager với NetInfo để refetch đúng lúc. Dùng timeout, retry có backoff, phân trang bằng cursor và nén payload. Persist query cache để mở app là thấy dữ liệu cũ ngay trong lúc tải mới." },
+            { "title": "Realtime trên mobile", "detail": "WebSocket hay SSE bị ngắt khi app vào nền, nên cần reconnect có backoff và đồng bộ lại phần đã lỡ khi quay về foreground. Với cập nhật quan trọng khi app đã đóng, dùng push notification (có thể là silent push) để đánh thức việc đồng bộ thay vì giữ kết nối." }
+          ],
+          "practices": [
+            "Thiết kế schema local có migration được version hóa ngay từ bản đầu tiên.",
+            "Cho mọi thao tác ghi một id phía client và idempotency key.",
+            "Hiển thị rõ trạng thái đồng bộ (đang chờ, lỗi, đã lưu) để người dùng tin dữ liệu.",
+            "Test bằng chế độ máy bay, mạng chậm giả lập và chuyển mạng giữa chừng."
+          ],
+          "pitfalls": [
+            "Lưu toàn bộ state app thành một chuỗi JSON lớn trong AsyncStorage rồi đọc ghi mỗi lần thay đổi.",
+            "Quên migration khiến người dùng bản cũ bị crash khi cập nhật app."
+          ],
+          "project": { "title": "App quản lý việc offline-first", "brief": "Làm app todo có dự án, nhãn và đồng bộ với một API NestJS hoặc backend có sẵn. Đạt yêu cầu khi thêm, sửa, xóa được lúc offline, đồng bộ đúng khi có mạng, không tạo bản ghi trùng khi retry, và có ít nhất một migration schema chạy được trên dữ liệu cũ." },
+          "resources": [
+            { "title": "Expo SQLite", "url": "https://docs.expo.dev/versions/latest/sdk/sqlite/", "kind": "docs" },
+            { "title": "Build an offline-first app (Android)", "url": "https://developer.android.com/topic/architecture/data-layer/offline-first", "kind": "docs" },
+            { "title": "TanStack Query: React Native", "url": "https://tanstack.com/query/latest/docs/framework/react/react-native", "kind": "docs" }
+          ],
+          "tags": ["SQLite", "Offline", "Sync"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Native module và API thiết bị",
+          "goal": "Dùng được camera, vị trí, sinh trắc học và tự viết native module nhỏ bằng Swift và Kotlin khi thư viện không đáp ứng.",
+          "note": "Phần mình ngại nhất lúc đầu là mở Xcode. Viết thử một Expo Module nhỏ bằng Swift và Kotlin là lúc mình thấy native không đáng sợ như tưởng tượng.",
+          "topics": [
+            { "title": "Thư viện thiết bị có sẵn", "detail": "Expo SDK có expo-camera, expo-location, expo-local-authentication, expo-notifications, expo-image, expo-file-system và nhiều module khác đã hỗ trợ New Architecture. Trước khi viết native, hãy kiểm tra React Native Directory và Expo SDK. Đọc kỹ phần cấu hình quyền và giới hạn chạy nền của từng module." },
+            { "title": "Expo Modules API", "detail": "Viết native module bằng Swift và Kotlin với DSL ngắn gọn: khai báo function, async function, event và cả native view. Module tự có config plugin, autolinking và chạy tốt trên New Architecture. Đây là cách dễ nhất cho dev đến từ React để chạm vào native." },
+            { "title": "Turbo Native Modules và Codegen", "detail": "Cách chuẩn của React Native: viết spec TypeScript, Codegen sinh interface C++ và native, rồi hiện thực bằng Objective-C++/Swift và Kotlin. Hiểu cơ chế này giúp đọc được thư viện bên thứ ba. Nitro Modules là lựa chọn cộng đồng tối ưu hiệu năng dựa trên JSI nếu cần gọi native rất nhiều lần." },
+            { "title": "Native view và tích hợp UI", "detail": "Khi cần component hệ điều hành như map, video player hay picker, bạn bọc native view và truyền props, events qua cầu nối. Expo UI cho phép dùng trực tiếp component SwiftUI và Jetpack Compose trong cây React. Cẩn thận với kích thước, layout và vòng đời của view native." },
+            { "title": "Đọc Swift và Kotlin đủ dùng", "detail": "Không cần thành chuyên gia, nhưng cần đọc được optional, closure và async/await trong Swift, null safety, coroutine và extension trong Kotlin. Biết dùng Xcode và Android Studio để đặt breakpoint native, xem Logcat và đọc crash log là kỹ năng tiết kiệm rất nhiều thời gian." }
+          ],
+          "practices": [
+            "Ưu tiên thư viện được duy trì tốt và hỗ trợ New Architecture trước khi tự viết native.",
+            "Giữ API của native module nhỏ, bất đồng bộ và có type đầy đủ.",
+            "Viết config plugin cho mọi thay đổi native mà module cần.",
+            "Test native module trên máy thật của cả hai nền tảng, kể cả bản hệ điều hành cũ nhất bạn hỗ trợ."
+          ],
+          "pitfalls": [
+            "Gọi native đồng bộ cho việc nặng làm chặn luồng JS hoặc UI.",
+            "Quên dọn listener và subscription phía native, gây rò rỉ bộ nhớ."
+          ],
+          "project": { "title": "Module sinh trắc học và pin", "brief": "Viết một Expo Module bằng Swift và Kotlin trả về mức pin, trạng thái sạc và phát event khi thay đổi, kèm màn hình khóa bằng Face ID hoặc vân tay. Đạt yêu cầu khi module có type TypeScript, event được hủy đúng khi unmount và chạy được trên máy thật cả hai nền tảng." },
+          "resources": [
+            { "title": "Expo Modules API overview", "url": "https://docs.expo.dev/modules/overview/", "kind": "docs" },
+            { "title": "Turbo Native Modules", "url": "https://reactnative.dev/docs/turbo-native-modules-introduction", "kind": "docs" },
+            { "title": "SwiftUI", "url": "https://developer.apple.com/swiftui/", "kind": "docs" }
+          ],
+          "tags": ["Native Modules", "Swift", "Kotlin"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Hiệu năng: khởi động, danh sách và jank",
+          "goal": "Đo và cải thiện thời gian khởi động, độ mượt khi cuộn và animation bằng công cụ profiling thật.",
+          "note": "Lúc mới học mình hay tối ưu theo cảm giác trên simulator, và kết quả gần như vô nghĩa. Bài học là luôn đo trên build release và máy thật cấu hình thấp.",
+          "topics": [
+            { "title": "Thời gian khởi động", "detail": "Phân biệt cold, warm và hot start; Android Vitals theo dõi thời gian tới khung hình đầu tiên. Giảm công việc lúc khởi động: tải lười màn hình, trì hoãn SDK analytics, tránh đọc storage đồng bộ lớn. Hermes với bytecode đã giúp nhiều, phần còn lại là kỷ luật về những gì chạy trước màn hình đầu tiên." },
+            { "title": "Danh sách dài", "detail": "FlatList đủ cho danh sách vừa phải, còn FlashList hoặc Legend List tái sử dụng view nên mượt hơn với danh sách lớn. Memo hóa item, giữ keyExtractor ổn định, tránh hàm và object tạo mới trong renderItem. Dùng expo-image với kích thước phù hợp và cache thay cho ảnh full size." },
+            { "title": "Jank và render thừa", "detail": "Mục tiêu là giữ khung hình ổn định ở 60 hoặc 120 fps, nên mọi việc trên luồng JS lúc cuộn hay animate đều đáng nghi. React Compiler giúp giảm render thừa, nhưng vẫn cần chia nhỏ state, tránh context quá rộng. Animation đặt trên UI thread bằng Reanimated thay vì setState liên tục." },
+            { "title": "Công cụ profiling", "detail": "React Native DevTools có Profiler và Performance panel để xem render và thời gian JS. Bên native dùng Xcode Instruments (Time Profiler, Allocations, Hangs) và Android Studio Profiler hoặc Perfetto. Bật Performance Monitor để xem FPS của luồng JS và UI trong lúc thao tác." },
+            { "title": "Kích thước app và tài nguyên", "detail": "Kích thước app ảnh hưởng tỉ lệ cài đặt, nhất là ở thị trường mạng chậm. Theo dõi bundle JS bằng công cụ phân tích của Expo Atlas, nén và chọn định dạng ảnh hợp lý, bật R8 trên Android và kiểm tra kích thước trong App Store Connect và Play Console." }
+          ],
+          "practices": [
+            "Đo hiệu năng trên build release và máy Android tầm trung, không đo trên debug build.",
+            "Đặt ngân sách cho thời gian khởi động và kích thước app, kiểm tra trong CI.",
+            "Profile trước khi tối ưu và ghi lại số liệu trước và sau mỗi thay đổi.",
+            "Chuyển animation và gesture sang UI thread bằng Reanimated và Gesture Handler."
+          ],
+          "pitfalls": [
+            "Kết luận app chậm hay nhanh dựa trên chế độ dev, vốn chậm hơn bản release nhiều.",
+            "Bọc useMemo và useCallback khắp nơi mà không đo, trong khi vấn đề thật nằm ở ảnh quá lớn."
+          ],
+          "project": { "title": "Feed ảnh mượt", "brief": "Dựng feed khoảng 5.000 item có ảnh, like và vô hạn cuộn, sau đó profile và tối ưu. Đạt yêu cầu khi có số liệu thời gian khởi động và FPS lúc cuộn trước và sau tối ưu trên một máy Android tầm trung, kèm ghi chú các thay đổi có tác dụng." },
+          "resources": [
+            { "title": "React Native Performance Overview", "url": "https://reactnative.dev/docs/performance", "kind": "docs" },
+            { "title": "React Native Profiling", "url": "https://reactnative.dev/docs/profiling", "kind": "docs" },
+            { "title": "FlashList", "url": "https://shopify.github.io/flash-list/", "kind": "tool" },
+            { "title": "App startup time (Android)", "url": "https://developer.android.com/topic/performance/vitals/launch-time", "kind": "docs" }
+          ],
+          "tags": ["Performance", "Profiling", "Lists"]
+        },
+        {
+          "id": "08",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "Kiểm thử: unit, component và E2E",
+          "goal": "Có bộ test đủ tin để phát hành thường xuyên, từ unit test tới E2E chạy trên thiết bị thật trong CI.",
+          "note": "Mình quen Vitest và Playwright trên web, nên bất ngờ khi E2E mobile chậm và dễ flaky hơn nhiều. Chọn đúng tầng test cho từng loại lỗi giúp tiết kiệm rất nhiều công sức.",
+          "topics": [
+            { "title": "Unit test logic", "detail": "Tách logic nghiệp vụ, đồng bộ dữ liệu và format ra hàm thuần để test nhanh bằng Jest với preset jest-expo. Mock tối thiểu các module native, ưu tiên test hành vi thay vì chi tiết hiện thực. Phần đồng bộ offline và xử lý xung đột là nơi unit test có giá trị nhất." },
+            { "title": "Component test", "detail": "React Native Testing Library render component và truy vấn theo vai trò, nhãn, text giống cách người dùng nhìn thấy. Truy vấn bằng role và accessibility label vừa test được hành vi vừa ép bạn làm accessibility tốt hơn. Test các trạng thái loading, lỗi, rỗng chứ không chỉ trường hợp đẹp." },
+            { "title": "E2E với Maestro", "detail": "Maestro viết flow bằng YAML, chạy trên simulator, emulator hoặc thiết bị thật, tự chờ UI ổn định nên ít flaky. Phù hợp để test các luồng chính như đăng nhập, mua hàng, onboarding. Có thể chạy trong EAS Workflows hoặc CI riêng trên mỗi pull request." },
+            { "title": "E2E với Detox", "detail": "Detox là framework gray-box viết bằng JavaScript, đồng bộ với trạng thái app (network, animation, timer) để giảm flaky. Mạnh khi cần kiểm soát sâu, nhưng cấu hình phức tạp hơn Maestro. Chọn một công cụ và đầu tư cho nó thay vì dùng cả hai." },
+            { "title": "Thiết bị và ma trận test", "detail": "Không thể test mọi máy, hãy chọn ma trận dựa trên analytics: phiên bản hệ điều hành cũ nhất hỗ trợ, một máy Android yếu, một máy màn hình nhỏ, tablet nếu có. Device farm như Firebase Test Lab hoặc dịch vụ tương tự bổ sung cho máy thật trong tay." }
+          ],
+          "practices": [
+            "Giữ E2E cho vài luồng quan trọng nhất, phần còn lại đẩy xuống unit và component test.",
+            "Gắn testID hoặc accessibility label ổn định cho các phần tử E2E cần tương tác.",
+            "Chạy test trên build release-like trong CI cho mỗi pull request vào nhánh chính.",
+            "Seed dữ liệu và reset trạng thái app trước mỗi flow E2E."
+          ],
+          "pitfalls": [
+            "Dùng sleep cố định trong E2E thay vì chờ điều kiện, khiến test chậm và flaky.",
+            "Mock quá nhiều tới mức test pass nhưng app thật vẫn hỏng."
+          ],
+          "project": { "title": "Pipeline test cho app todo", "brief": "Thêm unit test cho logic đồng bộ, component test cho màn danh sách và ba flow Maestro (đăng nhập, tạo việc offline, đồng bộ lại). Đạt yêu cầu khi tất cả chạy tự động trong CI cho mỗi pull request và flow E2E pass ổn định mười lần liên tiếp." },
+          "resources": [
+            { "title": "Maestro documentation", "url": "https://docs.maestro.dev/", "kind": "docs" },
+            { "title": "Detox", "url": "https://wix.github.io/Detox/", "kind": "tool" },
+            { "title": "React Native Testing Library", "url": "https://callstack.github.io/react-native-testing-library/", "kind": "docs" },
+            { "title": "Expo: Unit testing with Jest", "url": "https://docs.expo.dev/develop/unit-testing/", "kind": "docs" }
+          ],
+          "tags": ["Testing", "Maestro", "Detox"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Phát hành: ký app, store review và OTA",
+          "goal": "Đưa app lên App Store và Google Play một cách lặp lại được, với OTA update, staged rollout và theo dõi crash.",
+          "note": "Trên web mình deploy vài lần một ngày và rollback trong vài giây. Mobile thì một bản lỗi có thể nằm trên máy người dùng nhiều tuần, nên quy trình phát hành phải cẩn trọng hơn hẳn.",
+          "topics": [
+            { "title": "Code signing", "detail": "iOS cần Apple Developer account, certificate, provisioning profile và entitlement; Android cần upload key và Play App Signing giữ app signing key. EAS có thể quản lý credentials, nhưng bạn vẫn phải hiểu chúng để xử lý khi hết hạn hay đổi đội. Từ 2026 Google còn yêu cầu xác minh developer cho app cài trên thiết bị Android chứng nhận, bắt đầu ở một số quốc gia." },
+            { "title": "Store review và chính sách", "detail": "App Store Review Guidelines và chính sách Google Play quy định về quyền riêng tư, thanh toán trong app, nội dung và đăng nhập. Cần privacy manifest và nhãn quyền riêng tư bên iOS, Data safety form bên Play, và đáp ứng yêu cầu target API level mới của Play mỗi năm. Hãy chuẩn bị tài khoản demo cho reviewer và giải thích rõ tính năng nhạy cảm." },
+            { "title": "OTA update", "detail": "EAS Update cho phép đẩy thay đổi JS và asset mà không qua review, nhưng chỉ khi tương thích runtime version với native code đang chạy. Dùng fingerprint để tự xác định runtime version, chia channel cho preview và production, và luôn có kế hoạch rollback. OTA dùng để sửa lỗi và cải tiến nhỏ, không để lách chính sách store." },
+            { "title": "Staged rollout và feature flag", "detail": "Google Play hỗ trợ phát hành theo phần trăm, App Store có phased release trong 7 ngày, EAS Update cũng rollout theo tỉ lệ. Kết hợp với feature flag để bật tắt tính năng mà không cần build mới. Theo dõi tỉ lệ crash-free trước khi tăng phần trăm." },
+            { "title": "Crash reporting và quan sát", "detail": "Dùng Sentry, Firebase Crashlytics hoặc EAS Observe để thu crash JS lẫn native, upload source map và dSYM để đọc được stack trace. Theo dõi crash-free users, ANR, thời gian khởi động và lỗi network theo phiên bản. Tự động hóa toàn bộ chuỗi build, test, submit bằng EAS Workflows hoặc Fastlane trong CI." }
+          ],
+          "practices": [
+            "Tự động hóa build, tăng version và submit trong CI thay vì build tay trên máy cá nhân.",
+            "Luôn upload source map và debug symbol cho mỗi bản phát hành.",
+            "Phát hành theo phần trăm và đặt ngưỡng crash-free rõ ràng để dừng rollout.",
+            "Ghi lại runtime version của mỗi bản build để OTA không gửi nhầm JS cho native không tương thích."
+          ],
+          "pitfalls": [
+            "Đẩy OTA có thay đổi cần native mới, làm app crash ngay khi mở.",
+            "Để certificate hoặc provisioning profile hết hạn đúng lúc cần phát hành gấp."
+          ],
+          "project": { "title": "Pipeline phát hành hoàn chỉnh", "brief": "Thiết lập pipeline với EAS Workflows hoặc GitHub Actions: build, test, submit lên TestFlight và internal testing track, kèm EAS Update theo channel và Sentry. Đạt yêu cầu khi một commit vào nhánh release tự động ra bản test, crash có stack trace đọc được và thử rollback một bản OTA thành công." },
+          "resources": [
+            { "title": "EAS Build", "url": "https://docs.expo.dev/build/introduction/", "kind": "docs" },
+            { "title": "EAS Update deployment patterns", "url": "https://docs.expo.dev/eas-update/deployment/", "kind": "docs" },
+            { "title": "App Store Review Guidelines", "url": "https://developer.apple.com/app-store/review/guidelines/", "kind": "docs" },
+            { "title": "Google Play: staged rollouts", "url": "https://support.google.com/googleplay/android-developer/answer/6346149", "kind": "docs" }
+          ],
+          "tags": ["EAS", "Release", "OTA", "Crash"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Bảo mật và AI trên thiết bị",
+          "goal": "Bảo vệ dữ liệu người dùng theo OWASP MASVS và tích hợp được tính năng AI chạy trên thiết bị một cách có trách nhiệm.",
+          "note": "Lúc đầu mình nghĩ code app là bí mật, cho tới khi hiểu rằng ai cũng giải nén được file app. Còn AI trên thiết bị là phần mình thấy thú vị nhất khi làm việc với LLM, vì nó giải quyết được cả độ trễ lẫn quyền riêng tư.",
+          "topics": [
+            { "title": "Lưu trữ an toàn", "detail": "Token và bí mật lưu trong iOS Keychain và Android Keystore, qua expo-secure-store hoặc thư viện tương đương, không để trong AsyncStorage hay MMKV không mã hóa. Có thể gắn khóa với sinh trắc học cho dữ liệu nhạy cảm. Mọi thứ trong bundle JS đều đọc được, nên không bao giờ nhúng API key bí mật vào app." },
+            { "title": "Bảo mật mạng", "detail": "Bắt buộc HTTPS, App Transport Security trên iOS và Network Security Config trên Android. Certificate pinning (pin public key) giảm rủi ro man-in-the-middle nhưng cần kế hoạch xoay khóa, nếu không app có thể mất kết nối hàng loạt. Dùng OAuth 2.0 với PKCE qua trình duyệt hệ thống cho đăng nhập." },
+            { "title": "OWASP MASVS và toàn vẹn app", "detail": "OWASP MASVS chia yêu cầu thành các nhóm như storage, crypto, auth, network, platform, code, resilience và privacy, đi kèm MASTG để kiểm thử. Dùng Play Integrity API và App Attest để server xác minh request đến từ app thật. Obfuscation và phát hiện root hay jailbreak chỉ làm chậm kẻ tấn công, logic quan trọng phải kiểm tra ở server." },
+            { "title": "AI trên thiết bị: API của hệ điều hành", "detail": "Apple có Foundation Models framework cho phép gọi model on-device của Apple Intelligence bằng Swift, có guided generation và tool calling. Android có ML Kit GenAI API và Prompt API dùng Gemini Nano qua AICore, hiện chỉ trên một số thiết bị và chỉ khi app ở foreground. Cả hai đều cần kiểm tra thiết bị có hỗ trợ và có phương án dự phòng." },
+            { "title": "AI trên thiết bị: model tự mang", "detail": "Với React Native, có thể chạy model nhỏ bằng ExecuTorch, LiteRT (TensorFlow Lite) hoặc Core ML qua native module. Cân nhắc kích thước model, RAM, nhiệt độ máy và pin; thường tải model sau khi cài thay vì nhúng vào app. Thiết kế kiến trúc lai: việc nhẹ và nhạy cảm chạy trên máy, việc nặng gọi lên cloud." }
+          ],
+          "practices": [
+            "Rà app theo checklist OWASP MASVS trước mỗi bản phát hành lớn.",
+            "Giữ mọi bí mật ở server và cấp token ngắn hạn cho app.",
+            "Kiểm tra khả năng AI của thiết bị lúc runtime và luôn có đường dự phòng khi không hỗ trợ.",
+            "Ghi rõ trong chính sách quyền riêng tư dữ liệu nào xử lý trên máy và dữ liệu nào gửi lên server."
+          ],
+          "pitfalls": [
+            "Nhúng API key của dịch vụ LLM vào bundle JS rồi bị lấy ra dùng miễn phí.",
+            "Bật certificate pinning mà không có khóa dự phòng, đến khi đổi chứng chỉ thì app mất kết nối."
+          ],
+          "project": { "title": "Tóm tắt ghi chú an toàn", "brief": "Thêm vào app ghi chú tính năng khóa bằng sinh trắc học, lưu token trong secure store và tóm tắt ghi chú bằng model on-device (Foundation Models hoặc Gemini Nano), dự phòng gọi API qua backend của bạn. Đạt yêu cầu khi không có bí mật nào trong bundle, app pass các mục storage và network của MASVS, và tính năng AI hoạt động hoặc dự phòng đúng trên máy không hỗ trợ." },
+          "resources": [
+            { "title": "OWASP MASVS", "url": "https://mas.owasp.org/MASVS/", "kind": "docs" },
+            { "title": "Expo SecureStore", "url": "https://docs.expo.dev/versions/latest/sdk/securestore/", "kind": "docs" },
+            { "title": "Apple Foundation Models", "url": "https://developer.apple.com/documentation/foundationmodels", "kind": "docs" },
+            { "title": "ML Kit GenAI APIs", "url": "https://developers.google.com/ml-kit/genai", "kind": "docs" }
+          ],
+          "tags": ["Security", "MASVS", "On-device AI"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "New Architecture là mặc định duy nhất", "detail": "Từ React Native 0.82 kiến trúc cũ đã bị loại bỏ, Hermes V1 thành mặc định từ 0.84. Việc cần làm bây giờ là dọn các thư viện cũ, tận dụng tính năng concurrent của React và JSI cho native module." },
+          { "title": "Expo là cách bắt đầu mặc định", "detail": "Expo Router, development build, config plugin và EAS đã thành quy trình chuẩn cho dự án React Native mới. Phần lớn đội không còn duy trì thư mục native thủ công mà sinh ra bằng CNG." },
+          { "title": "UI native ngay trong cross-platform", "detail": "Expo UI và native tabs cho phép dùng component SwiftUI và Jetpack Compose trực tiếp, trong khi Liquid Glass trên iOS và Material 3 Expressive trên Android nâng kỳ vọng về cảm giác native. App cross-platform bị đánh giá khắt khe hơn về độ đúng chất nền tảng." },
+          { "title": "Quy trình phát hành chặt hơn", "detail": "Google yêu cầu xác minh developer cho app Android bắt đầu từ cuối 2026, các store siết dần yêu cầu về quyền riêng tư. Theo dõi crash, OTA có kiểm soát và staged rollout giờ là kỹ năng cơ bản chứ không còn là điểm cộng." }
+        ],
+        "next": [
+          { "title": "AI on-device thành tính năng chuẩn", "detail": "Foundation Models của Apple và Gemini Nano trên Android sẽ phủ thêm nhiều thiết bị, kéo theo kỳ vọng về tóm tắt, phân loại và trợ lý chạy offline. Hãy học cách thiết kế kiến trúc lai on-device và cloud, cùng cách đánh giá chất lượng đầu ra." },
+          { "title": "Ranh giới cross-platform mờ dần", "detail": "Compose Multiplatform trên iOS đã ổn định, Expo đưa SwiftUI và Compose vào React, và React Native tiến gần chuẩn web hơn. Mobile engineer có giá trị là người hiểu cả tầng JS lẫn native và chọn đúng công cụ cho từng màn." },
+          { "title": "Agent viết code và test cho mobile", "detail": "Xcode, Android Studio và các công cụ như Expo đang tích hợp AI agent để sinh code, chạy build và test trên simulator. Người làm mobile sẽ dành nhiều thời gian hơn cho review, kiến trúc và kiểm thử trên thiết bị thật, nên kỹ năng đọc code native và viết E2E càng quan trọng." },
+          { "title": "Quyền riêng tư và bảo mật theo luật", "detail": "Các quy định về dữ liệu và an toàn ứng dụng ngày càng chặt, MASVS dần trở thành yêu cầu trong hợp đồng và kiểm toán. Chuẩn bị bằng cách đưa kiểm tra bảo mật và quyền riêng tư vào CI ngay từ bây giờ." }
+        ]
+      },
+      "outcomes": [
+        "Chọn và bảo vệ được lựa chọn giữa React Native + Expo, Flutter, native và Kotlin Multiplatform cho một sản phẩm cụ thể.",
+        "Xây app Expo trên New Architecture với điều hướng, deep link và accessibility đạt chuẩn nền tảng.",
+        "Thiết kế lớp dữ liệu offline-first với SQLite, đồng bộ an toàn và migration có version.",
+        "Viết native module nhỏ bằng Swift và Kotlin, đọc được crash log native.",
+        "Profile và cải thiện thời gian khởi động, độ mượt khi cuộn trên máy thật cấu hình thấp.",
+        "Vận hành pipeline test và phát hành với code signing, OTA, staged rollout và theo dõi crash.",
+        "Bảo vệ dữ liệu theo OWASP MASVS và tích hợp tính năng AI on-device có phương án dự phòng."
+      ]
+    },
+    "en": {
+      "name": "Mobile Engineer",
+      "tagline": "Build iOS and Android apps that feel smooth, work offline and ship safely",
+      "summary": "This map goes from choosing a path (React Native + Expo, Flutter or native) through OS fundamentals, UI, offline data, native modules, performance, testing, release and security, ending with on-device AI. It is for web developers, especially React developers, who want to take mobile seriously rather than stop at a working demo.",
+      "story": {
+        "intro": "I am a frontend developer who writes React and TypeScript every day, not a professional mobile engineer. I explored React Native and Expo through side projects and worked alongside mobile teammates when integrating APIs, WebSocket and login flows shared between web and app. Those moments showed me exactly where mobile differs from the web: app lifecycle, permissions, build signing, store review and the fact that you cannot hotfix whenever you like. This map is the path I would follow if I started the Mobile Engineer role today, checked against official docs as of late 2026.",
+        "lessons": [
+          "What I wish I had known earlier is that React Native is not the web running on a phone: there is no DOM, no CSS cascade, and every touch of native code is a different world.",
+          "When I started I tested on the newest simulator and felt fine, while real users were holding mid-range Android phones on flaky networks; get a real low-end device from day one.",
+          "Shipping an app is its own skill: code signing, store review, OTA updates and staged rollouts deserve the same serious study as writing components.",
+          "Being able to read a little Swift and Kotlin made me less afraid of native modules and let me read native crash stack traces, even when most of the code is still TypeScript."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Choose a path: cross-platform or native",
+          "goal": "Pick a stack that fits your team and product, and explain the trade-offs of that choice.",
+          "note": "I chose React Native + Expo because it reuses React and TypeScript, but that is a contextual choice, not the right answer for everyone. Taking time to understand the other paths made conversations with native colleagues much easier.",
+          "topics": [
+            { "title": "React Native + Expo", "detail": "You write UI in React and TypeScript, it renders real native views, and you share most code across iOS, Android and possibly web. Expo is the framework React Native recommends for new projects, handling builds, routing, OTA updates and native libraries. The downside is dependence on the library ecosystem, and sometimes you still drop down to Swift or Kotlin." },
+            { "title": "Flutter", "detail": "Flutter uses Dart and draws the entire UI itself with the Impeller engine, so the look is consistent across platforms and animation performance is strong. In exchange, widgets are not the OS's native components, so matching the iOS or Android feel takes deliberate work, and the team learns a language that is rarely used outside Flutter." },
+            { "title": "Native: SwiftUI and Jetpack Compose", "detail": "SwiftUI and Jetpack Compose are both declarative UI toolkits with a mindset close to React: state flows down, events flow up, UI is a function of state. Native gives the best experience and day-one access to new APIs, which suits graphics-heavy apps, deep OS integration or teams staffed for two platforms." },
+            { "title": "Kotlin Multiplatform", "detail": "KMP lets you share logic (networking, data, business rules) in Kotlin between Android and iOS while keeping native UI. Compose Multiplatform is now stable on iOS, so you can share UI too if you want. It is a natural fit for teams that are already strong on Android." },
+            { "title": "Decision criteria", "detail": "Weigh the team's existing skills, how much native API access you need, how platform-specific the UI must be, whether web should share the codebase, and long-term maintenance cost. An internal forms-and-lists app is a very different problem from a camera or real-time map app." }
+          ],
+          "practices": [
+            "Write a short decision record (ADR) explaining why you chose the stack and what would make you change your mind.",
+            "Prototype the same small screen in two stacks before committing if the team is undecided.",
+            "Check that must-have libraries (payments, maps, push) are well supported on the chosen stack before you start."
+          ],
+          "pitfalls": [
+            "Choosing a stack only because it feels familiar while ignoring real product needs like background processing or Bluetooth.",
+            "Believing cross-platform means you will never have to open Xcode or Android Studio."
+          ],
+          "project": { "title": "Compare stacks with one screen", "brief": "Build the same list screen with pull-to-refresh and a detail screen in Expo and in one other stack (Flutter, SwiftUI or Compose). Done when both run on real devices on both platforms and you have a one-page ADR comparing developer experience, app size and startup time." },
+          "resources": [
+            { "title": "React Native: Get Started", "url": "https://reactnative.dev/docs/getting-started", "kind": "docs" },
+            { "title": "Flutter documentation", "url": "https://docs.flutter.dev/", "kind": "docs" },
+            { "title": "Kotlin Multiplatform", "url": "https://kotlinlang.org/docs/multiplatform.html", "kind": "docs" },
+            { "title": "Jetpack Compose", "url": "https://developer.android.com/compose", "kind": "docs" }
+          ],
+          "tags": ["React Native", "Flutter", "SwiftUI", "KMP"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Mobile platform fundamentals",
+          "goal": "Understand app lifecycle, permissions, threading and memory on iOS and Android so real-world behavior does not surprise you.",
+          "note": "Coming from the web, I was used to a browser tab living forever. On mobile the OS can suspend or kill your app at any moment, and understanding that changed how I design state.",
+          "topics": [
+            { "title": "App and screen lifecycle", "detail": "Android has the Activity lifecycle (onCreate, onStart, onResume, onPause, onStop), and the process can be killed under memory pressure and later restored. iOS has active, inactive, background and suspended states, managed through scenes. In React Native, AppState tells you whether the app is in the foreground or background so you can pause polling, save drafts or refresh data on return." },
+            { "title": "Permissions", "detail": "Camera, location, notifications and photos are requested at runtime, and users can deny permanently or grant partially, such as approximate location or a few selected photos. iOS requires purpose strings in Info.plist; Android needs manifest declarations and handling for when the user must go to Settings. Ask when the user needs the feature, not all at once on launch." },
+            { "title": "Threading", "detail": "Both platforms have a main (UI) thread, and blocking it too long causes jank or an ANR on Android. Swift uses async/await and actors, Kotlin uses coroutines with Dispatchers. In React Native, JS runs on its own thread, while libraries like Reanimated run animations on the UI thread via worklets." },
+            { "title": "Memory and resources", "detail": "Mid-range devices have little RAM, and large images or long lists easily get your app killed by the OS. iOS uses ARC, so watch for retain cycles; Android has a garbage collector but can still leak through long-held contexts. Resize images, clean up listeners on unmount, and monitor memory with Xcode Instruments or the Android Studio Profiler." },
+            { "title": "Background work and notifications", "detail": "Operating systems tightly restrict background execution to save battery: iOS uses BGTaskScheduler, Android uses WorkManager. Push notifications go through APNs and FCM and need token handling, behavior when the app is open, backgrounded or killed, and deep links from a notification to the right screen." }
+          ],
+          "practices": [
+            "Persist important state such as form drafts instead of trusting the app not to be killed.",
+            "Request permissions in context, with an explanation screen before the OS dialog.",
+            "Turn on Don't keep activities in Android Developer options to test state restoration.",
+            "Move heavy work such as parsing large JSON or processing images off the UI thread."
+          ],
+          "pitfalls": [
+            "Requesting every permission on the first screen so users deny them and they are hard to ask for again.",
+            "Assuming the app is always in the foreground, so timers, WebSockets and polling keep running in the background."
+          ],
+          "project": { "title": "A resilient notes app", "brief": "Build a notes app with photo attachments and local notification reminders. Done when the app restores drafts after being killed by the OS, handles every permission-denied case, and stops WebSocket or polling when it goes to the background." },
+          "resources": [
+            { "title": "The activity lifecycle", "url": "https://developer.android.com/guide/components/activities/activity-lifecycle", "kind": "docs" },
+            { "title": "Managing your app's life cycle (Apple)", "url": "https://developer.apple.com/documentation/uikit/managing-your-app-s-life-cycle", "kind": "docs" },
+            { "title": "Request runtime permissions", "url": "https://developer.android.com/training/permissions/requesting", "kind": "docs" },
+            { "title": "React Native AppState", "url": "https://reactnative.dev/docs/appstate", "kind": "docs" }
+          ],
+          "tags": ["Lifecycle", "Permissions", "Threading"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "React Native New Architecture and Expo",
+          "goal": "Set up and run a modern Expo project on the New Architecture and understand what happens underneath.",
+          "note": "At first I only ran Expo Go and thought that was enough. When I needed a native library, I finally understood why development builds and config plugins are the standard way to work.",
+          "topics": [
+            { "title": "New Architecture: JSI, Fabric, TurboModules", "detail": "Since React Native 0.82 the New Architecture is the only architecture: the old asynchronous bridge is replaced by JSI, which lets JS call C++ directly and synchronously. Fabric is the new renderer that supports React's concurrent features, and TurboModules are lazily loaded, typed native modules generated with Codegen. Libraries that do not support the New Architecture are now a real risk, so check before adding them." },
+            { "title": "Hermes", "detail": "Hermes is the default JS engine; it compiles JS to bytecode at build time, so startup is faster and memory use lower. Since React Native 0.84, Hermes V1 is the default. Debug with React Native DevTools, which is based on Chrome DevTools, instead of the older debugging tools." },
+            { "title": "Expo Router", "detail": "File-based routing in the app directory, close to the Next.js mental model: nested layouts, stacks, tabs, modals, deep links and typed routes out of the box. Recent versions add native tabs that use the OS tab bar, data loaders and API routes. Every screen has a URL, so deep links and universal links come almost for free." },
+            { "title": "Development builds, CNG and config plugins", "detail": "Expo Go can only run the libraries bundled inside it; real apps should use a development build so they can include any native code. Continuous Native Generation (prebuild) generates the ios and android folders from app.config, and config plugins change Info.plist, AndroidManifest or Gradle in code rather than by hand. This makes SDK upgrades far less painful." },
+            { "title": "EAS: Build, Submit, Update", "detail": "EAS Build builds the app in the cloud and manages signing credentials, EAS Submit pushes to App Store Connect and Google Play, and EAS Update ships JS updates over the air. Expo releases about three SDK versions a year, each tied to one React Native version, so make regular upgrades a habit." }
+          ],
+          "practices": [
+            "Switch to a development build as soon as the project grows past a demo instead of staying in Expo Go.",
+            "Do not commit the ios and android folders generated by prebuild; route every native change through a config plugin.",
+            "Run npx expo-doctor and npx expo install --check after adding libraries or upgrading the SDK.",
+            "Follow the Expo and React Native changelogs and upgrade one SDK at a time rather than skipping several."
+          ],
+          "pitfalls": [
+            "Hand-editing native files in a prebuilt folder and losing every change on the next prebuild.",
+            "Adding a library that does not support the New Architecture without checking React Native Directory."
+          ],
+          "project": { "title": "A standard Expo app skeleton", "brief": "Create an Expo app with Expo Router (tabs, stack, modal), strict TypeScript, a development build and a custom config plugin that adds the camera permission. Done when it builds through EAS for both platforms, a deep link opens the right detail screen, and prebuild --clean loses no configuration." },
+          "resources": [
+            { "title": "React Native: About the New Architecture", "url": "https://reactnative.dev/architecture/landing-page", "kind": "docs" },
+            { "title": "Expo Router introduction", "url": "https://docs.expo.dev/router/introduction/", "kind": "docs" },
+            { "title": "Expo development builds", "url": "https://docs.expo.dev/develop/development-builds/introduction/", "kind": "docs" },
+            { "title": "Expo config plugins", "url": "https://docs.expo.dev/config-plugins/introduction/", "kind": "docs" }
+          ],
+          "tags": ["Expo", "Fabric", "Hermes", "EAS"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "UI, navigation and accessibility",
+          "goal": "Build interfaces that feel right on each platform, navigate naturally and work with screen readers.",
+          "note": "When I started, I tended to build mobile screens with web habits, and they looked like a shrunken website. Studying the HIG and Material 3 showed me why back gestures, tab bars and system font sizes matter so much.",
+          "topics": [
+            { "title": "Layout and styling in React Native", "detail": "Layout uses Flexbox through Yoga with flexDirection defaulting to column, and there is no CSS cascade, so styles are passed explicitly through components. You must handle safe areas, keyboards covering inputs and edge-to-edge, which is now enforced on recent Android. StyleSheet, Unistyles or NativeWind all work, as long as you have consistent design tokens." },
+            { "title": "Platform conventions: HIG and Material 3", "detail": "Apple's Human Interface Guidelines and Material 3 describe navigation, type sizes, spacing and minimum touch targets (about 44pt on iOS, 48dp on Android). iOS 26 introduced the Liquid Glass design language, and Android has Material 3 Expressive. You do not need two different UIs, but details like the back button, dialogs and pickers should follow the platform." },
+            { "title": "Navigation and deep links", "detail": "Stacks, tabs and modals should use native navigators so you get swipe-back and Android predictive back. Design URLs for every important screen and configure universal links (iOS) and App Links (Android) so links from the web and notifications open straight into the app. Handle deep links into screens that require login." },
+            { "title": "Animation and gestures", "detail": "Reanimated runs animations on the UI thread so they stay smooth while JS is busy, and Gesture Handler processes gestures natively. Layout animations and shared element transitions make the app feel more native. Respect the user's Reduce Motion setting." },
+            { "title": "Accessibility", "detail": "Use accessibilityLabel, accessibilityRole, accessibilityState and accessibilityHint so VoiceOver and TalkBack announce things correctly. Support Dynamic Type and font scaling without breaking layout, with enough color contrast and a sensible focus order. Test for real by turning on a screen reader and completing a main flow." }
+          ],
+          "practices": [
+            "Test every screen at the largest system font size and with VoiceOver or TalkBack.",
+            "Use native navigation components instead of building a stack in JS.",
+            "Define design tokens (color, spacing, typography) with dark mode support from the start.",
+            "Make every touch target meet the minimum size in the HIG and Material guidelines."
+          ],
+          "pitfalls": [
+            "Copying a web UI to mobile with hover states, tiny menus and buttons packed too closely.",
+            "Hard-coding text heights so the layout breaks when users increase the font size."
+          ],
+          "project": { "title": "An accessible news reader", "brief": "Build a news reader with tabs, a list, a detail screen, sharing and deep links from the web. Done when the main flow can be completed using only VoiceOver and TalkBack, the layout holds at the largest font size, dark mode is supported and back gestures work correctly on both platforms." },
+          "resources": [
+            { "title": "Human Interface Guidelines", "url": "https://developer.apple.com/design/human-interface-guidelines/", "kind": "docs" },
+            { "title": "Material Design 3", "url": "https://m3.material.io/", "kind": "docs" },
+            { "title": "React Native Accessibility", "url": "https://reactnative.dev/docs/accessibility", "kind": "docs" },
+            { "title": "React Native Reanimated", "url": "https://docs.swmansion.com/react-native-reanimated/", "kind": "docs" }
+          ],
+          "tags": ["UI", "Navigation", "Accessibility"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Offline-first data and networking",
+          "goal": "Design a data layer that works without a connection, syncs when the network returns and resolves conflicts sensibly.",
+          "note": "On the web I was used to treating the server as the only source of truth. On mobile a flaky network is normal, so I had to learn to treat the local database as the primary data source for the UI.",
+          "topics": [
+            { "title": "Local storage", "detail": "Use expo-sqlite (or op-sqlite) for structured data, often paired with Drizzle ORM for typed schemas and migrations. Use MMKV for small, fast key-value data like settings instead of the slower AsyncStorage. Sensitive data such as tokens does not belong here; it goes into the Keychain or Keystore." },
+            { "title": "Offline-first architecture", "detail": "The UI reads from the local database, and writes go to local storage first, then into a queue (outbox) that is sent to the server when online. Each operation needs a client-generated id and an idempotency key so retries never create duplicates. Track connectivity with NetInfo, but do not fully trust it; handle request errors as usual." },
+            { "title": "Sync and conflict resolution", "detail": "Sync deltas by timestamp or version instead of reloading everything. Pick an explicit conflict strategy: last-write-wins, per-field merge, or CRDTs for collaborative data. Engines such as PowerSync, WatermelonDB or CRDT-based solutions save you from rewriting the hardest part yourself." },
+            { "title": "Networking and caching", "detail": "TanStack Query on React Native needs focusManager wired to AppState and onlineManager wired to NetInfo so it refetches at the right moments. Use timeouts, retries with backoff, cursor pagination and compressed payloads. Persist the query cache so the app shows stale data instantly while fresh data loads." },
+            { "title": "Real-time on mobile", "detail": "WebSocket or SSE connections drop when the app goes to the background, so you need reconnect with backoff and a catch-up sync when returning to the foreground. For important updates while the app is closed, use push notifications (possibly silent push) to trigger a sync instead of holding a connection open." }
+          ],
+          "practices": [
+            "Design a local schema with versioned migrations from the very first release.",
+            "Give every write a client-side id and an idempotency key.",
+            "Show sync status clearly (pending, failed, saved) so users trust their data.",
+            "Test with airplane mode, throttled networks and network switches mid-request."
+          ],
+          "pitfalls": [
+            "Storing the whole app state as one big JSON string in AsyncStorage and rewriting it on every change.",
+            "Forgetting migrations so users on an older version crash after updating."
+          ],
+          "project": { "title": "An offline-first task app", "brief": "Build a todo app with projects, labels and sync against a NestJS API or an existing backend. Done when you can create, edit and delete offline, sync correctly once online, retries never create duplicates, and at least one schema migration runs on existing data." },
+          "resources": [
+            { "title": "Expo SQLite", "url": "https://docs.expo.dev/versions/latest/sdk/sqlite/", "kind": "docs" },
+            { "title": "Build an offline-first app (Android)", "url": "https://developer.android.com/topic/architecture/data-layer/offline-first", "kind": "docs" },
+            { "title": "TanStack Query: React Native", "url": "https://tanstack.com/query/latest/docs/framework/react/react-native", "kind": "docs" }
+          ],
+          "tags": ["SQLite", "Offline", "Sync"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Native modules and device APIs",
+          "goal": "Use the camera, location and biometrics, and write a small native module in Swift and Kotlin when libraries fall short.",
+          "note": "The part I dreaded most at first was opening Xcode. Writing a small Expo Module in Swift and Kotlin was when I realized native is not as scary as I imagined.",
+          "topics": [
+            { "title": "Existing device libraries", "detail": "The Expo SDK includes expo-camera, expo-location, expo-local-authentication, expo-notifications, expo-image, expo-file-system and many more modules that support the New Architecture. Before writing native code, check React Native Directory and the Expo SDK. Read each module's permission setup and background limits carefully." },
+            { "title": "Expo Modules API", "detail": "Write native modules in Swift and Kotlin with a concise DSL: declare functions, async functions, events and even native views. Modules come with config plugins, autolinking and work well on the New Architecture. It is the easiest way for a React developer to touch native code." },
+            { "title": "Turbo Native Modules and Codegen", "detail": "The standard React Native approach: write a TypeScript spec, let Codegen generate C++ and native interfaces, then implement them in Objective-C++/Swift and Kotlin. Understanding this helps you read third-party libraries. Nitro Modules is a community, JSI-based option optimized for performance when you call native code very frequently." },
+            { "title": "Native views and UI integration", "detail": "When you need an OS component such as a map, video player or picker, you wrap a native view and pass props and events across. Expo UI lets you use SwiftUI and Jetpack Compose components directly inside the React tree. Be careful with sizing, layout and the native view's lifecycle." },
+            { "title": "Reading enough Swift and Kotlin", "detail": "You do not need to be an expert, but you should read optionals, closures and async/await in Swift, and null safety, coroutines and extensions in Kotlin. Knowing how to set native breakpoints in Xcode and Android Studio, read Logcat and read crash logs saves a huge amount of time." }
+          ],
+          "practices": [
+            "Prefer well-maintained libraries that support the New Architecture before writing native code yourself.",
+            "Keep native module APIs small, asynchronous and fully typed.",
+            "Write a config plugin for every native change a module requires.",
+            "Test native modules on real devices for both platforms, including the oldest OS version you support."
+          ],
+          "pitfalls": [
+            "Making synchronous native calls for heavy work that block the JS or UI thread.",
+            "Forgetting to remove native listeners and subscriptions, which leaks memory."
+          ],
+          "project": { "title": "Biometrics and battery module", "brief": "Write an Expo Module in Swift and Kotlin that returns battery level and charging state and emits events on change, plus a lock screen using Face ID or fingerprint. Done when the module has TypeScript types, events are removed correctly on unmount, and it runs on real devices on both platforms." },
+          "resources": [
+            { "title": "Expo Modules API overview", "url": "https://docs.expo.dev/modules/overview/", "kind": "docs" },
+            { "title": "Turbo Native Modules", "url": "https://reactnative.dev/docs/turbo-native-modules-introduction", "kind": "docs" },
+            { "title": "SwiftUI", "url": "https://developer.apple.com/swiftui/", "kind": "docs" }
+          ],
+          "tags": ["Native Modules", "Swift", "Kotlin"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Performance: startup, lists and jank",
+          "goal": "Measure and improve startup time, scroll smoothness and animation using real profiling tools.",
+          "note": "When I started I tended to optimize by feel on a simulator, and the results were close to meaningless. The lesson: always measure on a release build and a real low-end device.",
+          "topics": [
+            { "title": "Startup time", "detail": "Distinguish cold, warm and hot starts; Android Vitals tracks time to initial display. Reduce startup work: lazy-load screens, defer analytics SDKs, avoid large synchronous storage reads. Hermes bytecode already helps a lot; the rest is discipline about what runs before the first screen." },
+            { "title": "Long lists", "detail": "FlatList is fine for moderate lists, while FlashList or Legend List recycle views and stay smoother for large ones. Memoize items, keep keyExtractor stable, and avoid creating functions and objects inside renderItem. Use expo-image with properly sized, cached images instead of full-size originals." },
+            { "title": "Jank and wasted renders", "detail": "The goal is a steady 60 or 120 fps, so any JS-thread work while scrolling or animating is suspect. React Compiler reduces wasted renders, but you still need to split state and avoid overly broad contexts. Run animations on the UI thread with Reanimated instead of calling setState in a loop." },
+            { "title": "Profiling tools", "detail": "React Native DevTools has a Profiler and Performance panel for renders and JS timing. On the native side, use Xcode Instruments (Time Profiler, Allocations, Hangs) and the Android Studio Profiler or Perfetto. Turn on the Performance Monitor to watch JS and UI thread FPS while interacting." },
+            { "title": "App size and assets", "detail": "App size affects install rates, especially in markets with slow networks. Track the JS bundle with Expo Atlas, compress and choose sensible image formats, enable R8 on Android, and check sizes in App Store Connect and Play Console." }
+          ],
+          "practices": [
+            "Measure performance on release builds and mid-range Android devices, never on debug builds.",
+            "Set budgets for startup time and app size and check them in CI.",
+            "Profile before optimizing and record numbers before and after every change.",
+            "Move animations and gestures to the UI thread with Reanimated and Gesture Handler."
+          ],
+          "pitfalls": [
+            "Judging speed in development mode, which is much slower than a release build.",
+            "Wrapping everything in useMemo and useCallback without measuring, while the real problem is oversized images."
+          ],
+          "project": { "title": "A smooth photo feed", "brief": "Build a feed of about 5,000 items with images, likes and infinite scroll, then profile and optimize it. Done when you have startup time and scroll FPS numbers before and after optimization on a mid-range Android device, with notes on which changes made a difference." },
+          "resources": [
+            { "title": "React Native Performance Overview", "url": "https://reactnative.dev/docs/performance", "kind": "docs" },
+            { "title": "React Native Profiling", "url": "https://reactnative.dev/docs/profiling", "kind": "docs" },
+            { "title": "FlashList", "url": "https://shopify.github.io/flash-list/", "kind": "tool" },
+            { "title": "App startup time (Android)", "url": "https://developer.android.com/topic/performance/vitals/launch-time", "kind": "docs" }
+          ],
+          "tags": ["Performance", "Profiling", "Lists"]
+        },
+        {
+          "id": "08",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "Testing: unit, component and E2E",
+          "goal": "Build a test suite you trust enough to release often, from unit tests to E2E on real devices in CI.",
+          "note": "I was used to Vitest and Playwright on the web, so I was surprised by how much slower and flakier mobile E2E can be. Picking the right test layer for each kind of bug saves a lot of effort.",
+          "topics": [
+            { "title": "Unit testing logic", "detail": "Extract business logic, data sync and formatting into pure functions and test them quickly with Jest using the jest-expo preset. Mock native modules minimally and test behavior rather than implementation details. Offline sync and conflict handling are where unit tests pay off the most." },
+            { "title": "Component testing", "detail": "React Native Testing Library renders components and queries by role, label and text the way users perceive them. Querying by role and accessibility label tests behavior and pushes you toward better accessibility at the same time. Test loading, error and empty states, not just the happy path." },
+            { "title": "E2E with Maestro", "detail": "Maestro defines flows in YAML, runs on simulators, emulators or real devices, and waits for the UI to settle, so tests are less flaky. It suits key journeys like login, checkout and onboarding. You can run it in EAS Workflows or your own CI on every pull request." },
+            { "title": "E2E with Detox", "detail": "Detox is a gray-box framework written in JavaScript that synchronizes with app state (network, animations, timers) to reduce flakiness. It is powerful when you need deep control but harder to configure than Maestro. Pick one tool and invest in it rather than running both." },
+            { "title": "Devices and the test matrix", "detail": "You cannot test every phone, so build a matrix from analytics: the oldest supported OS, a weak Android device, a small-screen device, and tablets if relevant. Device farms such as Firebase Test Lab or similar services complement the real devices on your desk." }
+          ],
+          "practices": [
+            "Keep E2E for a few critical journeys and push the rest down to unit and component tests.",
+            "Add stable testIDs or accessibility labels to elements that E2E tests interact with.",
+            "Run tests on a release-like build in CI for every pull request to the main branch.",
+            "Seed data and reset app state before each E2E flow."
+          ],
+          "pitfalls": [
+            "Using fixed sleeps in E2E instead of waiting for conditions, which makes tests slow and flaky.",
+            "Mocking so much that tests pass while the real app is broken."
+          ],
+          "project": { "title": "A test pipeline for the task app", "brief": "Add unit tests for sync logic, component tests for the list screen and three Maestro flows (login, create a task offline, sync again). Done when everything runs automatically in CI on every pull request and the E2E flows pass ten times in a row." },
+          "resources": [
+            { "title": "Maestro documentation", "url": "https://docs.maestro.dev/", "kind": "docs" },
+            { "title": "Detox", "url": "https://wix.github.io/Detox/", "kind": "tool" },
+            { "title": "React Native Testing Library", "url": "https://callstack.github.io/react-native-testing-library/", "kind": "docs" },
+            { "title": "Expo: Unit testing with Jest", "url": "https://docs.expo.dev/develop/unit-testing/", "kind": "docs" }
+          ],
+          "tags": ["Testing", "Maestro", "Detox"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Release: signing, store review and OTA",
+          "goal": "Ship to the App Store and Google Play repeatably, with OTA updates, staged rollouts and crash monitoring.",
+          "note": "On the web I deploy several times a day and roll back in seconds. On mobile a bad build can sit on users' phones for weeks, so the release process has to be far more careful.",
+          "topics": [
+            { "title": "Code signing", "detail": "iOS needs an Apple Developer account, certificates, provisioning profiles and entitlements; Android needs an upload key, with Play App Signing holding the app signing key. EAS can manage credentials, but you still need to understand them to handle expiry or team changes. From 2026 Google also requires developer verification for apps installed on certified Android devices, starting in a few countries." },
+            { "title": "Store review and policies", "detail": "The App Store Review Guidelines and Google Play policies cover privacy, in-app payments, content and sign-in. You need a privacy manifest and privacy labels on iOS, the Data safety form on Play, and you must meet Play's new target API level requirement each year. Prepare a demo account for reviewers and explain sensitive features clearly." },
+            { "title": "OTA updates", "detail": "EAS Update ships JS and asset changes without review, but only when the runtime version is compatible with the native code already installed. Use fingerprinting to derive the runtime version, separate channels for preview and production, and always have a rollback plan. OTA is for fixes and small improvements, not for getting around store policy." },
+            { "title": "Staged rollouts and feature flags", "detail": "Google Play supports percentage rollouts, the App Store has a 7-day phased release, and EAS Update can roll out by percentage too. Combine these with feature flags to toggle features without a new build. Watch the crash-free rate before increasing the percentage." },
+            { "title": "Crash reporting and observability", "detail": "Use Sentry, Firebase Crashlytics or EAS Observe to capture both JS and native crashes, and upload source maps and dSYMs so stack traces are readable. Track crash-free users, ANRs, startup time and network errors per version. Automate the full build, test and submit chain with EAS Workflows or Fastlane in CI." }
+          ],
+          "practices": [
+            "Automate builds, version bumps and submission in CI instead of building by hand on a personal machine.",
+            "Always upload source maps and debug symbols for every release.",
+            "Release by percentage and set a clear crash-free threshold for halting a rollout.",
+            "Record the runtime version of each build so OTA never sends JS to incompatible native code."
+          ],
+          "pitfalls": [
+            "Pushing an OTA update that depends on new native code, crashing the app on launch.",
+            "Letting a certificate or provisioning profile expire right when you need an urgent release."
+          ],
+          "project": { "title": "A complete release pipeline", "brief": "Set up a pipeline with EAS Workflows or GitHub Actions: build, test, submit to TestFlight and an internal testing track, plus channel-based EAS Update and Sentry. Done when a commit to the release branch automatically produces a test build, crashes have readable stack traces, and you have successfully rolled back an OTA update." },
+          "resources": [
+            { "title": "EAS Build", "url": "https://docs.expo.dev/build/introduction/", "kind": "docs" },
+            { "title": "EAS Update deployment patterns", "url": "https://docs.expo.dev/eas-update/deployment/", "kind": "docs" },
+            { "title": "App Store Review Guidelines", "url": "https://developer.apple.com/app-store/review/guidelines/", "kind": "docs" },
+            { "title": "Google Play: staged rollouts", "url": "https://support.google.com/googleplay/android-developer/answer/6346149", "kind": "docs" }
+          ],
+          "tags": ["EAS", "Release", "OTA", "Crash"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Security and on-device AI",
+          "goal": "Protect user data following OWASP MASVS and integrate on-device AI features responsibly.",
+          "note": "At first I assumed app code was secret, until I learned anyone can unpack an app file. On-device AI is the part I find most interesting from my LLM work, because it tackles both latency and privacy.",
+          "topics": [
+            { "title": "Secure storage", "detail": "Store tokens and secrets in the iOS Keychain and Android Keystore via expo-secure-store or an equivalent, never in AsyncStorage or unencrypted MMKV. Sensitive data can be bound to biometrics. Everything in the JS bundle is readable, so never embed a secret API key in the app." },
+            { "title": "Network security", "detail": "Enforce HTTPS with App Transport Security on iOS and Network Security Config on Android. Certificate pinning (public key pinning) reduces man-in-the-middle risk but needs a key rotation plan, or the app can lose connectivity for everyone. Use OAuth 2.0 with PKCE through the system browser for sign-in." },
+            { "title": "OWASP MASVS and app integrity", "detail": "OWASP MASVS groups requirements into storage, crypto, auth, network, platform, code, resilience and privacy, with the MASTG for testing. Use the Play Integrity API and App Attest so your server can verify requests come from the genuine app. Obfuscation and root or jailbreak detection only slow attackers down; critical logic must be checked on the server." },
+            { "title": "On-device AI: OS APIs", "detail": "Apple's Foundation Models framework lets you call the on-device Apple Intelligence model from Swift, with guided generation and tool calling. Android offers ML Kit GenAI APIs and the Prompt API using Gemini Nano through AICore, currently on a subset of devices and only while the app is in the foreground. Both require checking device support and having a fallback." },
+            { "title": "On-device AI: bring your own model", "detail": "In React Native you can run small models with ExecuTorch, LiteRT (TensorFlow Lite) or Core ML through native modules. Weigh model size, RAM, thermals and battery; models are usually downloaded after install rather than bundled. Design a hybrid architecture: light and sensitive tasks run on device, heavy ones go to the cloud." }
+          ],
+          "practices": [
+            "Review the app against the OWASP MASVS checklist before every major release.",
+            "Keep all secrets on the server and issue short-lived tokens to the app.",
+            "Check the device's AI capabilities at runtime and always provide a fallback when unsupported.",
+            "State clearly in the privacy policy which data is processed on device and which is sent to the server."
+          ],
+          "pitfalls": [
+            "Embedding an LLM provider API key in the JS bundle, where it gets extracted and abused.",
+            "Enabling certificate pinning without a backup key, so the app loses connectivity when the certificate changes."
+          ],
+          "project": { "title": "Secure note summaries", "brief": "Add biometric lock, secure-store token storage and on-device note summarization (Foundation Models or Gemini Nano) to the notes app, falling back to an API call through your own backend. Done when no secrets are in the bundle, the app passes the MASVS storage and network checks, and the AI feature works or falls back correctly on unsupported devices." },
+          "resources": [
+            { "title": "OWASP MASVS", "url": "https://mas.owasp.org/MASVS/", "kind": "docs" },
+            { "title": "Expo SecureStore", "url": "https://docs.expo.dev/versions/latest/sdk/securestore/", "kind": "docs" },
+            { "title": "Apple Foundation Models", "url": "https://developer.apple.com/documentation/foundationmodels", "kind": "docs" },
+            { "title": "ML Kit GenAI APIs", "url": "https://developers.google.com/ml-kit/genai", "kind": "docs" }
+          ],
+          "tags": ["Security", "MASVS", "On-device AI"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "The New Architecture is the only option", "detail": "Since React Native 0.82 the legacy architecture is gone, and Hermes V1 has been the default since 0.84. The work now is cleaning out old libraries and making use of React's concurrent features and JSI for native modules." },
+          { "title": "Expo is the default way to start", "detail": "Expo Router, development builds, config plugins and EAS have become the standard workflow for new React Native projects. Most teams no longer maintain native folders by hand but generate them with CNG." },
+          { "title": "Native UI inside cross-platform apps", "detail": "Expo UI and native tabs let you use SwiftUI and Jetpack Compose components directly, while Liquid Glass on iOS and Material 3 Expressive on Android raise expectations for native feel. Cross-platform apps are judged more strictly on platform fidelity." },
+          { "title": "Stricter release processes", "detail": "Google is requiring developer verification for Android apps starting in late 2026, and stores keep tightening privacy requirements. Crash monitoring, controlled OTA and staged rollouts are now baseline skills, not extras." }
+        ],
+        "next": [
+          { "title": "On-device AI becomes a standard feature", "detail": "Apple's Foundation Models and Gemini Nano on Android will reach more devices, bringing expectations of offline summarization, classification and assistants. Learn to design hybrid on-device and cloud architectures and to evaluate output quality." },
+          { "title": "Cross-platform boundaries blur", "detail": "Compose Multiplatform on iOS is stable, Expo brings SwiftUI and Compose into React, and React Native keeps moving closer to web standards. The valuable mobile engineer understands both the JS and native layers and picks the right tool per screen." },
+          { "title": "Agents writing mobile code and tests", "detail": "Xcode, Android Studio and tools like Expo are integrating AI agents that generate code, run builds and test on simulators. Mobile engineers will spend more time on review, architecture and real-device testing, so reading native code and writing E2E tests matter even more." },
+          { "title": "Privacy and security by regulation", "detail": "Data and app security regulations keep tightening, and MASVS is increasingly showing up in contracts and audits. Prepare by putting security and privacy checks into CI now." }
+        ]
+      },
+      "outcomes": [
+        "Choose and defend a choice between React Native + Expo, Flutter, native and Kotlin Multiplatform for a specific product.",
+        "Build an Expo app on the New Architecture with navigation, deep links and accessibility that meet platform standards.",
+        "Design an offline-first data layer with SQLite, safe sync and versioned migrations.",
+        "Write small native modules in Swift and Kotlin and read native crash logs.",
+        "Profile and improve startup time and scroll smoothness on real low-end devices.",
+        "Run a test and release pipeline with code signing, OTA, staged rollouts and crash monitoring.",
+        "Protect data according to OWASP MASVS and ship on-device AI features with a fallback."
+      ]
+    }
+  }
+}

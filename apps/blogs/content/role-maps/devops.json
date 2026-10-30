@@ -1,0 +1,828 @@
+{
+  "id": "devops",
+  "ecosystem": ["Linux", "Docker", "GitHub Actions", "Kubernetes", "OpenTofu/Terraform", "AWS", "OpenTelemetry", "Argo CD"],
+  "locales": {
+    "vi": {
+      "name": "DevOps / Platform Engineer",
+      "tagline": "Xây hạ tầng, pipeline và nền tảng để team ship nhanh, chạy ổn định, an toàn",
+      "summary": "Lộ trình đi từ Linux, mạng và Git đến container, CI/CD, cloud, IaC, Kubernetes, observability, bảo mật chuỗi cung ứng và platform engineering, có thêm phần vận hành workload AI. Dành cho developer muốn hiểu sâu phần hạ tầng phía sau code của mình, hoặc người muốn chuyển hẳn sang vai trò DevOps, SRE hay Platform Engineer.",
+      "story": {
+        "intro": "Mình là Frontend Developer, không phải DevOps chuyên nghiệp. Những gì mình biết về mảng này đến từ việc tự dựng CI, viết Dockerfile và cấu hình deploy lên Vercel cho monorepo Bun + Turborepo của blog này, cộng với thời gian làm cùng các anh chị DevOps trong team khi debug pipeline hay sự cố môi trường. Mỗi lần ngồi cạnh họ mình lại thấy phần mình chạm tới chỉ là lớp ngoài cùng. Lộ trình này là con đường mình sẽ đi nếu bắt đầu vai trò DevOps / Platform Engineer từ hôm nay, tổng hợp từ tài liệu chính thức, những gì mình quan sát được và các thay đổi lớn của ngành tính đến cuối 2026.",
+        "lessons": [
+          "Lúc mới tập viết pipeline mình hay copy YAML từ đâu đó cho chạy được là xong. Điều mình ước biết sớm hơn là hiểu Linux, process, network và DNS thì mới debug được khi pipeline hay container chết một cách khó hiểu.",
+          "Thứ gì làm bằng tay trên console cloud thì sớm muộn cũng bị quên hoặc lệch giữa các môi trường. Đưa mọi thứ vào code và review như code ứng dụng giúp mình đỡ sợ mỗi lần phải thay đổi.",
+          "Observability không phải là dựng dashboard cho đẹp. Câu hỏi đúng là người dùng đang gặp gì, và SLO giúp cả team trả lời câu đó bằng con số thay vì cảm giác.",
+          "Làm platform là làm sản phẩm cho developer khác. Nhìn từ phía developer, mình chỉ dùng thứ gì đơn giản hơn tự làm, nên golden path phải thật sự dễ đi chứ không chỉ là quy định."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 5,
+          "title": "Linux, shell và mạng căn bản",
+          "goal": "Tự tin thao tác trên server Linux, viết shell script an toàn và giải thích được một request đi từ DNS, TLS đến load balancer như thế nào.",
+          "note": "Mình từng nghĩ phần này hơi khô và muốn nhảy thẳng vào Kubernetes. Nhưng hầu hết lỗi khó chịu nhất trong container hay CI đều quy về permission, process, DNS hoặc certificate, nên nền này đáng bỏ thời gian.",
+          "topics": [
+            { "title": "Process, file system và permission", "detail": "Hiểu process, signal (SIGTERM, SIGKILL), file descriptor, user/group, chmod/chown và capability. Biết cách xem tài nguyên bằng ps, top, ss, lsof, df, du và đọc log hệ thống qua journalctl. Đây chính là những thứ container dùng lại qua namespace và cgroup." },
+            { "title": "systemd và quản lý service", "detail": "Viết unit file, hiểu restart policy, dependency giữa các unit và cách systemd giới hạn tài nguyên bằng cgroup. Biết đọc trạng thái với systemctl status và debug service không lên bằng journalctl -u." },
+            { "title": "Shell scripting an toàn", "detail": "Dùng set -euo pipefail, quote biến đúng cách, trap để dọn dẹp và kiểm tra script bằng ShellCheck. Biết lúc nào nên dừng Bash và chuyển sang Python hay Go khi logic bắt đầu phức tạp." },
+            { "title": "DNS và HTTP", "detail": "Hiểu record A, AAAA, CNAME, TXT, MX, TTL và quá trình resolve, dùng dig để debug. Nắm HTTP/1.1, HTTP/2, HTTP/3 khác nhau ở đâu, cùng các header liên quan đến cache, proxy và CORS." },
+            { "title": "TLS và certificate", "detail": "Hiểu TLS handshake, chuỗi certificate, SNI, mTLS và vòng đời certificate với ACME (Let's Encrypt). Dùng openssl s_client để kiểm tra certificate hết hạn hay sai chain, lỗi rất hay gặp khi deploy." },
+            { "title": "Load balancing và reverse proxy", "detail": "Phân biệt load balancer tầng 4 và tầng 7, thuật toán round robin, least connections, health check và connection draining. Thực hành với Nginx, HAProxy hoặc Caddy để thấy timeout, keep-alive và header X-Forwarded-* ảnh hưởng thế nào." }
+          ],
+          "practices": [
+            "Dùng SSH key thay cho password và tắt đăng nhập root trực tiếp trên mọi server.",
+            "Chạy ShellCheck cho mọi script trước khi đưa vào repo hay pipeline.",
+            "Khi debug mạng, đi từng tầng: DNS, kết nối TCP, TLS rồi mới đến HTTP.",
+            "Ghi lại các lệnh debug hay dùng thành runbook ngắn cho chính mình."
+          ],
+          "pitfalls": [
+            "Chạy mọi thứ bằng root hoặc chmod 777 cho nhanh rồi quên sửa lại.",
+            "Đổi DNS mà không để ý TTL, rồi ngạc nhiên vì một số người dùng vẫn vào server cũ.",
+            "Viết script dài hàng trăm dòng Bash không có xử lý lỗi, chạy giữa chừng thì hỏng mà không ai biết."
+          ],
+          "project": {
+            "title": "Tự dựng web server trên một VPS",
+            "brief": "Thuê một VPS nhỏ, cấu hình user không phải root, SSH key, firewall và chạy một app qua Caddy hoặc Nginx với HTTPS từ Let's Encrypt. Đạt yêu cầu khi domain trỏ đúng, certificate tự gia hạn, app chạy bằng systemd và tự khởi động lại khi crash."
+          },
+          "resources": [
+            { "title": "The Linux Command Line (William Shotts)", "url": "https://linuxcommand.org/tlcl.php", "kind": "book" },
+            { "title": "GNU Bash Reference Manual", "url": "https://www.gnu.org/software/bash/manual/bash.html", "kind": "docs" },
+            { "title": "High Performance Browser Networking", "url": "https://hpbn.co/", "kind": "book" },
+            { "title": "MDN: HTTP", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP", "kind": "docs" }
+          ],
+          "tags": ["Linux", "Bash", "DNS", "TLS"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Git workflow và trunk-based development",
+          "goal": "Làm việc với Git ở mức nâng cao và hiểu vì sao trunk-based development là nền tảng của CI/CD.",
+          "note": "Hồi đầu mình quen dùng branch feature sống cả tuần, đến lúc merge thì conflict khắp nơi. Từ khi chia nhỏ PR và merge sớm, việc release nhẹ nhàng hơn hẳn.",
+          "topics": [
+            { "title": "Mô hình dữ liệu của Git", "detail": "Hiểu commit, tree, blob, ref và HEAD để không còn sợ rebase, reset hay reflog. Biết khi nào dùng merge, khi nào rebase và cách khôi phục commit đã mất bằng reflog." },
+            { "title": "Trunk-based development", "detail": "Mọi người merge vào main thường xuyên qua branch ngắn ngày, main luôn ở trạng thái deploy được. So sánh với GitFlow và hiểu vì sao các team có tần suất deploy cao thường chọn trunk-based." },
+            { "title": "Feature flag", "detail": "Tách deploy khỏi release bằng feature flag để merge code chưa hoàn thiện mà không ảnh hưởng người dùng. Tìm hiểu OpenFeature như chuẩn API trung lập và luôn có kế hoạch xoá flag cũ." },
+            { "title": "Branch protection và code review", "detail": "Cấu hình rulesets hoặc branch protection, bắt buộc status check, CODEOWNERS và signed commit. Dùng merge queue khi repo có nhiều người merge cùng lúc để main không bị vỡ." },
+            { "title": "Conventional Commits và versioning", "detail": "Viết commit message theo Conventional Commits để tự động sinh changelog và tăng version theo SemVer với các công cụ như release-please hoặc Changesets trong monorepo." }
+          ],
+          "practices": [
+            "Giữ PR nhỏ, tập trung vào một thay đổi và merge trong vòng một đến hai ngày.",
+            "Bắt buộc CI xanh trước khi merge vào main.",
+            "Dùng feature flag cho tính năng dở dang thay vì giữ branch dài.",
+            "Không commit secret, kể cả trong branch tạm, vì lịch sử Git rất khó xoá sạch."
+          ],
+          "pitfalls": [
+            "Force push lên branch dùng chung và làm mất commit của đồng đội.",
+            "Để feature flag tồn tại mãi, biến code thành mê cung if/else."
+          ],
+          "project": {
+            "title": "Thiết lập quy trình trunk-based cho một repo",
+            "brief": "Cấu hình một repo với ruleset bảo vệ main, CODEOWNERS, status check bắt buộc và tự động sinh changelog từ Conventional Commits. Đạt yêu cầu khi không thể push thẳng lên main và mỗi lần merge tạo được release note đúng."
+          },
+          "resources": [
+            { "title": "Pro Git", "url": "https://git-scm.com/book/en/v2", "kind": "book" },
+            { "title": "Trunk Based Development", "url": "https://trunkbaseddevelopment.com/", "kind": "article" }
+          ],
+          "tags": ["Git", "Trunk-based", "Feature flags"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Container với Docker",
+          "goal": "Đóng gói ứng dụng thành image nhỏ, build nhanh, an toàn và có SBOM đi kèm.",
+          "note": "Dockerfile đầu tiên mình viết cho app Next.js nặng gần cả GB vì copy nguyên node_modules. Hiểu multi-stage build và layer cache là bước nhảy lớn nhất của mình ở phần này.",
+          "topics": [
+            { "title": "Container hoạt động thế nào", "detail": "Container là process được cô lập bằng namespace và giới hạn bằng cgroup, không phải máy ảo. Hiểu chuẩn OCI cho image và runtime giúp bạn thấy Docker, containerd, Podman chỉ là các cách khác nhau để chạy cùng một thứ." },
+            { "title": "Multi-stage build và layer cache", "detail": "Tách stage build và stage runtime, sắp xếp lệnh để layer ít thay đổi nằm trên, dùng .dockerignore và cache mount của BuildKit. Kết quả là image nhỏ hơn và build lại nhanh hơn rất nhiều." },
+            { "title": "Base image và bảo mật image", "detail": "Chọn base image tối giản như distroless, Alpine, Chainguard hoặc Docker Hardened Images (đã miễn phí và mã nguồn mở từ cuối 2025). Chạy bằng user không phải root, pin image theo digest và quét lỗ hổng bằng Trivy hoặc Grype." },
+            { "title": "SBOM", "detail": "Sinh SBOM (định dạng SPDX hoặc CycloneDX) bằng Syft hoặc tuỳ chọn --sbom của docker buildx để biết image chứa những gì. SBOM là đầu vào cho việc quét lỗ hổng và ngày càng được yêu cầu trong các quy định về chuỗi cung ứng." },
+            { "title": "Docker Compose cho môi trường local", "detail": "Dùng Compose để dựng app cùng database, cache và queue chỉ bằng một lệnh. Thêm healthcheck, depends_on với condition và volume để dữ liệu không mất khi restart." },
+            { "title": "Build đa nền tảng", "detail": "Dùng docker buildx để build image cho cả linux/amd64 và linux/arm64, quan trọng khi máy dev là Apple Silicon còn server là x86 hoặc khi chạy trên instance ARM để tiết kiệm chi phí." }
+          ],
+          "practices": [
+            "Luôn dùng multi-stage build và chỉ copy artifact cần thiết vào image cuối.",
+            "Chạy container bằng user không phải root và bật read-only filesystem khi có thể.",
+            "Pin base image theo digest và để Renovate hoặc Dependabot cập nhật.",
+            "Không bao giờ đưa secret vào image qua ARG hay ENV, dùng BuildKit secret mount."
+          ],
+          "pitfalls": [
+            "Dùng tag latest khiến môi trường khác nhau chạy những image khác nhau.",
+            "Coi việc quét lỗ hổng là xong việc mà không có quy trình xử lý các CVE tìm được.",
+            "Bỏ quên xử lý SIGTERM nên container bị kill cứng mỗi lần deploy."
+          ],
+          "project": {
+            "title": "Container hoá một app full-stack",
+            "brief": "Viết Dockerfile multi-stage cho một app web và API, dựng thêm PostgreSQL bằng Compose. Đạt yêu cầu khi image runtime chạy non-root, nhỏ hơn đáng kể so với bản đầu tiên, có SBOM và không còn lỗ hổng mức critical theo Trivy."
+          },
+          "resources": [
+            { "title": "Docker Docs: Multi-stage builds", "url": "https://docs.docker.com/build/building/multi-stage/", "kind": "docs" },
+            { "title": "Docker Docs: Building best practices", "url": "https://docs.docker.com/build/building/best-practices/", "kind": "docs" },
+            { "title": "Trivy", "url": "https://trivy.dev/", "kind": "tool" },
+            { "title": "Syft", "url": "https://github.com/anchore/syft", "kind": "tool" }
+          ],
+          "tags": ["Docker", "OCI", "SBOM"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "CI/CD với GitHub Actions",
+          "goal": "Xây pipeline build, test, đóng gói và deploy nhanh, có cache, an toàn và hỗ trợ blue-green hoặc canary.",
+          "note": "Đây là phần mình chạm nhiều nhất khi dựng CI cho monorepo của blog. Bài học lớn nhất là pipeline cũng là code production: chậm, flaky hay thiếu an toàn thì cả team chịu.",
+          "topics": [
+            { "title": "Workflow, job và runner", "detail": "Hiểu trigger, job chạy song song, needs, matrix, concurrency group và reusable workflow để tránh lặp YAML. Biết khi nào cần self-hosted runner hoặc runner tự scale trên Kubernetes bằng Actions Runner Controller." },
+            { "title": "Cache và tăng tốc pipeline", "detail": "Dùng actions/cache hoặc cache có sẵn của setup action, cache layer Docker qua BuildKit, và remote cache của Turborepo hay Nx để chỉ build lại phần thay đổi. Đo thời gian từng bước trước khi tối ưu." },
+            { "title": "Artifact và registry", "detail": "Phân biệt artifact tạm giữa các job với artifact release lâu dài. Đẩy image lên registry như GHCR hoặc ECR với tag là commit SHA, build một lần và promote cùng một image qua các môi trường." },
+            { "title": "Bảo mật pipeline", "detail": "Dùng OIDC để lấy credential cloud ngắn hạn thay vì lưu access key, đặt permissions tối thiểu cho GITHUB_TOKEN và pin action theo commit SHA. Vụ tj-actions/changed-files bị chiếm quyền năm 2025 là ví dụ rõ về rủi ro khi dùng tag có thể bị ghi đè." },
+            { "title": "Chiến lược deploy", "detail": "So sánh rolling update, blue-green và canary, cùng cách rollback của từng kiểu. Với Kubernetes có Argo Rollouts hoặc Flagger để chạy canary dựa trên metric, tự dừng khi tỉ lệ lỗi tăng." },
+            { "title": "Environment và approval", "detail": "Dùng GitHub environments để tách secret theo môi trường, đặt required reviewer cho production và deployment protection rule. Ghi nhận thông tin deploy để đo được các chỉ số DORA như deployment frequency và change failure rate." }
+          ],
+          "practices": [
+            "Build artifact một lần và promote cùng artifact đó qua staging lên production.",
+            "Đặt permissions mặc định là read và chỉ mở quyền cần thiết cho từng job.",
+            "Dùng OIDC thay cho long-lived cloud key trong secrets.",
+            "Giữ pipeline của PR dưới khoảng mười phút để không ai muốn bỏ qua nó."
+          ],
+          "pitfalls": [
+            "Chạy workflow pull_request_target với code từ fork, mở đường cho secret bị lộ.",
+            "Rebuild image riêng cho từng môi trường nên thứ được test không phải thứ được deploy.",
+            "Test flaky bị retry cho qua thay vì sửa, lâu dần không ai tin pipeline nữa."
+          ],
+          "project": {
+            "title": "Pipeline hoàn chỉnh cho monorepo",
+            "brief": "Xây workflow chạy lint, test, build có cache cho một monorepo, build image tag theo SHA và deploy lên staging tự động, lên production cần approval. Đạt yêu cầu khi pipeline dùng OIDC, action được pin theo SHA, lần chạy thứ hai nhanh hơn rõ rệt nhờ cache và có cách rollback trong một bước."
+          },
+          "resources": [
+            { "title": "GitHub Actions documentation", "url": "https://docs.github.com/en/actions", "kind": "docs" },
+            { "title": "GitHub Actions: Secure use reference", "url": "https://docs.github.com/en/actions/reference/security/secure-use", "kind": "docs" },
+            { "title": "Martin Fowler: BlueGreenDeployment", "url": "https://martinfowler.com/bliki/BlueGreenDeployment.html", "kind": "article" },
+            { "title": "Argo Rollouts", "url": "https://argo-rollouts.readthedocs.io/en/stable/", "kind": "docs" }
+          ],
+          "tags": ["GitHub Actions", "CI/CD", "Canary"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 5,
+          "title": "Cloud căn bản trên AWS",
+          "goal": "Thiết kế được một hệ thống cơ bản trên một cloud lớn với IAM chặt chẽ, mạng hợp lý, dùng managed service và kiểm soát chi phí.",
+          "note": "Mình chọn AWS làm ví dụ vì phổ biến nhất, nhưng khái niệm chuyển sang GCP hay Azure khá dễ. Điều mình thấy các anh chị DevOps quan tâm nhất không phải biết nhiều service, mà là IAM, network và hoá đơn cuối tháng.",
+          "topics": [
+            { "title": "IAM và least privilege", "detail": "Hiểu user, role, policy, trust policy và cách đánh giá quyền khi có nhiều policy chồng nhau. Ưu tiên role với credential ngắn hạn, IAM Identity Center cho người dùng và EKS Pod Identity hoặc IRSA cho workload." },
+            { "title": "Tổ chức account", "detail": "Dùng AWS Organizations với nhiều account tách theo môi trường hoặc team, áp guardrail bằng Service Control Policy. Một account cho mọi thứ khiến blast radius và việc phân bổ chi phí đều khó." },
+            { "title": "VPC và mạng", "detail": "Thiết kế subnet public và private qua nhiều Availability Zone, hiểu route table, NAT gateway, security group, VPC endpoint và PrivateLink. NAT gateway và data transfer giữa AZ là khoản chi phí hay bị bỏ qua." },
+            { "title": "Compute và managed service", "detail": "So sánh EC2, ECS Fargate, Lambda và EKS theo mức kiểm soát và chi phí vận hành. Ưu tiên managed service như RDS, ElastiCache, SQS, S3 để team tập trung vào sản phẩm thay vì vá database." },
+            { "title": "FinOps và chi phí", "detail": "Gắn tag bắt buộc để phân bổ chi phí, đặt budget và cảnh báo, dùng Savings Plans, Spot và instance ARM (Graviton) cho workload phù hợp. FinOps Framework giúp biến chi phí thành trách nhiệm chung của engineering chứ không chỉ của finance." }
+          ],
+          "practices": [
+            "Bật MFA, tắt access key của root account và không dùng root cho việc hằng ngày.",
+            "Đặt database và service nội bộ trong private subnet, chỉ mở qua load balancer.",
+            "Gắn tag owner, environment, cost-center cho mọi resource ngay từ đầu.",
+            "Đặt budget alert trước khi tạo resource đầu tiên."
+          ],
+          "pitfalls": [
+            "Gán AdministratorAccess cho mọi thứ vì không có thời gian viết policy đúng.",
+            "Để lại resource thử nghiệm chạy quên tắt, cuối tháng nhận hoá đơn bất ngờ.",
+            "Đặt mọi thứ vào một Availability Zone rồi gọi đó là production."
+          ],
+          "project": {
+            "title": "Deploy app lên AWS đúng chuẩn",
+            "brief": "Dựng VPC hai AZ, chạy container app trên ECS Fargate sau Application Load Balancer, database trên RDS trong private subnet và secret trong Secrets Manager. Đạt yêu cầu khi app chỉ truy cập được qua HTTPS, không có credential tĩnh, mọi resource có tag và có budget alert hoạt động."
+          },
+          "resources": [
+            { "title": "AWS Well-Architected Framework", "url": "https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html", "kind": "docs" },
+            { "title": "AWS IAM security best practices", "url": "https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html", "kind": "docs" },
+            { "title": "FinOps Framework", "url": "https://www.finops.org/framework/", "kind": "docs" }
+          ],
+          "tags": ["AWS", "IAM", "VPC", "FinOps"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Infrastructure as Code",
+          "goal": "Quản lý toàn bộ hạ tầng bằng code có review, có test, có policy và có pipeline riêng.",
+          "note": "Lần đầu xem một đồng nghiệp chạy plan và đọc diff hạ tầng như đọc diff code, mình mới hiểu vì sao họ không bao giờ sửa tay trên console.",
+          "topics": [
+            { "title": "Terraform và OpenTofu", "detail": "Nắm provider, resource, data source, variable, output và vòng đời plan/apply. OpenTofu là bản fork mã nguồn mở dưới Linux Foundation sau khi Terraform đổi sang giấy phép BSL, cú pháp gần như giống nhau và có thêm tính năng như mã hoá state." },
+            { "title": "State và môi trường", "detail": "Lưu state ở remote backend có locking như S3, tách state theo môi trường và theo vùng ảnh hưởng để một lần apply không động vào mọi thứ. Biết dùng import, moved block và phát hiện drift." },
+            { "title": "Module và cấu trúc repo", "detail": "Viết module nhỏ, có version, input rõ ràng và tái sử dụng được. Dùng Terragrunt hoặc cấu trúc thư mục theo môi trường để tránh copy-paste khi số môi trường tăng." },
+            { "title": "Pulumi và IaC bằng ngôn ngữ lập trình", "detail": "Pulumi cho phép viết hạ tầng bằng TypeScript, Python hay Go, hợp với team đã quen code và muốn dùng vòng lặp, kiểu dữ liệu, test thông thường. Đánh đổi là dễ viết logic quá phức tạp khó review." },
+            { "title": "Policy as code và kiểm tra", "detail": "Chặn cấu hình sai trước khi apply bằng OPA/Conftest, Checkov hoặc Trivy config scan, ví dụ S3 bucket public hay security group mở 0.0.0.0/0. Chạy plan trong PR để reviewer thấy chính xác thứ sẽ thay đổi." }
+          ],
+          "practices": [
+            "Mọi thay đổi hạ tầng đi qua PR, có plan đính kèm và được review.",
+            "Pin version của provider và module, cập nhật có chủ đích.",
+            "Chia state nhỏ theo service và môi trường để giảm blast radius.",
+            "Chạy kiểm tra drift định kỳ và xử lý ngay khi phát hiện."
+          ],
+          "pitfalls": [
+            "Lưu state local hoặc commit file state chứa secret lên Git.",
+            "Sửa tay trên console rồi lần apply sau ghi đè mất thay đổi.",
+            "Một module khổng lồ nhận hàng chục biến để làm mọi thứ."
+          ],
+          "project": {
+            "title": "Viết lại hạ tầng stage 05 bằng code",
+            "brief": "Chuyển toàn bộ hạ tầng AWS ở stage trước sang OpenTofu hoặc Terraform với remote state, module tái sử dụng và hai môi trường staging, production. Đạt yêu cầu khi PR tự hiển thị plan, policy check chặn được một cấu hình sai cố ý và có thể dựng lại môi trường từ đầu chỉ bằng pipeline."
+          },
+          "resources": [
+            { "title": "OpenTofu documentation", "url": "https://opentofu.org/docs/", "kind": "docs" },
+            { "title": "Terraform documentation", "url": "https://developer.hashicorp.com/terraform/docs", "kind": "docs" },
+            { "title": "Pulumi documentation", "url": "https://www.pulumi.com/docs/", "kind": "docs" },
+            { "title": "Open Policy Agent documentation", "url": "https://www.openpolicyagent.org/docs/latest/", "kind": "docs" }
+          ],
+          "tags": ["OpenTofu", "Terraform", "Pulumi", "OPA"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 6,
+          "title": "Kubernetes và GitOps",
+          "goal": "Vận hành ứng dụng trên Kubernetes với cấu hình đóng gói bằng Helm hoặc Kustomize, tự scale và deploy theo mô hình GitOps.",
+          "note": "Kubernetes là phần mình thấy dễ học sai thứ tự nhất. Hiểu Pod, Deployment, Service và cách controller đưa trạng thái thực về trạng thái mong muốn trước, rồi mới đến Helm, service mesh hay operator.",
+          "topics": [
+            { "title": "Object cốt lõi", "detail": "Nắm Pod, Deployment, StatefulSet, Job, Service, ConfigMap, Secret, Namespace và mô hình reconcile của controller. Hiểu probe (liveness, readiness, startup), resource request/limit và PodDisruptionBudget để app chịu được rolling update và node bị drain." },
+            { "title": "Networking và Gateway API", "detail": "Hiểu Service, DNS nội bộ, NetworkPolicy và CNI như Cilium. Gateway API là hướng chuẩn thay cho Ingress, đặc biệt khi Ingress-NGINX đã ngừng phát triển từ tháng 3/2026, công cụ ingress2gateway hỗ trợ chuyển đổi." },
+            { "title": "Helm và Kustomize", "detail": "Helm đóng gói ứng dụng thành chart có template và values, hợp khi phân phối cho nhiều người dùng. Kustomize dùng overlay không template, hợp để vá cấu hình theo môi trường; nhiều team dùng cả hai cùng lúc." },
+            { "title": "Autoscaling", "detail": "Dùng HPA theo CPU, memory hoặc custom metric, KEDA để scale theo sự kiện như độ dài queue, và Karpenter hoặc Cluster Autoscaler để scale node. Request đặt sai sẽ làm mọi cơ chế autoscaling hoạt động sai theo." },
+            { "title": "GitOps với Argo CD hoặc Flux", "detail": "Git là nguồn sự thật, agent trong cluster liên tục đồng bộ và báo drift. Tách repo cấu hình khỏi repo code, để CI chỉ cập nhật image tag còn việc apply do Argo CD hoặc Flux đảm nhận." },
+            { "title": "Bảo mật và multi-tenancy", "detail": "Áp RBAC tối thiểu, Pod Security Standards ở mức restricted và policy engine như Kyverno hoặc ValidatingAdmissionPolicy dùng CEL để chặn cấu hình nguy hiểm. Dùng External Secrets Operator để lấy secret từ secret manager thay vì commit Secret vào Git." }
+          ],
+          "practices": [
+            "Đặt request và limit cho mọi container dựa trên số đo thực tế.",
+            "Cấu hình readiness probe và graceful shutdown để rolling update không rơi request.",
+            "Không dùng kubectl apply tay lên production khi đã có GitOps.",
+            "Dùng managed Kubernetes (EKS, GKE, AKS) trừ khi có lý do rất rõ để tự vận hành control plane."
+          ],
+          "pitfalls": [
+            "Đưa mọi thứ lên Kubernetes trong khi một ECS service hay serverless function là đủ.",
+            "Dùng liveness probe kiểm tra cả database, khiến cả cluster restart dây chuyền khi DB chậm.",
+            "Commit Secret dạng base64 vào Git và nghĩ rằng như vậy là đã mã hoá."
+          ],
+          "project": {
+            "title": "Cluster GitOps cho app nhiều service",
+            "brief": "Dựng một cluster (kind cho local hoặc managed cluster), deploy app gồm frontend, API và worker bằng Helm hoặc Kustomize, quản lý bởi Argo CD. Đạt yêu cầu khi đổi image tag trong Git là app tự cập nhật, HPA hoặc KEDA scale được theo tải giả lập, có NetworkPolicy và secret lấy từ secret manager."
+          },
+          "resources": [
+            { "title": "Kubernetes Concepts", "url": "https://kubernetes.io/docs/concepts/", "kind": "docs" },
+            { "title": "Gateway API", "url": "https://gateway-api.sigs.k8s.io/", "kind": "docs" },
+            { "title": "Helm documentation", "url": "https://helm.sh/docs/", "kind": "docs" },
+            { "title": "Argo CD documentation", "url": "https://argo-cd.readthedocs.io/en/stable/", "kind": "docs" }
+          ],
+          "tags": ["Kubernetes", "Helm", "Argo CD", "GitOps"]
+        },
+        {
+          "id": "08",
+          "phase": "core",
+          "weeks": 5,
+          "title": "Observability, SLO và on-call",
+          "goal": "Đo được hệ thống qua metric, log, trace theo chuẩn OpenTelemetry, đặt SLO có error budget và xử lý sự cố có quy trình.",
+          "note": "Phía frontend mình quen nhìn lỗi qua console và Sentry. Làm cùng team DevOps mình mới thấy giá trị của trace xuyên suốt nhiều service và của việc thống nhất trước thế nào là hệ thống đang khoẻ.",
+          "topics": [
+            { "title": "OpenTelemetry", "detail": "Dùng OpenTelemetry SDK và auto-instrumentation để thu trace, metric, log theo một chuẩn trung lập, gửi qua OpenTelemetry Collector rồi mới tới backend. Collector cho phép lọc, sampling và đổi backend mà không sửa code; signal Profiles đang ở giai đoạn alpha nên chưa nên dựa vào cho production." },
+            { "title": "Metric với Prometheus và Grafana", "detail": "Hiểu counter, gauge, histogram, label cardinality và viết PromQL cho các chỉ số RED (rate, errors, duration) và USE. Dùng Grafana để dựng dashboard và Alertmanager để định tuyến cảnh báo." },
+            { "title": "Log và trace", "detail": "Log có cấu trúc dạng JSON, có trace_id để nối với trace. Hiểu context propagation qua W3C Trace Context, head sampling so với tail sampling, cùng các backend như Loki, Tempo hoặc Jaeger." },
+            { "title": "SLI, SLO và error budget", "detail": "Chọn SLI phản ánh trải nghiệm người dùng như tỉ lệ request thành công hay latency p99, đặt SLO thực tế và dùng error budget để cân bằng giữa ship tính năng và ổn định. Cảnh báo theo burn rate nhiều cửa sổ thay vì theo ngưỡng CPU." },
+            { "title": "Incident response và on-call", "detail": "Phân vai incident commander, người liên lạc và người xử lý, có mức độ nghiêm trọng rõ ràng và kênh trao đổi riêng. Mỗi cảnh báo gửi tới người on-call phải cần hành động và có runbook đi kèm." },
+            { "title": "Postmortem không đổ lỗi", "detail": "Viết postmortem tập trung vào hệ thống và quy trình thay vì cá nhân, có timeline, nguyên nhân góp phần và action item có người chịu trách nhiệm. Theo dõi action item tới khi đóng, nếu không postmortem chỉ là tài liệu để đó." }
+          ],
+          "practices": [
+            "Alert theo triệu chứng người dùng thấy, không theo mọi chỉ số nội bộ.",
+            "Gắn trace_id vào log và response header để đi từ lỗi tới trace nhanh chóng.",
+            "Kiểm soát cardinality của label, không đưa user ID hay URL đầy đủ vào metric.",
+            "Viết runbook cho mọi alert trước khi bật nó cho on-call."
+          ],
+          "pitfalls": [
+            "Quá nhiều alert vô nghĩa dẫn tới alert fatigue và bỏ lỡ sự cố thật.",
+            "Đặt SLO 100% hoặc nhiều số 9 mà không có lý do kinh doanh.",
+            "Thu thập mọi thứ không sampling rồi bất ngờ vì chi phí observability."
+          ],
+          "project": {
+            "title": "Observability cho cluster ở stage 07",
+            "brief": "Instrument app bằng OpenTelemetry, dựng Collector, Prometheus, Grafana và một backend trace. Đặt hai SLO kèm alert theo burn rate, sau đó tự gây một sự cố, xử lý theo quy trình và viết postmortem. Đạt yêu cầu khi đi được từ alert tới trace và log liên quan trong vài cú click."
+          },
+          "resources": [
+            { "title": "OpenTelemetry documentation", "url": "https://opentelemetry.io/docs/", "kind": "docs" },
+            { "title": "Prometheus overview", "url": "https://prometheus.io/docs/introduction/overview/", "kind": "docs" },
+            { "title": "Google SRE Workbook: Implementing SLOs", "url": "https://sre.google/workbook/implementing-slos/", "kind": "book" },
+            { "title": "PagerDuty Incident Response", "url": "https://response.pagerduty.com/", "kind": "docs" }
+          ],
+          "tags": ["OpenTelemetry", "Prometheus", "SLO", "SRE"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "DevSecOps và bảo mật chuỗi cung ứng",
+          "goal": "Chứng minh được artifact chạy trên production được build từ đâu, bởi pipeline nào, và quản lý secret không để lộ.",
+          "note": "Các vụ tấn công chuỗi cung ứng mấy năm gần đây cho thấy dependency và pipeline cũng là bề mặt tấn công. Đây là phần mình nghĩ developer nào cũng nên biết, không riêng DevOps.",
+          "topics": [
+            { "title": "SLSA", "detail": "SLSA là framework mô tả các mức đảm bảo cho quá trình build, từ có provenance tới build trên nền tảng được bảo vệ và khó giả mạo. Dùng nó như checklist để nâng dần mức an toàn của pipeline thay vì cố đạt mức cao nhất ngay." },
+            { "title": "Ký và xác thực với Sigstore", "detail": "Dùng cosign ký image theo kiểu keyless qua OIDC, chữ ký được ghi vào transparency log Rekor. GitHub artifact attestations dùng Sigstore để sinh provenance, sau đó bạn có thể xác thực bằng gh attestation verify hoặc policy trong cluster." },
+            { "title": "Admission policy khi deploy", "detail": "Chặn image chưa ký hoặc không có provenance ngay tại cluster bằng Kyverno hoặc Sigstore policy-controller. Đây là bước biến chữ ký từ thứ để trưng bày thành thứ thực sự bảo vệ production." },
+            { "title": "Quản lý secret", "detail": "Dùng secret manager như AWS Secrets Manager, HashiCorp Vault hoặc OpenBao, ưu tiên credential động, ngắn hạn và xoay vòng tự động. Quét secret trong repo bằng GitHub secret scanning hoặc Gitleaks và có quy trình thu hồi khi bị lộ." },
+            { "title": "Bảo mật dependency và repo", "detail": "Dùng Renovate hoặc Dependabot để cập nhật đều đặn, SCA để phát hiện lỗ hổng, và OpenSSF Scorecard để đánh giá độ tin cậy của dự án mã nguồn mở bạn phụ thuộc. Kết hợp SAST trong PR nhưng điều chỉnh để không tạo quá nhiều cảnh báo giả." }
+          ],
+          "practices": [
+            "Ký mọi image release và xác thực chữ ký trước khi cho chạy trên production.",
+            "Sinh SBOM và provenance trong pipeline, lưu cùng artifact.",
+            "Dùng credential ngắn hạn qua OIDC hoặc secret động thay vì key tĩnh.",
+            "Xếp hạng lỗ hổng theo khả năng khai thác thực tế (EPSS, KEV) thay vì chỉ theo điểm CVSS."
+          ],
+          "pitfalls": [
+            "Bật hàng loạt công cụ quét rồi để hàng nghìn cảnh báo không ai xử lý.",
+            "Ký image nhưng không bao giờ xác thực chữ ký ở bất kỳ đâu.",
+            "Xoá secret bị lộ khỏi Git mà quên thu hồi và đổi secret đó."
+          ],
+          "project": {
+            "title": "Pipeline có provenance và chính sách chặn",
+            "brief": "Mở rộng pipeline ở stage 04 để sinh SBOM, ký image bằng cosign và tạo build provenance, đồng thời cấu hình cluster chỉ nhận image đã ký từ đúng repo. Đạt yêu cầu khi một image tự build ngoài pipeline bị cluster từ chối và repo đạt điểm OpenSSF Scorecard cao hơn lúc bắt đầu."
+          },
+          "resources": [
+            { "title": "SLSA specification", "url": "https://slsa.dev/", "kind": "docs" },
+            { "title": "Sigstore documentation", "url": "https://docs.sigstore.dev/", "kind": "docs" },
+            { "title": "GitHub: Artifact attestations", "url": "https://docs.github.com/en/actions/concepts/security/artifact-attestations", "kind": "docs" },
+            { "title": "OWASP Secrets Management Cheat Sheet", "url": "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html", "kind": "docs" }
+          ],
+          "tags": ["SLSA", "Sigstore", "Secrets"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 5,
+          "title": "Platform engineering và workload AI",
+          "goal": "Xây nền tảng nội bộ với golden path cho developer và vận hành được workload AI/LLM cùng các công cụ AIOps một cách có kiểm soát.",
+          "note": "Là người dùng của platform, mình thấy rõ khác biệt giữa một template tạo service chạy được ngay và một trang wiki dài mười bước. Với AI, mình chỉ mới tích hợp LLM ở tầng ứng dụng, nên phần hạ tầng này là thứ mình đang học cùng mọi người.",
+          "topics": [
+            { "title": "Internal developer platform", "detail": "Platform là tập hợp công cụ và API tự phục vụ giúp developer tạo service, môi trường, database mà không cần mở ticket. Coi platform như sản phẩm: có người dùng, roadmap, đo mức sử dụng và mức hài lòng, tham khảo mô hình trưởng thành của CNCF." },
+            { "title": "Backstage và developer portal", "detail": "Backstage cung cấp software catalog, software template để scaffold service theo chuẩn và TechDocs. New Frontend System đã trở thành mặc định cho app mới, nên học theo hướng này nếu bắt đầu từ bây giờ; ngoài ra có Port hay Cortex nếu không muốn tự vận hành." },
+            { "title": "Golden path và abstraction", "detail": "Golden path là con đường đã được trải sẵn: template có CI/CD, observability, bảo mật mặc định. Dùng Crossplane hoặc các controller tương tự để đưa hạ tầng vào API kiểu Kubernetes, và đo hiệu quả bằng DORA metrics cùng thời gian onboarding." },
+            { "title": "Hạ tầng cho LLM và GPU", "detail": "Dynamic Resource Allocation (DRA) đã GA, cho phép khai báo và chia sẻ GPU linh hoạt hơn device plugin cũ. Phục vụ model bằng vLLM hoặc KServe, định tuyến theo KV cache và tải với Gateway API Inference Extension hoặc llm-d, scale theo độ dài queue thay vì CPU." },
+            { "title": "Observability và chi phí cho AI", "detail": "Dùng GenAI semantic conventions của OpenTelemetry để theo dõi token, latency, model và lỗi của từng lời gọi LLM. Gắn chi phí token và GPU vào từng team hoặc tính năng, vì đây đang là khoản chi tăng nhanh nhất trong nhiều tổ chức." },
+            { "title": "AIOps và agent vận hành", "detail": "Dùng LLM để tóm tắt alert, gợi ý nguyên nhân từ log và trace, hoặc viết nháp postmortem; công cụ cho agent truy cập hệ thống thường đi qua MCP server. Giữ con người duyệt mọi hành động thay đổi, cấp quyền read-only mặc định và ghi log đầy đủ những gì agent đã làm." }
+          ],
+          "practices": [
+            "Phỏng vấn developer và đo pain point trước khi xây bất kỳ thành phần platform nào.",
+            "Làm golden path tuỳ chọn nhưng đủ tốt để mọi người tự muốn dùng.",
+            "Bắt đầu với một thinnest viable platform rồi mở rộng theo nhu cầu thật.",
+            "Giới hạn quyền của AI agent theo least privilege và yêu cầu phê duyệt cho thao tác ghi."
+          ],
+          "pitfalls": [
+            "Dựng Backstage đầy plugin nhưng catalog không ai cập nhật nên nhanh chóng lỗi thời.",
+            "Để GPU đắt tiền chạy không tải vì không có autoscaling hay chia sẻ tài nguyên.",
+            "Cho AI agent quyền ghi trên production mà không có audit log hay cơ chế rollback."
+          ],
+          "project": {
+            "title": "Golden path tạo service có sẵn AI gateway",
+            "brief": "Dựng Backstage với một software template tạo service mới kèm repo, pipeline, manifest GitOps và dashboard observability. Thêm một service gọi LLM qua gateway có theo dõi token bằng OpenTelemetry. Đạt yêu cầu khi một developer tạo được service chạy trên staging trong dưới một giờ mà không cần hỏi ai."
+          },
+          "resources": [
+            { "title": "CNCF Platforms White Paper", "url": "https://tag-app-delivery.cncf.io/whitepapers/platforms/", "kind": "article" },
+            { "title": "Backstage documentation", "url": "https://backstage.io/docs/overview/what-is-backstage", "kind": "docs" },
+            { "title": "Kubernetes: Dynamic Resource Allocation", "url": "https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/", "kind": "docs" },
+            { "title": "OpenTelemetry GenAI semantic conventions", "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/", "kind": "docs" }
+          ],
+          "tags": ["Backstage", "Platform", "GPU", "AIOps"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "Kubernetes là nền tảng mặc định cho AI inference", "detail": "DRA đã GA, các driver GPU và TPU được đóng góp cho cộng đồng và các dự án như llm-d đưa định tuyến theo KV cache vào hệ sinh thái CNCF. DevOps ngày càng phải hiểu GPU scheduling và đặc thù của model serving." },
+          { "title": "Gateway API thay thế Ingress", "detail": "Ingress-NGINX đã ngừng phát triển từ tháng 3/2026 nên nhiều team đang chuyển sang Gateway API với các implementation như Envoy Gateway, Cilium hay NGINX Gateway Fabric. Đây là việc migration thực tế mà người mới có thể gặp ngay." },
+          { "title": "Bảo mật chuỗi cung ứng thành yêu cầu cơ bản", "detail": "SBOM, ký image, provenance và pin action theo SHA không còn là điểm cộng mà là kỳ vọng mặc định. Hardened base image miễn phí và artifact attestations có sẵn trên GitHub khiến rào cản để bắt đầu thấp hơn nhiều." },
+          { "title": "Platform engineering trưởng thành", "detail": "Các tổ chức chuyển từ dựng portal sang đo kết quả: thời gian onboarding, DORA metrics, mức hài lòng của developer. Platform được quản lý như sản phẩm với product manager riêng." }
+        ],
+        "next": [
+          { "title": "Agent tham gia vận hành", "detail": "AI agent sẽ xử lý phần lặp lại như phân loại alert, điều tra ban đầu và mở PR sửa cấu hình. Chuẩn bị bằng cách làm tốt runbook, observability và phân quyền, vì agent chỉ tốt bằng dữ liệu và guardrail bạn cho nó." },
+          { "title": "Platform phục vụ cả người và agent", "detail": "Golden path và API tự phục vụ sẽ được gọi bởi coding agent nhiều không kém developer. Thiết kế API rõ ràng, có policy as code và audit log là cách để nền tảng của bạn an toàn khi số lượng thay đổi tự động tăng mạnh." },
+          { "title": "OpenTelemetry ở mọi tầng", "detail": "Profiles đang trên đường ổn định và GenAI conventions phổ biến dần, OpenTelemetry sẽ là lớp chung cho mọi tín hiệu kể cả từ LLM. Học sâu Collector và semantic conventions sẽ có giá trị lâu dài hơn học một vendor cụ thể." },
+          { "title": "FinOps cho GPU và token", "detail": "Chi phí AI sẽ buộc team hạ tầng phải đo và tối ưu ở mức từng request, từng model. Kỹ năng kết hợp observability với dữ liệu chi phí sẽ là điểm khác biệt lớn của DevOps trong vài năm tới." }
+        ]
+      },
+      "outcomes": [
+        "Bạn có thể debug sự cố từ tầng Linux, DNS, TLS đến ứng dụng một cách có hệ thống.",
+        "Bạn có thể xây pipeline CI/CD có cache, bảo mật bằng OIDC và hỗ trợ canary hoặc blue-green.",
+        "Bạn có thể dựng hạ tầng cloud hoàn toàn bằng OpenTofu hoặc Terraform với policy as code.",
+        "Bạn có thể vận hành ứng dụng trên Kubernetes theo GitOps với autoscaling và bảo mật cơ bản.",
+        "Bạn có thể đặt SLO, xây observability bằng OpenTelemetry và dẫn dắt một incident đến postmortem.",
+        "Bạn có thể ký, xác thực artifact và chứng minh nguồn gốc của mọi thứ chạy trên production.",
+        "Bạn có thể thiết kế golden path và đưa workload AI lên nền tảng với chi phí và quyền hạn được kiểm soát."
+      ]
+    },
+    "en": {
+      "name": "DevOps / Platform Engineer",
+      "tagline": "Builds infrastructure, pipelines and platforms so teams ship fast, safely and reliably",
+      "summary": "A path from Linux, networking and Git through containers, CI/CD, cloud, IaC, Kubernetes, observability, supply chain security and platform engineering, plus running AI workloads. For developers who want to understand the infrastructure behind their code, or anyone moving into a DevOps, SRE or Platform Engineer role.",
+      "story": {
+        "intro": "I am a Frontend Developer, not a DevOps specialist. What I know about this area comes from setting up CI, writing Dockerfiles and configuring Vercel deploys for the Bun + Turborepo monorepo behind this blog, plus time spent with the DevOps engineers on my team while debugging pipelines and environment issues. Every time I sat next to them I realized I had only touched the outer layer. This map is the path I would take if I started as a DevOps / Platform Engineer today, built from official docs, what I observed, and the major shifts in the field as of late 2026.",
+        "lessons": [
+          "When I started writing pipelines I would copy some YAML until it ran and call it done. What I wish I had known earlier is that you need Linux, processes, networking and DNS to debug a pipeline or container that dies for no obvious reason.",
+          "Anything done by hand in a cloud console gets forgotten or drifts between environments sooner or later. Putting everything in code and reviewing it like application code made me much less afraid of making changes.",
+          "Observability is not about pretty dashboards. The real question is what users are experiencing, and SLOs let the whole team answer that with numbers instead of gut feeling.",
+          "Building a platform means building a product for other developers. From the developer side, I only adopt something if it is easier than doing it myself, so a golden path has to be genuinely easy, not just a rule."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 5,
+          "title": "Linux, shell and networking basics",
+          "goal": "Work confidently on Linux servers, write safe shell scripts and explain how a request travels through DNS, TLS and a load balancer.",
+          "note": "I used to find this part dry and wanted to jump straight to Kubernetes. But most of the nastiest container and CI failures come down to permissions, processes, DNS or certificates, so this foundation is worth the time.",
+          "topics": [
+            { "title": "Processes, file system and permissions", "detail": "Understand processes, signals (SIGTERM, SIGKILL), file descriptors, users and groups, chmod/chown and capabilities. Inspect resources with ps, top, ss, lsof, df, du and read system logs with journalctl. Containers reuse exactly these primitives through namespaces and cgroups." },
+            { "title": "systemd and service management", "detail": "Write unit files, understand restart policies, unit dependencies and how systemd limits resources through cgroups. Read state with systemctl status and debug a service that will not start using journalctl -u." },
+            { "title": "Safe shell scripting", "detail": "Use set -euo pipefail, quote variables properly, use trap for cleanup and lint scripts with ShellCheck. Know when to stop writing Bash and switch to Python or Go once the logic gets complex." },
+            { "title": "DNS and HTTP", "detail": "Understand A, AAAA, CNAME, TXT and MX records, TTLs and the resolution process, and debug with dig. Know how HTTP/1.1, HTTP/2 and HTTP/3 differ, along with the headers that matter for caching, proxies and CORS." },
+            { "title": "TLS and certificates", "detail": "Understand the TLS handshake, certificate chains, SNI, mTLS and the certificate lifecycle with ACME (Let's Encrypt). Use openssl s_client to check for expired certificates or broken chains, a very common deploy failure." },
+            { "title": "Load balancing and reverse proxies", "detail": "Distinguish layer 4 from layer 7 load balancers, round robin and least connections, health checks and connection draining. Practice with Nginx, HAProxy or Caddy to see how timeouts, keep-alive and X-Forwarded-* headers behave." }
+          ],
+          "practices": [
+            "Use SSH keys instead of passwords and disable direct root login on every server.",
+            "Run ShellCheck on every script before it goes into a repo or pipeline.",
+            "Debug networking layer by layer: DNS, TCP connection, TLS, then HTTP.",
+            "Keep your most-used debugging commands in a short personal runbook."
+          ],
+          "pitfalls": [
+            "Running everything as root or using chmod 777 to move fast and never reverting it.",
+            "Changing DNS without considering TTL, then being surprised that some users still hit the old server.",
+            "Writing hundreds of lines of Bash with no error handling that fails halfway without anyone noticing."
+          ],
+          "project": {
+            "title": "Run your own web server on a VPS",
+            "brief": "Rent a small VPS, set up a non-root user, SSH keys and a firewall, and serve an app through Caddy or Nginx with HTTPS from Let's Encrypt. Done when the domain resolves correctly, certificates renew automatically, and the app runs under systemd and restarts after a crash."
+          },
+          "resources": [
+            { "title": "The Linux Command Line (William Shotts)", "url": "https://linuxcommand.org/tlcl.php", "kind": "book" },
+            { "title": "GNU Bash Reference Manual", "url": "https://www.gnu.org/software/bash/manual/bash.html", "kind": "docs" },
+            { "title": "High Performance Browser Networking", "url": "https://hpbn.co/", "kind": "book" },
+            { "title": "MDN: HTTP", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP", "kind": "docs" }
+          ],
+          "tags": ["Linux", "Bash", "DNS", "TLS"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Git workflows and trunk-based development",
+          "goal": "Use Git at an advanced level and understand why trunk-based development is the foundation of CI/CD.",
+          "note": "Early on I was used to feature branches that lived for a week, and merging meant conflicts everywhere. Once I split PRs small and merged early, releasing became much calmer.",
+          "topics": [
+            { "title": "Git's data model", "detail": "Understand commits, trees, blobs, refs and HEAD so rebase, reset and reflog stop being scary. Know when to merge versus rebase and how to recover lost commits with reflog." },
+            { "title": "Trunk-based development", "detail": "Everyone merges into main frequently through short-lived branches, and main is always deployable. Compare it with GitFlow and understand why teams with high deploy frequency usually choose trunk-based." },
+            { "title": "Feature flags", "detail": "Separate deploy from release with feature flags so unfinished code can be merged without affecting users. Look at OpenFeature as a vendor-neutral API and always plan for removing old flags." },
+            { "title": "Branch protection and code review", "detail": "Configure rulesets or branch protection, required status checks, CODEOWNERS and signed commits. Use a merge queue when many people merge at once so main never breaks." },
+            { "title": "Conventional Commits and versioning", "detail": "Write commit messages following Conventional Commits to generate changelogs and bump SemVer versions automatically with tools like release-please or Changesets in a monorepo." }
+          ],
+          "practices": [
+            "Keep PRs small and focused, and merge them within a day or two.",
+            "Require green CI before anything merges into main.",
+            "Use feature flags for unfinished features instead of long-lived branches.",
+            "Never commit secrets, even on a temporary branch, because Git history is very hard to scrub."
+          ],
+          "pitfalls": [
+            "Force pushing to a shared branch and wiping out a teammate's commits.",
+            "Leaving feature flags around forever until the code turns into an if/else maze."
+          ],
+          "project": {
+            "title": "Set up a trunk-based workflow for a repo",
+            "brief": "Configure a repo with a ruleset protecting main, CODEOWNERS, required status checks and automatic changelogs from Conventional Commits. Done when nobody can push directly to main and every merge produces correct release notes."
+          },
+          "resources": [
+            { "title": "Pro Git", "url": "https://git-scm.com/book/en/v2", "kind": "book" },
+            { "title": "Trunk Based Development", "url": "https://trunkbaseddevelopment.com/", "kind": "article" }
+          ],
+          "tags": ["Git", "Trunk-based", "Feature flags"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Containers with Docker",
+          "goal": "Package applications into small, fast-building, secure images that ship with an SBOM.",
+          "note": "The first Dockerfile I wrote for a Next.js app produced an image close to a gigabyte because it copied the whole node_modules. Understanding multi-stage builds and layer caching was my biggest leap in this area.",
+          "topics": [
+            { "title": "How containers work", "detail": "A container is a process isolated by namespaces and limited by cgroups, not a virtual machine. Understanding the OCI image and runtime specs shows you that Docker, containerd and Podman are just different ways to run the same thing." },
+            { "title": "Multi-stage builds and layer caching", "detail": "Split build and runtime stages, order instructions so rarely changing layers come first, and use .dockerignore and BuildKit cache mounts. The result is smaller images and much faster rebuilds." },
+            { "title": "Base images and image security", "detail": "Pick minimal base images such as distroless, Alpine, Chainguard or Docker Hardened Images (free and open source since late 2025). Run as a non-root user, pin images by digest and scan for vulnerabilities with Trivy or Grype." },
+            { "title": "SBOM", "detail": "Generate an SBOM (SPDX or CycloneDX) with Syft or docker buildx's --sbom option so you know what is inside an image. SBOMs feed vulnerability scanning and are increasingly required by supply chain regulations." },
+            { "title": "Docker Compose for local environments", "detail": "Use Compose to bring up an app with its database, cache and queue in one command. Add healthchecks, depends_on with conditions and volumes so data survives restarts." },
+            { "title": "Multi-platform builds", "detail": "Use docker buildx to build for both linux/amd64 and linux/arm64, which matters when developers use Apple Silicon while servers run x86, or when you run on ARM instances to save cost." }
+          ],
+          "practices": [
+            "Always use multi-stage builds and copy only the required artifacts into the final image.",
+            "Run containers as a non-root user and enable a read-only filesystem where possible.",
+            "Pin base images by digest and let Renovate or Dependabot update them.",
+            "Never bake secrets into images through ARG or ENV; use BuildKit secret mounts."
+          ],
+          "pitfalls": [
+            "Using the latest tag so different environments end up running different images.",
+            "Treating a vulnerability scan as the finish line without a process for handling the CVEs it finds.",
+            "Ignoring SIGTERM so the container gets killed hard on every deploy."
+          ],
+          "project": {
+            "title": "Containerize a full-stack app",
+            "brief": "Write a multi-stage Dockerfile for a web app and an API, and add PostgreSQL with Compose. Done when the runtime image runs as non-root, is significantly smaller than your first version, ships with an SBOM and has no critical vulnerabilities according to Trivy."
+          },
+          "resources": [
+            { "title": "Docker Docs: Multi-stage builds", "url": "https://docs.docker.com/build/building/multi-stage/", "kind": "docs" },
+            { "title": "Docker Docs: Building best practices", "url": "https://docs.docker.com/build/building/best-practices/", "kind": "docs" },
+            { "title": "Trivy", "url": "https://trivy.dev/", "kind": "tool" },
+            { "title": "Syft", "url": "https://github.com/anchore/syft", "kind": "tool" }
+          ],
+          "tags": ["Docker", "OCI", "SBOM"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "CI/CD with GitHub Actions",
+          "goal": "Build fast, cached and secure pipelines that build, test, package and deploy with blue-green or canary support.",
+          "note": "This is the part I touched most while setting up CI for this blog's monorepo. The biggest lesson was that a pipeline is production code too: if it is slow, flaky or insecure, the whole team pays for it.",
+          "topics": [
+            { "title": "Workflows, jobs and runners", "detail": "Understand triggers, parallel jobs, needs, matrix builds, concurrency groups and reusable workflows to avoid duplicated YAML. Know when you need self-hosted runners or autoscaling runners on Kubernetes with Actions Runner Controller." },
+            { "title": "Caching and pipeline speed", "detail": "Use actions/cache or the built-in caching of setup actions, Docker layer caching through BuildKit, and Turborepo or Nx remote caching so only changed parts rebuild. Measure each step before optimizing." },
+            { "title": "Artifacts and registries", "detail": "Distinguish temporary artifacts passed between jobs from long-lived release artifacts. Push images to a registry such as GHCR or ECR tagged with the commit SHA, build once, and promote the same image across environments." },
+            { "title": "Pipeline security", "detail": "Use OIDC to get short-lived cloud credentials instead of storing access keys, set minimal permissions for GITHUB_TOKEN and pin actions to a commit SHA. The 2025 compromise of tj-actions/changed-files is a clear example of the risk of mutable tags." },
+            { "title": "Deployment strategies", "detail": "Compare rolling updates, blue-green and canary releases and how each one rolls back. On Kubernetes, Argo Rollouts or Flagger can run metric-driven canaries that halt automatically when error rates rise." },
+            { "title": "Environments and approvals", "detail": "Use GitHub environments to scope secrets per environment, require reviewers for production and add deployment protection rules. Record deploy data so you can track DORA metrics such as deployment frequency and change failure rate." }
+          ],
+          "practices": [
+            "Build an artifact once and promote that same artifact from staging to production.",
+            "Default permissions to read and grant only what each job needs.",
+            "Use OIDC instead of long-lived cloud keys in secrets.",
+            "Keep PR pipelines under roughly ten minutes so nobody wants to skip them."
+          ],
+          "pitfalls": [
+            "Running pull_request_target workflows on code from forks, opening a path for secrets to leak.",
+            "Rebuilding the image per environment, so what was tested is not what gets deployed.",
+            "Retrying flaky tests until they pass instead of fixing them, until nobody trusts the pipeline."
+          ],
+          "project": {
+            "title": "A complete pipeline for a monorepo",
+            "brief": "Build a workflow that runs lint, tests and cached builds for a monorepo, builds an image tagged by SHA, deploys to staging automatically and to production with approval. Done when the pipeline uses OIDC, actions are pinned by SHA, the second run is clearly faster thanks to caching, and rollback is a single step."
+          },
+          "resources": [
+            { "title": "GitHub Actions documentation", "url": "https://docs.github.com/en/actions", "kind": "docs" },
+            { "title": "GitHub Actions: Secure use reference", "url": "https://docs.github.com/en/actions/reference/security/secure-use", "kind": "docs" },
+            { "title": "Martin Fowler: BlueGreenDeployment", "url": "https://martinfowler.com/bliki/BlueGreenDeployment.html", "kind": "article" },
+            { "title": "Argo Rollouts", "url": "https://argo-rollouts.readthedocs.io/en/stable/", "kind": "docs" }
+          ],
+          "tags": ["GitHub Actions", "CI/CD", "Canary"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 5,
+          "title": "Cloud fundamentals on AWS",
+          "goal": "Design a basic system on a major cloud with tight IAM, sensible networking, managed services and cost control.",
+          "note": "I use AWS as the example because it is the most common, but the concepts transfer to GCP or Azure fairly easily. What I saw DevOps engineers care about most was not knowing many services, but IAM, networking and the bill at the end of the month.",
+          "topics": [
+            { "title": "IAM and least privilege", "detail": "Understand users, roles, policies, trust policies and how permissions are evaluated when policies overlap. Prefer roles with short-lived credentials, IAM Identity Center for people, and EKS Pod Identity or IRSA for workloads." },
+            { "title": "Account structure", "detail": "Use AWS Organizations with separate accounts per environment or team and apply guardrails with Service Control Policies. A single account for everything makes both blast radius and cost allocation hard." },
+            { "title": "VPC and networking", "detail": "Design public and private subnets across multiple Availability Zones, and understand route tables, NAT gateways, security groups, VPC endpoints and PrivateLink. NAT gateways and cross-AZ data transfer are frequently overlooked costs." },
+            { "title": "Compute and managed services", "detail": "Compare EC2, ECS Fargate, Lambda and EKS by level of control and operational cost. Prefer managed services like RDS, ElastiCache, SQS and S3 so the team focuses on the product instead of patching databases." },
+            { "title": "FinOps and cost", "detail": "Enforce tags for cost allocation, set budgets and alerts, and use Savings Plans, Spot and ARM (Graviton) instances for suitable workloads. The FinOps Framework turns cost into a shared engineering responsibility, not just finance's problem." }
+          ],
+          "practices": [
+            "Enable MFA, remove root access keys and never use the root account for daily work.",
+            "Keep databases and internal services in private subnets, exposed only through a load balancer.",
+            "Tag every resource with owner, environment and cost-center from day one.",
+            "Set a budget alert before creating your first resource."
+          ],
+          "pitfalls": [
+            "Granting AdministratorAccess to everything because there is no time to write proper policies.",
+            "Leaving experimental resources running and getting a surprise bill at month end.",
+            "Putting everything in a single Availability Zone and calling it production."
+          ],
+          "project": {
+            "title": "Deploy an app to AWS properly",
+            "brief": "Build a two-AZ VPC, run a container app on ECS Fargate behind an Application Load Balancer, with the database on RDS in a private subnet and secrets in Secrets Manager. Done when the app is reachable only over HTTPS, there are no static credentials, every resource is tagged and a budget alert works."
+          },
+          "resources": [
+            { "title": "AWS Well-Architected Framework", "url": "https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html", "kind": "docs" },
+            { "title": "AWS IAM security best practices", "url": "https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html", "kind": "docs" },
+            { "title": "FinOps Framework", "url": "https://www.finops.org/framework/", "kind": "docs" }
+          ],
+          "tags": ["AWS", "IAM", "VPC", "FinOps"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Infrastructure as Code",
+          "goal": "Manage all infrastructure as code that is reviewed, tested, policy-checked and deployed through its own pipeline.",
+          "note": "The first time I watched a teammate run a plan and read the infrastructure diff like a code diff, I understood why they never change things by hand in the console.",
+          "topics": [
+            { "title": "Terraform and OpenTofu", "detail": "Learn providers, resources, data sources, variables, outputs and the plan/apply lifecycle. OpenTofu is the open source fork under the Linux Foundation created after Terraform moved to the BSL license; the syntax is nearly identical and it adds features such as state encryption." },
+            { "title": "State and environments", "detail": "Store state in a remote backend with locking such as S3, and split state by environment and blast radius so one apply cannot touch everything. Know how to use import, moved blocks and drift detection." },
+            { "title": "Modules and repo structure", "detail": "Write small, versioned modules with clear inputs that can be reused. Use Terragrunt or an environment-based directory layout to avoid copy-paste as the number of environments grows." },
+            { "title": "Pulumi and IaC in general-purpose languages", "detail": "Pulumi lets you write infrastructure in TypeScript, Python or Go, which suits teams that already code and want loops, types and normal tests. The trade-off is that it is easy to write logic too complex to review." },
+            { "title": "Policy as code and testing", "detail": "Block bad configuration before apply with OPA/Conftest, Checkov or Trivy config scanning, for example public S3 buckets or security groups open to 0.0.0.0/0. Run plan in the PR so reviewers see exactly what will change." }
+          ],
+          "practices": [
+            "Route every infrastructure change through a PR with an attached plan and a review.",
+            "Pin provider and module versions and upgrade deliberately.",
+            "Split state into small units by service and environment to reduce blast radius.",
+            "Run drift detection regularly and fix drift as soon as it appears."
+          ],
+          "pitfalls": [
+            "Keeping state locally or committing state files that contain secrets to Git.",
+            "Editing by hand in the console and having the next apply silently overwrite it.",
+            "One giant module taking dozens of variables to do everything."
+          ],
+          "project": {
+            "title": "Rewrite stage 05 infrastructure as code",
+            "brief": "Move all the AWS infrastructure from the previous stage into OpenTofu or Terraform with remote state, reusable modules and two environments, staging and production. Done when PRs show the plan automatically, a policy check blocks a deliberately bad config, and an environment can be rebuilt from scratch through the pipeline alone."
+          },
+          "resources": [
+            { "title": "OpenTofu documentation", "url": "https://opentofu.org/docs/", "kind": "docs" },
+            { "title": "Terraform documentation", "url": "https://developer.hashicorp.com/terraform/docs", "kind": "docs" },
+            { "title": "Pulumi documentation", "url": "https://www.pulumi.com/docs/", "kind": "docs" },
+            { "title": "Open Policy Agent documentation", "url": "https://www.openpolicyagent.org/docs/latest/", "kind": "docs" }
+          ],
+          "tags": ["OpenTofu", "Terraform", "Pulumi", "OPA"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 6,
+          "title": "Kubernetes and GitOps",
+          "goal": "Run applications on Kubernetes, packaged with Helm or Kustomize, autoscaled and deployed through GitOps.",
+          "note": "Kubernetes is where I think it is easiest to learn things in the wrong order. Understand Pods, Deployments, Services and how controllers drive actual state toward desired state first, then move on to Helm, service meshes or operators.",
+          "topics": [
+            { "title": "Core objects", "detail": "Learn Pods, Deployments, StatefulSets, Jobs, Services, ConfigMaps, Secrets, Namespaces and the controller reconcile model. Understand probes (liveness, readiness, startup), resource requests and limits, and PodDisruptionBudgets so apps survive rolling updates and node drains." },
+            { "title": "Networking and Gateway API", "detail": "Understand Services, cluster DNS, NetworkPolicy and CNIs such as Cilium. Gateway API is the standard successor to Ingress, especially now that Ingress-NGINX was retired in March 2026, and the ingress2gateway tool helps with migration." },
+            { "title": "Helm and Kustomize", "detail": "Helm packages an application as a chart with templates and values, which suits distributing to many consumers. Kustomize uses template-free overlays, which suits patching config per environment; many teams use both together." },
+            { "title": "Autoscaling", "detail": "Use HPA on CPU, memory or custom metrics, KEDA for event-driven scaling such as queue length, and Karpenter or Cluster Autoscaler for nodes. Wrong resource requests make every autoscaling mechanism misbehave." },
+            { "title": "GitOps with Argo CD or Flux", "detail": "Git is the source of truth, and an in-cluster agent continuously syncs and reports drift. Keep config repos separate from code repos, let CI only update the image tag, and leave applying to Argo CD or Flux." },
+            { "title": "Security and multi-tenancy", "detail": "Apply minimal RBAC, Pod Security Standards at the restricted level and a policy engine such as Kyverno or CEL-based ValidatingAdmissionPolicy to block dangerous config. Use External Secrets Operator to pull secrets from a secret manager instead of committing Secrets to Git." }
+          ],
+          "practices": [
+            "Set requests and limits for every container based on real measurements.",
+            "Configure readiness probes and graceful shutdown so rolling updates do not drop requests.",
+            "Stop running kubectl apply by hand against production once GitOps is in place.",
+            "Use managed Kubernetes (EKS, GKE, AKS) unless you have a very clear reason to run the control plane yourself."
+          ],
+          "pitfalls": [
+            "Moving everything to Kubernetes when an ECS service or a serverless function would do.",
+            "Liveness probes that check the database, causing cascading restarts across the cluster when the DB slows down.",
+            "Committing base64 Secrets to Git and assuming that counts as encryption."
+          ],
+          "project": {
+            "title": "A GitOps cluster for a multi-service app",
+            "brief": "Stand up a cluster (kind locally or a managed cluster) and deploy an app with a frontend, an API and a worker using Helm or Kustomize, managed by Argo CD. Done when changing an image tag in Git updates the app automatically, HPA or KEDA scales under simulated load, NetworkPolicies are in place and secrets come from a secret manager."
+          },
+          "resources": [
+            { "title": "Kubernetes Concepts", "url": "https://kubernetes.io/docs/concepts/", "kind": "docs" },
+            { "title": "Gateway API", "url": "https://gateway-api.sigs.k8s.io/", "kind": "docs" },
+            { "title": "Helm documentation", "url": "https://helm.sh/docs/", "kind": "docs" },
+            { "title": "Argo CD documentation", "url": "https://argo-cd.readthedocs.io/en/stable/", "kind": "docs" }
+          ],
+          "tags": ["Kubernetes", "Helm", "Argo CD", "GitOps"]
+        },
+        {
+          "id": "08",
+          "phase": "core",
+          "weeks": 5,
+          "title": "Observability, SLOs and on-call",
+          "goal": "Measure systems through metrics, logs and traces with OpenTelemetry, set SLOs with error budgets and handle incidents with a clear process.",
+          "note": "On the frontend I was used to seeing errors through the console and Sentry. Working with the DevOps team showed me the value of traces across many services and of agreeing up front on what healthy actually means.",
+          "topics": [
+            { "title": "OpenTelemetry", "detail": "Use the OpenTelemetry SDKs and auto-instrumentation to collect traces, metrics and logs through one vendor-neutral standard, routed through the OpenTelemetry Collector before reaching a backend. The Collector lets you filter, sample and switch backends without code changes; the Profiles signal is still alpha, so do not rely on it in production yet." },
+            { "title": "Metrics with Prometheus and Grafana", "detail": "Understand counters, gauges, histograms and label cardinality, and write PromQL for RED (rate, errors, duration) and USE metrics. Use Grafana for dashboards and Alertmanager to route alerts." },
+            { "title": "Logs and traces", "detail": "Emit structured JSON logs that carry a trace_id linking them to traces. Understand context propagation through W3C Trace Context, head versus tail sampling, and backends such as Loki, Tempo or Jaeger." },
+            { "title": "SLIs, SLOs and error budgets", "detail": "Pick SLIs that reflect user experience, such as request success rate or p99 latency, set realistic SLOs and use the error budget to balance shipping features against stability. Alert on multi-window burn rates instead of CPU thresholds." },
+            { "title": "Incident response and on-call", "detail": "Define roles such as incident commander, communications lead and responders, with clear severity levels and a dedicated channel. Every page sent to on-call should require action and come with a runbook." },
+            { "title": "Blameless postmortems", "detail": "Write postmortems that focus on systems and process rather than individuals, with a timeline, contributing factors and owned action items. Track the action items until they close, otherwise the postmortem is just a document on a shelf." }
+          ],
+          "practices": [
+            "Alert on symptoms users can see, not on every internal metric.",
+            "Attach trace_id to logs and response headers so you can jump from an error to its trace quickly.",
+            "Control label cardinality and never put user IDs or full URLs into metrics.",
+            "Write a runbook for every alert before enabling it for on-call."
+          ],
+          "pitfalls": [
+            "Too many meaningless alerts, leading to alert fatigue and missed real incidents.",
+            "Setting a 100% or many-nines SLO with no business reason behind it.",
+            "Collecting everything without sampling and then being shocked by the observability bill."
+          ],
+          "project": {
+            "title": "Observability for the stage 07 cluster",
+            "brief": "Instrument the app with OpenTelemetry and set up a Collector, Prometheus, Grafana and a tracing backend. Define two SLOs with burn-rate alerts, then cause an incident on purpose, handle it with the process and write a postmortem. Done when you can go from an alert to the related trace and logs in a few clicks."
+          },
+          "resources": [
+            { "title": "OpenTelemetry documentation", "url": "https://opentelemetry.io/docs/", "kind": "docs" },
+            { "title": "Prometheus overview", "url": "https://prometheus.io/docs/introduction/overview/", "kind": "docs" },
+            { "title": "Google SRE Workbook: Implementing SLOs", "url": "https://sre.google/workbook/implementing-slos/", "kind": "book" },
+            { "title": "PagerDuty Incident Response", "url": "https://response.pagerduty.com/", "kind": "docs" }
+          ],
+          "tags": ["OpenTelemetry", "Prometheus", "SLO", "SRE"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "DevSecOps and supply chain security",
+          "goal": "Prove where every production artifact came from and which pipeline built it, and manage secrets without leaking them.",
+          "note": "The supply chain attacks of the last few years show that dependencies and pipelines are attack surface too. I think every developer should know this part, not only DevOps.",
+          "topics": [
+            { "title": "SLSA", "detail": "SLSA is a framework describing levels of assurance for builds, from having provenance to building on a hardened, tamper-resistant platform. Use it as a checklist to raise pipeline security step by step instead of aiming for the highest level at once." },
+            { "title": "Signing and verification with Sigstore", "detail": "Use cosign to sign images keylessly via OIDC, with signatures recorded in the Rekor transparency log. GitHub artifact attestations use Sigstore to produce provenance, which you can verify with gh attestation verify or with an in-cluster policy." },
+            { "title": "Admission policy at deploy time", "detail": "Block unsigned images or images without provenance at the cluster with Kyverno or the Sigstore policy-controller. This is the step that turns signatures from decoration into real protection for production." },
+            { "title": "Secrets management", "detail": "Use a secret manager such as AWS Secrets Manager, HashiCorp Vault or OpenBao, preferring dynamic, short-lived and automatically rotated credentials. Scan repos with GitHub secret scanning or Gitleaks and have a revocation process ready for leaks." },
+            { "title": "Dependency and repo security", "detail": "Use Renovate or Dependabot for steady updates, SCA to find vulnerable packages, and OpenSSF Scorecard to judge the health of open source projects you depend on. Add SAST in PRs but tune it so it does not drown people in false positives." }
+          ],
+          "practices": [
+            "Sign every release image and verify the signature before it runs in production.",
+            "Generate SBOMs and provenance in the pipeline and store them alongside the artifact.",
+            "Use short-lived credentials through OIDC or dynamic secrets instead of static keys.",
+            "Prioritize vulnerabilities by real exploitability (EPSS, KEV) rather than CVSS score alone."
+          ],
+          "pitfalls": [
+            "Turning on a pile of scanners and leaving thousands of findings untriaged.",
+            "Signing images but never verifying the signatures anywhere.",
+            "Removing a leaked secret from Git but forgetting to revoke and rotate it."
+          ],
+          "project": {
+            "title": "A pipeline with provenance and enforcement",
+            "brief": "Extend the stage 04 pipeline to generate an SBOM, sign the image with cosign and produce build provenance, then configure the cluster to accept only signed images from the right repo. Done when an image built outside the pipeline is rejected by the cluster and the repo's OpenSSF Scorecard score is higher than when you started."
+          },
+          "resources": [
+            { "title": "SLSA specification", "url": "https://slsa.dev/", "kind": "docs" },
+            { "title": "Sigstore documentation", "url": "https://docs.sigstore.dev/", "kind": "docs" },
+            { "title": "GitHub: Artifact attestations", "url": "https://docs.github.com/en/actions/concepts/security/artifact-attestations", "kind": "docs" },
+            { "title": "OWASP Secrets Management Cheat Sheet", "url": "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html", "kind": "docs" }
+          ],
+          "tags": ["SLSA", "Sigstore", "Secrets"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 5,
+          "title": "Platform engineering and AI workloads",
+          "goal": "Build an internal platform with golden paths for developers and run AI/LLM workloads and AIOps tooling in a controlled way.",
+          "note": "As a platform user, I can clearly feel the difference between a service template that just works and a ten-step wiki page. On the AI side I have only integrated LLMs at the application layer, so this infrastructure is something I am learning alongside everyone else.",
+          "topics": [
+            { "title": "Internal developer platforms", "detail": "A platform is a set of self-service tools and APIs that let developers create services, environments and databases without filing tickets. Treat it as a product with users, a roadmap, adoption and satisfaction metrics, and use the CNCF platform maturity model as a reference." },
+            { "title": "Backstage and developer portals", "detail": "Backstage provides a software catalog, software templates to scaffold services to a standard, and TechDocs. The New Frontend System is now the default for new apps, so learn that approach if you start today; Port or Cortex are options if you do not want to run it yourself." },
+            { "title": "Golden paths and abstractions", "detail": "A golden path is a paved road: templates with CI/CD, observability and security built in by default. Use Crossplane or similar controllers to expose infrastructure through Kubernetes-style APIs, and measure impact with DORA metrics and onboarding time." },
+            { "title": "Infrastructure for LLMs and GPUs", "detail": "Dynamic Resource Allocation (DRA) is GA and lets you request and share GPUs far more flexibly than the old device plugins. Serve models with vLLM or KServe, route by KV cache and load with the Gateway API Inference Extension or llm-d, and scale on queue depth rather than CPU." },
+            { "title": "Observability and cost for AI", "detail": "Use OpenTelemetry's GenAI semantic conventions to track tokens, latency, model and errors for every LLM call. Attribute token and GPU costs to teams or features, because this is the fastest-growing line item in many organizations." },
+            { "title": "AIOps and operations agents", "detail": "Use LLMs to summarize alerts, suggest likely causes from logs and traces, or draft postmortems; agents usually reach systems through MCP servers. Keep humans approving every change, default agents to read-only access and log everything an agent does." }
+          ],
+          "practices": [
+            "Interview developers and measure their pain points before building any platform component.",
+            "Make golden paths optional but good enough that people choose them.",
+            "Start with a thinnest viable platform and grow it based on real demand.",
+            "Scope AI agent permissions with least privilege and require approval for write actions."
+          ],
+          "pitfalls": [
+            "Standing up Backstage full of plugins while nobody maintains the catalog, so it goes stale quickly.",
+            "Leaving expensive GPUs idle because there is no autoscaling or sharing.",
+            "Giving AI agents write access to production without audit logs or a rollback path."
+          ],
+          "project": {
+            "title": "A golden path with a built-in AI gateway",
+            "brief": "Set up Backstage with a software template that creates a new service with its repo, pipeline, GitOps manifests and observability dashboard. Add a service that calls an LLM through a gateway with token tracking via OpenTelemetry. Done when a developer can get a new service running on staging in under an hour without asking anyone."
+          },
+          "resources": [
+            { "title": "CNCF Platforms White Paper", "url": "https://tag-app-delivery.cncf.io/whitepapers/platforms/", "kind": "article" },
+            { "title": "Backstage documentation", "url": "https://backstage.io/docs/overview/what-is-backstage", "kind": "docs" },
+            { "title": "Kubernetes: Dynamic Resource Allocation", "url": "https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/", "kind": "docs" },
+            { "title": "OpenTelemetry GenAI semantic conventions", "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/", "kind": "docs" }
+          ],
+          "tags": ["Backstage", "Platform", "GPU", "AIOps"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "Kubernetes is the default substrate for AI inference", "detail": "DRA is GA, GPU and TPU drivers have been donated to the community, and projects like llm-d bring KV-cache-aware routing into the CNCF ecosystem. DevOps engineers increasingly need to understand GPU scheduling and the specifics of model serving." },
+          { "title": "Gateway API replaces Ingress", "detail": "Ingress-NGINX was retired in March 2026, so many teams are moving to Gateway API with implementations such as Envoy Gateway, Cilium or NGINX Gateway Fabric. This is a real migration a newcomer may face right away." },
+          { "title": "Supply chain security is table stakes", "detail": "SBOMs, image signing, provenance and SHA-pinned actions are no longer bonus points but default expectations. Free hardened base images and built-in GitHub artifact attestations have lowered the barrier to getting started." },
+          { "title": "Platform engineering is maturing", "detail": "Organizations are moving from building portals to measuring outcomes: onboarding time, DORA metrics and developer satisfaction. Platforms are run as products, often with a dedicated product manager." }
+        ],
+        "next": [
+          { "title": "Agents join operations", "detail": "AI agents will take over repetitive work such as alert triage, first-pass investigation and opening PRs that fix config. Prepare by investing in runbooks, observability and permissions, because an agent is only as good as the data and guardrails you give it." },
+          { "title": "Platforms serve both people and agents", "detail": "Golden paths and self-service APIs will be called by coding agents as often as by developers. Clear APIs with policy as code and audit logs are how you keep a platform safe as the volume of automated changes grows." },
+          { "title": "OpenTelemetry everywhere", "detail": "With Profiles on its way to stability and GenAI conventions spreading, OpenTelemetry is becoming the common layer for every signal, including LLM calls. Deep knowledge of the Collector and semantic conventions will outlast knowledge of any single vendor." },
+          { "title": "FinOps for GPUs and tokens", "detail": "AI costs will push infrastructure teams to measure and optimize per request and per model. Combining observability with cost data will be a major differentiator for DevOps engineers over the next few years." }
+        ]
+      },
+      "outcomes": [
+        "You can debug incidents systematically from Linux, DNS and TLS up to the application.",
+        "You can build CI/CD pipelines with caching, OIDC-based security and canary or blue-green releases.",
+        "You can provision cloud infrastructure entirely with OpenTofu or Terraform, guarded by policy as code.",
+        "You can run applications on Kubernetes through GitOps with autoscaling and baseline security.",
+        "You can define SLOs, build observability with OpenTelemetry and lead an incident through to a postmortem.",
+        "You can sign and verify artifacts and prove the origin of everything running in production.",
+        "You can design golden paths and bring AI workloads onto the platform with controlled cost and permissions."
+      ]
+    }
+  }
+}

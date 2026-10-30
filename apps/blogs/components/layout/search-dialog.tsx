@@ -18,7 +18,7 @@ const KIND_STYLE: Record<SearchKind, string> = {
   series: "bg-topic-growth/12 text-topic-growth",
   guide: "bg-topic-tooling/12 text-topic-tooling",
   chapter: "bg-topic-tooling/12 text-topic-tooling",
-  roadmap: "bg-topic-performance/12 text-topic-performance",
+  role: "bg-topic-performance/12 text-topic-performance",
   stage: "bg-topic-performance/12 text-topic-performance",
   tool: "bg-topic-frontend/12 text-topic-frontend",
 };
@@ -51,7 +51,7 @@ export function SearchDialog({
           query,
         ),
       )
-      // Title hits first; otherwise keep index order (posts, roadmaps, guides, tools).
+      // Title hits first; otherwise keep index order (posts, role maps, guides, tools).
       .map((entry, order) => ({ entry, order, inTitle: normalizeSearch(entry.title).includes(needle) }))
       .sort((a, b) => Number(b.inTitle) - Number(a.inTitle) || a.order - b.order)
       .slice(0, MAX_RESULTS)

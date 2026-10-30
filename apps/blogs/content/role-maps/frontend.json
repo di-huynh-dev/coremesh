@@ -1,0 +1,748 @@
+{
+  "id": "frontend",
+  "ecosystem": ["TypeScript", "React", "Next.js", "TanStack Query", "Vite", "Vitest", "Playwright", "Turborepo"],
+  "locales": {
+    "vi": {
+      "name": "Frontend Engineer",
+      "tagline": "Xây giao diện web nhanh, dễ tiếp cận và bền vững khi sản phẩm lẫn team cùng lớn lên",
+      "summary": "Map này đi từ nền tảng web (HTML, CSS hiện đại, JavaScript, TypeScript, accessibility) đến React 19, Next.js App Router, testing, performance và kiến trúc frontend ở quy mô lớn. Dành cho bạn đã viết được vài trang React và muốn lên mức intermediate rồi advanced, hiểu vì sao chứ không chỉ biết dùng.",
+      "story": {
+        "intro": "Mình là frontend developer, đây là vai trò mình làm hằng ngày từ lúc thực tập ở AMIT Group năm 2022 đến giờ ở Estuary Solutions. Công việc của mình xoay quanh React, TypeScript, Next.js, Zustand, TanStack Query và một monorepo Bun + Turborepo chạy chính blog này. Trong lúc kèm hai bạn junior, mình nhận ra nhiều roadmap ngoài kia chỉ liệt kê công nghệ mà không nói thứ tự học hay vì sao thứ đó quan trọng. Map này là thứ tự mình sẽ đi nếu được bắt đầu lại hôm nay, cập nhật theo trạng thái của hệ sinh thái cuối 2026.",
+        "lessons": [
+          "Lúc mới học mình nhảy vào framework quá sớm, nên nhiều bug thật ra là bug CSS, bug event loop hay bug HTML mà mình lại đi tìm trong React.",
+          "Server state và client state là hai thứ khác nhau; tách chúng ra sớm thì store toàn cục nhỏ đi rất nhiều và bug về dữ liệu cũ gần như biến mất.",
+          "Accessibility không phải việc làm thêm ở cuối sprint: dùng đúng element ngay từ đầu rẻ hơn rất nhiều so với vá ARIA sau này.",
+          "Điều mình ước biết sớm hơn là đo trước khi tối ưu: một lần profile trong DevTools đáng giá hơn cả buổi đoán xem component nào chậm."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "HTML ngữ nghĩa và CSS hiện đại",
+          "goal": "Dựng được layout responsive, theo ngữ nghĩa, không cần thư viện UI và hiểu rõ cascade đang làm gì.",
+          "note": "Mình từng nghĩ CSS là phần dễ, đến khi gặp z-index chồng nhau và style bị ghi đè không rõ lý do. Hiểu cascade và layout cẩn thận một lần giúp mình tiết kiệm rất nhiều giờ debug về sau.",
+          "topics": [
+            { "title": "HTML ngữ nghĩa và form gốc", "detail": "Dùng landmark (header, nav, main, aside), heading theo thứ tự, button cho hành động và a cho điều hướng. Form gốc với label, fieldset, các type input và constraint validation (required, pattern, :user-invalid) cho bạn rất nhiều hành vi miễn phí. Element dialog với showModal() và popover attribute xử lý focus, top layer và Esc mà không cần tự viết." },
+            { "title": "Layout: Flexbox, Grid, subgrid", "detail": "Flexbox cho bố cục một chiều, Grid cho hai chiều, subgrid để các card con thẳng hàng theo lưới của cha. Học kỹ min(), max(), clamp(), các đơn vị dvh/svh và logical properties (margin-inline, padding-block) để layout đúng cả với ngôn ngữ RTL." },
+            { "title": "Container queries và :has()", "detail": "Container queries (@container, đơn vị cqi) cho phép component tự responsive theo kích thước vùng chứa thay vì viewport, rất hợp với design system. :has() là parent selector: style một card khi nó chứa ảnh, hoặc một form khi có input lỗi, giảm hẳn số class điều kiện viết bằng JavaScript." },
+            { "title": "Cascade layers, nesting và specificity", "detail": "@layer cho phép khai báo thứ tự ưu tiên (reset, base, components, utilities) độc lập với specificity, nên CSS thư viện không còn đè lên CSS của bạn một cách khó hiểu. Kết hợp với CSS nesting gốc, :where() để giữ specificity bằng 0, và custom properties làm design token." },
+            { "title": "View transitions và animation theo scroll", "detail": "View Transition API tạo hiệu ứng chuyển trạng thái hoặc chuyển trang bằng document.startViewTransition() và view-transition-name, với SPA đã có hỗ trợ trên các trình duyệt chính. Scroll-driven animations và anchor positioning giúp thay nhiều thư viện JavaScript; luôn kiểm tra trạng thái Baseline và tôn trọng prefers-reduced-motion." }
+          ],
+          "practices": [
+            "Kiểm tra trạng thái Baseline của một tính năng CSS trước khi dùng nó trong production.",
+            "Sắp xếp CSS theo @layer ngay từ đầu dự án thay vì tăng specificity để thắng.",
+            "Ưu tiên element gốc như button, dialog, details trước khi tự dựng bằng div.",
+            "Dùng custom properties cho màu, spacing, radius để đổi theme bằng một chỗ."
+          ],
+          "pitfalls": [
+            "Dùng div có onClick thay cho button, làm mất focus, phím Enter/Space và vai trò với screen reader.",
+            "Viết media query theo từng thiết bị cụ thể thay vì để layout co giãn tự nhiên với Grid và clamp().",
+            "Lạm dụng !important để vá xung đột thay vì hiểu cascade."
+          ],
+          "project": { "title": "Trang sản phẩm không dùng JavaScript", "brief": "Dựng một trang danh sách sản phẩm với card dùng container queries, bộ lọc dùng :has() và dialog chi tiết bằng element dialog. Đạt yêu cầu khi layout đúng từ 320px đến màn rộng, không có horizontal scroll và điều hướng được hoàn toàn bằng bàn phím." },
+          "resources": [
+            { "title": "MDN: Learn web development", "url": "https://developer.mozilla.org/en-US/docs/Learn_web_development", "kind": "docs" },
+            { "title": "web.dev: Learn CSS", "url": "https://web.dev/learn/css", "kind": "course" },
+            { "title": "Chrome for Developers: View Transitions", "url": "https://developer.chrome.com/docs/web-platform/view-transitions", "kind": "docs" },
+            { "title": "web.dev: Baseline", "url": "https://web.dev/baseline", "kind": "docs" }
+          ],
+          "tags": ["HTML", "CSS", "Responsive"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 4,
+          "title": "JavaScript hiện đại và TypeScript",
+          "goal": "Đọc hiểu và viết được code bất đồng bộ đúng, mô hình hóa dữ liệu bằng type an toàn.",
+          "note": "Khi kèm junior, phần lớn bug mình gặp không nằm ở React mà ở closure cũ, promise không được await hoặc type any lan khắp nơi. Đầu tư vào phần này trả lãi trong mọi framework.",
+          "topics": [
+            { "title": "Event loop, promise và async", "detail": "Phân biệt macrotask, microtask và lúc trình duyệt render, để hiểu vì sao một vòng lặp nặng làm treo UI. Thành thạo async/await, Promise.all, Promise.allSettled, AbortController để hủy request và structuredClone để copy sâu dữ liệu." },
+            { "title": "Module, closure và bất biến", "detail": "ES modules (import/export, dynamic import()) là nền tảng của code splitting và tree shaking. Hiểu closure và tham chiếu là chìa khóa để tránh stale state trong React; các method không đột biến như toSorted, toSpliced, with và Object.groupBy giúp code bất biến gọn hơn." },
+            { "title": "TypeScript cho ứng dụng thật", "detail": "Bật strict, dùng discriminated union để mô hình trạng thái (idle, loading, success, error), satisfies để kiểm tra mà không làm rộng type, và generic có ràng buộc cho hàm tiện ích. Học utility types (Pick, Omit, Partial, ReturnType) và type narrowing thay vì ép kiểu bằng as." },
+            { "title": "Validate ở biên hệ thống", "detail": "Type chỉ tồn tại lúc compile, dữ liệu từ API, URL hay localStorage cần validate lúc runtime bằng schema như Zod hoặc Valibot. Suy type từ schema (z.infer) để chỉ có một nguồn sự thật cho cả validate lẫn type." },
+            { "title": "Tooling: Vite, ESLint, tsc", "detail": "Vite là lựa chọn mặc định cho SPA và thư viện; hiểu dev server dùng ESM gốc và build bằng bundler. Tách typecheck (tsc --noEmit) khỏi build, dùng typescript-eslint với rule type-aware. TypeScript đang được port sang native (Go) để typecheck nhanh hơn nhiều, nên theo dõi lộ trình này." }
+          ],
+          "practices": [
+            "Bật strict và noUncheckedIndexedAccess trong tsconfig cho mọi dự án mới.",
+            "Mô hình trạng thái bằng discriminated union thay vì nhiều boolean rời rạc.",
+            "Validate mọi dữ liệu đi vào từ bên ngoài bằng schema trước khi dùng.",
+            "Luôn truyền AbortSignal cho request có thể bị hủy khi người dùng rời trang."
+          ],
+          "pitfalls": [
+            "Dùng any hoặc as để tắt lỗi thay vì sửa type, khiến bug lọt xuống runtime.",
+            "Quên await hoặc không bắt lỗi promise, dẫn đến unhandled rejection khó truy vết.",
+            "Tin rằng type từ API là đúng mà không validate dữ liệu thật."
+          ],
+          "project": { "title": "Client API có type đầy đủ", "brief": "Viết một module fetch dữ liệu từ một API công khai với schema Zod, hỗ trợ hủy request, retry có giới hạn và trả về discriminated union. Đạt yêu cầu khi tsc strict không lỗi, không có any và có test cho trường hợp dữ liệu sai schema." },
+          "resources": [
+            { "title": "The Modern JavaScript Tutorial", "url": "https://javascript.info/", "kind": "course" },
+            { "title": "TypeScript Handbook", "url": "https://www.typescriptlang.org/docs/handbook/intro.html", "kind": "docs" },
+            { "title": "Zod documentation", "url": "https://zod.dev", "kind": "docs" }
+          ],
+          "tags": ["JavaScript", "TypeScript", "Vite"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Accessibility thực chiến",
+          "goal": "Xây component dùng được bằng bàn phím và screen reader, đạt WCAG 2.2 mức AA.",
+          "note": "Mình học accessibility muộn và phải quay lại sửa nhiều modal, dropdown tự viết. Giờ mình coi nó là một phần của định nghĩa hoàn thành, không phải hạng mục riêng.",
+          "topics": [
+            { "title": "WCAG 2.2 và nguyên tắc POUR", "detail": "Nắm các tiêu chí hay gặp: độ tương phản màu, focus nhìn thấy được và không bị che (Focus Not Obscured), kích thước vùng chạm tối thiểu (Target Size), không phụ thuộc thao tác kéo thả. Nhiều thị trường đã đưa WCAG AA vào yêu cầu pháp lý, ví dụ European Accessibility Act có hiệu lực từ giữa 2025." },
+            { "title": "Bàn phím và quản lý focus", "detail": "Thứ tự tab theo DOM, focus trap trong modal, trả focus về nút mở khi đóng, :focus-visible cho viền focus. Thuộc tính inert giúp vô hiệu hóa vùng nền khi mở overlay mà không cần thủ thuật." },
+            { "title": "ARIA đúng cách", "detail": "Quy tắc đầu tiên của ARIA là không dùng ARIA nếu element gốc làm được. Khi tự dựng combobox, tabs, menu thì theo pattern trong ARIA Authoring Practices Guide, dùng aria-live cho thông báo động như toast hay kết quả tìm kiếm." },
+            { "title": "Kiểm thử accessibility", "detail": "Kết hợp kiểm tra tự động (axe-core, eslint-plugin-jsx-a11y, Lighthouse) với kiểm tra thủ công bằng bàn phím và screen reader như NVDA hoặc VoiceOver. Công cụ tự động chỉ bắt được một phần lỗi, phần còn lại cần người dùng thử thật." }
+          ],
+          "practices": [
+            "Đặt label hiển thị hoặc accessible name cho mọi control tương tác.",
+            "Tự đi qua mỗi tính năng mới chỉ bằng bàn phím trước khi mở PR.",
+            "Dùng thư viện headless có sẵn a11y như Radix hoặc React Aria cho component phức tạp.",
+            "Chạy axe trong test component để bắt lỗi hồi quy sớm."
+          ],
+          "pitfalls": [
+            "Xóa outline focus vì lý do thẩm mỹ mà không thay bằng kiểu focus khác.",
+            "Thêm role và aria-* bừa bãi khiến screen reader đọc sai còn tệ hơn không có."
+          ],
+          "project": { "title": "Bộ component có thể truy cập", "brief": "Tự xây combobox có autocomplete và modal confirm theo ARIA APG. Đạt yêu cầu khi dùng được hoàn toàn bằng bàn phím, axe không báo lỗi và đọc đúng trên ít nhất một screen reader." },
+          "resources": [
+            { "title": "ARIA Authoring Practices Guide", "url": "https://www.w3.org/WAI/ARIA/apg/", "kind": "docs" },
+            { "title": "WCAG 2.2", "url": "https://www.w3.org/TR/WCAG22/", "kind": "docs" },
+            { "title": "web.dev: Learn Accessibility", "url": "https://web.dev/learn/accessibility", "kind": "course" }
+          ],
+          "tags": ["a11y", "WCAG", "ARIA"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Mô hình tư duy của React 19",
+          "goal": "Giải thích được React render khi nào, vì sao, và dùng đúng hook, Actions, Suspense cùng React Compiler.",
+          "note": "Mình đi từ React 18 sang 19 trong công việc, và thay đổi lớn nhất không phải API mới mà là cách nghĩ: ít useEffect hơn, ít memo thủ công hơn, để framework lo phần bất đồng bộ. Hiểu render là một hàm thuần giúp mọi thứ còn lại dễ hơn.",
+          "topics": [
+            { "title": "Render, commit và tính thuần", "detail": "Component là hàm thuần từ props và state ra UI; render có thể chạy nhiều lần, chỉ commit mới chạm DOM. Hiểu key, cách state gắn với vị trí trong cây, và vì sao StrictMode gọi render hai lần ở dev để lộ side effect sai chỗ." },
+            { "title": "Hook và việc bạn có thể không cần Effect", "detail": "Phần lớn useEffect để đồng bộ state dẫn xuất là thừa: tính trực tiếp khi render hoặc xử lý trong event handler. useEffect chỉ dành cho đồng bộ với hệ thống bên ngoài; React 19.2 thêm useEffectEvent để tách phần giống event khỏi Effect, tránh kết nối lại không cần thiết." },
+            { "title": "Actions và form trong React 19", "detail": "Actions là hàm async gắn với transition: useActionState quản lý kết quả và trạng thái pending, useOptimistic cho cập nhật lạc quan, useFormStatus đọc trạng thái form từ component con. Form có thể nhận action trực tiếp, và ref giờ là prop bình thường, không cần forwardRef." },
+            { "title": "Suspense, use() và concurrent rendering", "detail": "Suspense khai báo vùng chờ dữ liệu hoặc code, use() đọc promise hoặc context ngay trong render. startTransition và useDeferredValue giữ UI phản hồi khi cập nhật nặng; component Activity trong React 19.2 giữ state của phần UI bị ẩn và hoãn cập nhật của nó." },
+            { "title": "React Compiler", "detail": "React Compiler 1.0 đã ổn định, tự memo hóa component và giá trị nên useMemo, useCallback, memo thủ công phần lớn không còn cần. Compiler chỉ an toàn khi code tuân thủ Rules of React, nên bật bộ rule mới trong eslint-plugin-react-hooks trước, kể cả khi chưa bật compiler." }
+          ],
+          "practices": [
+            "Tính state dẫn xuất ngay khi render thay vì đồng bộ bằng useEffect.",
+            "Bật eslint-plugin-react-hooks với các rule của compiler và sửa hết cảnh báo.",
+            "Dùng useActionState và useOptimistic cho mutation thay vì tự quản lý cờ loading.",
+            "Đặt Suspense boundary theo vùng UI có ý nghĩa, không bọc toàn bộ trang."
+          ],
+          "pitfalls": [
+            "Fetch dữ liệu trong useEffect không có cleanup, gây race condition khi đổi tham số nhanh.",
+            "Rải useMemo, useCallback khắp nơi mà không đo, làm code khó đọc mà không nhanh hơn.",
+            "Đột biến trực tiếp object trong state rồi thắc mắc vì sao UI không cập nhật."
+          ],
+          "project": { "title": "Ứng dụng ghi chú với Actions", "brief": "Xây app ghi chú dùng form action, useActionState cho lỗi validate, useOptimistic khi thêm hoặc xóa và Suspense cho phần tải danh sách. Đạt yêu cầu khi bật React Compiler không có cảnh báo lint, không có useEffect nào dùng để đồng bộ state." },
+          "resources": [
+            { "title": "react.dev: Learn React", "url": "https://react.dev/learn", "kind": "docs" },
+            { "title": "React 19.2 release notes", "url": "https://react.dev/blog/2025/10/01/react-19-2", "kind": "article" },
+            { "title": "React Compiler", "url": "https://react.dev/learn/react-compiler", "kind": "docs" },
+            { "title": "Suspense reference", "url": "https://react.dev/reference/react/Suspense", "kind": "docs" }
+          ],
+          "tags": ["React 19", "Hooks", "React Compiler"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Client state, server state và URL state",
+          "goal": "Chọn đúng nơi lưu từng loại state và xây luồng dữ liệu có cache, refetch, optimistic update.",
+          "note": "Ở dự án đầu, mình nhét mọi thứ, kể cả dữ liệu từ API, vào store toàn cục và phải tự viết logic loading, cache, invalidate. Chuyển dữ liệu server sang TanStack Query và chỉ giữ UI state trong Zustand làm code gọn đi rõ rệt.",
+          "topics": [
+            { "title": "Phân loại state", "detail": "Tách state thành: local UI (useState), state chia sẻ phía client (Zustand hoặc context), server state (TanStack Query) và URL state (search params). Mỗi loại có vòng đời và nguồn sự thật khác nhau; nhầm loại là nguồn gốc của dữ liệu cũ và render thừa." },
+            { "title": "TanStack Query v5", "detail": "Thiết kế query key có cấu trúc qua queryOptions factory, hiểu staleTime và gcTime, invalidateQueries sau mutation, và optimistic update qua onMutate hoặc biến của mutation. Dùng useSuspenseQuery khi muốn kết hợp với Suspense, và prefetch trên server rồi hydrate khi dùng với Next.js." },
+            { "title": "Zustand cho client state", "detail": "Store nhỏ theo tính năng, đọc bằng selector để chỉ render lại khi phần cần thiết đổi, dùng useShallow khi selector trả object. Middleware persist cho dữ liệu lưu trên máy, devtools để debug; tránh biến Zustand thành bản sao cache của server." },
+            { "title": "URL là state", "detail": "Bộ lọc, phân trang, tab đang chọn nên nằm trên URL để chia sẻ, back/forward và reload đều đúng. Thư viện như nuqs cho parse và serialize search params có type, hoạt động với Next.js App Router và React Router." },
+            { "title": "Realtime và đồng bộ", "detail": "Với WebSocket hoặc Server-Sent Events, đẩy sự kiện vào cache của TanStack Query (setQueryData hoặc invalidate) thay vì giữ một store song song. Xử lý reconnect, thứ tự sự kiện và khi tab ẩn thì tạm dừng." }
+          ],
+          "practices": [
+            "Gom query key và queryFn vào queryOptions dùng chung cho cả prefetch lẫn component.",
+            "Đặt staleTime có chủ đích cho từng loại dữ liệu thay vì để mặc định bằng 0.",
+            "Đọc Zustand qua selector hẹp, không lấy cả store.",
+            "Đưa bộ lọc và phân trang lên URL ngay từ đầu."
+          ],
+          "pitfalls": [
+            "Copy dữ liệu từ useQuery vào useState hoặc store, tạo hai nguồn sự thật lệch nhau.",
+            "Dùng query key dạng chuỗi tùy hứng khiến invalidate trượt hoặc xóa nhầm cache."
+          ],
+          "project": { "title": "Dashboard quản lý đơn hàng", "brief": "Xây trang danh sách đơn hàng có bộ lọc trên URL, phân trang, cập nhật trạng thái đơn với optimistic update và nhận cập nhật realtime qua WebSocket giả lập. Đạt yêu cầu khi reload giữ nguyên bộ lọc, rollback đúng khi mutation lỗi và không có dữ liệu server nằm trong Zustand." },
+          "resources": [
+            { "title": "TanStack Query docs", "url": "https://tanstack.com/query/latest/docs/framework/react/overview", "kind": "docs" },
+            { "title": "TkDodo: Practical React Query", "url": "https://tkdodo.eu/blog/practical-react-query", "kind": "article" },
+            { "title": "Zustand docs", "url": "https://zustand.docs.pmnd.rs/", "kind": "docs" },
+            { "title": "nuqs", "url": "https://nuqs.dev", "kind": "tool" }
+          ],
+          "tags": ["TanStack Query", "Zustand", "State"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Next.js App Router, RSC và form",
+          "goal": "Thiết kế ứng dụng Next.js 16 với ranh giới server/client rõ ràng, cache có chủ đích và form an toàn.",
+          "note": "Server Components buộc mình nghĩ lại chỗ dữ liệu được lấy và chỗ JavaScript thực sự cần chạy. Lúc đầu mình đánh dấu 'use client' quá rộng; đẩy ranh giới xuống các lá nhỏ làm bundle nhẹ hơn hẳn.",
+          "topics": [
+            { "title": "Server và Client Components", "detail": "Mặc định là Server Component: lấy dữ liệu trực tiếp, không gửi JavaScript xuống client. Chỉ đặt 'use client' ở các component lá cần state hoặc event, truyền Server Component vào Client Component qua children, và dùng server-only để chặn import nhầm code bí mật." },
+            { "title": "Routing và streaming", "detail": "Nắm layout, loading.tsx, error.tsx, route group, parallel và intercepting routes. Streaming với Suspense cho phép phần tĩnh hiện ngay và phần chậm đổ về sau, cải thiện cả thời gian thấy nội dung lẫn trải nghiệm." },
+            { "title": "Cache Components và 'use cache'", "detail": "Next.js 16 giới thiệu Cache Components (bật bằng cacheComponents): cache trở thành tùy chọn tường minh qua directive 'use cache', kết hợp cacheLife và cacheTag, phần động được stream bên trong Suspense. Hiểu khi nào invalidate theo tag, khi nào cần dữ liệu luôn mới, và rằng mặc định giờ là động chứ không còn cache ngầm." },
+            { "title": "Server Functions và form", "detail": "Server Functions ('use server') nhận form action, kết hợp useActionState để trả lỗi validate, và revalidate dữ liệu sau khi ghi. Mỗi Server Function là một endpoint công khai: luôn validate input bằng schema và kiểm tra quyền ngay bên trong, không dựa vào việc UI đã ẩn nút." },
+            { "title": "Validate form dùng chung client và server", "detail": "Một schema Zod dùng cho cả validate phía client (React Hook Form hoặc Conform) và phía server, nhờ chuẩn Standard Schema mà nhiều thư viện form đều nhận. Giữ progressive enhancement: form vẫn submit được khi JavaScript chưa tải xong." },
+            { "title": "proxy.ts và biên mạng", "detail": "Ở Next.js 16, middleware.ts được đổi thành proxy.ts để làm rõ đây là lớp chặn request ở biên. Dùng nó cho redirect, rewrite, kiểm tra session nhẹ; phân quyền thật vẫn phải nằm ở data layer và Server Functions." }
+          ],
+          "practices": [
+            "Đẩy 'use client' xuống component lá nhỏ nhất có thể.",
+            "Tạo data access layer riêng kiểm tra auth trước khi trả dữ liệu cho component.",
+            "Validate input và kiểm tra quyền trong mọi Server Function.",
+            "Gắn cacheTag cho dữ liệu cache và invalidate theo tag sau khi ghi."
+          ],
+          "pitfalls": [
+            "Truyền nguyên object từ database sang Client Component, làm lộ trường nhạy cảm vào HTML.",
+            "Chỉ kiểm tra quyền trong proxy hoặc layout rồi coi như mọi route con đã an toàn.",
+            "Không cập nhật kịp bản vá bảo mật của React và Next.js; lỗ hổng RCE trong React Server Components cuối 2025 là ví dụ rõ nhất."
+          ],
+          "project": { "title": "Blog có trang quản trị", "brief": "Xây blog Next.js 16 với trang public được cache theo tag, trang quản trị có form tạo bài bằng Server Function và validate chung một schema. Đạt yêu cầu khi người không đăng nhập không gọi được Server Function, sửa bài thì trang public cập nhật ngay, và form chạy được khi tắt JavaScript." },
+          "resources": [
+            { "title": "Next.js App Router docs", "url": "https://nextjs.org/docs/app", "kind": "docs" },
+            { "title": "Next.js 16 release", "url": "https://nextjs.org/blog/next-16", "kind": "article" },
+            { "title": "useActionState reference", "url": "https://react.dev/reference/react/useActionState", "kind": "docs" }
+          ],
+          "tags": ["Next.js 16", "RSC", "Forms"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Chiến lược testing frontend",
+          "goal": "Xây bộ test nhanh, đáng tin, kiểm tra hành vi người dùng thay vì chi tiết cài đặt.",
+          "note": "Mình không phải chuyên gia QA, nhưng từng thấy test viết theo chi tiết cài đặt vỡ liên tục mỗi lần refactor. Test theo cách người dùng tương tác mới thực sự giúp mình tự tin khi sửa code.",
+          "topics": [
+            { "title": "Testing trophy và chọn tầng test", "detail": "Ưu tiên integration test ở mức component và tính năng, unit test cho logic thuần, vài E2E cho luồng quan trọng nhất, cộng static analysis (TypeScript, ESLint) làm nền. Mục tiêu là sự tự tin trên mỗi phút chạy CI, không phải độ phủ cao." },
+            { "title": "Vitest và Browser Mode", "detail": "Vitest chạy nhanh, dùng chung cấu hình với Vite. Từ Vitest 4, Browser Mode đã ổn định, cho phép chạy test component trong trình duyệt thật qua Playwright thay vì jsdom, kèm visual regression bằng screenshot." },
+            { "title": "Testing Library và MSW", "detail": "Query theo role và accessible name (getByRole) nên test vừa kiểm tra hành vi vừa gián tiếp kiểm tra a11y. Dùng user-event để mô phỏng tương tác thật và MSW để mock API ở tầng network, dùng chung handler cho test, Storybook và dev." },
+            { "title": "Playwright cho E2E", "detail": "Locator theo role, auto-waiting, web-first assertion nên ít flaky hơn. Dùng fixtures, storageState để tái sử dụng đăng nhập, trace viewer để debug lỗi trên CI và chạy song song theo shard." },
+            { "title": "Test Server Components và Actions", "detail": "Async Server Components còn khó unit test trực tiếp, nên tách logic dữ liệu ra hàm thuần để test riêng, còn luồng đầy đủ thì kiểm tra bằng E2E. Server Function nên được test như một API: input sai, thiếu quyền, thành công." }
+          ],
+          "practices": [
+            "Query phần tử theo role và label như người dùng thấy, tránh test id khi có lựa chọn tốt hơn.",
+            "Mock ở tầng network bằng MSW thay vì mock module fetch.",
+            "Bật trace on-first-retry cho Playwright trên CI.",
+            "Giữ test độc lập, không phụ thuộc thứ tự chạy hay dữ liệu chung."
+          ],
+          "pitfalls": [
+            "Snapshot cả cây component lớn rồi cập nhật snapshot mỗi khi đỏ mà không đọc diff.",
+            "Dùng sleep cố định trong E2E thay vì chờ theo điều kiện, gây test chập chờn."
+          ],
+          "project": { "title": "Bộ test cho dashboard đơn hàng", "brief": "Viết integration test bằng Vitest và Testing Library cho dashboard ở stage 05, mock API bằng MSW, và hai luồng E2E bằng Playwright chạy trên CI. Đạt yêu cầu khi toàn bộ chạy dưới vài phút, không flaky sau 10 lần chạy liên tiếp." },
+          "resources": [
+            { "title": "Vitest guide", "url": "https://vitest.dev/guide/", "kind": "docs" },
+            { "title": "Testing Library: About Queries", "url": "https://testing-library.com/docs/queries/about", "kind": "docs" },
+            { "title": "Playwright docs", "url": "https://playwright.dev/docs/intro", "kind": "docs" },
+            { "title": "MSW docs", "url": "https://mswjs.io/docs", "kind": "docs" }
+          ],
+          "tags": ["Vitest", "Playwright", "Testing"]
+        },
+        {
+          "id": "08",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "Performance và Core Web Vitals",
+          "goal": "Đo, chẩn đoán và cải thiện LCP, INP, CLS dựa trên dữ liệu người dùng thật.",
+          "note": "Mình từng tối ưu theo cảm giác và tốn công vào những chỗ không đáng. Học đọc flame chart trong tab Performance là bước ngoặt: biết chính xác task nào đang chặn main thread.",
+          "topics": [
+            { "title": "Core Web Vitals và dữ liệu thật", "detail": "LCP đo tốc độ tải nội dung chính, INP đo độ phản hồi trong suốt phiên, CLS đo độ ổn định layout; ngưỡng tốt lần lượt khoảng 2.5s, 200ms và 0.1 ở phân vị 75. Phân biệt dữ liệu lab (Lighthouse) với dữ liệu field (CrUX, RUM qua thư viện web-vitals)." },
+            { "title": "Tối ưu INP", "detail": "INP gồm input delay, processing time và presentation delay. Chia nhỏ long task, nhường main thread bằng scheduler.yield() (có fallback), dùng startTransition cho cập nhật không khẩn cấp, và dùng Long Animation Frames API để tìm script gây chậm." },
+            { "title": "Tối ưu LCP và CLS", "detail": "Ưu tiên tài nguyên LCP bằng fetchpriority=high, tránh lazy-load ảnh trên màn đầu, dùng định dạng AVIF hoặc WebP với srcset. Giữ chỗ cho ảnh và quảng cáo bằng width/height hoặc aspect-ratio, self-host font với font-display và size-adjust để giảm layout shift." },
+            { "title": "Bundle và tải code", "detail": "Phân tích bundle, code split theo route và theo tương tác bằng dynamic import, loại thư viện nặng hoặc thay bằng API gốc. Server Components giúp giữ thư viện chỉ dùng để render khỏi bundle client." },
+            { "title": "Render hiệu quả trong React", "detail": "Dùng React DevTools Profiler và Performance Tracks trong Chrome DevTools để thấy component nào render và tốn bao lâu. Ảo hóa danh sách dài (TanStack Virtual) và content-visibility: auto cho vùng ngoài màn hình." }
+          ],
+          "practices": [
+            "Thu thập Core Web Vitals từ người dùng thật và theo dõi theo route.",
+            "Đặt performance budget cho bundle và kiểm tra trong CI.",
+            "Profile trước khi tối ưu và đo lại sau khi sửa.",
+            "Test trên thiết bị tầm trung và mạng chậm, không chỉ trên máy dev."
+          ],
+          "pitfalls": [
+            "Chạy theo điểm Lighthouse trong khi dữ liệu field vẫn kém.",
+            "Lazy-load luôn cả ảnh LCP khiến trang hiển thị chậm hơn."
+          ],
+          "project": { "title": "Cải thiện một trang thật", "brief": "Chọn một trang trong dự án của bạn, đo baseline bằng web-vitals và Performance panel, rồi sửa ba vấn đề lớn nhất. Đạt yêu cầu khi có bảng trước/sau cho LCP, INP, CLS và kích thước bundle, kèm giải thích nguyên nhân từng cải thiện." },
+          "resources": [
+            { "title": "web.dev: Web Vitals", "url": "https://web.dev/articles/vitals", "kind": "docs" },
+            { "title": "web.dev: Interaction to Next Paint", "url": "https://web.dev/articles/inp", "kind": "article" },
+            { "title": "Chrome DevTools: Performance", "url": "https://developer.chrome.com/docs/devtools/performance", "kind": "docs" }
+          ],
+          "tags": ["Core Web Vitals", "INP", "Performance"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Design system và kiến trúc quy mô lớn",
+          "goal": "Xây design system có token và component tái sử dụng, tổ chức monorepo với ranh giới module rõ ràng.",
+          "note": "Mình đã dùng Ant Design và Material UI nhiều năm, rồi mới hiểu khi tự vận hành monorepo Bun + Turborepo cho blog này: phần khó không phải viết component mà là giữ ranh giới giữa các package khi code lớn dần.",
+          "topics": [
+            { "title": "Design token", "detail": "Tổ chức token theo tầng: primitive (bảng màu), semantic (color.text.muted) và component. Định dạng của W3C Design Tokens Community Group cùng công cụ như Style Dictionary giúp sinh CSS variables, theme sáng tối và đồng bộ với Figma." },
+            { "title": "Component headless và API component", "detail": "Dùng primitive headless (Radix, React Aria, Base UI) cho hành vi và a11y, tự lo phần style; mô hình shadcn/ui copy code vào dự án cho phép sở hữu hoàn toàn. Thiết kế API bằng composition (compound component, asChild) thay vì dồn hàng chục prop boolean." },
+            { "title": "Tài liệu và kiểm thử component", "detail": "Storybook làm nơi phát triển và tài liệu sống, kết hợp interaction test, kiểm tra a11y và visual regression. Mỗi component có story cho các trạng thái: loading, lỗi, rỗng, nội dung dài." },
+            { "title": "Monorepo với Turborepo", "detail": "Tách apps và packages (ui, config, utils), dùng workspace của pnpm hoặc Bun, cache task và chỉ chạy lại phần bị ảnh hưởng. Chia sẻ tsconfig và cấu hình ESLint qua package riêng để mọi app nhất quán." },
+            { "title": "Ranh giới module", "detail": "Tổ chức code theo feature thay vì theo loại file, mỗi feature chỉ lộ API công khai qua entry point. Ép ranh giới bằng lint rule hoặc công cụ kiểm tra phụ thuộc, và cân nhắc micro-frontend chỉ khi có nhiều team cần deploy độc lập thật sự." }
+          ],
+          "practices": [
+            "Dùng token semantic trong component, không dùng mã màu trực tiếp.",
+            "Viết story cho mọi trạng thái của component trước khi dùng trong app.",
+            "Chặn import sâu vào nội bộ package hoặc feature khác bằng lint rule.",
+            "Version và ghi changelog cho package dùng chung bằng Changesets."
+          ],
+          "pitfalls": [
+            "Xây design system quá sớm, trừu tượng hóa trước khi có ít nhất ba chỗ dùng thật.",
+            "Để package ui phụ thuộc ngược vào code của app, tạo vòng phụ thuộc."
+          ],
+          "project": { "title": "Monorepo có package ui", "brief": "Dựng monorepo Turborepo gồm hai app và một package ui có token, theme sáng tối, năm component headless và Storybook. Đạt yêu cầu khi build có cache, đổi một token cập nhật cả hai app, và lint chặn được import sai ranh giới." },
+          "resources": [
+            { "title": "Turborepo docs", "url": "https://turborepo.com/docs", "kind": "docs" },
+            { "title": "Storybook docs", "url": "https://storybook.js.org/docs", "kind": "docs" },
+            { "title": "Radix Primitives", "url": "https://www.radix-ui.com/primitives/docs/overview/introduction", "kind": "docs" },
+            { "title": "Design Tokens Community Group", "url": "https://www.designtokens.org/", "kind": "docs" }
+          ],
+          "tags": ["Design System", "Monorepo", "Architecture"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Vận hành: observability, bảo mật, AI",
+          "goal": "Đưa frontend lên production có giám sát lỗi, chống XSS bằng CSP và làm việc hiệu quả với AI mà vẫn kiểm soát chất lượng.",
+          "note": "Frontend dễ bị coi là chỉ hiển thị, nhưng code của mình chạy trên máy người dùng và xử lý cả token đăng nhập. Mình dùng AI coding assistant hằng ngày, và bài học lớn nhất là AI viết nhanh nhưng mình vẫn là người chịu trách nhiệm review.",
+          "topics": [
+            { "title": "Observability phía client", "detail": "Thu lỗi runtime kèm source map (Sentry hoặc tương đương), gắn release và user context, ghi Web Vitals theo route. OpenTelemetry cho trình duyệt cho phép nối trace từ click của người dùng xuyên qua API, dù phần browser vẫn còn đang phát triển nên cần đánh giá kỹ trước khi dùng." },
+            { "title": "XSS và cách React bảo vệ", "detail": "React escape nội dung mặc định, nhưng dangerouslySetInnerHTML, href dạng javascript: và dữ liệu đưa vào script inline vẫn là lỗ hổng. Sanitize HTML bằng DOMPurify và không bao giờ tin dữ liệu chỉ vì nó đến từ API của mình." },
+            { "title": "CSP và Trusted Types", "detail": "Content Security Policy dạng strict với nonce và strict-dynamic chặn phần lớn script bị chèn; Next.js hỗ trợ sinh nonce mỗi request. Trusted Types khóa các sink nguy hiểm như innerHTML, nên triển khai dần ở chế độ report-only trước." },
+            { "title": "Auth và chuỗi cung ứng", "detail": "Lưu session trong cookie HttpOnly, Secure, SameSite thay vì localStorage, phòng CSRF cho request ghi. Khóa phiên bản dependency bằng lockfile, bật cảnh báo lỗ hổng và cập nhật bản vá framework nhanh, vì frontend hiện đại chạy cả code server." },
+            { "title": "Làm việc cùng AI coding assistant", "detail": "Dùng AI để scaffold, viết test, refactor và giải thích code lạ, nhưng review từng diff như review code của đồng nghiệp. Cung cấp ngữ cảnh qua file hướng dẫn dự án và MCP server (docs, Figma, trình duyệt), và để test, typecheck, lint làm lưới an toàn cho code AI sinh ra." },
+            { "title": "Xây UI cho tính năng AI", "detail": "Giao diện cho LLM cần streaming token, hủy request giữa chừng, hiển thị trạng thái công cụ đang chạy và xử lý lỗi hoặc kết quả sai. AI SDK của Vercel và các hook tương tự giúp quản lý luồng stream; render markdown từ model phải được sanitize như mọi dữ liệu không tin cậy." }
+          ],
+          "practices": [
+            "Upload source map lên công cụ giám sát lỗi nhưng không public chúng.",
+            "Triển khai CSP ở chế độ report-only rồi mới enforce.",
+            "Review mọi đoạn code AI sinh ra và yêu cầu có test đi kèm.",
+            "Theo dõi advisory bảo mật của framework và cập nhật bản vá trong vài ngày."
+          ],
+          "pitfalls": [
+            "Lưu access token trong localStorage, nơi bất kỳ script XSS nào cũng đọc được.",
+            "Merge code AI sinh ra mà chưa hiểu nó, đặc biệt là code liên quan auth và dữ liệu.",
+            "Chỉ nhìn log server mà không biết người dùng đang gặp lỗi gì trên trình duyệt."
+          ],
+          "project": { "title": "Đưa app lên production có giám sát", "brief": "Deploy ứng dụng ở stage 06 với error tracking có source map, CSP dùng nonce, cookie session an toàn và một tính năng chat có streaming từ LLM. Đạt yêu cầu khi lỗi được báo về kèm stack trace gốc, CSP không có vi phạm ở chế độ enforce, và output markdown của model được sanitize." },
+          "resources": [
+            { "title": "OWASP XSS Prevention Cheat Sheet", "url": "https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html", "kind": "docs" },
+            { "title": "MDN: Content Security Policy", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP", "kind": "docs" },
+            { "title": "OpenTelemetry JavaScript", "url": "https://opentelemetry.io/docs/languages/js/", "kind": "docs" },
+            { "title": "Model Context Protocol", "url": "https://modelcontextprotocol.io/", "kind": "docs" }
+          ],
+          "tags": ["Security", "Observability", "AI"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "Server-first React đã thành mặc định", "detail": "Với Next.js 16 và React 19, Server Components, Server Functions và streaming là cách mặc định để xây app mới. Kỹ năng quan trọng là đặt ranh giới server/client đúng và hiểu cache tường minh, không chỉ biết viết hook." },
+          { "title": "Compiler thay cho memo thủ công", "detail": "React Compiler 1.0 ổn định và được khuyến nghị cho app mới, nên tối ưu render giờ chủ yếu là viết code tuân thủ Rules of React. Lint rule mới bắt lỗi từ sớm, kể cả khi chưa bật compiler." },
+          { "title": "Nền tảng web gánh nhiều việc hơn", "detail": "Container queries, :has(), cascade layers, view transitions, anchor positioning, popover và dialog đã đủ rộng để thay nhiều thư viện JavaScript. Ít dependency hơn nghĩa là bundle nhẹ hơn và ít lỗ hổng hơn." },
+          { "title": "AI là một phần của quy trình", "detail": "AI coding assistant đã có mặt trong công việc hằng ngày, từ scaffold đến viết test. Khác biệt nằm ở người biết review, đặt ngữ cảnh và giữ chất lượng bằng test, type và lint." }
+        ],
+        "next": [
+          { "title": "Agent làm việc trong codebase", "detail": "AI agent sẽ nhận các task lớn hơn: tự chạy test, mở trình duyệt kiểm tra UI, sửa lỗi qua nhiều file. Hãy chuẩn bị bằng codebase có test tốt, script rõ ràng và tài liệu kiến trúc ngắn gọn để agent và người mới đều làm việc được." },
+          { "title": "Tooling native và nhanh hơn", "detail": "TypeScript đang được port sang native, các bundler và linter viết bằng Rust như Turbopack, Rolldown, Oxc ngày càng phổ biến. Nắm vững khái niệm (module graph, typecheck, transform) để chuyển công cụ dễ dàng thay vì gắn với cấu hình của một tool." },
+          { "title": "Frontend gánh thêm trách nhiệm server", "detail": "Khi Server Functions và edge runtime phổ biến, frontend engineer cần hiểu bảo mật server, phân quyền và observability đầu cuối. Học thêm căn bản về HTTP, cache CDN, database và OpenTelemetry sẽ là lợi thế." },
+          { "title": "Giao diện cho sản phẩm AI", "detail": "Ngày càng nhiều sản phẩm có UI streaming, generative UI và luồng có agent chạy nền. Kỹ năng thiết kế trạng thái chờ, hủy, xác nhận hành động và hiển thị độ tin cậy của kết quả sẽ thành yêu cầu cơ bản." }
+        ]
+      },
+      "outcomes": [
+        "Bạn có thể dựng layout responsive, có thể truy cập, dùng CSS hiện đại mà không phụ thuộc thư viện UI.",
+        "Bạn có thể giải thích React render thế nào và viết component đúng Rules of React, sẵn sàng cho React Compiler.",
+        "Bạn có thể thiết kế luồng dữ liệu tách rõ server state, client state và URL state.",
+        "Bạn có thể xây ứng dụng Next.js 16 với Server Components, cache tường minh và Server Functions an toàn.",
+        "Bạn có thể viết bộ test nhiều tầng bằng Vitest, Testing Library và Playwright chạy ổn định trên CI.",
+        "Bạn có thể đo và cải thiện LCP, INP, CLS dựa trên dữ liệu người dùng thật.",
+        "Bạn có thể tổ chức monorepo có design system, giám sát lỗi production và áp dụng CSP chống XSS."
+      ]
+    },
+    "en": {
+      "name": "Frontend Engineer",
+      "tagline": "Building web interfaces that stay fast, accessible and maintainable as products grow",
+      "summary": "This map goes from web fundamentals (HTML, modern CSS, JavaScript, TypeScript, accessibility) to React 19, the Next.js App Router, testing, performance and frontend architecture at scale. It is for people who have built a few React pages and want to reach intermediate and then advanced level, understanding the why and not just the how.",
+      "story": {
+        "intro": "I am a frontend developer, and this is the role I have worked in every day since interning at AMIT Group in 2022 and now at Estuary Solutions. My work centers on React, TypeScript, Next.js, Zustand, TanStack Query and a Bun + Turborepo monorepo that runs this very blog. While mentoring two juniors, I noticed that many roadmaps only list technologies without saying in what order to learn them or why they matter. This map is the order I would follow if I started again today, updated to the state of the ecosystem in late 2026.",
+        "lessons": [
+          "When I started, I jumped into a framework too early, so many bugs I hunted in React were really CSS bugs, event loop bugs or HTML bugs.",
+          "Server state and client state are different things; separating them early shrinks the global store a lot and stale data bugs almost disappear.",
+          "Accessibility is not extra work at the end of a sprint: using the right element from the start is far cheaper than patching ARIA later.",
+          "What I wish I had known sooner is to measure before optimizing: one profiling session in DevTools is worth more than an afternoon of guessing which component is slow."
+        ]
+      },
+      "stages": [
+        {
+          "id": "01",
+          "phase": "foundation",
+          "weeks": 3,
+          "title": "Semantic HTML and modern CSS",
+          "goal": "Build responsive, semantic layouts without a UI library and understand exactly what the cascade is doing.",
+          "note": "I used to think CSS was the easy part, until I hit stacked z-index issues and styles overridden for no obvious reason. Learning the cascade and layout properly once saved me many hours of debugging later.",
+          "topics": [
+            { "title": "Semantic HTML and native forms", "detail": "Use landmarks (header, nav, main, aside), ordered headings, button for actions and a for navigation. Native forms with label, fieldset, input types and constraint validation (required, pattern, :user-invalid) give you a lot of behavior for free. The dialog element with showModal() and the popover attribute handle focus, the top layer and Esc without custom code." },
+            { "title": "Layout: Flexbox, Grid, subgrid", "detail": "Flexbox for one-dimensional layout, Grid for two dimensions, and subgrid so child cards align to the parent grid. Learn min(), max(), clamp(), the dvh/svh units and logical properties (margin-inline, padding-block) so layouts also work in RTL languages." },
+            { "title": "Container queries and :has()", "detail": "Container queries (@container, cqi units) let a component respond to the size of its container instead of the viewport, which fits design systems well. :has() is a parent selector: style a card when it contains an image, or a form when an input is invalid, removing many conditional classes set from JavaScript." },
+            { "title": "Cascade layers, nesting and specificity", "detail": "@layer lets you declare priority order (reset, base, components, utilities) independently of specificity, so library CSS stops overriding yours in confusing ways. Combine it with native CSS nesting, :where() to keep specificity at zero, and custom properties as design tokens." },
+            { "title": "View transitions and scroll-driven animation", "detail": "The View Transition API animates state or page changes with document.startViewTransition() and view-transition-name, and same-document transitions now work across the major browsers. Scroll-driven animations and anchor positioning replace many JavaScript libraries; always check Baseline status and respect prefers-reduced-motion." }
+          ],
+          "practices": [
+            "Check the Baseline status of a CSS feature before using it in production.",
+            "Organize CSS with @layer from the start of a project instead of raising specificity to win.",
+            "Prefer native elements such as button, dialog and details before building them from divs.",
+            "Use custom properties for color, spacing and radius so a theme changes in one place."
+          ],
+          "pitfalls": [
+            "Using a div with onClick instead of a button, losing focus, Enter/Space handling and the role for screen readers.",
+            "Writing media queries for specific devices instead of letting layouts flex naturally with Grid and clamp().",
+            "Reaching for !important to patch conflicts instead of understanding the cascade."
+          ],
+          "project": { "title": "A product page with no JavaScript", "brief": "Build a product listing page with cards using container queries, filters using :has() and a detail view with the dialog element. It passes when the layout works from 320px to wide screens, has no horizontal scroll and is fully navigable by keyboard." },
+          "resources": [
+            { "title": "MDN: Learn web development", "url": "https://developer.mozilla.org/en-US/docs/Learn_web_development", "kind": "docs" },
+            { "title": "web.dev: Learn CSS", "url": "https://web.dev/learn/css", "kind": "course" },
+            { "title": "Chrome for Developers: View Transitions", "url": "https://developer.chrome.com/docs/web-platform/view-transitions", "kind": "docs" },
+            { "title": "web.dev: Baseline", "url": "https://web.dev/baseline", "kind": "docs" }
+          ],
+          "tags": ["HTML", "CSS", "Responsive"]
+        },
+        {
+          "id": "02",
+          "phase": "foundation",
+          "weeks": 4,
+          "title": "Modern JavaScript and TypeScript",
+          "goal": "Read and write correct asynchronous code and model data with safe types.",
+          "note": "When mentoring juniors, most bugs I saw were not in React but in stale closures, unawaited promises or any types spreading everywhere. Investing here pays off in every framework.",
+          "topics": [
+            { "title": "Event loop, promises and async", "detail": "Tell apart macrotasks, microtasks and when the browser renders, so you understand why a heavy loop freezes the UI. Get fluent with async/await, Promise.all, Promise.allSettled, AbortController for cancelling requests and structuredClone for deep copies." },
+            { "title": "Modules, closures and immutability", "detail": "ES modules (import/export, dynamic import()) underpin code splitting and tree shaking. Understanding closures and references is the key to avoiding stale state in React; non-mutating methods such as toSorted, toSpliced, with and Object.groupBy keep immutable code short." },
+            { "title": "TypeScript for real applications", "detail": "Turn on strict, use discriminated unions to model states (idle, loading, success, error), satisfies to check without widening, and constrained generics for utilities. Learn utility types (Pick, Omit, Partial, ReturnType) and narrowing instead of casting with as." },
+            { "title": "Validate at system boundaries", "detail": "Types only exist at compile time; data from APIs, the URL or localStorage needs runtime validation with a schema library such as Zod or Valibot. Infer types from the schema (z.infer) so there is one source of truth for both validation and types." },
+            { "title": "Tooling: Vite, ESLint, tsc", "detail": "Vite is the default choice for SPAs and libraries; understand that the dev server serves native ESM while builds go through a bundler. Run typechecking (tsc --noEmit) separately from the build and use typescript-eslint with type-aware rules. TypeScript is being ported to native code (Go) for much faster typechecking, so keep an eye on that roadmap." }
+          ],
+          "practices": [
+            "Enable strict and noUncheckedIndexedAccess in tsconfig for every new project.",
+            "Model state with discriminated unions instead of several loose booleans.",
+            "Validate every piece of external input with a schema before using it.",
+            "Always pass an AbortSignal to requests that may be cancelled when the user navigates away."
+          ],
+          "pitfalls": [
+            "Using any or as to silence errors instead of fixing types, letting bugs slip to runtime.",
+            "Forgetting to await or catch promises, leading to unhandled rejections that are hard to trace.",
+            "Trusting that API types are correct without validating the real data."
+          ],
+          "project": { "title": "A fully typed API client", "brief": "Write a module that fetches from a public API with a Zod schema, supports cancellation, bounded retries and returns a discriminated union. It passes when strict tsc reports no errors, there is no any, and a test covers data that does not match the schema." },
+          "resources": [
+            { "title": "The Modern JavaScript Tutorial", "url": "https://javascript.info/", "kind": "course" },
+            { "title": "TypeScript Handbook", "url": "https://www.typescriptlang.org/docs/handbook/intro.html", "kind": "docs" },
+            { "title": "Zod documentation", "url": "https://zod.dev", "kind": "docs" }
+          ],
+          "tags": ["JavaScript", "TypeScript", "Vite"]
+        },
+        {
+          "id": "03",
+          "phase": "foundation",
+          "weeks": 2,
+          "title": "Accessibility in practice",
+          "goal": "Build components that work with keyboard and screen readers and meet WCAG 2.2 level AA.",
+          "note": "I learned accessibility late and had to go back and fix many hand-rolled modals and dropdowns. Now I treat it as part of the definition of done, not a separate item.",
+          "topics": [
+            { "title": "WCAG 2.2 and the POUR principles", "detail": "Know the common criteria: color contrast, visible focus that is not hidden (Focus Not Obscured), minimum target size (Target Size) and not depending on dragging. Many markets now require WCAG AA by law, for example the European Accessibility Act in force since mid 2025." },
+            { "title": "Keyboard and focus management", "detail": "Tab order follows the DOM, trap focus inside modals, return focus to the trigger on close, and use :focus-visible for focus rings. The inert attribute disables the background while an overlay is open without hacks." },
+            { "title": "ARIA done right", "detail": "The first rule of ARIA is not to use ARIA if a native element can do the job. When you build combobox, tabs or menu yourself, follow the patterns in the ARIA Authoring Practices Guide and use aria-live for dynamic messages such as toasts or search results." },
+            { "title": "Testing accessibility", "detail": "Combine automated checks (axe-core, eslint-plugin-jsx-a11y, Lighthouse) with manual testing by keyboard and a screen reader such as NVDA or VoiceOver. Automated tools catch only part of the issues; the rest needs a real person trying it." }
+          ],
+          "practices": [
+            "Give every interactive control a visible label or an accessible name.",
+            "Go through each new feature using only the keyboard before opening a PR.",
+            "Use headless libraries with built-in a11y such as Radix or React Aria for complex components.",
+            "Run axe in component tests to catch regressions early."
+          ],
+          "pitfalls": [
+            "Removing the focus outline for aesthetic reasons without replacing it with another focus style.",
+            "Sprinkling role and aria-* attributes carelessly, which makes screen readers announce wrong information, worse than none at all."
+          ],
+          "project": { "title": "An accessible component set", "brief": "Build an autocomplete combobox and a confirm modal following the ARIA APG. It passes when both are fully usable by keyboard, axe reports no violations, and they are announced correctly in at least one screen reader." },
+          "resources": [
+            { "title": "ARIA Authoring Practices Guide", "url": "https://www.w3.org/WAI/ARIA/apg/", "kind": "docs" },
+            { "title": "WCAG 2.2", "url": "https://www.w3.org/TR/WCAG22/", "kind": "docs" },
+            { "title": "web.dev: Learn Accessibility", "url": "https://web.dev/learn/accessibility", "kind": "course" }
+          ],
+          "tags": ["a11y", "WCAG", "ARIA"]
+        },
+        {
+          "id": "04",
+          "phase": "core",
+          "weeks": 4,
+          "title": "The React 19 mental model",
+          "goal": "Explain when and why React renders, and use hooks, Actions, Suspense and the React Compiler correctly.",
+          "note": "I moved from React 18 to 19 at work, and the biggest change was not the new APIs but the way of thinking: fewer effects, less manual memoization, letting the framework handle async work. Understanding render as a pure function makes everything else easier.",
+          "topics": [
+            { "title": "Render, commit and purity", "detail": "A component is a pure function from props and state to UI; render may run many times and only the commit touches the DOM. Understand keys, how state is tied to its position in the tree, and why StrictMode renders twice in development to expose misplaced side effects." },
+            { "title": "Hooks, and when you might not need an Effect", "detail": "Most useEffect calls that sync derived state are unnecessary: compute it during render or handle it in the event handler. useEffect is for syncing with external systems; React 19.2 adds useEffectEvent to pull event-like logic out of an Effect and avoid needless reconnections." },
+            { "title": "Actions and forms in React 19", "detail": "Actions are async functions tied to transitions: useActionState manages the result and pending state, useOptimistic handles optimistic updates, and useFormStatus reads form state from child components. Forms can take an action directly, and ref is now a regular prop with no forwardRef needed." },
+            { "title": "Suspense, use() and concurrent rendering", "detail": "Suspense declares where to wait for data or code, and use() reads a promise or context during render. startTransition and useDeferredValue keep the UI responsive during heavy updates; the Activity component in React 19.2 keeps the state of hidden UI and defers its updates." },
+            { "title": "React Compiler", "detail": "React Compiler 1.0 is stable and memoizes components and values automatically, so manual useMemo, useCallback and memo are mostly unnecessary. It is only safe when code follows the Rules of React, so enable the new rules in eslint-plugin-react-hooks first, even before turning the compiler on." }
+          ],
+          "practices": [
+            "Compute derived state during render instead of syncing it with useEffect.",
+            "Enable eslint-plugin-react-hooks with the compiler rules and fix every warning.",
+            "Use useActionState and useOptimistic for mutations instead of hand-managed loading flags.",
+            "Place Suspense boundaries around meaningful UI regions, not around the whole page."
+          ],
+          "pitfalls": [
+            "Fetching data in useEffect without cleanup, causing race conditions when parameters change quickly.",
+            "Scattering useMemo and useCallback everywhere without measuring, making code harder to read but not faster.",
+            "Mutating objects in state directly and wondering why the UI does not update."
+          ],
+          "project": { "title": "A notes app built on Actions", "brief": "Build a notes app using a form action, useActionState for validation errors, useOptimistic for add and delete, and Suspense for loading the list. It passes when the React Compiler is enabled with no lint warnings and no useEffect is used to sync state." },
+          "resources": [
+            { "title": "react.dev: Learn React", "url": "https://react.dev/learn", "kind": "docs" },
+            { "title": "React 19.2 release notes", "url": "https://react.dev/blog/2025/10/01/react-19-2", "kind": "article" },
+            { "title": "React Compiler", "url": "https://react.dev/learn/react-compiler", "kind": "docs" },
+            { "title": "Suspense reference", "url": "https://react.dev/reference/react/Suspense", "kind": "docs" }
+          ],
+          "tags": ["React 19", "Hooks", "React Compiler"]
+        },
+        {
+          "id": "05",
+          "phase": "core",
+          "weeks": 3,
+          "title": "Client state, server state and URL state",
+          "goal": "Pick the right home for each kind of state and build data flows with caching, refetching and optimistic updates.",
+          "note": "In my first projects I put everything, including API data, into a global store and had to hand-write loading, caching and invalidation. Moving server data to TanStack Query and keeping only UI state in Zustand made the code noticeably smaller.",
+          "topics": [
+            { "title": "Classifying state", "detail": "Split state into local UI (useState), shared client state (Zustand or context), server state (TanStack Query) and URL state (search params). Each has a different lifecycle and source of truth; mixing them up is the root of stale data and extra renders." },
+            { "title": "TanStack Query v5", "detail": "Design structured query keys with a queryOptions factory, understand staleTime and gcTime, call invalidateQueries after mutations, and do optimistic updates via onMutate or the mutation variables. Use useSuspenseQuery to combine with Suspense, and prefetch on the server then hydrate when working with Next.js." },
+            { "title": "Zustand for client state", "detail": "Keep small, feature-scoped stores, read with selectors so components only re-render when the slice they need changes, and use useShallow when a selector returns an object. Use the persist middleware for data stored on the device and devtools for debugging; do not turn Zustand into a copy of the server cache." },
+            { "title": "The URL is state", "detail": "Filters, pagination and the active tab belong in the URL so sharing, back/forward and reload all work. Libraries such as nuqs give typed parsing and serialization of search params and work with the Next.js App Router and React Router." },
+            { "title": "Realtime and sync", "detail": "With WebSocket or Server-Sent Events, push events into the TanStack Query cache (setQueryData or invalidate) instead of keeping a parallel store. Handle reconnects, event ordering and pausing when the tab is hidden." }
+          ],
+          "practices": [
+            "Bundle query keys and query functions into shared queryOptions used by both prefetching and components.",
+            "Set a deliberate staleTime per kind of data instead of leaving the default of zero.",
+            "Read from Zustand through narrow selectors, never the whole store.",
+            "Put filters and pagination in the URL from day one."
+          ],
+          "pitfalls": [
+            "Copying data from useQuery into useState or a store, creating two sources of truth that drift apart.",
+            "Using ad hoc string query keys so invalidation misses or clears the wrong cache."
+          ],
+          "project": { "title": "An order management dashboard", "brief": "Build an order list with URL-based filters, pagination, order status updates with optimistic updates and realtime updates from a mocked WebSocket. It passes when reload keeps the filters, failed mutations roll back correctly and no server data lives in Zustand." },
+          "resources": [
+            { "title": "TanStack Query docs", "url": "https://tanstack.com/query/latest/docs/framework/react/overview", "kind": "docs" },
+            { "title": "TkDodo: Practical React Query", "url": "https://tkdodo.eu/blog/practical-react-query", "kind": "article" },
+            { "title": "Zustand docs", "url": "https://zustand.docs.pmnd.rs/", "kind": "docs" },
+            { "title": "nuqs", "url": "https://nuqs.dev", "kind": "tool" }
+          ],
+          "tags": ["TanStack Query", "Zustand", "State"]
+        },
+        {
+          "id": "06",
+          "phase": "core",
+          "weeks": 4,
+          "title": "Next.js App Router, RSC and forms",
+          "goal": "Design a Next.js 16 app with clear server/client boundaries, deliberate caching and safe forms.",
+          "note": "Server Components forced me to rethink where data is fetched and where JavaScript really needs to run. At first I marked 'use client' far too high; pushing the boundary down to small leaves made bundles much lighter.",
+          "topics": [
+            { "title": "Server and Client Components", "detail": "Server Components are the default: they fetch data directly and ship no JavaScript to the client. Put 'use client' only on leaf components that need state or events, pass Server Components into Client Components through children, and use server-only to block accidental imports of secret code." },
+            { "title": "Routing and streaming", "detail": "Learn layouts, loading.tsx, error.tsx, route groups, and parallel and intercepting routes. Streaming with Suspense shows the static part immediately and fills in slow parts later, improving both time to content and perceived speed." },
+            { "title": "Cache Components and 'use cache'", "detail": "Next.js 16 introduces Cache Components (enabled with cacheComponents): caching becomes explicit through the 'use cache' directive together with cacheLife and cacheTag, while dynamic parts stream inside Suspense. Understand when to invalidate by tag, when data must always be fresh, and that the default is now dynamic rather than implicitly cached." },
+            { "title": "Server Functions and forms", "detail": "Server Functions ('use server') take form actions, pair with useActionState to return validation errors, and revalidate data after writes. Every Server Function is a public endpoint: always validate input with a schema and check authorization inside it, never relying on the UI hiding a button." },
+            { "title": "Shared client and server validation", "detail": "One Zod schema serves both client validation (React Hook Form or Conform) and server validation, helped by the Standard Schema spec that many form libraries accept. Keep progressive enhancement: the form still submits before JavaScript has loaded." },
+            { "title": "proxy.ts and the network boundary", "detail": "In Next.js 16, middleware.ts is renamed to proxy.ts to make clear it is a request interception layer at the edge of the app. Use it for redirects, rewrites and light session checks; real authorization still belongs in the data layer and Server Functions." }
+          ],
+          "practices": [
+            "Push 'use client' down to the smallest possible leaf component.",
+            "Create a separate data access layer that checks auth before returning data to components.",
+            "Validate input and check permissions in every Server Function.",
+            "Tag cached data with cacheTag and invalidate by tag after writes."
+          ],
+          "pitfalls": [
+            "Passing whole database objects to Client Components, leaking sensitive fields into the HTML.",
+            "Checking permissions only in proxy or a layout and assuming every child route is safe.",
+            "Being slow to apply React and Next.js security patches; the remote code execution flaw in React Server Components in late 2025 is the clearest example."
+          ],
+          "project": { "title": "A blog with an admin area", "brief": "Build a Next.js 16 blog whose public pages are cached by tag and whose admin area creates posts through a Server Function validated with a shared schema. It passes when signed-out users cannot call the Server Function, editing a post updates the public page immediately, and the form works with JavaScript disabled." },
+          "resources": [
+            { "title": "Next.js App Router docs", "url": "https://nextjs.org/docs/app", "kind": "docs" },
+            { "title": "Next.js 16 release", "url": "https://nextjs.org/blog/next-16", "kind": "article" },
+            { "title": "useActionState reference", "url": "https://react.dev/reference/react/useActionState", "kind": "docs" }
+          ],
+          "tags": ["Next.js 16", "RSC", "Forms"]
+        },
+        {
+          "id": "07",
+          "phase": "core",
+          "weeks": 3,
+          "title": "A frontend testing strategy",
+          "goal": "Build a fast, trustworthy test suite that checks user behavior instead of implementation details.",
+          "note": "I am not a QA specialist, but I have seen tests written against implementation details break on every refactor. Tests that follow how users interact are what actually give me confidence when changing code.",
+          "topics": [
+            { "title": "The testing trophy and choosing layers", "detail": "Favor integration tests at the component and feature level, unit tests for pure logic, a few end-to-end tests for the most critical flows, and static analysis (TypeScript, ESLint) as the base. The goal is confidence per minute of CI, not high coverage numbers." },
+            { "title": "Vitest and Browser Mode", "detail": "Vitest is fast and shares configuration with Vite. Since Vitest 4, Browser Mode is stable, running component tests in a real browser through Playwright instead of jsdom, with visual regression via screenshots." },
+            { "title": "Testing Library and MSW", "detail": "Query by role and accessible name (getByRole) so tests check behavior and indirectly check accessibility. Use user-event to simulate real interaction and MSW to mock APIs at the network level, sharing handlers across tests, Storybook and development." },
+            { "title": "Playwright for end-to-end", "detail": "Role-based locators, auto-waiting and web-first assertions make tests far less flaky. Use fixtures, storageState to reuse logins, the trace viewer to debug CI failures, and sharding to run in parallel." },
+            { "title": "Testing Server Components and Actions", "detail": "Async Server Components are still awkward to unit test directly, so extract data logic into pure functions and test those, and cover the full flow with end-to-end tests. Test Server Functions like an API: bad input, missing permission, success." }
+          ],
+          "practices": [
+            "Query elements by role and label as users see them, avoiding test ids when a better option exists.",
+            "Mock at the network level with MSW instead of mocking the fetch module.",
+            "Enable trace on-first-retry for Playwright in CI.",
+            "Keep tests independent, never relying on run order or shared data."
+          ],
+          "pitfalls": [
+            "Snapshotting large component trees and updating snapshots whenever they fail without reading the diff.",
+            "Using fixed sleeps in end-to-end tests instead of waiting on conditions, causing flaky runs."
+          ],
+          "project": { "title": "A test suite for the order dashboard", "brief": "Write integration tests with Vitest and Testing Library for the dashboard from stage 05, mock the API with MSW, and add two Playwright end-to-end flows running in CI. It passes when everything runs in a few minutes and stays green across 10 consecutive runs." },
+          "resources": [
+            { "title": "Vitest guide", "url": "https://vitest.dev/guide/", "kind": "docs" },
+            { "title": "Testing Library: About Queries", "url": "https://testing-library.com/docs/queries/about", "kind": "docs" },
+            { "title": "Playwright docs", "url": "https://playwright.dev/docs/intro", "kind": "docs" },
+            { "title": "MSW docs", "url": "https://mswjs.io/docs", "kind": "docs" }
+          ],
+          "tags": ["Vitest", "Playwright", "Testing"]
+        },
+        {
+          "id": "08",
+          "phase": "advanced",
+          "weeks": 3,
+          "title": "Performance and Core Web Vitals",
+          "goal": "Measure, diagnose and improve LCP, INP and CLS based on real user data.",
+          "note": "I used to optimize by feel and spent effort where it did not matter. Learning to read the flame chart in the Performance panel was the turning point: I could see exactly which task was blocking the main thread.",
+          "topics": [
+            { "title": "Core Web Vitals and field data", "detail": "LCP measures how fast the main content loads, INP measures responsiveness across the whole session, and CLS measures layout stability; the good thresholds are about 2.5s, 200ms and 0.1 at the 75th percentile. Tell lab data (Lighthouse) apart from field data (CrUX, RUM via the web-vitals library)." },
+            { "title": "Optimizing INP", "detail": "INP is made of input delay, processing time and presentation delay. Break up long tasks, yield to the main thread with scheduler.yield() (with a fallback), use startTransition for non-urgent updates, and use the Long Animation Frames API to find slow scripts." },
+            { "title": "Optimizing LCP and CLS", "detail": "Prioritize the LCP resource with fetchpriority=high, avoid lazy-loading above-the-fold images, and serve AVIF or WebP with srcset. Reserve space for images and embeds with width/height or aspect-ratio, and self-host fonts with font-display and size-adjust to reduce layout shift." },
+            { "title": "Bundles and code loading", "detail": "Analyze bundles, split code by route and by interaction with dynamic import, and drop heavy libraries or replace them with native APIs. Server Components keep render-only libraries out of the client bundle." },
+            { "title": "Efficient rendering in React", "detail": "Use the React DevTools Profiler and the Performance Tracks in Chrome DevTools to see which components render and for how long. Virtualize long lists (TanStack Virtual) and use content-visibility: auto for off-screen regions." }
+          ],
+          "practices": [
+            "Collect Core Web Vitals from real users and track them per route.",
+            "Set a bundle performance budget and enforce it in CI.",
+            "Profile before optimizing and measure again after the fix.",
+            "Test on mid-range devices and slow networks, not only on your dev machine."
+          ],
+          "pitfalls": [
+            "Chasing a Lighthouse score while field data stays poor.",
+            "Lazy-loading the LCP image as well, which makes the page render later."
+          ],
+          "project": { "title": "Improve a real page", "brief": "Pick a page from your own project, record a baseline with web-vitals and the Performance panel, then fix the three biggest problems. It passes when you have a before/after table for LCP, INP, CLS and bundle size, with an explanation of the cause behind each improvement." },
+          "resources": [
+            { "title": "web.dev: Web Vitals", "url": "https://web.dev/articles/vitals", "kind": "docs" },
+            { "title": "web.dev: Interaction to Next Paint", "url": "https://web.dev/articles/inp", "kind": "article" },
+            { "title": "Chrome DevTools: Performance", "url": "https://developer.chrome.com/docs/devtools/performance", "kind": "docs" }
+          ],
+          "tags": ["Core Web Vitals", "INP", "Performance"]
+        },
+        {
+          "id": "09",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Design systems and architecture at scale",
+          "goal": "Build a design system with tokens and reusable components, and organize a monorepo with clear module boundaries.",
+          "note": "I used Ant Design and Material UI for years, but only understood the real work when running the Bun + Turborepo monorepo for this blog: the hard part is not writing components but keeping package boundaries intact as the code grows.",
+          "topics": [
+            { "title": "Design tokens", "detail": "Organize tokens in tiers: primitive (the palette), semantic (color.text.muted) and component. The W3C Design Tokens Community Group format and tools such as Style Dictionary generate CSS variables, light and dark themes, and keep things in sync with Figma." },
+            { "title": "Headless components and component APIs", "detail": "Use headless primitives (Radix, React Aria, Base UI) for behavior and accessibility and own the styling; the shadcn/ui model copies code into your project so you fully own it. Design APIs through composition (compound components, asChild) instead of piling up dozens of boolean props." },
+            { "title": "Documenting and testing components", "detail": "Storybook serves as the workshop and living documentation, combined with interaction tests, accessibility checks and visual regression. Every component has stories for its states: loading, error, empty and long content." },
+            { "title": "Monorepos with Turborepo", "detail": "Split apps and packages (ui, config, utils), use pnpm or Bun workspaces, cache tasks and only rerun what is affected. Share tsconfig and ESLint configuration through dedicated packages so every app stays consistent." },
+            { "title": "Module boundaries", "detail": "Organize code by feature rather than by file type, with each feature exposing a public API through an entry point. Enforce boundaries with lint rules or dependency checking tools, and consider micro-frontends only when several teams truly need independent deploys." }
+          ],
+          "practices": [
+            "Use semantic tokens in components, never raw color values.",
+            "Write stories for every component state before using it in an app.",
+            "Block deep imports into another package or feature's internals with a lint rule.",
+            "Version shared packages and keep changelogs with Changesets."
+          ],
+          "pitfalls": [
+            "Building a design system too early, abstracting before there are at least three real use cases.",
+            "Letting the ui package depend back on app code, creating a dependency cycle."
+          ],
+          "project": { "title": "A monorepo with a ui package", "brief": "Set up a Turborepo monorepo with two apps and a ui package containing tokens, light and dark themes, five headless-based components and Storybook. It passes when builds are cached, changing one token updates both apps, and lint blocks imports that cross boundaries." },
+          "resources": [
+            { "title": "Turborepo docs", "url": "https://turborepo.com/docs", "kind": "docs" },
+            { "title": "Storybook docs", "url": "https://storybook.js.org/docs", "kind": "docs" },
+            { "title": "Radix Primitives", "url": "https://www.radix-ui.com/primitives/docs/overview/introduction", "kind": "docs" },
+            { "title": "Design Tokens Community Group", "url": "https://www.designtokens.org/", "kind": "docs" }
+          ],
+          "tags": ["Design System", "Monorepo", "Architecture"]
+        },
+        {
+          "id": "10",
+          "phase": "advanced",
+          "weeks": 4,
+          "title": "Production: observability, security, AI",
+          "goal": "Ship a frontend to production with error monitoring, XSS defenses through CSP, and an effective AI workflow that keeps quality under control.",
+          "note": "Frontend is easy to dismiss as just display, but our code runs on user devices and handles login tokens. I use AI coding assistants every day, and the biggest lesson is that AI writes fast but I am still the one responsible for the review.",
+          "topics": [
+            { "title": "Client-side observability", "detail": "Capture runtime errors with source maps (Sentry or similar), attach release and user context, and record Web Vitals per route. OpenTelemetry for the browser can link a trace from a user click through the API, though the browser side is still maturing, so evaluate it carefully first." },
+            { "title": "XSS and how React protects you", "detail": "React escapes content by default, but dangerouslySetInnerHTML, javascript: URLs in href and data embedded in inline scripts are still holes. Sanitize HTML with DOMPurify and never trust data just because it comes from your own API." },
+            { "title": "CSP and Trusted Types", "detail": "A strict Content Security Policy with nonces and strict-dynamic blocks most injected scripts; Next.js supports generating a nonce per request. Trusted Types lock down dangerous sinks such as innerHTML, so roll them out gradually in report-only mode first." },
+            { "title": "Auth and the supply chain", "detail": "Keep sessions in HttpOnly, Secure, SameSite cookies rather than localStorage, and guard write requests against CSRF. Pin dependencies with a lockfile, turn on vulnerability alerts and apply framework patches quickly, because modern frontends run server code too." },
+            { "title": "Working with AI coding assistants", "detail": "Use AI to scaffold, write tests, refactor and explain unfamiliar code, but review every diff as you would a teammate's. Provide context through project instruction files and MCP servers (docs, Figma, the browser), and let tests, typechecking and lint act as the safety net for generated code." },
+            { "title": "Building UI for AI features", "detail": "Interfaces for LLMs need token streaming, mid-request cancellation, visible tool-call status, and handling of errors or wrong answers. The Vercel AI SDK and similar hooks help manage streams; markdown rendered from a model must be sanitized like any untrusted data." }
+          ],
+          "practices": [
+            "Upload source maps to your error monitoring tool but do not serve them publicly.",
+            "Roll out CSP in report-only mode before enforcing it.",
+            "Review all AI-generated code and require tests to come with it.",
+            "Follow your framework's security advisories and apply patches within days."
+          ],
+          "pitfalls": [
+            "Storing access tokens in localStorage, where any XSS script can read them.",
+            "Merging AI-generated code you do not understand, especially around auth and data.",
+            "Watching only server logs without knowing what errors users hit in the browser."
+          ],
+          "project": { "title": "Ship the app to production with monitoring", "brief": "Deploy the stage 06 app with source-mapped error tracking, a nonce-based CSP, secure session cookies and a chat feature that streams from an LLM. It passes when errors arrive with original stack traces, the enforced CSP reports no violations, and model markdown output is sanitized." },
+          "resources": [
+            { "title": "OWASP XSS Prevention Cheat Sheet", "url": "https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html", "kind": "docs" },
+            { "title": "MDN: Content Security Policy", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP", "kind": "docs" },
+            { "title": "OpenTelemetry JavaScript", "url": "https://opentelemetry.io/docs/languages/js/", "kind": "docs" },
+            { "title": "Model Context Protocol", "url": "https://modelcontextprotocol.io/", "kind": "docs" }
+          ],
+          "tags": ["Security", "Observability", "AI"]
+        }
+      ],
+      "trends": {
+        "now": [
+          { "title": "Server-first React is the default", "detail": "With Next.js 16 and React 19, Server Components, Server Functions and streaming are the default way to build new apps. The key skill is placing the server/client boundary well and understanding explicit caching, not just writing hooks." },
+          { "title": "The compiler replaces manual memoization", "detail": "React Compiler 1.0 is stable and recommended for new apps, so render optimization is now mostly about writing code that follows the Rules of React. The new lint rules catch problems early, even before the compiler is enabled." },
+          { "title": "The web platform does more of the work", "detail": "Container queries, :has(), cascade layers, view transitions, anchor positioning, popover and dialog are now widely available enough to replace many JavaScript libraries. Fewer dependencies means lighter bundles and fewer vulnerabilities." },
+          { "title": "AI is part of the workflow", "detail": "AI coding assistants are part of daily work, from scaffolding to writing tests. The difference lies in who can review, set context and hold the quality bar with tests, types and lint." }
+        ],
+        "next": [
+          { "title": "Agents working inside the codebase", "detail": "AI agents will take on larger tasks: running tests, opening a browser to check UI and fixing bugs across many files. Prepare with a well-tested codebase, clear scripts and short architecture docs so both agents and new hires can work effectively." },
+          { "title": "Native, faster tooling", "detail": "TypeScript is being ported to native code, and Rust-based bundlers and linters such as Turbopack, Rolldown and Oxc keep gaining ground. Master the concepts (module graph, typechecking, transforms) so you can switch tools easily instead of being tied to one tool's config." },
+          { "title": "Frontend takes on server responsibilities", "detail": "As Server Functions and edge runtimes spread, frontend engineers need to understand server security, authorization and end-to-end observability. Learning the basics of HTTP, CDN caching, databases and OpenTelemetry will be an advantage." },
+          { "title": "Interfaces for AI products", "detail": "More products ship streaming UI, generative UI and flows with agents running in the background. Designing waiting states, cancellation, action confirmation and showing how reliable a result is will become baseline skills." }
+        ]
+      },
+      "outcomes": [
+        "You can build responsive, accessible layouts with modern CSS without depending on a UI library.",
+        "You can explain how React renders and write components that follow the Rules of React, ready for the React Compiler.",
+        "You can design data flows that clearly separate server state, client state and URL state.",
+        "You can build a Next.js 16 app with Server Components, explicit caching and secure Server Functions.",
+        "You can write a layered test suite with Vitest, Testing Library and Playwright that runs reliably in CI.",
+        "You can measure and improve LCP, INP and CLS using real user data.",
+        "You can organize a monorepo with a design system, monitor production errors and apply a CSP against XSS."
+      ]
+    }
+  }
+}

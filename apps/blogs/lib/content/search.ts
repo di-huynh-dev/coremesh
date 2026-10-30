@@ -1,6 +1,6 @@
 import { getGuides } from "./guides";
 import { getAllPosts } from "@repo/content/posts";
-import { getRoadmaps } from "./roadmaps";
+import { getRoleMaps } from "./role-maps";
 import { getAllSeries } from "./series";
 import { TOOLS } from "./tools";
 import type { BlogLocale, SearchEntry } from "./types";
@@ -11,7 +11,7 @@ function clip(text: string) {
   return text.length > MAX_DESCRIPTION ? `${text.slice(0, MAX_DESCRIPTION - 1).trimEnd()}…` : text;
 }
 
-/** Site-wide ⌘K index for one locale: posts, series, roadmaps + stages, guides + chapters, tools. */
+/** Site-wide ⌘K index for one locale: posts, series, role maps + stages, guides + chapters, tools. */
 export function buildSearchIndex(locale: BlogLocale): SearchEntry[] {
   const base = `/${locale}`;
 
@@ -51,22 +51,21 @@ export function buildSearchIndex(locale: BlogLocale): SearchEntry[] {
     })),
   ]);
 
-  const roadmaps: SearchEntry[] = getRoadmaps(locale).flatMap((roadmap) => [
+  const roleMaps: SearchEntry[] = getRoleMaps(locale).flatMap((roleMap) => [
     {
-      kind: "roadmap" as const,
-      title: roadmap.name,
-      description: clip(roadmap.summary),
-      href: `${base}/roadmap/${roadmap.id}`,
-      context: roadmap.role,
-      keywords: roadmap.skills,
+      kind: "role" as const,
+      title: roleMap.name,
+      description: clip(roleMap.tagline),
+      href: `${base}/role-map/${roleMap.id}`,
+      keywords: roleMap.ecosystem,
     },
-    ...roadmap.milestones.map((milestone) => ({
+    ...roleMap.stages.map((stage) => ({
       kind: "stage" as const,
-      title: milestone.title,
-      description: clip(milestone.description),
-      href: `${base}/roadmap/${roadmap.id}#stage-${milestone.step}`,
-      context: roadmap.name,
-      keywords: milestone.tags,
+      title: stage.title,
+      description: clip(stage.goal),
+      href: `${base}/role-map/${roleMap.id}#stage-${stage.id}`,
+      context: roleMap.name,
+      keywords: [...stage.tags, ...stage.topics.map((topic) => topic.title)],
     })),
   ]);
 
@@ -78,5 +77,5 @@ export function buildSearchIndex(locale: BlogLocale): SearchEntry[] {
     keywords: tool.keywords,
   }));
 
-  return [...posts, ...series, ...roadmaps, ...guides, ...tools];
+  return [...posts, ...series, ...roleMaps, ...guides, ...tools];
 }
