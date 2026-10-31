@@ -1,0 +1,573 @@
+---
+title: "Micro-frontends, Honestly: When They're Worth It, How Module Federation 2.0 Works, and What They Cost"
+excerpt: "Micro-frontends solve an organizational problem — independent teams shipping independently — not a technical one. This post compares five ways to compose a frontend, digs into Module Federation 2.0 (shared singletons, version skew, manifests, types, fallbacks) and shows when a Turborepo monorepo is the better answer."
+---
+
+<Lead>The first time I was asked to "split the frontend into micro-frontends", the stated reason was "to make the app faster". It didn't get faster — it got slower, heavier, and it took three months to track down an "Invalid hook call" error that only happened in production. The second time was different: six teams, a two-week release train, and every time one team had a bug, the other five waited. That time micro-frontends genuinely saved the project. This post is what I took away from both: what problem micro-frontends actually solve, how the different composition approaches compare, how Module Federation 2.0 works at a level deep enough to debug it, the cross-cutting concerns nobody warns you about, and when you should just pick a regular monorepo.</Lead>
+
+## Micro-frontends solve an organizational problem, not a technical one
+
+The shortest definition I use: **micro-frontends are a way of splitting one frontend product into parts that are each owned, built and deployed independently by one team**. The key words are "deployed independently". If the parts still have to ship together, you just have a monolith cut into several repos — which is worse than the original monolith.
+
+This is Conway's law applied directly: software architecture tends to mirror the communication structure of the organization that builds it. When an organization has several autonomous, domain-aligned teams (catalog, checkout, account, back-office), a monolithic frontend forces them to coordinate where they shouldn't have to: a shared pipeline, a shared release, a shared lockfile, shared framework-upgrade decisions.
+
+### Signs you actually need them
+
+I only propose micro-frontends when I see several of these at once:
+
+- **Many teams (usually four or more) working on one product**, each owning a clear domain with its own product owner.
+- **Releases are blocked by coordination**, not by technology: one team waits for another to fix a bug before it can deploy, or has to "freeze" code for the release train.
+- **Genuinely different release cadences**: the growth team wants to ship experiments daily, the payments team needs a stricter approval process.
+- **Stable domain boundaries**: you know checkout and catalog are different things, and that won't change in the next few years.
+- **A legacy part you need to replace gradually**: wrapping an old app (AngularJS, jQuery) as one "remote" and replacing it piece by piece is a very real use case.
+
+### Signs you don't
+
+On the other hand, these are reasons I've heard that are all wrong:
+
+- **"To make the app faster."** Micro-frontends almost always increase total JavaScript and request count. Code splitting inside one app does far better.
+- **"So each team can use the framework they like."** In theory, yes. In practice you double the bundle and lose the ability to share a design system. Mixing frameworks only makes sense during a migration.
+- **"The codebase is huge and builds are slow."** That's a build-tool and caching problem — Turborepo, Nx and remote caching solve it far more cheaply.
+- **One or two teams.** If the same group of people owns every remote, you pay the full cost of a distributed system and get none of the benefits.
+
+<Callout type="warning" title="Distributed monolith">
+  The simplest test: if changing one feature means deploying two remotes in a specific order, or the shell has to redeploy whenever a remote changes, you have a distributed monolith. It has every downside of a monolith (coordinated releases) plus every downside of a distributed system (network failures, version skew, painful debugging).
+</Callout>
+
+### The price you pay
+
+I list these up front so nobody is surprised later:
+
+| Cost | What it looks like in practice |
+| --- | --- |
+| Runtime complexity | Code is stitched together at runtime; integration bugs only show up in real environments |
+| Version skew | Shell built against React 19.1, remote against 19.2, design system v3 and v4 on the same page |
+| Duplicated dependencies | Each remote ships its own lodash, date-fns and charting library |
+| Integration testing | Every remote's unit tests are green, but the composed page still breaks |
+| Observability | A console error doesn't tell you which remote, or which team, it belongs to |
+| UX consistency | Every team "innovates" its own loading state, empty state and toast |
+| Local developer experience | Running one page means starting a shell plus three remotes, or pointing at staging |
+
+None of these are unsolvable. But each one needs a person, a convention and a tool. If nobody in the organization (usually a small platform team) owns them, they rot.
+
+## Five ways to compose a frontend: an honest comparison
+
+"Micro-frontends" doesn't mean Module Federation. There are at least five composition approaches, and picking the right one matters more than picking the right library.
+
+| Approach | Independent deploy | Isolation | Performance | Shared UX / state | Complexity | Fits when |
+| --- | --- | --- | --- | --- | --- | --- |
+| Build-time packages (npm, workspaces) | No — the shell must rebuild | Low | Best: one optimized bundle | Easy | Low | A few teams who need to share code, not deploy separately |
+| iframes | Yes | Highest (own origin, JS, CSS) | Poor: every frame reloads everything | Hard: resizing, focus, routing, modals | Medium | Third-party widgets, legacy islands, untrusted content |
+| Server-side composition / edge includes | Yes | Medium | Good for content-heavy pages, HTML arrives early | Medium; interactivity must hydrate itself | Medium to high | Commerce and content pages where SEO matters |
+| Runtime with Module Federation 2.0 | Yes | Low (shared window, shared DOM) | Good if dependencies are shared well | Good: one React tree | High | Multi-team SPAs with dense interaction that must feel like one app |
+| Next.js multi-zones | Yes, per route | High between zones | Good within a zone; crossing zones is a full page load | Only via URL, cookies, shared packages | Low to medium | Areas split by path: /blog, /docs, /app |
+
+### Build-time packages
+
+Each team publishes components or features as a package (`@acme/checkout`), and the shell imports and builds them all. This is "micro-frontends" with no runtime at all — and for many organizations, it's enough. You get code boundaries, ownership via CODEOWNERS, versioning via semver. What you don't get is independent deployment: for checkout to reach production, the shell must build and deploy again.
+
+That sounds like a weakness, but if the shell deploys automatically and quickly (minutes), "deploying independently" and "deploying through the shell" differ less than you'd think. What really hurts is a shell with a slow, manual release process.
+
+### iframes
+
+iframes get a bad reputation, but they're the only *real* isolation on this list: separate origin, separate globals, separate CSS, separate crashes. I still use them for two things: embedding third-party tools and wrapping a legacy app nobody dares touch.
+
+The cost is UX: height has to be synchronized with `postMessage` and `ResizeObserver`, modals can't escape the frame, focus and keyboard shortcuts are split, deep links must be synced both ways, and every frame reloads its whole runtime.
+
+### Server-side composition and edge includes
+
+An old idea from the Edge Side Includes (ESI) era: a page is assembled from HTML fragments rendered by different services. These days I usually do it at the edge, for example with Cloudflare Workers' `HTMLRewriter`:
+
+```ts
+// edge/compose.ts — a Cloudflare Worker that stitches HTML fragments
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const page = await fetch(new URL(url.pathname, "https://shell.internal.example.com"), request);
+
+    return new HTMLRewriter()
+      .on("mfe-fragment", {
+        async element(el) {
+          const src = el.getAttribute("src");
+          if (!src) return el.remove();
+          try {
+            const res = await fetch(src, { signal: AbortSignal.timeout(300) });
+            if (!res.ok) throw new Error(`fragment ${src} ${res.status}`);
+            el.replace(await res.text(), { html: true });
+          } catch {
+            // Slow or broken fragment: keep the page, drop the fragment
+            el.replace(`<div class="fragment-fallback"></div>`, { html: true });
+          }
+        },
+      })
+      .transform(page);
+  },
+};
+```
+
+The big win: the browser receives complete HTML, which is good for SEO and LCP, and a slow fragment can be cut off with a timeout. The downside: interactive parts still need to hydrate, and if every fragment carries its own JavaScript you're back to the duplicated-dependency problem. Tools like Podium and Tailor (from Zalando) take this approach at the Node layer.
+
+### Runtime with Module Federation
+
+The shell (host) loads the remotes' JavaScript at runtime, and they share dependencies such as React. The result is a single React tree, SPA-smooth navigation, and independently deployed remotes. It gives the best "one app" feel, and it's also the most complex option. Most of this post is about it.
+
+### Next.js multi-zones
+
+Multi-zones are Next.js's way of splitting one domain into several apps by path. Each zone is an independent Next.js app; a main zone uses `rewrites` to forward the paths that belong to other zones.
+
+```ts
+// apps/web/next.config.ts — main zone
+import type { NextConfig } from "next";
+
+const BLOG_ORIGIN = process.env.BLOG_ORIGIN!; // e.g. https://blog-zone.internal.example.com
+
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return [
+      { source: "/blog", destination: `${BLOG_ORIGIN}/blog` },
+      { source: "/blog/:path+", destination: `${BLOG_ORIGIN}/blog/:path+` },
+      // The blog zone's assets go through their own prefix so they don't collide with /_next
+      { source: "/blog-static/:path+", destination: `${BLOG_ORIGIN}/blog-static/:path+` },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
+```ts
+// apps/blog/next.config.ts — child zone
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  assetPrefix: "/blog-static",
+};
+
+export default nextConfig;
+```
+
+Things to know: links *between* zones must be plain `a` tags, not Next.js `Link`, because you're navigating to a different app — it's a full page load. If you use Server Actions through the main domain, the child zone must list the allowed origins in `experimental.serverActions.allowedOrigins`. And the session cookie should live on the main domain so every zone can read it.
+
+Multi-zones are my favourite option when team boundaries line up with URL boundaries: marketing, docs, blog, dashboard. They're cheap, easy to reason about, and well isolated. They don't fit when two teams need to render side by side on *the same page*.
+
+<Callout type="note" title="Module Federation and the Next.js App Router">
+  The `@module-federation/nextjs-mf` plugin never supported the App Router, and its maintainers have advised against using it for new projects. If your stack is the Next.js App Router, multi-zones and build-time packages are the realistic options. Module Federation fits best with SPAs built on Rspack, Rsbuild, webpack or Vite.
+</Callout>
+
+## Module Federation 2.0 in depth
+
+Module Federation was born in webpack 5. Version 2.0, developed by the module-federation community (closely tied to the Rspack ecosystem), splits the runtime out of the bundler and adds what the first version lacked in real-world use: manifests, runtime plugins, type sharing and debugging tools. The main packages are `@module-federation/enhanced` for webpack and Rspack, `@module-federation/rsbuild-plugin` for Rsbuild, and `@module-federation/vite` for Vite.
+
+### Host and remote
+
+A **remote** declares the modules it "exposes". A **host** (usually called the shell) declares the remotes it consumes. An app can be both, but I recommend against it: circular dependency graphs between remotes are the source of the most confusing bugs.
+
+```ts
+// apps/checkout/rsbuild.config.ts — remote
+import { defineConfig } from "@rsbuild/core";
+import { pluginReact } from "@rsbuild/plugin-react";
+import { pluginModuleFederation } from "@module-federation/rsbuild-plugin";
+import { sharedDeps } from "@acme/mf-config";
+
+export default defineConfig({
+  plugins: [
+    pluginReact(),
+    pluginModuleFederation({
+      name: "checkout",
+      filename: "remoteEntry.js",
+      manifest: true,
+      exposes: {
+        // Expose an "app" with a clear contract, not individual components
+        "./CheckoutApp": "./src/expose/CheckoutApp.tsx",
+      },
+      shared: sharedDeps,
+    }),
+  ],
+  output: {
+    // A remote's assets must load from its own CDN, not from the shell's origin
+    assetPrefix: "https://mfe.example.com/checkout/",
+  },
+});
+```
+
+```ts
+// apps/shell/rsbuild.config.ts — host
+import path from "node:path";
+import { defineConfig } from "@rsbuild/core";
+import { pluginReact } from "@rsbuild/plugin-react";
+import { pluginModuleFederation } from "@module-federation/rsbuild-plugin";
+import { sharedDeps } from "@acme/mf-config";
+
+export default defineConfig({
+  plugins: [
+    pluginReact(),
+    pluginModuleFederation({
+      name: "shell",
+      // Static remote for local dev; production uses dynamic remotes (see below)
+      remotes: {
+        checkout: "checkout@http://localhost:3003/mf-manifest.json",
+      },
+      shared: sharedDeps,
+      runtimePlugins: [path.resolve("./src/mf/fallback-plugin.ts")],
+    }),
+  ],
+});
+```
+
+Two conventions I apply from day one:
+
+1. **The `shared` config lives in a shared package** (`@acme/mf-config`), so no remote can "forget" to declare React as a singleton.
+2. **Expose an app, not components.** The remote exposes `CheckoutApp` with minimal props (`basePath`, `session`, `onNavigate`). Exposing dozens of individual components turns a remote into a distributed UI library — and every component becomes a public API you have to keep compatible.
+
+### Shared singletons: there can be only one React
+
+This is the most important part and the one most often wrong. React, React DOM, the router and any library that holds module-level state (context, store, theme) **must exist exactly once** on the page. Two copies of React DOM mean two hook dispatchers; a remote's component calls `useState` against the dispatcher that isn't rendering — and you get "Invalid hook call".
+
+```ts
+// packages/mf-config/src/shared.ts
+import pkg from "../package.json" with { type: "json" };
+
+const deps = pkg.peerDependencies;
+
+export const sharedDeps = {
+  react: { singleton: true, requiredVersion: deps.react },
+  "react-dom": { singleton: true, requiredVersion: deps["react-dom"] },
+  "react-router": { singleton: true, requiredVersion: deps["react-router"] },
+  "@acme/design-system": { singleton: true, requiredVersion: deps["@acme/design-system"] },
+  // Pure-function library with no state: share to reduce duplication, no singleton needed
+  "date-fns": { requiredVersion: deps["date-fns"] },
+} as const;
+```
+
+The options worth understanding:
+
+- **`singleton: true`**: load only one copy into the shared scope, even if consumers ask for different versions.
+- **`requiredVersion`**: the semver range this app accepts. If the singleton in play doesn't satisfy it, the runtime warns in the console but still uses it.
+- **`strictVersion: true`**: turns that warning into an error. I only enable it for libraries that are guaranteed to break on the wrong version (typically a design system with breaking token changes).
+- **`eager: true`**: puts the dependency into the startup bundle instead of loading it asynchronously. Avoid it: it bloats the initial bundle and readily produces "Shared module is not available for eager consumption" when configs drift.
+
+<Callout type="danger" title="War story: a bug that only happens on one path">
+  A remote declared `react` as a singleton but forgot `react-dom`. Everything worked when users landed directly on that remote's page. The "Invalid hook call" only appeared when users navigated from the home page (where the shell had already initialized its own `react-dom`) to the remote's page. The remote's E2E tests opened its URL directly, so they never caught it. After that I moved the shared config into a common package and added a test that inspects `__FEDERATION__` on the composed page and asserts each singleton has exactly one loaded version.
+</Callout>
+
+### Version skew: when the parties disagree on versions
+
+In an independently deployed system, version skew isn't an incident — it's the normal state. The shell was built last week against React 19.1, a remote was built today against 19.2. Which one wins?
+
+The Module Federation 2.0 runtime has a `shareStrategy` option. The default, `version-first`, looks at every version the remotes have registered and picks the highest one that satisfies the requirements; `loaded-first` prefers whatever is already loaded. `version-first` is more consistent but may make the shell fetch every remote's entry earlier just to learn their versions. Whichever you choose, these are the rules I use to keep skew from becoming an incident:
+
+1. **Wide ranges for patch and minor, strict for major.** `^19.0.0` for React; never pin exactly `19.1.0`.
+2. **A major upgrade is a planned event.** Upgrading React 19 to 20 across micro-frontends means: the shell supports both for a while (or can't), every remote upgrades in turn, and there's a cut-off date. This is coordination cost that micro-frontends don't remove.
+3. **The design system must be backward compatible within a major.** If `@acme/design-system` 4.3 renames a CSS variable, every remote running 4.1 breaks when the shell upgrades.
+4. **Measure actual versions in production.** Send the resolved version of each shared dependency to telemetry. You'll be surprised how many remotes run a design system from six months ago.
+
+### Manifests and dynamic remotes
+
+The first Module Federation pointed straight at `remoteEntry.js`. Version 2.0 also emits `mf-manifest.json`: a file describing what a remote exposes, which shared dependencies at which versions it needs, which assets to preload and where its types live. The shell points at the manifest instead of the entry.
+
+More importantly: **don't hardcode remote URLs into the shell's build**. If the URL lives in the shell bundle, every remote version change means rebuilding the shell — and you've lost exactly what micro-frontends promised. I use a simple registry (a JSON file on the CDN or a small endpoint) and register remotes at runtime:
+
+```ts
+// apps/shell/src/mf/bootstrap.ts
+import { registerRemotes } from "@module-federation/enhanced/runtime";
+
+type RemoteMap = Record<string, { entry: string; version: string }>;
+
+export async function registerFromRegistry(env: "staging" | "production") {
+  const res = await fetch(`https://mfe.example.com/registry/${env}.json`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`registry ${res.status}`);
+  const remotes = (await res.json()) as RemoteMap;
+
+  registerRemotes(
+    Object.entries(remotes).map(([name, r]) => ({
+      name,
+      // Versioned URL: a new deploy is a new file, rollback is pointing the registry back
+      entry: r.entry, // e.g. https://mfe.example.com/checkout/1.42.0/mf-manifest.json
+    })),
+  );
+  return remotes;
+}
+```
+
+```json
+// registry/production.json
+{
+  "checkout": { "version": "1.42.0", "entry": "https://mfe.example.com/checkout/1.42.0/mf-manifest.json" },
+  "catalog": { "version": "3.8.1", "entry": "https://mfe.example.com/catalog/3.8.1/mf-manifest.json" }
+}
+```
+
+This model gives you three things for free: **instant rollback** (point the registry at the old version, build nothing), **canaries** (the registry serves the new version to 5% of users), and **debug overrides** (read a version from a query string or cookie on staging to test a remote under review). Each version's assets live at an immutable path and are cached forever; only the registry is `no-store`.
+
+### Sharing types across repos
+
+When the shell calls `loadRemote("checkout/CheckoutApp")`, TypeScript has no idea what that module looks like. Module Federation 2.0 handles this with the `dts` option: the remote generates type declarations for its exposed modules and packs them into `@mf-types.zip` next to the manifest; the host downloads them into an `@mf-types` folder during dev and build.
+
+```json
+// apps/shell/tsconfig.json
+{
+  "compilerOptions": {
+    "paths": {
+      "*": ["./@mf-types/*"]
+    }
+  }
+}
+```
+
+It works, but I treat generated types as a *convenience*, not a *contract*. The real contract lives in a small, versioned package that both sides import:
+
+```ts
+// packages/mfe-contracts/src/checkout.ts
+import type { ComponentType } from "react";
+
+export type CheckoutAppProps = {
+  basePath: string;
+  locale: "vi" | "en";
+  session: { userId: string; getAccessToken: () => Promise<string> };
+  onNavigate: (to: string) => void;
+};
+
+export type CheckoutModule = {
+  default: ComponentType<CheckoutAppProps>;
+  contractVersion: 2;
+};
+```
+
+`contractVersion` is a constant the shell checks at load time: if the remote exports a contract version the shell doesn't understand, the shell shows a fallback instead of rendering a component with the wrong props. Crude, but it saved me once when a remote shipped a breaking change at midnight.
+
+### When a remote is down: fallbacks
+
+A remote is a network dependency. The CDN can return 503, a deploy can break the entry, a mobile network can time out. The default design must be: **one remote going down must not take the whole page with it**.
+
+There are two kinds of failure to handle separately:
+
+1. **Load failures**: the manifest or entry can't be fetched. Catch these with a runtime plugin's `errorLoadRemote` hook.
+2. **Render failures**: the remote loaded but throws at runtime. Catch these with a React error boundary around each remote.
+
+```ts
+// apps/shell/src/mf/fallback-plugin.ts
+import type { ModuleFederationRuntimePlugin } from "@module-federation/enhanced/runtime";
+import { RemoteUnavailable } from "../components/RemoteUnavailable";
+import { track } from "../telemetry";
+
+export default function fallbackPlugin(): ModuleFederationRuntimePlugin {
+  return {
+    name: "shell-remote-fallback",
+    errorLoadRemote({ id, error, lifecycle }) {
+      track("remote_load_failed", { id, lifecycle, message: String(error) });
+      if (lifecycle === "onLoad") {
+        // Replacement factory with the same shape as the exposed module
+        return () => ({ __esModule: true, default: RemoteUnavailable, contractVersion: 2 });
+      }
+      // Failures in other phases (manifest, entry): let loadRemote reject,
+      // and the error boundary below shows the fallback
+      return undefined;
+    },
+  };
+}
+```
+
+The runtime calls this hook in several phases — fetching the manifest, loading the entry, getting the module — and tells you which via `lifecycle`. I only substitute the module in the `onLoad` phase; everything else is allowed to propagate and gets caught by the error boundary. The overlap is deliberate: the plugin gives consistent telemetry for every remote, and the boundary guarantees no failure escapes the remote's slot.
+
+```tsx
+// apps/shell/src/mf/RemoteSlot.tsx
+import { Component, lazy, Suspense, type ReactNode } from "react";
+import { loadRemote } from "@module-federation/enhanced/runtime";
+import type { CheckoutAppProps, CheckoutModule } from "@acme/mfe-contracts";
+import { RemoteUnavailable } from "../components/RemoteUnavailable";
+import { track } from "../telemetry";
+
+class RemoteBoundary extends Component<{ name: string; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    track("remote_render_failed", { remote: this.props.name, message: String(error) });
+  }
+  render() {
+    return this.state.failed ? <RemoteUnavailable /> : this.props.children;
+  }
+}
+
+const CheckoutApp = lazy(async () => {
+  const mod = await loadRemote<CheckoutModule>("checkout/CheckoutApp");
+  if (!mod || mod.contractVersion !== 2) return { default: RemoteUnavailable };
+  return mod;
+});
+
+export function CheckoutSlot(props: CheckoutAppProps) {
+  return (
+    <RemoteBoundary name="checkout">
+      <Suspense fallback={<div className="slot-skeleton" aria-busy="true" />}>
+        <CheckoutApp {...props} />
+      </Suspense>
+    </RemoteBoundary>
+  );
+}
+```
+
+A few practical details:
+
+- **The fallback must mean something to the user.** "Checkout is temporarily unavailable, your cart is saved" beats a blank box. When the remote is the whole page, add a "Try again" button that calls `loadRemote` again.
+- **Set a timeout.** A hanging CDN is worse than one that fails fast. Pair the skeleton with a time limit that switches to the fallback.
+- **Track per remote.** Telemetry must attach the remote's name and version to every error; otherwise the shell team's on-call gets every alert.
+
+<Figure src="/blog/micro-frontends-module-federation-composition.svg" alt="Diagram of runtime micro-frontend composition: a registry gives the shell each remote's version; the shell owns routing, session and error boundaries and reports to telemetry; it calls loadRemote on the catalog and account remotes, which load successfully, while the checkout remote fails with a 503 or timeout so the errorLoadRemote runtime plugin returns a fallback UI and the rest of the page keeps working; along the bottom, a shared scope holds react 19, react-dom 19 and design system 4, loaded exactly once and reused by every remote instead of bundled" caption="The registry pins versions, the shared scope keeps exactly one React and one design system, and a dead remote only costs the page its own slot." />
+
+## The cross-cutting concerns nobody warns you about
+
+Picking a composition approach is the easy part. The hard part is everything that cuts across every remote.
+
+### Who owns routing
+
+My rule: **the shell owns top-level routes, the remote owns everything below**. The shell knows `/checkout/*` belongs to checkout, but not that `/checkout/payment` or `/checkout/review` exist.
+
+```tsx
+// apps/shell/src/routes.tsx
+import { createBrowserRouter } from "react-router";
+import { CatalogSlot, CheckoutSlot, AccountSlot } from "./mf/slots";
+import { ShellLayout } from "./ShellLayout";
+
+export const router = createBrowserRouter([
+  {
+    element: <ShellLayout />,
+    children: [
+      { path: "/", element: <CatalogSlot basePath="/" /> },
+      { path: "/checkout/*", element: <CheckoutSlot basePath="/checkout" /> },
+      { path: "/account/*", element: <AccountSlot basePath="/account" /> },
+    ],
+  },
+]);
+```
+
+Inside the remote, use nested `Routes` with relative paths — *don't* create a second `BrowserRouter`. Two routers listening to the same history is a recipe for "you have to press back twice" bugs. This is also why the router must be a shared singleton.
+
+When a remote needs to navigate into another remote's area (from catalog to checkout), it imports nothing from checkout — it just navigates to `/checkout`. **The URL is the most stable public API between teams.**
+
+### A shared design system
+
+The design system is what makes five teams look like one product. It's also the dependency most prone to version skew. What I've learned:
+
+- **Tokens travel as CSS custom properties**, defined by the shell on `:root`. Remotes don't embed color values; they use `var(--color-primary)`. Theme changes, dark mode, a rebrand — no remote needs to redeploy. (I go deeper on this in the post on [design tokens and theming](/blog/design-tokens-and-theming).)
+- **Components are a shared singleton with a pinned major range**, and the design system has to take semver seriously.
+- **The shell provides the page "primitives"**: toasts, the dialog host, layout. If every remote mounts its own toast container, you'll get three toasts stacked on top of each other.
+
+### Auth and session
+
+The session belongs to the shell. Remotes never log in on their own, never read cookies themselves, never refresh tokens themselves.
+
+- **Serve everything under one domain**, via a reverse proxy or CDN, so the session cookie is first-party and `SameSite` behaves as expected. Remotes call APIs through same-origin `/api/...`, ideally via a backend-for-frontend.
+- **The shell passes an interface, not a token.** `getAccessToken()` returns a valid token (the shell refreshes it when needed). Remotes don't keep tokens in long-lived state.
+- **Session expiry is a global event.** When an API returns 401, the remote emits an event and the shell handles the redirect to sign-in — in one place.
+
+### Communication between apps: events, URLs, and no shared global store
+
+The biggest temptation is "let's just share one Redux store". Don't. A shared store means every remote depends on everyone else's state shape — changing one reducer is a breaking change for the whole system. You're back to a monolith, only harder to debug.
+
+My order of preference:
+
+1. **The URL** for anything users might share or bookmark: filters, the selected product, the checkout step.
+2. **Props from the shell** for stable context: locale, session, feature flags.
+3. **Custom events** for "something happened" notifications: item added to cart, session expired, currency changed.
+4. **The backend** as the source of truth for shared data. The cart lives on the server; the shell's header refetches the item count when it hears the event, instead of receiving state from a remote.
+
+```ts
+// packages/mfe-contracts/src/events.ts
+export type MfeEvents = {
+  "cart:changed": { itemCount: number };
+  "auth:session-expired": { reason: "timeout" | "revoked" };
+  "locale:changed": { locale: "vi" | "en" };
+};
+
+type EventName = keyof MfeEvents;
+
+export function emit<K extends EventName>(type: K, detail: MfeEvents[K]) {
+  window.dispatchEvent(new CustomEvent(`mfe:${type}`, { detail }));
+}
+
+export function on<K extends EventName>(type: K, handler: (detail: MfeEvents[K]) => void) {
+  const listener = (e: Event) => handler((e as CustomEvent<MfeEvents[K]>).detail);
+  window.addEventListener(`mfe:${type}`, listener);
+  return () => window.removeEventListener(`mfe:${type}`, listener);
+}
+```
+
+Events are typed, namespaced, and live in a versioned contract package. Adding an event is a compatible change; changing a `detail` shape is a breaking change and goes through the same process as an API change. Keep payloads small and focused on "what just happened" — receivers fetch the full data from the source of truth.
+
+### CSS isolation
+
+Every remote shares one document, which means one cascade. A single remote writing `.button { padding: 0 }` is enough to break another remote's UI. Defenses, from cheap to expensive:
+
+- **CSS Modules or hashed class names** for each remote's own styles. Never write bare element selectors (`h2`, `button`) at global scope.
+- **A prefix when using Tailwind**: Tailwind v4 supports `@import "tailwindcss" prefix(co);` so classes become `co:flex`. This matters most when two remotes run two Tailwind versions that both generate a `flex` class with different definitions.
+- **Cascade layers** so precedence doesn't depend on load order: the shell declares `@layer reset, ds, remotes, overrides;` and each remote wraps its CSS in the `remotes` layer.
+- **Shadow DOM** for real isolation — at a price: modal portals that render outside the shadow root lose their styles, fonts must be declared at the document level, and many UI libraries aren't ready for it. CSS custom properties do inherit through shadow roots, so design-system tokens still work.
+
+And don't forget cleanup: CSS a remote injects on mount should be removed, or at least be harmless, after it unmounts — many bundlers leave styles in `head` forever.
+
+### Performance budget: duplicated dependencies
+
+Micro-frontends take away a bundler's most valuable asset: a global view for deduplication. Each remote is a separate build. If three remotes use the same charting library without sharing it, users download it three times.
+
+What I put into each remote's CI:
+
+- **A size budget for the remote's entry and initial chunks** (compressed), failing the build when exceeded.
+- **A check that singletons aren't bundled**: analyze the output (Rsdoctor does this well for Rspack/Rsbuild) and fail if `react-dom` shows up in a remote's chunks.
+- **Deliberate preloading**: use the runtime's `preloadRemote` when the user hovers the "Checkout" link, rather than preloading every remote on page load.
+- **Measure the composed page**, not each remote in isolation. Real-user Core Web Vitals on `/checkout` are the numbers that matter.
+
+<Callout type="tip" title="One question before you share">
+  Not every dependency should be shared. Sharing has a cost: the shell has to load metadata and negotiate versions at runtime, and shared chunks can't be tree-shaken per remote. A small library used by few remotes is cheaper bundled into each one. Share what's large, widely used, or must be a singleton.
+</Callout>
+
+## When a modular monolith in a monorepo is the better answer
+
+After all of that, I want to be blunt: for most organizations with one to four teams, **a modular monolith in a monorepo beats micro-frontends**. You get most of the boundary and ownership benefits without paying the runtime cost.
+
+A monorepo gives you:
+
+- **Boundaries checked at build time.** Each domain is a package (`@acme/checkout`, `@acme/catalog`). Import rules (ESLint `no-restricted-imports`, or Turborepo's boundaries feature with tags in `turbo.json`) stop catalog from reaching into checkout's internals.
+- **Ownership via CODEOWNERS**: the checkout team reviews every change in `packages/checkout`.
+- **Builds and tests scoped to what changed**: `turbo run test --affected` only runs packages affected by a change, and remote caching avoids rebuilding what didn't change.
+- **One React version, one design-system version**, upgraded once, verified once, in one PR.
+- **Cross-boundary refactors in a single PR**, type-checked end to end — something that's nearly impossible across independently deployed repos.
+
+The only thing a monorepo doesn't give you is independent deployment at runtime. And if the app's pipeline is fast and you use feature flags to separate deploy from release, that need is usually smaller than you think. I wrote about the lessons from building this site's own monorepo in [what a Bun + Turborepo monorepo taught me](/blog/monorepo-lessons-bun-turborepo).
+
+The path I usually recommend:
+
+1. **Start with a modular monolith** in a monorepo, with clear domain boundaries and enforced import rules.
+2. **If areas split cleanly by URL**, break them into Next.js multi-zones — low cost, good isolation.
+3. **Only when several teams must render on the same page and independent deployment is a real bottleneck**, bring in Module Federation — and by then the package boundaries already exist, so the split becomes mechanical.
+
+The nice thing about this path: step 1 is never wasted effort. Good boundaries inside a monolith are exactly what makes micro-frontends succeed later.
+
+## Mistakes I keep seeing
+
+- **Splitting by technical layer instead of by domain.** "Header remote", "footer remote", "form remote" — every feature touches every remote. Split by business capability: catalog, checkout, account.
+- **Remotes that are too small.** Each remote is a pipeline, a set of alerts, a set of dependencies to upgrade. Twenty remotes for six teams is too many.
+- **The shell grows into a monolith.** The shell should be thin: layout, top-level routing, session, error boundaries, telemetry. Once business logic starts landing in the shell, every team is waiting on the shell again.
+- **No integration environment.** Every remote has its own tests, but nobody tests the composed page before the production registry changes. At minimum you need an E2E smoke suite running on staging against the staging registry.
+- **"latest" remote URLs.** Pointing at `checkout/latest/mf-manifest.json` means checkout's deploys take effect immediately, with no rollback, no canary, and the CDN cache deciding who sees which version.
+- **Sharing state through `window`.** `window.__CART__ = ...` starts as a temporary hack and ends as an untyped, unversioned API that everyone is afraid to touch.
+- **Nobody owns the platform.** Shared config, the registry, contracts and budgets need an owner. Without one, each team solves things its own way and the system slowly fragments.
+
+## Checklist before choosing micro-frontends
+
+<Checklist>
+
+- There are several autonomous teams, stable domain boundaries, and the real bottleneck is release coordination.
+- A modular monolith in a monorepo and multi-zones were considered first, with concrete reasons why they aren't enough.
+- The `shared` config lives in a common package; React, React DOM, the router and the design system are singletons with sensible semver ranges.
+- Remote URLs come from a runtime registry and point at immutable, versioned manifests; rollback is a registry change.
+- The shell–remote contract (props, events, `contractVersion`) lives in a versioned package.
+- Every remote is wrapped with a load-failure fallback and a render-failure error boundary, plus a timeout.
+- The shell owns top-level routes and the session; remotes only use nested routes and the auth interface the shell provides.
+- No shared global store; communication goes through URLs, props, typed custom events and the backend.
+- CSS is isolated with CSS Modules, prefixes or cascade layers; tokens flow through CSS custom properties.
+- CI enforces a size budget per remote and checks that singletons aren't bundled twice.
+- Telemetry tags every error with the remote's name and version; there's an E2E smoke suite on the composed page.
+- A person or team owns the platform: registry, shared config, contracts, budgets.
+
+</Checklist>

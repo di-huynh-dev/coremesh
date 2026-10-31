@@ -1,0 +1,663 @@
+---
+title: "SSRF and File Upload Security: URL Fetching and Uploads That Don't Hand Over Your Network"
+excerpt: "Link previews, webhooks, image import and file uploads look like boring features, yet they keep showing up in incident reports. Why SSRF blocklists fail, a safe fetch in Node with undici and pinned IPs, IMDSv2, and an upload pipeline: presigned S3, magic bytes, sharp, a separate domain and async scanning."
+---
+
+<Lead>Two features keep showing up in the incident reports I've read and in the ones I've been part of: "give us a URL and we'll fetch it" (link previews, webhooks, import an image from a link) and "upload a file". Both look like a ticket you can close in an afternoon. Both turn your server into a tool someone else controls — one makes requests on the attacker's behalf from *inside* your network, the other stores and serves content the attacker wrote on *your* domain. This post covers the attacks conceptually, with just enough detail to test your own systems, and spends most of its time on the code and infrastructure I actually ship to close them.</Lead>
+
+## Why these two features keep causing incidents
+
+Both features have the same shape: **untrusted input crosses a trust boundary and the server acts on it with its own privileges**.
+
+- With "fetch this URL", the input is an address. Your server has network access the attacker does not: the VPC, the cloud metadata service, the admin dashboard bound to `localhost`, the Redis instance with no password because "it's internal". Server-Side Request Forgery (SSRF) is simply the attacker borrowing that position.
+- With uploads, the input is bytes plus a few labels (filename, MIME type) the client made up. If you trust the labels, store the bytes on a path built from the filename, or serve them from your main origin, those bytes can become HTML that runs in your users' sessions, overwrite files, or exhaust your workers.
+
+What makes them persistent is that they're usually built by product teams under feature pressure, the happy path works on day one, and the dangerous inputs never appear in a demo. Nobody pastes `http://169.254.169.254/` into a link preview during QA.
+
+<Callout type="warning" title="Scope">
+
+Everything here is defensive. I describe attack techniques at the level you need to write tests and recognize the risk in code review. Only test systems you own or are explicitly authorized to test.
+
+</Callout>
+
+## SSRF: what the attacker actually gets
+
+SSRF comes in two flavors, and the difference changes how bad it is:
+
+| | Full-read SSRF | Blind SSRF |
+| --- | --- | --- |
+| **Typical feature** | Link preview, "import from URL", PDF/screenshot renderer | Webhooks, "ping this URL", async callbacks |
+| **Attacker sees** | The response body (title, image, rendered page) | Only side effects: timing, status, success/failure |
+| **Worst case** | Read cloud credentials from metadata, read internal APIs | Trigger state-changing internal endpoints, port-scan the VPC |
+| **Main mitigation** | Network isolation + IP validation, don't return raw bodies | Same, plus don't leak status codes and timings back |
+
+The classic payoff is the **cloud metadata service**. On AWS, `169.254.169.254` serves instance metadata — including temporary credentials for the instance's IAM role. On GCP it's `metadata.google.internal` (same link-local IP), on Azure it's the same address under `/metadata`. If your link previewer can be pointed at that address and returns what it got back, an attacker walks away with credentials that act as your server.
+
+Other targets I've seen matter in practice:
+
+- **Admin and debug endpoints** bound to localhost: actuator-style health pages, Prometheus exporters, the internal admin of a CMS.
+- **Unauthenticated internal services**: Elasticsearch, Redis over HTTP-ish protocols, internal microservices that trust anything coming from inside the VPC.
+- **Kubernetes**: the kubelet API, the API server via its in-cluster address, other pods by service DNS name.
+- **Container metadata**: ECS exposes task credentials at `169.254.170.2`, a different address from EC2's.
+
+### Cloud metadata and IMDSv2
+
+On AWS, the biggest single improvement is requiring **IMDSv2**. IMDSv1 answered a plain `GET`, which is exactly what a naive SSRF can send. IMDSv2 is session-based:
+
+```http
+PUT /latest/api/token HTTP/1.1
+Host: 169.254.169.254
+X-aws-ec2-metadata-token-ttl-seconds: 300
+
+GET /latest/meta-data/iam/security-credentials/my-role HTTP/1.1
+Host: 169.254.169.254
+X-aws-ec2-metadata-token: AQAEAN...
+```
+
+Most SSRF primitives let the attacker choose the URL but not the method or headers, so a mandatory `PUT` with a custom header blocks them. On top of that, IMDSv2 refuses token requests carrying `X-Forwarded-For` (a sign the request came through a proxy), and the token response has an IP hop limit. Set `HttpPutResponseHopLimit` to 1 for plain EC2; containers on a bridge network need 2, and that's a deliberate trade-off.
+
+```bash
+aws ec2 modify-instance-metadata-options \
+  --instance-id i-0123456789abcdef0 \
+  --http-tokens required \
+  --http-put-response-hop-limit 1
+```
+
+Enforce it organization-wide rather than per instance: launch templates with `HttpTokens: required`, the account-level default for new instances, and a policy or config rule that flags anything still allowing v1. GCP and Azure have a similar idea built in — their metadata services require a `Metadata-Flavor: Google` or `Metadata: true` header.
+
+<Callout type="note" title="IMDSv2 is a seatbelt, not the fix">
+
+It blocks the most common SSRF path to credentials. It does nothing for your internal admin panel, Redis, or the kubelet. And if your fetch feature lets users set custom headers or methods (some webhook UIs do), even IMDSv2 is back in play. Treat it as one layer.
+
+</Callout>
+
+## Why blocklists fail
+
+The first fix everyone writes is a check on the URL string: reject `localhost`, `127.0.0.1`, `169.254.169.254`, `10.`, `192.168.`. I have reviewed this exact function in at least four codebases. It loses for several independent reasons.
+
+### The same IP has many spellings
+
+An IPv4 address is a 32-bit number, and URL parsers accept a lot of ways to write it:
+
+```text
+http://127.0.0.1/          dotted decimal
+http://2130706433/         one 32-bit decimal number
+http://0x7f000001/         hex
+http://0177.0.0.1/         octal first octet
+http://127.1/              shortened form (missing octets are filled in)
+http://[::1]/              IPv6 loopback
+http://[::ffff:127.0.0.1]/ IPv4-mapped IPv6
+http://[::ffff:7f00:1]/    the same, written in hex
+http://0.0.0.0/            "this host" — reaches local services on many systems
+```
+
+The WHATWG URL parser used by `new URL()` in Node normalizes the IPv4 forms to dotted decimal, which helps — but other libraries, proxies and the HTTP client you end up using may not agree with your validator on what a host means. That disagreement is the bug. And none of this covers hostnames at all.
+
+### Hostnames resolve to whatever the attacker wants
+
+The attacker controls DNS for their own domain. `internal.attacker.example` can resolve to `10.0.0.5`. There are public wildcard DNS services that turn `10.0.0.5.something.example` into `10.0.0.5` with no setup at all. A string check on the hostname learns nothing; only the **resolved IP** matters.
+
+### DNS rebinding: validated is not the same as connected
+
+So you resolve the hostname, check the IP, then call `fetch(url)`. Here's the race: `fetch` resolves the name **again**. A rebinding DNS server answers the first query with a public IP (passes your check) and the second with `127.0.0.1`, using a TTL of zero so nothing caches. Time-of-check versus time-of-use, but with DNS. The only robust fix is that **the IP you validate must be the exact IP the socket connects to**.
+
+### Redirects move the target after you checked it
+
+Your validator approves `https://harmless.example/img.png`. That server answers `302 Location: http://169.254.169.254/latest/meta-data/`. If your HTTP client follows redirects automatically — and `fetch` does by default — your check was for a URL you never actually used as the final target. Every hop must be validated as if it were the original input.
+
+### The list is never complete
+
+Private ranges are more than RFC 1918. There's `100.64.0.0/10` (carrier-grade NAT, used by some cloud and VPN setups), `169.254.0.0/16` link-local, `fc00::/7` unique local IPv6, `fe80::/10` link-local IPv6, NAT64 `64:ff9b::/96` that embeds an IPv4 address, 6to4 `2002::/16`, AWS's IPv6 metadata endpoint `fd00:ec2::254`, and whatever your cloud uses internally next year. An **allowlist of "public unicast"** ages much better than a blocklist of the ranges you remembered.
+
+## A safe fetch in Node
+
+Here's the fetcher I use for link previews and image import. The ideas matter more than the exact code:
+
+1. Parse with `new URL()`, allow only `http:` and `https:`, only ports 80 and 443, no credentials in the URL.
+2. **Validate inside the DNS lookup the socket actually uses.** undici lets you pass a custom `lookup` to its `Agent`. We resolve, reject if *any* returned address isn't public unicast, and hand the validated addresses straight to the connection. Check and use become the same step, which kills DNS rebinding.
+3. Turn off automatic redirects and follow them by hand, re-validating each hop with a hop limit.
+4. Hard timeouts on connect, headers and body; a hard cap on bytes read.
+
+### Classifying IP addresses
+
+I use `ipaddr.js` rather than hand-written CIDR math. `ipaddr.process()` unwraps IPv4-mapped IPv6 addresses into plain IPv4, which closes the `::ffff:127.0.0.1` trick, and `range()` labels the address. The policy is an allowlist: only `unicast` passes.
+
+```ts
+// lib/ssrf/ip-policy.ts
+import ipaddr from "ipaddr.js";
+
+export class SsrfBlockedError extends Error {
+  constructor(public readonly reason: string) {
+    super(`Blocked outbound request: ${reason}`);
+    this.name = "SsrfBlockedError";
+  }
+}
+
+// Extra ranges ipaddr.js labels "unicast" but we still never want to reach.
+const EXTRA_BLOCKED: Array<[ipaddr.IPv4 | ipaddr.IPv6, number]> = [
+  ipaddr.parseCIDR("100.64.0.0/10"), // carrier-grade NAT, used inside some clouds
+  ipaddr.parseCIDR("198.18.0.0/15"), // benchmarking
+  ipaddr.parseCIDR("fd00:ec2::/32"), // AWS IPv6 metadata lives here
+];
+
+export function assertPublicAddress(address: string): void {
+  if (!ipaddr.isValid(address)) throw new SsrfBlockedError(`invalid address ${address}`);
+
+  // Unwraps ::ffff:a.b.c.d into an IPv4 object
+  const ip = ipaddr.process(address);
+  const range = ip.range();
+
+  if (range !== "unicast") {
+    throw new SsrfBlockedError(`${address} is in range "${range}"`);
+  }
+  for (const [net, bits] of EXTRA_BLOCKED) {
+    if (ip.kind() === net.kind() && ip.match(net, bits)) {
+      throw new SsrfBlockedError(`${address} is in a blocked range`);
+    }
+  }
+}
+```
+
+`range()` returns labels like `private`, `loopback`, `linkLocal`, `uniqueLocal`, `unspecified`, `carrierGradeNat`, `6to4`, `rfc6052` and so on; anything that isn't `unicast` is rejected without me having to enumerate it. Add a unit test per spelling from the list above — the test file is where blocklist assumptions get caught.
+
+### Pinning the IP with a custom lookup
+
+```ts
+// lib/ssrf/safe-agent.ts
+import dns from "node:dns";
+import type { LookupFunction } from "node:net";
+import { Agent } from "undici";
+import { assertPublicAddress, SsrfBlockedError } from "./ip-policy";
+
+const safeLookup: LookupFunction = (hostname, options, callback) => {
+  dns.lookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
+    if (err) return callback(err, "", 0);
+    try {
+      if (addresses.length === 0) throw new SsrfBlockedError(`no addresses for ${hostname}`);
+      // Reject if ANY answer is internal: attackers mix public and private records.
+      for (const a of addresses) assertPublicAddress(a.address);
+    } catch (e) {
+      return callback(e as NodeJS.ErrnoException, "", 0);
+    }
+    // The socket connects to exactly what we just validated.
+    if (options.all) return (callback as any)(null, addresses);
+    callback(null, addresses[0].address, addresses[0].family);
+  });
+};
+
+export const safeAgent = new Agent({
+  connect: { lookup: safeLookup, timeout: 3_000 },
+  headersTimeout: 5_000,
+  bodyTimeout: 10_000,
+  // One request per socket keeps reasoning simple for a low-volume fetcher
+  pipelining: 0,
+  keepAliveTimeout: 1_000,
+});
+```
+
+Why this works: undici passes `connect` options down to `net.connect`/`tls.connect`, and Node calls our `lookup` to turn the hostname into an address **for that socket**. There's no second resolution for an attacker to rebind. TLS still verifies the certificate against the original hostname, because SNI and certificate checks use the name, not the IP.
+
+Two details that bit me:
+
+- Node's happy-eyeballs (`autoSelectFamily`, on by default in recent versions) calls `lookup` with `all: true`. A lookup that only handles the single-address callback breaks IPv6-capable hosts in confusing ways — handle both shapes.
+- When the URL host is already an IP literal, Node skips `lookup` entirely. So validate IP literals in the URL yourself before connecting (the code below does).
+
+### Redirects, limits and the fetch wrapper
+
+```ts
+// lib/ssrf/safe-fetch.ts
+import net from "node:net";
+import { fetch } from "undici";
+import { assertPublicAddress, SsrfBlockedError } from "./ip-policy";
+import { safeAgent } from "./safe-agent";
+
+type SafeFetchOptions = {
+  maxBytes?: number;
+  maxRedirects?: number;
+  accept?: string;
+  timeoutMs?: number;
+};
+
+function checkUrl(raw: string | URL): URL {
+  const url = new URL(raw);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new SsrfBlockedError(`scheme ${url.protocol}`);
+  }
+  if (url.username || url.password) throw new SsrfBlockedError("credentials in URL");
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  if (port !== "80" && port !== "443") throw new SsrfBlockedError(`port ${port}`);
+
+  // IP literals never hit the lookup hook, so check them here.
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(host)) assertPublicAddress(host);
+  return url;
+}
+
+export async function safeFetch(input: string, opts: SafeFetchOptions = {}) {
+  const { maxBytes = 5 * 1024 * 1024, maxRedirects = 3, accept = "*/*", timeoutMs = 10_000 } = opts;
+  const signal = AbortSignal.timeout(timeoutMs); // overall budget, across all hops
+  let url = checkUrl(input);
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const res = await fetch(url, {
+      dispatcher: safeAgent,
+      redirect: "manual",
+      signal,
+      headers: { accept, "user-agent": "AcmePreviewBot/1.0 (+https://acme.example/bot)" },
+    });
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      await res.body?.cancel();
+      if (!location) throw new SsrfBlockedError("redirect without location");
+      url = checkUrl(new URL(location, url)); // every hop is a fresh, untrusted input
+      continue;
+    }
+
+    const declared = Number(res.headers.get("content-length") ?? 0);
+    if (declared > maxBytes) {
+      await res.body?.cancel();
+      throw new SsrfBlockedError(`body too large (${declared} bytes)`);
+    }
+
+    // Never trust content-length alone: count while reading.
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for await (const chunk of res.body ?? []) {
+      received += chunk.byteLength;
+      if (received > maxBytes) throw new SsrfBlockedError("body exceeded limit");
+      chunks.push(chunk);
+    }
+    return { url: url.href, status: res.status, headers: res.headers, body: Buffer.concat(chunks) };
+  }
+  throw new SsrfBlockedError("too many redirects");
+}
+```
+
+A few choices worth spelling out:
+
+- **I import `fetch` from `undici`, not the global.** Node's global `fetch` is built on a bundled undici, and passing a `dispatcher` from a different undici version into it is a well-known source of odd failures. Keep the agent and the fetch from the same package.
+- **The timeout covers the whole operation.** A per-hop timeout lets a slow redirect chain hold a worker for minutes. `AbortSignal.timeout()` on the outer call caps it.
+- **Errors to the user are generic.** "Couldn't fetch that URL" — not "connection refused on port 6379". Detailed errors turn blind SSRF into a port scanner. Log the detail server-side.
+- **Proxies bypass the pin.** If you route through an HTTP proxy, the proxy does DNS, not you. Then the proxy has to enforce the policy — which is actually the better design, as the next section argues.
+
+### What link previews and webhooks need on top
+
+For **link previews**, don't return the raw body. Parse it server-side, extract `og:title`, `og:description`, `og:image`, cap their lengths, and fetch `og:image` through the same `safeFetch` (it's another attacker-controlled URL). Cache results per URL so one popular link doesn't make you an amplifier.
+
+For **webhooks**, validate when the URL is registered (good UX: fail fast) *and* at every delivery (DNS changes after registration). Don't show response bodies in the delivery log UI; status code and latency bucket are enough. Sign payloads so receivers can verify, and run delivery workers in the isolated egress path described next.
+
+## The real fix: egress control at the network layer
+
+Everything above is application code, and application code has bugs, gets copied without the agent, or gets bypassed by a library that makes its own requests (an HTML-to-PDF renderer, an image library that follows URLs, an XML parser resolving external entities). The durable fix is making the dangerous destinations **unreachable** from the process that fetches user URLs.
+
+What that looks like in practice, from cheapest to strongest:
+
+| Layer | What it does | Catches | Cost |
+| --- | --- | --- | --- |
+| `safeFetch` with pinned lookup | App-level allowlist of public IPs | Most SSRF in code you wrote | Low, but per call site |
+| IMDSv2 required, hop limit 1 | Metadata needs PUT + header | Credential theft via simple GETs | Very low |
+| Kubernetes NetworkPolicy / security groups | Fetcher pods can't reach cluster CIDRs or metadata | Bypasses through other libraries | Medium |
+| Dedicated egress proxy (e.g. Stripe's Smokescreen) | All outbound user-URL traffic goes through one policy point that resolves and checks IPs | Everything, centrally, with logs | Medium–high |
+| Separate network / account for fetchers | Workers have no route to internal systems at all | Everything, by construction | Higher |
+
+My default for a team that has a real "fetch arbitrary URL" feature: **one small fetcher service** (link previews, image import, webhook delivery) running in its own subnet or namespace, whose only egress is the internet through an egress proxy, with a default-deny network policy towards everything internal. The application code still uses `safeFetch` — defense in depth — but a bug there no longer reaches Redis.
+
+```yaml
+# k8s: the fetcher can reach DNS and the public internet, nothing internal
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fetcher-egress
+  namespace: fetcher
+spec:
+  podSelector:
+    matchLabels:
+      app: fetcher
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }
+```
+
+Network policy is enforced by your CNI; make sure yours actually implements it, and add the IPv6 equivalents if your cluster is dual-stack. This is exactly the kind of control you should verify with a test pod rather than trust from YAML.
+
+## File uploads: the threat model
+
+Now the other feature. An upload endpoint accepts three things from the client: bytes, a filename and a declared MIME type. **All three are attacker-controlled.** What can go wrong:
+
+- **Stored XSS via content type confusion.** An "image" that's actually HTML or SVG with script, served from your origin, runs with your users' cookies when someone opens its URL.
+- **Path traversal.** A filename like `../../app/config.json` used to build a storage path overwrites something.
+- **Resource exhaustion.** A 50 MB upload is obvious; a 40 KB PNG that decodes to 50,000 × 50,000 pixels is a decompression bomb that eats your worker's RAM.
+- **Archive attacks.** Zip slip (entries named `../../...`) and zip bombs when you extract.
+- **Malware distribution.** Your bucket becomes free, reputable hosting for someone's payload, and your domain ends up on blocklists.
+- **Metadata leaks.** EXIF GPS coordinates in a user's profile photo, published to the world.
+
+The design principle is the same as with SSRF: don't try to recognize bad input with string checks. **Generate names yourself, derive type from bytes, re-encode what you can, isolate where it's served, and process asynchronously.**
+
+## Presigned uploads done right
+
+Uploading straight from the browser to S3 (or R2, GCS) with a presigned request is the right default: your API doesn't proxy large bodies, and the storage service handles resumable transfer. But a presigned URL is a capability — the conditions you sign are the only controls left once it leaves your server.
+
+Presigned `PUT` URLs can't express a size *range*; presigned `POST` with a policy can. That's why I use POST for user uploads:
+
+```ts
+// app/api/uploads/route.ts
+import { randomUUID } from "node:crypto";
+import { S3Client } from "@aws-sdk/client-s3";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import { z } from "zod";
+import { requireUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+
+const s3 = new S3Client({});
+const ALLOWED = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" } as const;
+
+const Body = z.object({
+  contentType: z.enum(Object.keys(ALLOWED) as [keyof typeof ALLOWED]),
+  size: z.number().int().positive().max(10 * 1024 * 1024),
+});
+
+export async function POST(req: Request) {
+  const user = await requireUser(req);
+  const { contentType, size } = Body.parse(await req.json());
+
+  // We choose the key. The client's filename never touches storage paths.
+  const id = randomUUID();
+  const key = `incoming/${user.id}/${id}`;
+
+  await db.upload.create({ data: { id, userId: user.id, key, status: "pending", declaredSize: size } });
+
+  const presigned = await createPresignedPost(s3, {
+    Bucket: process.env.QUARANTINE_BUCKET!,
+    Key: key,
+    Conditions: [
+      ["content-length-range", 1, 10 * 1024 * 1024],
+      ["eq", "$Content-Type", contentType],
+      ["eq", "$key", key],
+    ],
+    Fields: { "Content-Type": contentType },
+    Expires: 120, // seconds
+  });
+
+  return Response.json({ uploadId: id, ...presigned });
+}
+```
+
+What the conditions buy you, and what they don't:
+
+- **`content-length-range`** is enforced by S3. A client that lies about `size` in your API call still can't upload more than the signed limit.
+- **`eq $Content-Type`** pins the header S3 stores. It does **not** check the bytes. A client can upload HTML with `Content-Type: image/png` — which is why the next steps exist.
+- **The key is fixed** and lives in a quarantine bucket nobody reads from except the processing worker.
+- **Short expiry** limits replay. Two minutes is plenty for the browser to start the upload.
+
+Also set on the bucket: Block Public Access on, no public ACLs, CORS limited to your app's origin with only `POST`, and a lifecycle rule that deletes anything in `incoming/` after a day. Abandoned or rejected uploads clean themselves up.
+
+## Never trust the extension or the client MIME type
+
+Once the object lands, the worker decides what it really is by looking at the **first bytes** — the magic number:
+
+| Format | Signature (hex / ASCII) |
+| --- | --- |
+| PNG | `89 50 4E 47 0D 0A 1A 0A` |
+| JPEG | `FF D8 FF` |
+| GIF | `GIF87a` / `GIF89a` |
+| WebP | `RIFF` …4 bytes… `WEBP` |
+| PDF | `%PDF-` |
+| ZIP (also docx, xlsx, jar) | `50 4B 03 04` |
+
+I use the `file-type` package rather than maintaining this table, and treat its answer as a filter, not a verdict:
+
+```ts
+// worker/sniff.ts
+import { fileTypeFromBuffer } from "file-type";
+
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+export async function sniffImage(head: Uint8Array, declared: string) {
+  const detected = await fileTypeFromBuffer(head);
+  if (!detected || !IMAGE_TYPES.has(detected.mime)) {
+    return { ok: false as const, reason: `not an allowed image (detected ${detected?.mime ?? "unknown"})` };
+  }
+  if (detected.mime !== declared) {
+    // Not necessarily malicious (some clients mislabel), but log it and trust the bytes.
+    console.warn("upload type mismatch", { declared, detected: detected.mime });
+  }
+  return { ok: true as const, mime: detected.mime };
+}
+```
+
+Magic bytes are necessary, not sufficient. **Polyglot files** are valid in two formats at once — a file that is a real JPEG to an image decoder and also contains HTML a browser will happily render if it's ever served with the wrong type. Sniffing says "this starts like a JPEG"; it can't say "this contains nothing else". That's what re-encoding is for.
+
+### Re-encoding images with sharp
+
+For images, the strongest control is to **never serve the bytes the user uploaded**. Decode, then encode a fresh image. Anything that isn't pixels — appended HTML, odd chunks, EXIF, embedded thumbnails, ICC trickery — is gone.
+
+```ts
+// worker/reencode.ts
+import sharp from "sharp";
+
+const MAX_PIXELS = 40_000_000; // ~ 8000 x 5000; far below sharp's default ceiling
+const MAX_EDGE = 2560;
+
+export async function reencodeImage(input: Buffer) {
+  // Header-only read: cheap, no full decode yet.
+  const meta = await sharp(input, { limitInputPixels: MAX_PIXELS }).metadata();
+  if (!meta.width || !meta.height) throw new Error("unreadable image");
+  if ((meta.pages ?? 1) > 1) throw new Error("animated images not accepted here");
+
+  const output = await sharp(input, {
+    limitInputPixels: MAX_PIXELS, // decompression-bomb guard
+    failOn: "error",              // reject corrupt input instead of guessing
+    sequentialRead: true,
+  })
+    .rotate() // apply EXIF orientation before metadata is dropped
+    .resize({ width: MAX_EDGE, height: MAX_EDGE, fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 82 })
+    .toBuffer({ resolveWithObject: true });
+
+  // sharp drops EXIF/XMP/GPS by default unless you opt in with withMetadata()/keepMetadata().
+  return { buffer: output.data, width: output.info.width, height: output.info.height, mime: "image/webp" };
+}
+```
+
+Notes from running this in production:
+
+- **`limitInputPixels` is the decompression-bomb guard.** The compressed size tells you nothing; the pixel count is what costs memory. sharp's default limit is huge (around 268 megapixels), so set your own.
+- **Also cap concurrency.** Even legitimate 40 MP images use a lot of memory during decode. I run image workers with `sharp.concurrency(1)` per process and scale out with processes, plus a container memory limit so a bad file kills one worker, not the node.
+- **`rotate()` before dropping metadata**, or portrait phone photos come out sideways — the bug report you'll get on day one.
+- **Decoders are attack surface.** sharp uses libvips and bundled format libraries; image-decoder CVEs happen. Keep sharp updated and run the worker with no credentials beyond the two buckets it needs.
+
+<Callout type="danger" title="SVG is not an image format for this purpose">
+
+SVG is XML that can contain `script` elements, event handler attributes and `foreignObject` with HTML. Inside an `img` tag browsers won't run its scripts, but the moment someone opens the file's URL directly, it's a document in whatever origin serves it. My order of preference: reject SVG for user uploads; or rasterize it to PNG in the worker; or, if you truly need vector output, sanitize with an SVG-aware allow-list sanitizer *and* serve it from the isolated domain with a `sandbox` CSP.
+
+</Callout>
+
+## Serve user content from a separate domain
+
+Even with re-encoding, I assume something will eventually slip through — a new format someone adds, a PDF feature, a bug in a sanitizer. So user content never shares an origin, or even a site, with the app.
+
+- **Use a different registrable domain**, not a subdomain. `files.acme.com` is same-site with `app.acme.com`: cookies scoped to `.acme.com` are sent to it, and `SameSite` doesn't protect you. Something like `acme-usercontent.net` is the pattern the big platforms use for exactly this reason.
+- **Set an explicit, correct `Content-Type`** — the one you derived, not the one the client sent.
+- **`X-Content-Type-Options: nosniff`** so browsers don't second-guess the type and render a "text/plain" file as HTML.
+- **`Content-Disposition: attachment`** for anything that isn't an image you re-encoded (PDFs, documents, archives). The browser downloads instead of rendering.
+- **A restrictive CSP on the content domain**: `default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox`. If an HTML-ish file is ever rendered, it has no script and a unique opaque origin.
+
+On AWS I put CloudFront in front of the public bucket with a response headers policy carrying those headers, and set `Content-Type` and `Content-Disposition` as object metadata when the worker writes the processed file:
+
+```ts
+// worker/publish.ts
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({});
+
+function contentDisposition(originalName: string, inline: boolean) {
+  // Keep a safe ASCII fallback and an RFC 5987 encoded UTF-8 version.
+  const ascii = originalName.replace(/[^\x20-\x7e]|["\\]/g, "_").slice(0, 100) || "file";
+  const utf8 = encodeURIComponent(originalName.slice(0, 100));
+  return `${inline ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+
+export async function publish(id: string, body: Buffer, mime: string, originalName: string) {
+  const inline = mime.startsWith("image/");
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: process.env.PUBLIC_BUCKET!,
+      Key: `u/${id}`,
+      Body: body,
+      ContentType: mime,
+      ContentDisposition: contentDisposition(originalName, inline),
+      CacheControl: "public, max-age=31536000, immutable",
+    }),
+  );
+  return `https://acme-usercontent.net/u/${id}`;
+}
+```
+
+For private files, same idea with signed CloudFront URLs or presigned `GET`s on that separate domain — and you can override `ResponseContentDisposition` and `ResponseContentType` on a presigned `GET` so even old objects get served safely.
+
+## The asynchronous pipeline: quarantine, scan, publish
+
+Put together, the upload flow is a small state machine rather than a single request:
+
+<Figure src="/blog/ssrf-and-file-upload-security-upload-pipeline.svg" alt="Diagram of a safe upload pipeline: the browser asks the API for a presigned POST; the API records a pending upload and signs conditions for size, content type and a server-generated key; the browser uploads directly to a private quarantine bucket; an S3 event goes to a queue; a worker sniffs magic bytes, scans for malware, re-encodes images with sharp and strips metadata; clean files are written to a public bucket served by a CDN on a separate domain with nosniff, Content-Disposition and a sandbox CSP; rejected files are deleted and the record marked rejected" caption="Nothing the user uploaded is ever served directly. Bytes land in quarantine, the worker decides what they are, and only re-encoded output reaches the public bucket on a domain that shares nothing with the app." />
+
+1. **Presign.** API creates an `uploads` row with `status = pending`, returns a presigned POST for the quarantine bucket.
+2. **Upload.** Browser uploads directly to quarantine. The UI shows "processing".
+3. **Event.** S3 emits an `ObjectCreated` event to SQS (or EventBridge). Don't trust a "done" call from the client as the trigger.
+4. **Process.** A worker with read on quarantine and write on public: checks size, sniffs type, scans, re-encodes, publishes.
+5. **Finalize.** Row becomes `ready` (with the public URL, width, height) or `rejected` (with an internal reason). The quarantine object is deleted either way.
+6. **Notify.** The client polls or gets a push; the image shows up.
+
+```ts
+// worker/process-upload.ts
+import { GetObjectCommand, DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { db } from "@/lib/db";
+import { sniffImage } from "./sniff";
+import { reencodeImage } from "./reencode";
+import { scanBuffer } from "./scan";
+import { publish } from "./publish";
+
+const s3 = new S3Client({});
+const MAX = 10 * 1024 * 1024;
+
+export async function processUpload(bucket: string, key: string) {
+  const upload = await db.upload.findUnique({ where: { key } });
+  if (!upload || upload.status !== "pending") return; // idempotent: events can be delivered twice
+
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if ((obj.ContentLength ?? 0) > MAX) throw new Error("too large");
+    const input = Buffer.from(await obj.Body!.transformToByteArray());
+
+    const sniffed = await sniffImage(input.subarray(0, 4100), obj.ContentType ?? "");
+    if (!sniffed.ok) throw new Error(sniffed.reason);
+
+    const scan = await scanBuffer(input);
+    if (!scan.clean) throw new Error(`malware: ${scan.signature}`);
+
+    const image = await reencodeImage(input);
+    const url = await publish(upload.id, image.buffer, image.mime, upload.originalName ?? "image");
+
+    await db.upload.update({
+      where: { id: upload.id },
+      data: { status: "ready", url, width: image.width, height: image.height },
+    });
+  } catch (err) {
+    await db.upload.update({ where: { id: upload.id }, data: { status: "rejected", reason: String(err) } });
+  } finally {
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  }
+}
+```
+
+### Malware scanning
+
+For images you re-encode, AV scanning matters less — the output is pixels you produced. It matters a lot for anything you pass through unchanged: PDFs, Office documents, archives. Options I've used or evaluated:
+
+- **ClamAV** in a sidecar (`clamd`), streamed over its socket protocol. Free and decent at known signatures; keep `freshclam` updates running and alert when they stop.
+- **Managed scanning** in your cloud. AWS has GuardDuty Malware Protection for S3, which scans new objects and tags them with the result; you then gate promotion on the tag.
+- **Commercial scanners** with multiple engines when your users exchange documents with other users, where the reputational cost of being a malware host is high.
+
+Whatever you pick, design for **async and fail-closed**: a file isn't visible to other users until it's `ready`. And scanning is a signature match, not a guarantee — it complements `Content-Disposition: attachment` and the separate domain, it doesn't replace them.
+
+## Filenames, path traversal and zip slip
+
+The safest filename handling is not using the filename. Storage keys are UUIDs; the original name lives in a database column, used only for display and `Content-Disposition` (encoded, as above).
+
+If you ever must write to a filesystem — a legacy NFS share, a tool that requires local files — resolve and check:
+
+```ts
+// lib/safe-path.ts
+import path from "node:path";
+
+export function resolveInside(baseDir: string, untrusted: string): string {
+  const base = path.resolve(baseDir);
+  // Drop NULs and normalize separators: "..\\" matters even on Linux if files move to Windows later.
+  const cleaned = untrusted.replace(/\0/g, "").replace(/\\/g, "/");
+  const target = path.resolve(base, cleaned);
+  if (target !== base && !target.startsWith(base + path.sep)) {
+    throw new Error(`path escapes base directory: ${untrusted}`);
+  }
+  return target;
+}
+```
+
+`path.resolve` + prefix check with the separator appended is the important bit: a plain `startsWith(base)` accepts `/srv/uploads-evil/...` when base is `/srv/uploads`.
+
+**Zip slip** is the same bug inside archives: entry names are filenames the attacker chose, including `../../.bashrc` or absolute paths, plus symlink entries that point outside the target directory. When extracting:
+
+- Run every entry name through `resolveInside` before writing.
+- Skip symlinks and other special entries entirely.
+- Enforce limits **while extracting**, not from the archive's headers (which can lie): maximum entry count, maximum total uncompressed bytes, and a maximum compression ratio. That's your zip bomb defense.
+- Better still, ask whether you need to extract at all. Often you only need to list entries or pass the file through.
+
+## Mistakes I keep seeing
+
+- **Validating the URL, then fetching it with a different client.** The validator uses one parser and one DNS resolution; the HTTP library uses another. Pin the IP in the connection, or route through a proxy that does.
+- **`redirect: "follow"` left on** in the one fetch call that takes user input — often inside a helper written for a different purpose.
+- **Headless browsers for screenshots or PDFs** with no network restrictions. Chromium follows redirects, loads subresources, runs JavaScript that can fetch internal URLs. That service belongs in the most isolated network you have.
+- **Trusting `file.type` in the browser or `mimetype` from multer.** Both come from the client.
+- **Serving uploads from `/uploads/` on the main app origin** "temporarily". That temporary path is still there three years later.
+- **A subdomain for user content** and assuming it's isolated. Same site means shared cookies scoped to the parent domain.
+- **Generating thumbnails synchronously in the API request.** One crafted image and your API pods hit their memory limit together.
+- **Keeping EXIF.** GPS coordinates on profile photos are a privacy incident even with no attacker involved.
+- **Rejected uploads that never get deleted**, slowly building a bucket full of exactly the files you decided were dangerous.
+
+## Takeaways
+
+<Checklist>
+
+- Every "fetch a URL" feature goes through one shared fetcher, not ad-hoc `fetch` calls.
+- Validation is an allowlist of public unicast IPs, applied to **every resolved address** inside the lookup the socket uses (undici `Agent` with custom `lookup`), with IP literals checked separately.
+- Redirects are manual, capped, and every hop re-validated; there's an overall timeout and a byte cap enforced while reading.
+- Error messages to users don't reveal internal status codes, ports or timings.
+- IMDSv2 is required everywhere with hop limit 1 (2 only where containers need it), enforced by default, not per instance.
+- The fetcher runs in an isolated network segment or behind an egress proxy that denies internal ranges and metadata; I've tested it from a pod, not just read the YAML.
+- Uploads use presigned POST with `content-length-range`, a fixed server-generated key and a short expiry, into a private quarantine bucket with a lifecycle rule.
+- File type comes from magic bytes; images are re-encoded with sharp with `limitInputPixels`, metadata stripped, and bounded concurrency and memory.
+- SVG uploads are rejected or rasterized.
+- User content is served from a separate registrable domain with explicit `Content-Type`, `nosniff`, `Content-Disposition` and a sandbox CSP.
+- Non-image files are scanned asynchronously and hidden until `ready`; the pipeline fails closed.
+- Filenames never build storage paths; any filesystem or archive extraction uses resolve-and-check plus entry, size and ratio limits.
+
+</Checklist>

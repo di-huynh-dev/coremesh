@@ -1,0 +1,879 @@
+---
+title: "Frontend Observability in Practice: RUM with web-vitals, Private Source Maps and Browser-to-Backend Traces"
+excerpt: "Installing Sentry is only step one. This is how I build real frontend observability: lab vs field data, RUM with web-vitals attribution, beacons that don't get lost, sampling, private source maps, taming noisy errors, linking traces to the backend with traceparent, PII scrubbing, p75 dashboards and deploy markers."
+---
+
+<Lead>On almost every project I've joined, the answer to "do we have frontend monitoring?" has been "yes, we installed Sentry". Then a week after a release, customers on mid-range Android phones complain that filtering the product list stutters, Lighthouse in CI is still green, and Sentry has forty thousand events a day that nobody can read. Installing an SDK doesn't make you *see* the system. This post is how I build frontend observability that answers the real questions: are real users slow, on which route, on which devices, since which deploy, because of which interaction and which script — and can that slow click be followed into a backend trace? We'll go from lab vs field data, through RUM with web-vitals attribution, beacons that don't drop data, sampling, private source maps, grouping noisy errors, W3C traceparent and OpenTelemetry, and PII scrubbing, to p75 dashboards and a deploy-marker workflow.</Lead>
+
+## "We installed Sentry" is not observability
+
+Observability isn't having tools; it's **being able to answer questions you didn't know you'd need to ask**. For the frontend, these are the questions I actually end up asking during incident investigations:
+
+- Are real users slow, or is it just that my dev machine is fast?
+- Slow on which route, on which kind of device and network?
+- Since when — does it line up with a deploy?
+- Is INP bad because of which interaction, which handler, whose script?
+- Is this error new, or has it been smouldering for months? How many sessions does it hit?
+- Is the page slow because of the frontend, or because of an API behind it?
+
+An error-tracking SDK answers part of question five. To answer all of them you need three kinds of signal plus one kind of context:
+
+| Signal | What it is | Answers |
+| --- | --- | --- |
+| **Metrics (RUM)** | LCP, INP, CLS, TTFB… measured in real users' browsers, with attribution | Is it slow, where, and why |
+| **Errors** | Exceptions, promise rejections, resource load failures, with de-minified stacks | What broke, for whom, since which release |
+| **Traces** | Spans from a browser fetch through every backend service | Where time goes while the frontend waits on the backend |
+| **Context** | Release, deploy markers, feature flags, route template, device class | Which change caused it |
+
+The crucial part is that all four **share the same keys**: the same `release`, the same `route`, the same `session_id`, the same `trace_id`. Three excellent tools that can't be joined still leave you eyeballing timestamps across browser tabs during an incident.
+
+<Figure src="/blog/frontend-observability-rum-pipeline.svg" alt="Frontend observability pipeline: in the browser, web-vitals attribution, the error SDK and OpenTelemetry fetch instrumentation push into a queue that flushes via sendBeacon or fetch keepalive on visibilitychange; a collector validates the schema, scrubs PII, applies the sample rate and adds release and device class; data lands in ClickHouse for vitals, an error store with privately uploaded source maps, and a trace store; dashboards show p75 per route and device, alerts compare against a baseline with deploy markers; fetch requests carry a traceparent header to the API gateway and backend services, and the shared trace_id in the trace store connects both sides" caption="One pipeline, four kinds of data, one set of keys: release, route, session_id and trace_id. traceparent travels out with requests to the backend; Server-Timing carries the HTML document's trace back to the browser." />
+
+## Lab data and field data answer different questions
+
+I've seen plenty of arguments along the lines of "Lighthouse says LCP is 1.2 seconds but Search Console says 3.8 — which one is wrong?". Neither. They measure different things.
+
+| | Lab (Lighthouse, WebPageTest, CI) | CrUX (Chrome UX Report) | Your own RUM |
+| --- | --- | --- | --- |
+| **Who** | One emulated machine, fixed config | Chrome users who opted into sharing | Every user you're allowed to measure |
+| **Latency** | Immediate | 28-day rolling window | Minutes |
+| **Granularity** | Every request, every long task | Origin or URL, p75 | Any dimension you attach: route, release, device, flag |
+| **INP** | Not really (nobody is interacting) | Yes | Yes, with attribution |
+| **Use it for** | Catching regressions before merge, reproducible debugging | Knowing what Google sees | Knowing what users see, and why |
+
+I use all three, each for its own job:
+
+- **Lab in CI** blocks reproducible regressions: a bloated bundle, a hero image that lost `priority`, a render-blocking font. It's stable, so comparing two commits means something.
+- **CrUX** is the "exam score" — the number Google uses. It's Chrome-only, p75-only, 28 days behind and can't be split by release. Use it to cross-check, not to debug.
+- **Your own RUM** is where you debug field data. That's what this post is about.
+
+Never compare a lab number with a field number and conclude "the field data is wrong". The lab machine has no extensions, no cold cache over flaky 4G, no ten other tabs running. If you want a refresher on what each metric means and its thresholds, I covered that separately in [Core Web Vitals](/blog/core-web-vitals).
+
+<Callout type="note" title="Field data isn't Chrome-only any more — but don't blend it">
+  LCP and INP used to be essentially Chromium-only. Other engines have been adding the underlying APIs such as Largest Contentful Paint and Event Timing, but support and implementation details still differ by version. Always record the browser engine on every event and make it a separate dashboard dimension — a p75 that blends Chrome and Safari usually tells you less than you think.
+</Callout>
+
+## Collecting RUM with web-vitals
+
+Google's [`web-vitals`](https://github.com/GoogleChrome/web-vitals) library handles dozens of edge cases for you: pages opened in the background, bfcache restores, prerendering, CLS session windows, INP picking the right near-worst interaction. Rewriting it yourself with `PerformanceObserver` is the fastest way to get confidently wrong numbers.
+
+### The basic setup and the event shape
+
+I always use the **attribution** build from day one. It's slightly heavier than the standard build, but without attribution all you know is "INP is bad", not why.
+
+```ts
+// lib/rum/vitals.ts
+import { onCLS, onFCP, onINP, onLCP, onTTFB, type MetricWithAttribution } from "web-vitals/attribution";
+import { enqueue } from "./transport";
+import { currentRoute, routeAt } from "./route";
+import { getSession } from "./session";
+
+export type VitalEvent = {
+  type: "vital";
+  name: MetricWithAttribution["name"];
+  value: number;
+  delta: number;
+  rating: "good" | "needs-improvement" | "poor";
+  metricId: string;
+  navigationType: string;
+  route: string;
+  attribution: Record<string, string | number | undefined>;
+};
+
+function report(metric: MetricWithAttribution) {
+  const session = getSession();
+  if (!session.sampled) return;
+
+  enqueue({
+    type: "vital",
+    name: metric.name,
+    value: metric.value,
+    delta: metric.delta,
+    rating: metric.rating,
+    metricId: metric.id,
+    navigationType: metric.navigationType,
+    route: metric.name === "INP" ? routeAt(metric.attribution.interactionTime) : currentRoute(),
+    attribution: summarizeAttribution(metric),
+  } satisfies VitalEvent);
+}
+
+export function startVitals() {
+  onTTFB(report);
+  onFCP(report);
+  onLCP(report);
+  onCLS(report);
+  onINP(report);
+}
+```
+
+A few fields worth understanding properly:
+
+- **`value` and `delta`**: CLS and INP can be reported several times per page load (with `reportAllChanges`, or when a page is hidden and shown again). `value` is the current value; `delta` is the change since the last report. On the backend, keep the last record per `metricId` instead of summing them all.
+- **`navigationType`**: `navigate`, `reload`, `back-forward`, `back-forward-cache`, `prerender`, `restore`. A page restored from bfcache has a near-zero LCP — mix those into your p75 and the number looks better than reality. I always split on this.
+- **When metrics are reported**: LCP is finalized at the first user interaction; CLS and INP are only finalized when the page goes `hidden`. If you don't send data at exactly that moment, you lose the two hardest metrics. The transport section below deals with that.
+
+### INP attribution: which interaction, which script
+
+This is the part I find most valuable. INP splits an interaction into three parts — *input delay*, *processing duration* and *presentation delay* — and the attribution build also attaches the **Long Animation Frames (LoAF)** entries that overlap the interaction, which means you learn *which script* was running.
+
+```ts
+// lib/rum/attribution.ts
+import type { MetricWithAttribution } from "web-vitals/attribution";
+
+const MAX = 120; // truncate so we never send an endless selector
+
+export function summarizeAttribution(metric: MetricWithAttribution) {
+  switch (metric.name) {
+    case "INP": {
+      const a = metric.attribution;
+      const script = a.longestScript?.entry;
+      return {
+        target: a.interactionTarget?.slice(0, MAX),
+        interactionType: a.interactionType, // "pointer" | "keyboard"
+        loadState: a.loadState, // did it happen while the page was still loading?
+        inputDelay: Math.round(a.inputDelay),
+        processing: Math.round(a.processingDuration),
+        presentation: Math.round(a.presentationDelay),
+        scriptUrl: script?.sourceURL ? stripQuery(script.sourceURL) : undefined,
+        scriptFn: script?.sourceFunctionName || undefined,
+        scriptInvoker: script?.invoker?.slice(0, MAX),
+        scriptSubpart: a.longestScript?.subpart,
+        totalScript: a.totalScriptDuration && Math.round(a.totalScriptDuration),
+        totalStyleLayout: a.totalStyleAndLayoutDuration && Math.round(a.totalStyleAndLayoutDuration),
+      };
+    }
+    case "LCP": {
+      const a = metric.attribution;
+      return {
+        url: a.url ? stripQuery(a.url) : undefined,
+        ttfb: Math.round(a.timeToFirstByte),
+        loadDelay: Math.round(a.resourceLoadDelay),
+        loadDuration: Math.round(a.resourceLoadDuration),
+        renderDelay: Math.round(a.elementRenderDelay),
+      };
+    }
+    case "CLS": {
+      const a = metric.attribution;
+      return {
+        target: a.largestShiftTarget?.slice(0, MAX),
+        shiftTime: a.largestShiftTime && Math.round(a.largestShiftTime),
+        loadState: a.loadState,
+      };
+    }
+    default:
+      return {};
+  }
+}
+
+function stripQuery(url: string) {
+  try {
+    const u = new URL(url, location.origin);
+    return u.origin + u.pathname;
+  } catch {
+    return undefined;
+  }
+}
+```
+
+Fields like `longestScript` and `totalScriptDuration` arrived in recent versions of the library and only have values in browsers that support LoAF, so I use optional chaining everywhere and accept that they're empty for part of the data.
+
+How I read the three parts of INP:
+
+- **Large input delay** — something else was hogging the main thread when the user tapped: hydration, a third-party tag, a polling timer. A `loadState` of `loading` or `dom-content-loaded` usually points straight at hydration.
+- **Large processing duration** — your own event handlers are slow: a setState that re-renders the whole tree, synchronous computation, layout reads that force reflow.
+- **Large presentation delay** — the rendering after the handler is heavy: a huge DOM, wide-scope style recalculation, synchronous image decoding.
+
+A real story: the product listing page on one project had its mobile INP p75 get noticeably worse after a sprint in which nobody touched the filter components. Grouping attribution by `scriptUrl` showed the heaviest chunk sat inside the file of an A/B testing tool where marketing had just switched on another experiment — it attached a page-wide click listener and ran a synchronous computation on every tap. Without LoAF, I'd have spent days profiling our own code.
+
+### Route templates, not URLs
+
+Two things I learned while attaching routes to metrics:
+
+1. **Group by route template, not by actual URL.** `/products/8812` and `/products/9031` are the same page. Group by URL and every bucket has a handful of samples, making the p75 meaningless — and real URLs often contain personal data. In Next.js I map pathnames back to templates using the `app/` directory structure at build time, or simply a small regex table.
+2. **In an SPA, INP may belong to a different route than the one that loaded.** INP is finalized when the page is hidden, and by then the user may have soft-navigated through five pages. I keep a timestamped route history and look up the route at `interactionTime` so INP lands in the right place.
+
+```ts
+// lib/rum/route.ts
+type Entry = { route: string; at: number };
+const history: Entry[] = [{ route: toTemplate(location.pathname), at: 0 }];
+
+export function onRouteChange(pathname: string) {
+  history.push({ route: toTemplate(pathname), at: performance.now() });
+  if (history.length > 50) history.shift();
+}
+
+export function currentRoute() {
+  return history[history.length - 1].route;
+}
+
+export function routeAt(time: number | undefined) {
+  if (time === undefined) return currentRoute();
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].at <= time) return history[i].route;
+  }
+  return history[0].route;
+}
+
+const PATTERNS: [RegExp, string][] = [
+  [/^\/products\/[^/]+$/, "/products/[id]"],
+  [/^\/orders\/[^/]+$/, "/orders/[id]"],
+  [/^\/u\/[^/]+(\/.*)?$/, "/u/[handle]"],
+];
+
+export function toTemplate(pathname: string) {
+  for (const [re, template] of PATTERNS) if (re.test(pathname)) return template;
+  return pathname.length > 64 ? "/(other)" : pathname;
+}
+```
+
+Chromium is experimenting with a Soft Navigations API that measures LCP and INP per soft navigation, but for now I still treat that as experimental data, not headline numbers.
+
+## Sending beacons reliably
+
+You can collect perfectly correct metrics and then drop them at the last step. This is the most common bug I find in home-grown RUM.
+
+### Why data gets lost
+
+- **`unload` is unreliable**, especially on mobile: the user switches apps, the OS freezes the tab, the event never fires. Worse, an `unload` handler can keep the page out of the bfcache.
+- **A regular `fetch` gets cancelled** when the page goes away.
+- **CLS and INP are only finalized when the page is hidden** — exactly when sending is hardest.
+
+The rule: **queue events, flush when `visibilitychange` goes to `hidden`**, use `pagehide` as a safety net, and send with `navigator.sendBeacon` or `fetch` with `keepalive: true` — both are allowed to keep going after the page is gone.
+
+### A queue and a flush
+
+```ts
+// lib/rum/transport.ts
+import { getSession } from "./session";
+
+const ENDPOINT = "/_r/e"; // first-party, neutral name
+const MAX_BYTES = 60_000; // under the ~64 KiB beacon/keepalive budget
+const queue: object[] = [];
+let timer: ReturnType<typeof setTimeout> | undefined;
+
+export function enqueue(event: object) {
+  queue.push(event);
+  if (queue.length >= 20) flush();
+  else timer ??= setTimeout(flush, 10_000);
+}
+
+export function flush() {
+  clearTimeout(timer);
+  timer = undefined;
+  while (queue.length) {
+    const batch = takeBatch();
+    const s = getSession();
+    const body = JSON.stringify({
+      v: 1,
+      sid: s.id,
+      release: s.release,
+      sampleRate: s.sampleRate,
+      events: batch,
+    });
+    // A string body => Content-Type text/plain, no CORS preflight.
+    const queued = navigator.sendBeacon?.(ENDPOINT, body);
+    if (!queued) {
+      fetch(ENDPOINT, { method: "POST", body, keepalive: true }).catch(() => {});
+    }
+  }
+}
+
+function takeBatch() {
+  const batch: object[] = [];
+  let size = 200;
+  while (queue.length) {
+    const next = JSON.stringify(queue[0]).length;
+    if (batch.length && size + next > MAX_BYTES) break;
+    batch.push(queue.shift()!);
+    size += next;
+  }
+  return batch;
+}
+
+export function startTransport() {
+  addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flush();
+  });
+  // Safety net for browsers that don't fire visibilitychange in time
+  addEventListener("pagehide", flush);
+}
+```
+
+Details that are easy to get wrong:
+
+- **Send a string, not a JSON `Blob`.** `sendBeacon` with a string uses `text/plain`, a "simple request" with no preflight. A `Blob` typed `application/json` sent to another origin triggers a CORS preflight — and a beacon can't wait around for one. My collector reads the body as text and calls `JSON.parse` itself.
+- **Size limits.** `sendBeacon` and `fetch keepalive` share a budget of roughly 64 KiB of in-flight data. Go over it and `sendBeacon` returns `false` — hence the fallback branch and the batch splitting.
+- **Never send from `unload`/`beforeunload`.** Besides being unreliable, it breaks the bfcache.
+
+`fetchLater()` is a newer API that lets you "schedule" a request for the browser to send when the page is torn down or after a timeout. I've tried it on Chromium and it's a much cleaner fit for exactly this problem, but I still feature-detect it and keep the `sendBeacon` path for other browsers.
+
+### The collector endpoint
+
+The collector is a small route, but it's a trust boundary: everything comes from the internet, and anyone can post to it.
+
+```ts
+// app/_r/e/route.ts
+import { NextResponse, type NextRequest } from "next/server";
+import { scrubEvent } from "@/lib/rum/scrub-server";
+import { classifyDevice } from "@/lib/rum/device";
+import { rumSink } from "@/lib/rum/sink";
+
+const MAX_BODY = 64 * 1024;
+const NAMES = new Set(["TTFB", "FCP", "LCP", "CLS", "INP"]);
+
+export async function POST(req: NextRequest) {
+  const text = await req.text();
+  if (text.length > MAX_BODY) return new NextResponse(null, { status: 413 });
+
+  let payload: any;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return new NextResponse(null, { status: 400 });
+  }
+  if (payload?.v !== 1 || !Array.isArray(payload.events)) {
+    return new NextResponse(null, { status: 400 });
+  }
+
+  const ua = req.headers.get("user-agent") ?? "";
+  const common = {
+    sessionId: String(payload.sid).slice(0, 36),
+    release: String(payload.release).slice(0, 40),
+    sampleRate: clamp(Number(payload.sampleRate), 0.001, 1),
+    device: classifyDevice(ua), // "mobile" | "tablet" | "desktop"
+    engine: engineOf(ua), // "chromium" | "webkit" | "gecko"
+    country: req.headers.get("x-vercel-ip-country") ?? "XX",
+    receivedAt: new Date().toISOString(),
+    // Deliberately NOT storing the IP or the raw UA.
+  };
+
+  const rows = payload.events
+    .slice(0, 50)
+    .filter((e: any) => e?.type === "vital" && NAMES.has(e.name) && Number.isFinite(e.value))
+    .map((e: any) => scrubEvent({ ...common, ...e }));
+
+  await rumSink.write(rows); // push to a queue/Kafka, never a synchronous DB write in the request
+  return new NextResponse(null, { status: 204 });
+}
+
+const clamp = (n: number, lo: number, hi: number) => (Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 1);
+const engineOf = (ua: string) =>
+  /Firefox\//.test(ua) ? "gecko" : /Chrome\/|Chromium\//.test(ua) ? "chromium" : /AppleWebKit\//.test(ua) ? "webkit" : "other";
+```
+
+The collector has to be cheap: validate, enrich, hand off to a queue, return `204`. Writing synchronously to a database inside the request is the fastest way for a traffic peak to turn your RUM endpoint into a second incident. And rate-limit it — it's a public URL.
+
+<Callout type="warning" title="Ad blockers block RUM more than you'd think">
+  Popular filter lists block paths like `/analytics`, `/collect`, `/rum`, `/beacon` and most third-party vendor domains. Sending to a first-party path with a neutral name noticeably reduces the data you lose. But this is about accuracy, not about sneaking past privacy choices: if the user declines consent, send nothing. And remember your RUM is biased either way — people who block tracking tend to be on more powerful machines.
+</Callout>
+
+## Sampling without skewing the numbers
+
+At scale, sending every event costs storage without adding information. But bad sampling skews the data in ways that are very hard to notice.
+
+### Decide once per session
+
+My rule: **make the sampling decision once per session**, not per event. If every metric flips its own coin, you'll have this session's LCP but not its INP — and you can't analyse correlations between metrics.
+
+```ts
+// lib/rum/session.ts
+type Session = { id: string; sampled: boolean; sampleRate: number; release: string };
+const KEY = "rum:s";
+
+const RATE = Number(process.env.NEXT_PUBLIC_RUM_SAMPLE_RATE ?? "0.2");
+let cached: Session | undefined;
+
+export function getSession(): Session {
+  if (cached) return cached;
+  try {
+    const raw = sessionStorage.getItem(KEY);
+    if (raw) return (cached = JSON.parse(raw));
+  } catch {}
+  const id = crypto.randomUUID();
+  cached = {
+    id,
+    sampleRate: RATE,
+    sampled: Math.random() < RATE,
+    release: process.env.NEXT_PUBLIC_RELEASE ?? "dev",
+  };
+  try {
+    sessionStorage.setItem(KEY, JSON.stringify(cached));
+  } catch {}
+  return cached;
+}
+```
+
+Send `sampleRate` with every batch so queries can **weight** each row (weight is one over the sample rate). That matters when you change the rate midway, or use different rates for different groups — for example 100% on a freshly launched route and 10% everywhere else.
+
+### Different rates for different signals
+
+| Signal | Rate I typically use | Why |
+| --- | --- | --- |
+| Web vitals | 10–25% of sessions, 100% at low traffic | p75 converges quickly; you need enough samples per route × device |
+| Errors | Close to 100%, with client-side dedupe and rate limiting | Rare errors still matter; handle noise with fingerprints, not sampling |
+| Traces | 1–5%, head-based, sampled flag carried in `traceparent` | Traces are expensive; the decision must be consistent front to back |
+| Session replay | Very low, plus 100% of sessions with errors if your tool supports it | The most expensive and the most privacy-sensitive |
+
+### Sampling patterns that bias your data
+
+- **Starting RUM only after hydration, or lazy-loading it too late.** Users who leave before hydration — precisely the ones with the worst experience — vanish from the data. Load the small RUM script early; lazy-load only the heavy parts (OpenTelemetry, replay).
+- **Sampling by a fixed user id forever.** A specific set of users never has data. Per session is safer.
+- **Including internal staff at 100%.** Staff have fast machines and office networks — mixing them in flatters the p75. Tag them `internal` and exclude them from the main dashboards.
+
+## Error tracking: private source maps and grouping the noise
+
+I wrote separately about classifying errors, error boundaries and retries in [A Frontend Error-Handling Strategy](/blog/frontend-error-handling-strategy). Here I'm focusing on the observability side: making stack traces readable, and shrinking forty thousand events a day into ten issues that mean something.
+
+### Source maps: upload them, don't deploy them
+
+A stack trace over minified code is useless. But deploying public `.map` files hands anyone your full original source: comments, internal endpoint names, names of unannounced feature flags. Source maps aren't a security boundary — client code is public by nature — but there's no reason to make it easier.
+
+The right flow: **generate source maps at build time, upload them to your error tracker, then delete them from the artifact before deploying.** With Vite, `build.sourcemap: "hidden"` emits map files without adding the `sourceMappingURL` comment to the bundle.
+
+```bash
+# .github/workflows/deploy.yml (build step excerpt)
+export RELEASE="web@${GITHUB_SHA::12}"
+export VITE_RELEASE="$RELEASE"
+
+bun run build                        # vite build with sourcemap: "hidden"
+
+# Inject Debug IDs into bundles and maps so they pair correctly even when file names collide
+bunx sentry-cli sourcemaps inject ./dist
+bunx sentry-cli sourcemaps upload --release="$RELEASE" ./dist
+
+# Never ship .map files
+find ./dist -name "*.map" -delete
+```
+
+With Next.js, `withSentryConfig` from `@sentry/nextjs` handles generating and uploading; you just turn on deletion after upload:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
+
+const nextConfig: NextConfig = {
+  productionBrowserSourceMaps: false, // don't serve public maps
+  env: { NEXT_PUBLIC_RELEASE: process.env.RELEASE ?? "dev" },
+};
+
+export default withSentryConfig(nextConfig, {
+  org: "acme",
+  project: "web",
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  release: { name: process.env.RELEASE },
+  sourcemaps: { deleteSourcemapsAfterUpload: true },
+  silent: !process.env.CI,
+});
+```
+
+The most important thing here isn't the tooling, it's that **the `release` string is identical** in three places: when uploading source maps, in the error SDK, and in every RUM beacon. I use `web@` plus the first 12 characters of the commit SHA. With one shared key, "which release made INP worse, and which new errors did that release introduce" becomes a single join.
+
+### Grouping errors: cleaning up noise with fingerprints
+
+Frontend error noise has some very familiar faces:
+
+| Error | Where it comes from | How I handle it |
+| --- | --- | --- |
+| `ResizeObserver loop completed with undelivered notifications` | A ResizeObserver callback changes layout within the same frame; the browser reports it but it's almost always harmless | Ignore, unless you're debugging a specific layout |
+| `Script error.` | An error from a cross-origin script loaded without `crossorigin` and CORS — the browser hides the details | Add `crossorigin="anonymous"` to your own CDN scripts; ignore third-party ones |
+| Frames from `chrome-extension://`, `moz-extension://`, `safari-web-extension://` | Extensions injecting code into the page | `denyUrls` plus filtering in `beforeSend` |
+| `ChunkLoadError`, `Failed to fetch dynamically imported module`, `Importing a module script failed` | An old tab requesting a chunk from a build that was deleted after a deploy | One fingerprint, and fix the root cause (below) |
+| `TypeError: Failed to fetch`, `Load failed`, `NetworkError when attempting to fetch resource` | Offline, user cancelled, ad blocker | Group by endpoint, alert only on rate increases |
+| `AbortError` | A deliberately cancelled request | Ignore entirely |
+| `Non-Error promise rejection captured` | Code rejecting with a string or plain object | Fix the code: always reject with an `Error` |
+
+```ts
+// instrumentation-client.ts
+import * as Sentry from "@sentry/nextjs";
+
+const CHUNK_RE = /ChunkLoadError|Loading chunk [\w-]+ failed|Failed to fetch dynamically imported module|Importing a module script failed/i;
+const NETWORK_RE = /^(TypeError: )?(Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.?)$/;
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  release: process.env.NEXT_PUBLIC_RELEASE,
+  environment: process.env.NEXT_PUBLIC_ENV,
+  sendDefaultPii: false,
+  tracesSampleRate: 0.02,
+  ignoreErrors: [/ResizeObserver loop/, /^Script error\.?$/, "AbortError"],
+  denyUrls: [/^chrome-extension:\/\//, /^moz-extension:\/\//, /^safari-(web-)?extension:\/\//],
+  beforeSend(event, hint) {
+    const err = hint.originalException;
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err ?? "");
+
+    if (CHUNK_RE.test(message)) {
+      event.fingerprint = ["chunk-load-error"];
+      event.level = "warning";
+    } else if (NETWORK_RE.test(message)) {
+      // Group network errors by route instead of one issue per URL with a different query
+      event.fingerprint = ["network-error", String(event.tags?.route ?? "unknown")];
+    }
+    return event;
+  },
+});
+```
+
+Two rules for writing fingerprints:
+
+- **Group by cause, not by symptom.** A chunk error is one cause even with a hundred different chunk ids. Conversely, two `Cannot read properties of undefined` errors in two different components are two causes — don't merge them just because the message matches.
+- **Don't `ignoreErrors` things you don't understand.** Every entry in the ignore list should have a comment explaining why, and the list should be reviewed every few months.
+
+### ChunkLoadError: fix the cause, don't just mute it
+
+Chunk errors after a deploy are noise, but they're also a **real failure for users**: they click into a page and nothing happens. I handle them in three layers:
+
+1. **Keep old assets around.** Files with a content hash in their name are immutable; there's no reason to delete them the moment a new build ships. Keeping the last few builds on the CDN solves most cases. Many platforms offer version-skew protection (Next.js has a `deploymentId` option so client and server can recognise each other); use it if your infrastructure supports it.
+2. **Reload once, with a guard.** When you catch a chunk error, reload to pick up the new build — but only once, so you don't loop forever if the new build is broken too.
+3. **Measure it.** The number of sessions hitting chunk errors after each deploy is a health indicator for your release process.
+
+```ts
+// lib/chunk-reload.ts
+const KEY = "chunk-reload-at";
+
+export function reloadOnceForStaleChunk() {
+  try {
+    const last = Number(sessionStorage.getItem(KEY) ?? 0);
+    if (Date.now() - last < 60_000) return false; // just reloaded and still failing: stop
+    sessionStorage.setItem(KEY, String(Date.now()));
+  } catch {
+    return false;
+  }
+  location.reload();
+  return true;
+}
+
+// Vite fires this when preloading a dynamic import fails
+addEventListener("vite:preloadError", (event) => {
+  if (reloadOnceForStaleChunk()) event.preventDefault();
+});
+```
+
+## Linking frontend and backend traces
+
+This is what turns "the frontend is slow" from a complaint into a trace you can click. The common standard is [W3C Trace Context](https://www.w3.org/TR/trace-context/): a `traceparent` header carries the trace id and span id along with the request.
+
+### The traceparent header
+
+```text
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             │  │                                │                │
+             │  trace-id (32 hex)                parent-id (16 hex) flags (01 = sampled)
+             version
+```
+
+You don't need a heavy SDK to get this. A few dozen lines wrapped around `fetch` are enough for every request to your own API to carry a trace id, and for that trace id to land on your error events:
+
+```ts
+// lib/trace/fetch.ts
+const PROPAGATE_TO = [location.origin, "https://api.example.com"];
+
+function hex(bytes: number) {
+  const buf = crypto.getRandomValues(new Uint8Array(bytes));
+  return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function tracedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const url = new URL(input instanceof Request ? input.url : String(input), location.origin);
+  if (!PROPAGATE_TO.includes(url.origin)) return fetch(input, init);
+
+  const traceId = hex(16);
+  const spanId = hex(8);
+  const sampled = Math.random() < 0.02 ? "01" : "00";
+  const headers = new Headers(init.headers);
+  headers.set("traceparent", `00-${traceId}-${spanId}-${sampled}`);
+
+  const started = performance.now();
+  try {
+    const res = await fetch(input, { ...init, headers });
+    if (!res.ok) reportApiFailure({ traceId, url: url.pathname, status: res.status, ms: performance.now() - started });
+    return res;
+  } catch (err) {
+    reportApiFailure({ traceId, url: url.pathname, status: 0, ms: performance.now() - started });
+    throw err;
+  }
+}
+
+declare function reportApiFailure(info: { traceId: string; url: string; status: number; ms: number }): void;
+```
+
+Two things you have to get right:
+
+- **Only send `traceparent` to your own origins.** Attaching it to third-party API calls leaks information and can break those requests through preflights.
+- **The backend has to allow the header through CORS.** For a cross-origin API, `traceparent` isn't a "simple" header, so the browser preflights. The server must answer with `Access-Control-Allow-Headers: traceparent, tracestate` — forget that line and every request breaks the moment you turn tracing on. I've watched exactly that happen on staging; luckily not on production.
+
+### The OpenTelemetry browser SDK
+
+When I need real frontend spans — document load, every fetch, custom spans around a business flow — I use OpenTelemetry JS for the web. It's considerably heavier than a hand-rolled wrapper, so I lazy-load it once the page is idle, and only for sampled sessions.
+
+```ts
+// lib/trace/otel.ts
+import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
+import { BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { ZoneContextManager } from "@opentelemetry/context-zone";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
+import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+
+export function startTracing(release: string) {
+  const provider = new WebTracerProvider({
+    resource: resourceFromAttributes({
+      [ATTR_SERVICE_NAME]: "web",
+      [ATTR_SERVICE_VERSION]: release,
+    }),
+    sampler: new TraceIdRatioBasedSampler(0.02),
+    spanProcessors: [
+      new BatchSpanProcessor(new OTLPTraceExporter({ url: "/_r/t" }), {
+        maxExportBatchSize: 50,
+        scheduledDelayMillis: 5_000,
+      }),
+    ],
+  });
+
+  provider.register({ contextManager: new ZoneContextManager() });
+
+  registerInstrumentations({
+    instrumentations: [
+      new DocumentLoadInstrumentation(),
+      new FetchInstrumentation({
+        // Only attach traceparent to our own API
+        propagateTraceHeaderCorsUrls: [/^https:\/\/api\.example\.com\//],
+        clearTimingResources: true,
+      }),
+    ],
+  });
+}
+```
+
+The exporter points at a first-party path (`/_r/t`), and the collector forwards to an OpenTelemetry Collector. Don't let the browser post straight to a vendor's tracing backend with an API key — everything in the bundle is readable.
+
+### Server-Timing: bringing the HTML document's trace to the browser
+
+There's a blind spot: the first HTML request is sent by the browser itself, so you can't attach `traceparent` to it. Yet a bad TTFB — the first part of LCP — very often lives right there. I solve it by going the other way: the server creates a trace for the HTML request and returns the trace id in a `Server-Timing` header.
+
+```http
+HTTP/2 200
+Content-Type: text/html; charset=utf-8
+Server-Timing: traceparent;desc="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", db;dur=412, render;dur=96
+```
+
+```ts
+// lib/rum/navigation-trace.ts
+export function navigationTraceId(): string | undefined {
+  const [nav] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+  const entry = nav?.serverTiming.find((t) => t.name === "traceparent");
+  return entry?.description.split("-")[1];
+}
+```
+
+Attach `navigationTraceId()` to your TTFB and LCP events. From then on, every bad LCP point on the dashboard links to the exact backend trace of that HTML request. For cross-origin resources, `serverTiming` is only readable if the server also sends `Timing-Allow-Origin`.
+
+A real story: LCP p75 on the product detail page was bad for a few categories, with nothing different on the frontend. With the trace id on each LCP event, I filtered the high-TTFB samples and opened their traces: the recommendations service was querying the database N+1-style for categories with many variants. Without that bridge, the investigation would have been two teams staring at two different dashboards saying "looks fine on our side".
+
+## PII: scrub it before it leaves the browser
+
+Observability is where personal data leaks most quietly. Nobody deliberately sends user emails into a monitoring system — it just happens to be sitting in a URL, an error message, a breadcrumb.
+
+Where PII typically sneaks in:
+
+- **URLs and query strings**: password-reset links with tokens, email links with `?email=`, search pages with whatever the user typed.
+- **Paths**: `/u/jane.doe`, `/orders/ORD-12345` — which is why the route templates above aren't only about grouping.
+- **Error messages**: `User a@b.com not found`, validation errors containing user input.
+- **Attribution CSS selectors**: a selector can include ids or classes generated from data.
+- **Breadcrumbs**: input values, a forgotten developer `console.log`, request bodies.
+- **Session replay**: the user's entire screen.
+
+```ts
+// lib/rum/scrub.ts
+const PATTERNS: [RegExp, string][] = [
+  [/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[email]"],
+  [/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[jwt]"],
+  [/\b(?:\d[ -]?){13,19}\b/g, "[card]"],
+  [/(\+?\d{1,3}[ .-]?)?(\d[ .-]?){8,11}\b/g, "[phone]"],
+  [/\b[0-9a-f]{32,}\b/gi, "[hex]"],
+];
+
+const SENSITIVE_PARAMS = /^(token|code|email|password|session|auth|key|signature|q|search)$/i;
+
+export function scrubText(input: string): string {
+  let out = input;
+  for (const [re, replacement] of PATTERNS) out = out.replace(re, replacement);
+  return out.slice(0, 500);
+}
+
+export function scrubUrl(raw: string): string {
+  try {
+    const url = new URL(raw, location.origin);
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_PARAMS.test(key)) url.searchParams.set(key, "[redacted]");
+    }
+    url.hash = "";
+    return scrubText(url.toString());
+  } catch {
+    return "[invalid-url]";
+  }
+}
+```
+
+Apply `scrubText` to error messages and selectors in `beforeSend`, and `scrubUrl` to every URL in breadcrumbs (Sentry's `beforeBreadcrumb` exists for this). For session replay, mask all text and inputs by default and unmask specific places deliberately — do it the other way round and sooner or later a checkout form gets recorded.
+
+Then **scrub a second time in the collector**. Clients may be running an old bundle without your newest rules, or a developer adds a field and forgets to scrub it. Server-side scrubbing is a defense you can fix immediately, without waiting for users to reload.
+
+<Callout type="danger" title="Once PII is in your observability store, it's very hard to get out">
+  Monitoring data gets backed up, exported to other tools, sent to vendors and retained for months. A data deletion request then becomes a hunt through five systems. The cheapest option is to never let it in: don't store IPs, raw user agents or full URLs, keep retention short, and respect the user's consent choice before starting any SDK at all.
+</Callout>
+
+## Storage and dashboards: p75 per route and device
+
+RUM events are append-only, high-volume, queried by time range with lots of grouping — exactly what columnar databases are good at. I usually reach for ClickHouse, but BigQuery or any columnar store works.
+
+```sql
+-- schema/rum_vitals.sql
+CREATE TABLE rum_vitals
+(
+    received_at     DateTime64(3),
+    session_id      String,
+    metric_id       String,
+    release         LowCardinality(String),
+    route           LowCardinality(String),
+    name            LowCardinality(String),   -- LCP | INP | CLS | FCP | TTFB
+    value           Float64,
+    rating          LowCardinality(String),
+    navigation_type LowCardinality(String),
+    device          LowCardinality(String),   -- mobile | tablet | desktop
+    engine          LowCardinality(String),
+    country         LowCardinality(String),
+    sample_rate     Float32,
+    nav_trace_id    String,
+    attribution     Map(String, String)
+)
+ENGINE = ReplacingMergeTree(received_at)
+PARTITION BY toYYYYMMDD(received_at)
+ORDER BY (name, route, device, metric_id)
+TTL toDateTime(received_at) + INTERVAL 90 DAY;
+```
+
+`ReplacingMergeTree` keyed on `metric_id` keeps the last record for each metric — matching how CLS and INP get reported more than once. At query time, use `FINAL` or group by `metric_id` taking the latest value when you need exact results.
+
+```sql
+-- INP p75 per route and device over the last 24 hours, weighted by sample rate
+SELECT
+    route,
+    device,
+    round(quantileTDigestWeighted(0.75)(value, toUInt32(round(1 / sample_rate)))) AS inp_p75,
+    count() AS samples,
+    round(countIf(rating = 'good') / count() * 100, 1) AS pct_good
+FROM rum_vitals FINAL
+WHERE name = 'INP'
+  AND received_at > now() - INTERVAL 1 DAY
+  AND navigation_type NOT IN ('back-forward-cache', 'prerender')
+GROUP BY route, device
+HAVING samples >= 200
+ORDER BY inp_p75 DESC
+LIMIT 30;
+```
+
+The dashboard rules I stick to:
+
+- **p75, never the mean.** The mean of long-tailed data gets dragged around by a few huge values and hides what most users experience. p75 matches how Core Web Vitals are assessed; I add p95 for critical routes.
+- **Always show the sample count next to the number.** A p75 over 30 samples swings like a lottery. The `HAVING samples >= 200` above is deliberate.
+- **Good / needs improvement / poor shares** as a stacked bar are often easier for non-engineers to read than a millisecond value.
+- **The default dimensions are route × device.** Desktop almost always hides mobile's problems.
+
+| Panel | The question it answers |
+| --- | --- |
+| Daily p75 LCP, INP, CLS split mobile/desktop, with deploy markers | Is it getting worse, and since when |
+| Top routes by mobile INP p75, with sample counts | What to fix first |
+| INP by `scriptUrl` and by `target` | Which script and which element cause it |
+| LCP split into its four phases per route | Slow because of the server, resource loading or rendering |
+| Release N vs N-1 over the same time window | Did the new release make things worse |
+| Share of sessions with errors and chunk errors per release | Did the release break anything |
+
+## Alerting on regressions, and the deploy-marker workflow
+
+### Alert on what users feel
+
+I keep very few frontend alerts, and every one must lead to an action:
+
+- **Web vitals regression**: p75 INP or LCP for an important route over the last hour is significantly higher than the same hour last week, **and** above an absolute threshold, **and** backed by enough samples. All three conditions — a ratio alone makes low-traffic routes cry wolf all night; an absolute threshold alone misses slow drifts.
+- **New issue in a new release** affecting more than some number of sessions in the first hour after a deploy.
+- **Crash-free session rate drops** compared with the previous release.
+- **Chunk errors spike** after a deploy — a sign old assets were deleted too early.
+
+Compare against the same hour last week rather than the previous hour, because frontend traffic has strong daily and weekly cycles: Saturday evening has more mobile users, and p75 naturally gets worse without anything being broken.
+
+### Deploy markers: a vertical line on every chart
+
+The first question when a chart turns bad is always "did someone deploy something?". A deploy marker answers it before anyone has to ask.
+
+```yaml
+# .github/workflows/deploy.yml (step after a successful deploy)
+- name: Record deploy marker
+  env:
+    SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+    GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
+  run: |
+    SHORT="web@${GITHUB_SHA::12}"
+    bunx sentry-cli releases set-commits "$SHORT" --auto
+    bunx sentry-cli releases finalize "$SHORT"
+    bunx sentry-cli deploys new --release "$SHORT" -e production
+
+    curl -sf -X POST https://grafana.example.com/api/annotations \
+      -H "Authorization: Bearer $GRAFANA_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"tags\":[\"deploy\",\"web\"],\"text\":\"$SHORT deployed\"}"
+```
+
+But time-based markers have a weakness many teams miss: **users don't switch to the new build at the same moment**. A tab opened yesterday still runs the old bundle; an app installed to the home screen might run an old build all week. So in addition to markers on the time axis, I always compare by **release cohort**: p75 of events with `release = N` against `release = N-1` over the same window. That's why the `release` string has to be on every beacon.
+
+My team's routine after every deploy:
+
+1. Deploy to a slice of traffic (canary) if the infrastructure allows it.
+2. For the first 30–60 minutes, whoever deployed watches the "release N vs N-1" dashboard: new issues, error-session rate, chunk errors, INP and LCP p75 on the key routes.
+3. If there are enough samples and nothing got worse, roll out further; if something did, roll back first and investigate after.
+4. Every incident gets written up with links to the exact panels and traces — the next investigation goes faster.
+
+## Mistakes I keep seeing
+
+**Running Lighthouse in CI and calling it monitoring.** Lab data catches reproducible regressions but never sees real INP, real devices or real networks.
+
+**Using the web-vitals build without attribution.** Knowing INP is bad without knowing which interaction and which script produces a "improve performance" ticket that nobody picks up.
+
+**Sending beacons from `unload`, or with a plain `fetch`.** You lose exactly CLS and INP — the two metrics that finalize last.
+
+**Grouping by real URL instead of route template.** Too few samples per bucket, and a PII leak.
+
+**Sampling per event, or starting RUM too late.** No correlation analysis, and you drop exactly the users with the worst experience.
+
+**Deploying public source maps, or mismatched release strings.** The first leaks your source; the second leaves stacks unmapped and metrics impossible to join with errors.
+
+**`ignoreErrors` on everything annoying.** ChunkLoadError gets muted while real users are clicking dead buttons.
+
+**Turning on `traceparent` and forgetting CORS.** Every cross-origin request dies at the preflight.
+
+**Alerting on an absolute threshold over the mean.** Either it pages all night or it never pages at all.
+
+**Only looking at time-based deploy markers.** You ignore users still running the old bundle and blame the wrong release.
+
+## Summary
+
+<Checklist>
+
+- Decide the questions you need to answer before choosing tools; metrics, errors, traces and deploy context share `release`, `route`, `session_id` and `trace_id`.
+- Use lab data in CI to block regressions, CrUX to cross-check, and your own RUM to debug — never compare lab numbers with field numbers.
+- Collect RUM with `web-vitals/attribution`; store all three INP parts, the longest LoAF script and the four LCP phases; split by `navigationType` and browser engine.
+- Attach metrics to route templates; in an SPA, attribute INP by `interactionTime`.
+- Queue events, flush on `visibilitychange` to `hidden` and on `pagehide`, send a string via `sendBeacon` with a `fetch keepalive` fallback, keep batches under roughly 64 KiB.
+- The collector validates, caps size, rate-limits, never stores IPs or raw UAs, hands off to a queue and returns `204`.
+- Sample per session and send `sampleRate` for weighting; load the RUM script early and lazy-load the heavy parts.
+- Source maps: generate hidden, upload with Debug IDs, delete from the artifact; the `release` string matches everywhere.
+- Fingerprint by cause: ResizeObserver, extensions, network errors, chunk errors; fix chunk errors at the root by keeping old assets and reloading once.
+- `traceparent` only to your own origins, with the backend allowing the header through CORS; use `Server-Timing` to link the HTML request to its backend trace.
+- Scrub PII in the client and again in the collector; replay masks everything by default; respect consent.
+- Dashboards show p75 per route × device with sample counts; alerts combine a week-over-week ratio, an absolute threshold and a minimum sample count.
+- Record deploy markers from CI and compare by release cohort, not just by time.
+
+</Checklist>

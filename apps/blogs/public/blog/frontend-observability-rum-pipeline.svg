@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#9CA3AF"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#16A34A"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#D97706"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#2F5BFF"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#DC2626"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#7C3AED"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="62" fill="#111827" font-size="34" font-weight="800">Frontend observability pipeline</text>
+  <text x="40" y="98" fill="#4B5563" font-size="18">Browser → collector → storage → dashboards and alerts, with traces joined to the backend.</text>
+
+  <!-- Browser -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="140" width="250" height="290" rx="22" fill="white" stroke="#2F5BFF" stroke-width="2.5"/>
+  </g>
+  <text x="165" y="180" text-anchor="middle" fill="#111827" font-size="24" font-weight="700">Browser</text>
+  <text x="62" y="222" fill="#4B5563" font-size="17">web-vitals/attribution</text>
+  <text x="62" y="258" fill="#4B5563" font-size="17">error SDK + scrubbing</text>
+  <text x="62" y="294" fill="#4B5563" font-size="17">OTel fetch spans</text>
+  <text x="62" y="330" fill="#4B5563" font-size="17">queue, flush on hidden</text>
+  <text x="62" y="366" fill="#2F5BFF" font-size="17" font-weight="600">sendBeacon / keepalive</text>
+  <text x="62" y="402" fill="#4B5563" font-size="17">sampled per session</text>
+
+  <!-- Collector -->
+  <g filter="url(#shadow)">
+    <rect x="340" y="140" width="230" height="290" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="455" y="180" text-anchor="middle" fill="#111827" font-size="24" font-weight="700">Collector</text>
+  <text x="455" y="206" text-anchor="middle" fill="#2F5BFF" font-size="16" font-weight="600">first-party /_r/e</text>
+  <text x="360" y="246" fill="#4B5563" font-size="17">validate, cap size</text>
+  <text x="360" y="280" fill="#4B5563" font-size="17">scrub PII again</text>
+  <text x="360" y="314" fill="#4B5563" font-size="17">weight by sample rate</text>
+  <text x="360" y="348" fill="#4B5563" font-size="17">add release, device</text>
+  <text x="360" y="382" fill="#DC2626" font-size="17" font-weight="600">no IP, no raw UA</text>
+
+  <!-- Storage -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="140" width="240" height="82" rx="20" fill="white" stroke="#2F5BFF" stroke-width="2.5"/>
+    <rect x="620" y="244" width="240" height="82" rx="20" fill="white" stroke="#DC2626" stroke-width="2.5"/>
+    <rect x="620" y="348" width="240" height="82" rx="20" fill="white" stroke="#7C3AED" stroke-width="2.5"/>
+  </g>
+  <text x="740" y="175" text-anchor="middle" fill="#111827" font-size="21" font-weight="700">ClickHouse</text>
+  <text x="740" y="203" text-anchor="middle" fill="#4B5563" font-size="16">vitals events, 90-day TTL</text>
+  <text x="740" y="279" text-anchor="middle" fill="#111827" font-size="21" font-weight="700">Error store</text>
+  <text x="740" y="307" text-anchor="middle" fill="#4B5563" font-size="16">private source maps</text>
+  <text x="740" y="383" text-anchor="middle" fill="#111827" font-size="21" font-weight="700">Trace store</text>
+  <text x="740" y="411" text-anchor="middle" fill="#4B5563" font-size="16">spans by trace_id</text>
+
+  <!-- Dashboards and alerts -->
+  <g filter="url(#shadow)">
+    <rect x="910" y="140" width="250" height="130" rx="22" fill="white" stroke="#16A34A" stroke-width="2.5"/>
+    <rect x="910" y="300" width="250" height="130" rx="22" fill="#FFFBEB" stroke="#D97706" stroke-width="2.5"/>
+  </g>
+  <text x="1035" y="180" text-anchor="middle" fill="#111827" font-size="24" font-weight="700">Dashboards</text>
+  <text x="1035" y="214" text-anchor="middle" fill="#4B5563" font-size="17">p75 by route × device</text>
+  <text x="1035" y="244" text-anchor="middle" fill="#4B5563" font-size="17">release N vs N-1</text>
+  <text x="1035" y="340" text-anchor="middle" fill="#111827" font-size="24" font-weight="700">Alerts</text>
+  <text x="1035" y="374" text-anchor="middle" fill="#4B5563" font-size="17">vs same hour last week</text>
+  <text x="1035" y="404" text-anchor="middle" fill="#4B5563" font-size="17">+ min sample count</text>
+
+  <!-- Backend lane -->
+  <g filter="url(#shadow)">
+    <rect x="340" y="500" width="230" height="100" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="620" y="500" width="240" height="100" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="910" y="500" width="250" height="100" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="455" y="541" text-anchor="middle" fill="#111827" font-size="21" font-weight="700">API gateway</text>
+  <text x="455" y="571" text-anchor="middle" fill="#4B5563" font-size="16">CORS allows traceparent</text>
+  <text x="740" y="541" text-anchor="middle" fill="#111827" font-size="21" font-weight="700">Backend services</text>
+  <text x="740" y="571" text-anchor="middle" fill="#4B5563" font-size="16">continue the same trace</text>
+  <text x="1035" y="541" text-anchor="middle" fill="#111827" font-size="21" font-weight="700">CI deploy</text>
+  <text x="1035" y="571" text-anchor="middle" fill="#4B5563" font-size="16">release tag + marker</text>
+
+  <!-- browser -> collector -->
+  <path d="M292 285H334" stroke="#2F5BFF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+
+  <!-- collector -> storage -->
+  <path d="M572 285C596 285 596 181 614 181" stroke="#2F5BFF" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+  <path d="M572 285H614" stroke="#DC2626" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrowRed)"/>
+  <path d="M572 285C596 285 596 389 614 389" stroke="#7C3AED" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrowPurple)"/>
+
+  <!-- storage -> dashboards / alerts -->
+  <path d="M862 181C886 181 886 205 904 205" stroke="#16A34A" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+  <path d="M862 190C890 190 880 350 904 350" stroke="#D97706" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowAmber)"/>
+  <path d="M862 285C886 285 886 380 904 380" stroke="#D97706" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowAmber)"/>
+
+  <!-- browser -> gateway with traceparent -->
+  <path d="M165 432V545H334" stroke="#16A34A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowGreen)"/>
+  <text x="178" y="474" fill="#16A34A" font-size="16" font-weight="700">fetch + traceparent</text>
+
+  <!-- gateway -> browser via Server-Timing -->
+  <path d="M338 585H110V436" stroke="#D97706" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowAmber)"/>
+  <text x="224" y="616" text-anchor="middle" fill="#D97706" font-size="16" font-weight="600">Server-Timing: traceparent</text>
+
+  <!-- gateway -> services -->
+  <path d="M572 550H614" stroke="#9CA3AF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <!-- services -> trace store -->
+  <path d="M740 498V436" stroke="#7C3AED" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowPurple)"/>
+  <text x="752" y="472" fill="#7C3AED" font-size="16" font-weight="600">spans</text>
+
+  <!-- CI -> alerts -->
+  <path d="M1035 498V436" stroke="#9CA3AF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <text x="1047" y="472" fill="#4B5563" font-size="16" font-weight="600">deploy marker</text>
+
+  <text x="600" y="652" text-anchor="middle" fill="#111827" font-size="17" font-weight="600">Shared keys everywhere: release · route · session_id · trace_id</text>
+</svg>

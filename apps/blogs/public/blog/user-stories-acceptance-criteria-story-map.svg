@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#6B7280"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="58" fill="#111827" font-size="34" font-weight="800">Story map: returning an online order</text>
+  <text x="40" y="92" fill="#4B5563" font-size="18">The backbone tells the story. Each horizontal slice is a release that still walks the whole journey.</text>
+
+
+  <text x="48" y="146" fill="#111827" font-size="18" font-weight="800">Backbone</text>
+  <text x="48" y="170" fill="#4B5563" font-size="16">user activities</text>
+  <g filter="url(#shadow)"><rect x="196" y="118" width="148" height="64" rx="16" fill="#1E3A8A"/></g>
+  <text x="270" y="156" text-anchor="middle" fill="white" font-size="18" font-weight="700">Find order</text>
+  <g filter="url(#shadow)"><rect x="357" y="118" width="148" height="64" rx="16" fill="#1E3A8A"/></g>
+  <text x="431" y="156" text-anchor="middle" fill="white" font-size="18" font-weight="700">Pick items</text>
+  <g filter="url(#shadow)"><rect x="518" y="118" width="148" height="64" rx="16" fill="#1E3A8A"/></g>
+  <text x="592" y="156" text-anchor="middle" fill="white" font-size="18" font-weight="700">Give reason</text>
+  <g filter="url(#shadow)"><rect x="679" y="118" width="148" height="64" rx="16" fill="#1E3A8A"/></g>
+  <text x="753" y="156" text-anchor="middle" fill="white" font-size="18" font-weight="700">Choose refund</text>
+  <g filter="url(#shadow)"><rect x="840" y="118" width="148" height="64" rx="16" fill="#1E3A8A"/></g>
+  <text x="914" y="156" text-anchor="middle" fill="white" font-size="18" font-weight="700">Ship it back</text>
+  <g filter="url(#shadow)"><rect x="1001" y="118" width="148" height="64" rx="16" fill="#1E3A8A"/></g>
+  <text x="1075" y="156" text-anchor="middle" fill="white" font-size="18" font-weight="700">Get refunded</text>
+  <path d="M345 150H355" stroke="#1E3A8A" stroke-width="3" stroke-linecap="round"/>
+  <path d="M506 150H516" stroke="#1E3A8A" stroke-width="3" stroke-linecap="round"/>
+  <path d="M667 150H677" stroke="#1E3A8A" stroke-width="3" stroke-linecap="round"/>
+  <path d="M828 150H838" stroke="#1E3A8A" stroke-width="3" stroke-linecap="round"/>
+  <path d="M989 150H999" stroke="#1E3A8A" stroke-width="3" stroke-linecap="round"/>
+
+  <rect x="30" y="200" width="1140" height="100" rx="18" fill="#EEF2FF" stroke="#2F5BFF" stroke-width="2.5"/>
+  <text x="48" y="234" fill="#2F5BFF" font-size="17" font-weight="800">Walking</text>
+  <text x="48" y="256" fill="#2F5BFF" font-size="17" font-weight="800">skeleton</text>
+  <text x="48" y="280" fill="#4B5563" font-size="16">Release 1</text>
+  <g filter="url(#shadow)"><rect x="196" y="218" width="148" height="64" rx="14" fill="white" stroke="#2F5BFF" stroke-width="2"/></g>
+  <text x="270" y="245" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Pick from</text>
+  <text x="270" y="267" text-anchor="middle" fill="#374151" font-size="16">order list</text>
+  <g filter="url(#shadow)"><rect x="357" y="218" width="148" height="64" rx="14" fill="white" stroke="#2F5BFF" stroke-width="2"/></g>
+  <text x="431" y="245" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Tick items</text>
+  <text x="431" y="267" text-anchor="middle" fill="#374151" font-size="16">to return</text>
+  <g filter="url(#shadow)"><rect x="518" y="218" width="148" height="64" rx="14" fill="white" stroke="#2F5BFF" stroke-width="2"/></g>
+  <text x="592" y="245" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Reason from</text>
+  <text x="592" y="267" text-anchor="middle" fill="#374151" font-size="16">a fixed list</text>
+  <g filter="url(#shadow)"><rect x="679" y="218" width="148" height="64" rx="14" fill="white" stroke="#2F5BFF" stroke-width="2"/></g>
+  <text x="753" y="245" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Refund to</text>
+  <text x="753" y="267" text-anchor="middle" fill="#374151" font-size="16">original card</text>
+  <g filter="url(#shadow)"><rect x="840" y="218" width="148" height="64" rx="14" fill="white" stroke="#2F5BFF" stroke-width="2"/></g>
+  <text x="914" y="245" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Print label,</text>
+  <text x="914" y="267" text-anchor="middle" fill="#374151" font-size="16">drop off</text>
+  <g filter="url(#shadow)"><rect x="1001" y="218" width="148" height="64" rx="14" fill="white" stroke="#2F5BFF" stroke-width="2"/></g>
+  <text x="1075" y="245" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Ops refunds</text>
+  <text x="1075" y="267" text-anchor="middle" fill="#374151" font-size="16">manually</text>
+
+  <rect x="30" y="318" width="1140" height="100" rx="18" fill="#FFF7ED" stroke="#D97706" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="48" y="362" fill="#D97706" font-size="17" font-weight="800">Release 2</text>
+  <text x="48" y="386" fill="#4B5563" font-size="16">make it smooth</text>
+  <g filter="url(#shadow)"><rect x="196" y="336" width="148" height="64" rx="14" fill="white" stroke="#D97706" stroke-width="2"/></g>
+  <text x="270" y="363" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Search by</text>
+  <text x="270" y="385" text-anchor="middle" fill="#374151" font-size="16">order number</text>
+  <g filter="url(#shadow)"><rect x="357" y="336" width="148" height="64" rx="14" fill="white" stroke="#D97706" stroke-width="2"/></g>
+  <text x="431" y="363" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Partial</text>
+  <text x="431" y="385" text-anchor="middle" fill="#374151" font-size="16">quantity</text>
+  <g filter="url(#shadow)"><rect x="518" y="336" width="148" height="64" rx="14" fill="white" stroke="#D97706" stroke-width="2"/></g>
+  <text x="592" y="363" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Upload</text>
+  <text x="592" y="385" text-anchor="middle" fill="#374151" font-size="16">photos</text>
+  <g filter="url(#shadow)"><rect x="679" y="336" width="148" height="64" rx="14" fill="white" stroke="#D97706" stroke-width="2"/></g>
+  <text x="753" y="363" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Store credit</text>
+  <text x="753" y="385" text-anchor="middle" fill="#374151" font-size="16">+ bonus</text>
+  <g filter="url(#shadow)"><rect x="840" y="336" width="148" height="64" rx="14" fill="white" stroke="#D97706" stroke-width="2"/></g>
+  <text x="914" y="363" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Courier</text>
+  <text x="914" y="385" text-anchor="middle" fill="#374151" font-size="16">pickup</text>
+  <g filter="url(#shadow)"><rect x="1001" y="336" width="148" height="64" rx="14" fill="white" stroke="#D97706" stroke-width="2"/></g>
+  <text x="1075" y="363" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Auto refund</text>
+  <text x="1075" y="385" text-anchor="middle" fill="#374151" font-size="16">on scan</text>
+
+  <rect x="30" y="436" width="1140" height="100" rx="18" fill="#F0FDF4" stroke="#16A34A" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="48" y="480" fill="#16A34A" font-size="17" font-weight="800">Release 3</text>
+  <text x="48" y="504" fill="#4B5563" font-size="16">cover the edges</text>
+  <g filter="url(#shadow)"><rect x="196" y="454" width="148" height="64" rx="14" fill="white" stroke="#16A34A" stroke-width="2"/></g>
+  <text x="270" y="481" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Guest lookup</text>
+  <text x="270" y="503" text-anchor="middle" fill="#374151" font-size="16">by email</text>
+  <g filter="url(#shadow)"><rect x="357" y="454" width="148" height="64" rx="14" fill="white" stroke="#16A34A" stroke-width="2"/></g>
+  <text x="431" y="481" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Exchange</text>
+  <text x="431" y="503" text-anchor="middle" fill="#374151" font-size="16">for a size</text>
+  <g filter="url(#shadow)"><rect x="518" y="454" width="148" height="64" rx="14" fill="white" stroke="#16A34A" stroke-width="2"/></g>
+  <text x="592" y="481" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Damage</text>
+  <text x="592" y="503" text-anchor="middle" fill="#374151" font-size="16">claim flow</text>
+  <g filter="url(#shadow)"><rect x="679" y="454" width="148" height="64" rx="14" fill="white" stroke="#16A34A" stroke-width="2"/></g>
+  <text x="753" y="481" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Bank transfer</text>
+  <text x="753" y="503" text-anchor="middle" fill="#374151" font-size="16">for COD</text>
+  <g filter="url(#shadow)"><rect x="840" y="454" width="148" height="64" rx="14" fill="white" stroke="#16A34A" stroke-width="2"/></g>
+  <text x="914" y="481" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Track the</text>
+  <text x="914" y="503" text-anchor="middle" fill="#374151" font-size="16">return</text>
+  <g filter="url(#shadow)"><rect x="1001" y="454" width="148" height="64" rx="14" fill="white" stroke="#16A34A" stroke-width="2"/></g>
+  <text x="1075" y="481" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Status</text>
+  <text x="1075" y="503" text-anchor="middle" fill="#374151" font-size="16">emails</text>
+
+  <path d="M196 568H1140" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <text x="668" y="598" text-anchor="middle" fill="#4B5563" font-size="17" font-weight="600">narrative flow: read left to right to understand the journey</text>
+  <path d="M100 560V640" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <text x="120" y="632" fill="#4B5563" font-size="17" font-weight="600">priority: top to bottom. Ship a whole row, never a single column.</text>
+</svg>

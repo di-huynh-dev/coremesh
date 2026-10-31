@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#9CA3AF"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#2F5BFF"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#16A34A"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="58" fill="#111827" font-size="34" font-weight="800">From a path string to a typed call</text>
+  <text x="40" y="92" fill="#4B5563" font-size="18">One literal in the route map feeds every type the caller sees. Zod keeps the response type honest at runtime.</text>
+
+  <!-- Row 1 -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="130" width="340" height="150" rx="22" fill="white" stroke="#2F5BFF" stroke-width="2.5"/>
+  </g>
+  <text x="62" y="166" fill="#2F5BFF" font-size="20" font-weight="700">1 · defineRoutes&lt;const R&gt;</text>
+  <text x="62" y="202" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">path: "/users/:id/posts/:postId"</text>
+  <text x="62" y="234" fill="#4B5563" font-size="16">The literal survives: not widened</text>
+  <text x="62" y="258" fill="#4B5563" font-size="16">to string, method stays "GET"</text>
+
+  <g filter="url(#shadow)">
+    <rect x="430" y="130" width="340" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="452" y="166" fill="#111827" font-size="20" font-weight="700">2 · template literal + infer</text>
+  <text x="452" y="202" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">`${string}:${infer P}/${infer R}`</text>
+  <text x="452" y="234" fill="#4B5563" font-size="16">recurse on the rest of the path</text>
+  <text x="452" y="262" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">→ "id" | "postId"</text>
+
+  <g filter="url(#shadow)">
+    <rect x="820" y="130" width="340" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="842" y="166" fill="#111827" font-size="20" font-weight="700">3 · mapped type</text>
+  <text x="842" y="202" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">{ [K in Names]: string }</text>
+  <text x="842" y="234" fill="#4B5563" font-size="16">or the route's param schema</text>
+  <text x="842" y="262" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">→ { id: UserId; postId: PostId }</text>
+
+  <path d="M382 205H424" stroke="#9CA3AF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M772 205H814" stroke="#9CA3AF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <!-- connector row1 -> row2 -->
+  <path d="M990 282V316H210V346" stroke="#9CA3AF" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+
+  <!-- Row 2 -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="352" width="340" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="62" y="388" fill="#111827" font-size="20" font-weight="700">4 · key remapping</text>
+  <text x="62" y="424" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">as `${M} ${P}`</text>
+  <text x="62" y="456" fill="#4B5563" font-size="16">route names become endpoint keys</text>
+  <text x="62" y="484" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">"GET /users/:id/posts/:postId"</text>
+
+  <g filter="url(#shadow)">
+    <rect x="430" y="352" width="340" height="150" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="452" y="388" fill="#111827" font-size="20" font-weight="700">5 · conditional args</text>
+  <text x="452" y="424" fill="#4B5563" font-size="16">params required only if the path</text>
+  <text x="452" y="448" fill="#4B5563" font-size="16">has them; body only if a schema</text>
+  <text x="452" y="484" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">[Names] extends [never] ? …</text>
+
+  <g filter="url(#shadow)">
+    <rect x="820" y="352" width="340" height="150" rx="22" fill="white" stroke="#16A34A" stroke-width="2.5"/>
+  </g>
+  <text x="842" y="388" fill="#16A34A" font-size="20" font-weight="700">6 · typed call</text>
+  <text x="842" y="424" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">api.call("GET /users/:id/…",</text>
+  <text x="842" y="450" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">  { params: { id, postId } })</text>
+  <text x="842" y="484" fill="#374151" font-size="15" font-family="JetBrains Mono, Consolas, monospace">→ ApiResult&lt;Post, NotFound&gt;</text>
+
+  <path d="M382 427H424" stroke="#9CA3AF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M772 427H814" stroke="#16A34A" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+
+  <!-- Zod strip -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="540" width="1120" height="100" rx="22" fill="#EEF2FF" stroke="#2F5BFF" stroke-width="2"/>
+  </g>
+  <text x="64" y="578" fill="#2F5BFF" font-size="20" font-weight="700">Runtime bridge (Zod)</text>
+  <text x="64" y="612" fill="#374151" font-size="17">response: PostSchema</text>
+  <path d="M248 606H322" stroke="#2F5BFF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+  <text x="285" y="596" text-anchor="middle" fill="#2F5BFF" font-size="15" font-weight="600">z.infer</text>
+  <text x="332" y="612" fill="#374151" font-size="17">the Post type in step 6</text>
+  <text x="560" y="612" fill="#9CA3AF" font-size="17">·</text>
+  <text x="586" y="612" fill="#374151" font-size="17">same schema</text>
+  <path d="M700 606H794" stroke="#16A34A" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+  <text x="747" y="596" text-anchor="middle" fill="#16A34A" font-size="15" font-weight="600">safeParse</text>
+  <text x="804" y="612" fill="#374151" font-size="17">kind: "contract" error on drift</text>
+</svg>

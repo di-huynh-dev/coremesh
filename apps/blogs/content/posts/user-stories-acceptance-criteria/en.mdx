@@ -1,0 +1,621 @@
+---
+title: "User Stories and Acceptance Criteria: Write Them So Developers Can Build and Testers Can Verify"
+excerpt: "A good user story isn't the “As a… I want… so that…” sentence, it's the conversation and the examples around it. This post covers the 3 Cs, INVEST with real bad and good examples, story mapping, splitting patterns, acceptance criteria as rules plus examples, Gherkin done right, Example Mapping and turning ACs into automated tests."
+---
+
+<Lead>I once picked up a story that looked textbook: "As a customer, I want to return items online so that I don't have to visit a store." All three clauses, clear business value, the PO nodded, the team estimated 5 points. Three sprints later it still wasn't done. Not because the code was hard, but because every demo surfaced a question nobody had answered: can sale items be returned, where does a cash-on-delivery refund go, which time zone decides "day 30", what about returning half the quantity. The story wasn't badly formatted — it was badly understood, by everyone, in different ways. This post is how I write and clarify user stories after years of standing between POs, developers and testers: the 3 Cs, INVEST checked against real examples, story mapping, splitting patterns, acceptance criteria as rules plus examples, Gherkin done properly, Example Mapping, Definition of Ready and Done, and finally how ACs flow straight into automated tests.</Lead>
+
+## Why a well-formatted story still fails
+
+The `As a [role], I want [action], so that [value]` template is useful, but it's just packaging. I see stories fail in the same three ways over and over:
+
+- **Different silent assumptions.** The PO thinks "return" means an automatic refund, the developer thinks it creates a ticket for the ops team, the tester assumes size exchanges are included. Everyone reads the same sentence and fills the gaps with their own experience.
+- **Too big, and nobody notices.** The story looks tidy on a card, but underneath sit six workflow steps, four refund methods and a courier integration. The 5-point estimate is a comfort number.
+- **No way to say "done".** Either there are no acceptance criteria, or they read like "the system works correctly" and "the UI is user-friendly". Testers have nothing to check, so each person tests against their memory of last week's meeting.
+
+None of these are fixed by filling in the template more carefully. They're fixed by **structured conversation** and **concrete examples**. The rest of this post follows one epic throughout: online returns for an e-commerce shop that sells clothing and electronics, with both card payments and cash on delivery (COD).
+
+## The 3 Cs: Card, Conversation, Confirmation
+
+Ron Jeffries described user stories with three Cs, and it's still the most useful definition I know.
+
+### Card: a promise to have a conversation
+
+The card (or the Jira or Linear ticket) is deliberately short. It isn't a specification — it's **a reminder that a need exists and has to be discussed**. When a ticket grows to three pages of mockups, data flows and fifteen bullets, someone is usually trying to replace the conversation with a document, and documents can't answer the next question.
+
+A good card has a verb-first title, the "who — wants what — so that" sentence, and links to where the rest lives (the story map, the Example Map, the designs).
+
+```text
+Return one item from a delivered order
+
+As a customer who has received my order,
+I want to request a return for one item,
+so that I get my money back without calling support.
+
+Story map: Returns / Release 1
+Example map: (link)
+```
+
+### Conversation: where the real requirements show up
+
+The most valuable part of a story isn't on the card. It's in the conversation between the person who understands the business (PO, BA, sometimes the actual ops staff), the person who'll build it (developer) and the person who'll try to break it (tester). This is the "three amigos", and my rule is simple: **no story enters a sprint until those three roles have sat down with it at least once**, even for twenty minutes.
+
+The conversation produces things no template can force out: "oh, final-sale items can't be returned", "we don't have bank details for COD customers", "the warehouse only accepts returns Monday to Friday". Those sentences have to be captured — and the place to capture them is the third C.
+
+### Confirmation: acceptance criteria
+
+Confirmation is how the team knows the story is done. It's the acceptance criteria, ideally as **rules with concrete examples** — most of this post is about that. If the conversation is where understanding is discovered, the ACs are where that understanding is **frozen** into something verifiable.
+
+<Callout type="tip" title="Record decisions, not minutes">
+After a three amigos session, don't write minutes of who said what. Update three things: the agreed rules, the examples that illustrate each rule, and the open questions with the name of whoever owns the answer. Anyone reading the ticket a month later understands it, including people who weren't in the room.
+</Callout>
+
+## INVEST, checked against real examples
+
+INVEST (Bill Wake) is a six-letter checklist for whether a story is healthy. Everyone can recite it; few people use it to **fix** stories. The table below shows examples I've actually run into (domain renamed), with the improved version.
+
+| Criterion | Question to ask | Bad story | Better story |
+| --- | --- | --- | --- |
+| **I**ndependent | Can it be built and released on its own? | "Build the returns API", then "Build the returns UI" | "Customer returns one item, refunded to the original card" — a vertical slice through UI, API, DB |
+| **N**egotiable | Is there still room to discuss how? | "Add a 48px orange button top-right that calls POST /returns" | "Customer can start a return from the order details page" |
+| **V**aluable | Who gets value when it ships? | "Create the return_requests table" | "Ops sees the list of new return requests every morning" |
+| **E**stimable | Does the team understand it well enough to estimate? | "Integrate the courier for returns" (nobody has read the API) | A 2-day spike on the courier pickup API, then write the stories |
+| **S**mall | Can it be finished in a few days? | "Customers return items online" (the whole epic) | Split by workflow and rules, each story 1–3 days |
+| **T**estable | Is there an objective way to say "done"? | "The return flow must be easy to use" | "Customer can create a request in at most 3 steps; final-sale items are rejected with a reason" |
+
+### Independent doesn't mean "no dependencies"
+
+People new to this read "independent" as "depends on nothing". That's impossible — "refund to store credit" obviously needs "create a return request" first. The point of the I is to **avoid hard dependencies between peer stories**, especially the horizontal kind (backend story, frontend story), where no story delivers value on its own and none can be tested end to end.
+
+When a real dependency exists, I deal with it in this order: merge the two stories if they're tiny; reorder the backlog so it's obvious; or accept the dependency and write it down. What I don't do is pretend it isn't there.
+
+### Small and Estimable travel together
+
+A story you can't estimate is usually either too big (lots of unknowns piled into one place) or has a completely blind technical area. The first gets split. The second gets a **spike** — a time-boxed task to learn, whose output is knowledge rather than a feature. We'll come back to spikes in the splitting section.
+
+How small is "small"? My practical rule: a story should be done — coded, reviewed, tested, merged — in **roughly 1 to 3 days** for one or two people. Anything larger and "90% done" tends to last all week.
+
+<Callout type="warning" title="Technical stories aren't a crime, but don't dress them up as user stories">
+"As a developer, I want to upgrade the ORM so that..." is a small lie. Developers aren't the end users, and phrasing it that way doesn't make the work more valuable. Necessary technical work should be a technical task or enabler with the business reason spelled out (faster builds, unblocking feature X), and the PO should prioritise it in the open. The disguise only makes the backlog harder to read.
+</Callout>
+
+## Story mapping: see the whole journey before you split
+
+A flat backlog — a long list sorted by priority — is terrible at showing the big picture. You look at story #37 and have no idea where it sits in the user's journey. Story mapping (Jeff Patton) fixes that by adding a second dimension: **the horizontal axis is the journey, the vertical axis is priority**.
+
+<Figure src="/blog/user-stories-acceptance-criteria-story-map.svg" alt="A story map for online returns. The top row is the backbone with six activities in order: find order, pick items, give reason, choose refund, ship it back, get refunded. Below it are three horizontal slices: the walking skeleton (release 1) with pick from order list, tick items to return, reason from a fixed list, refund to original card, print label and drop off, ops refunds manually; release 2 with search by order number, partial quantity, upload photos, store credit plus bonus, courier pickup, auto refund on scan; release 3 with guest lookup by email, exchange for a size, damage claim flow, bank transfer for COD, track the return, status emails. A horizontal arrow shows the narrative flow left to right and a vertical arrow shows priority from top to bottom." caption="Read across to understand the journey, read down to prioritise. Every slice is a release that walks the whole journey, however rough." />
+
+### The backbone: the user's big activities
+
+The top row is the **backbone**: the activities the user performs, in time order, written as verbs from their point of view rather than the system's. For returns: find order, pick items, give a reason, choose a refund, ship it back, get refunded.
+
+How I build it in a workshop: everyone writes sticky notes for "a customer's day when they want to return something", then the group arranges them in time order and clusters them. Just arranging them exposes steps nobody had thought about — "ship it back", for example, turned out to be two completely different paths (drop off at a post office versus courier pickup).
+
+### The walking skeleton: the thinnest slice that walks end to end
+
+The first slice under the backbone is the **walking skeleton**: the crudest version that still goes from start to finish. In the example, customers can only pick from their order list, reasons come from a fixed list, refunds only go to the original card, customers print a label and drop the parcel off themselves, and — importantly — **the refund step is done manually by ops** in the admin panel.
+
+It sounds unfinished, but a walking skeleton gives you three things that perfecting each step in turn never will: the system runs end to end early (exposing integration risk), you get real data to decide where to invest next, and users get real value from the first release. The manual step isn't shameful tech debt — it's the cheapest way to learn what to automate first.
+
+### Release slices: each slice is a complete release
+
+The following slices make the journey smoother (release 2) and then cover the edges (release 3). The golden rule: **ship a whole row, never a single column**. Perfecting "find order" with search, filters and guest lookup while nobody can get a refund yet is the fastest way to burn three sprints with nothing to give users.
+
+One benefit people rarely mention: a story map is a very effective way to **say "not yet"**. When a stakeholder asks "what about exchanges?", you point to the card in release 3 — it isn't forgotten, it just isn't its turn. The argument shifts from "yes or no" to "which slice", which is a much friendlier conversation.
+
+## Splitting stories: patterns that actually work
+
+Knowing stories should be small is one thing; knowing **where to cut** is another. The founding principle: cut **vertically** — each piece still goes through every layer it needs and delivers observable value. These are the patterns I use most, roughly in the order I try them.
+
+### By workflow step
+
+If the story is a multi-step journey, each step (or a few steps together) can become a story — as long as there's still a way to complete the flow, even manually. This is exactly how the walking skeleton is born: "create a return request" is one story, "ops reviews the request" is another, "refund" is a third.
+
+### By business rule variation
+
+When a story has several rules, build the simplest rule first and make the others separate stories. Returns have: a 30-day window for general items, 15 days for electronics, final-sale items can't be returned, each item can only be returned once. The first story only needs the 30-day window; electronics and final sale come later. Each rule gets its own ACs and tests, and the PO can decide which rules are really needed for the first release.
+
+### Happy path first, unhappy paths after
+
+Build the success path first and turn the failure paths into their own stories: window expired, order not delivered, item already has a request, courier not responding. One caveat: **the minimum unhappy-path handling that prevents data loss or wrong money must ship with the happy path**, not be split off. A "create return request" story that lets you create two requests for the same item isn't a happy path — it's a bug.
+
+### By data or channel variation
+
+Same action, different kind of data: refund to card, refund as store credit, bank transfer for COD orders. Each method has its own risks and integrations, so each is a story. The same goes for channels: web first, app later; one language first, more later.
+
+### By operation (CRUD)
+
+"Manage return requests" is a phrase hiding four stories: create, view, edit (change reason or quantity), cancel. Usually create and view are needed for the first release, edit may never be needed (cancel and recreate is enough), and cancel has its own rule (you can't cancel once the parcel has shipped).
+
+### A spike when you don't know enough to estimate
+
+When nobody knows whether the courier's API can create pickup orders, don't guess an estimate. Create a spike with a **fixed time box** (one or two days) and **specific questions to answer**: does the API have an endpoint for pickup orders? Are the status webhooks reliable? Is the sandbox usable? The output is a short note and new, estimable stories — not production code.
+
+### Worked example: splitting the "Online returns" epic
+
+This is the real outcome of a splitting session, trimmed. The last column shows which pattern produced each story.
+
+| # | Story | Slice | Pattern |
+| --- | --- | --- | --- |
+| 1 | Customer requests a return for one item within 30 days, refunded to the original card | Release 1 | Workflow + simplest rule |
+| 2 | Ops sees new requests and marks them as manually refunded | Release 1 | Workflow (manual step) |
+| 3 | Customer prints a return label and gets drop-off instructions | Release 1 | Workflow |
+| 4 | Final-sale items are rejected with a reason | Release 1 | Rule (money risk, so pulled forward) |
+| 5 | Electronics have a 15-day window | Release 2 | Rule variation |
+| 6 | Customer returns part of a line's quantity | Release 2 | Data variation |
+| 7 | Refund as store credit with a bonus | Release 2 | Data variation |
+| 8 | Spike: courier pickup API | Before release 2 | Spike |
+| 9 | Courier collects the parcel from home | Release 2 | Workflow (after the spike) |
+| 10 | Customer cancels a request before shipping | Release 2 | CRUD |
+| 11 | COD orders refunded by bank transfer | Release 3 | Data variation |
+| 12 | Guest customers look up an order by email and order number | Release 3 | Channel variation |
+
+Note story 4: by the "simplest rule first" logic it could wait, but without it customers can return final-sale items and the company loses real money. Patterns are tools; ordering is still decided by risk and value.
+
+<Callout type="danger" title="Splitting by technical layer isn't splitting a story">
+"Story 1: database. Story 2: API. Story 3: UI." looks like splitting, but no story has value on its own, none can be demoed to the PO, and all the integration risk is pushed to the end. If your team needs to divide work between people, split it into **tasks** inside one vertical story; don't promote tasks to stories.
+</Callout>
+
+## Acceptance criteria are rules plus examples
+
+There are two common styles of AC: a list of rules ("final-sale items cannot be returned") and scenarios ("Given... When... Then..."). I use **both, in that order**: rules first to state the policy, examples second to make the rule impossible to misread.
+
+### Rules: the business policy, stated briefly
+
+A rule is a general statement, independent of the UI:
+
+```text
+Story 1 — Return one item, refunded to the original card
+
+R1. General items can be returned within 30 days of successful delivery.
+R2. Each order line has at most one open return request.
+R3. The refund equals the price paid for the item, excluding the original shipping fee.
+R4. On success the customer receives a request number and a confirmation email.
+```
+
+Good rules have three properties: they're verifiable (clearly true or false), they don't describe implementation (no "click the button", no "call the API"), and they're small enough that one example can illustrate them.
+
+### Examples: make the rule impossible to misread
+
+R1 sounds perfectly clear until someone asks "does day 30 count?". Concrete examples with real dates force the team to answer:
+
+| Delivered | Requested | Outcome | Note |
+| --- | --- | --- | --- |
+| Sep 1 | Sep 15 | Accepted | Mid-window |
+| Sep 1 | Oct 1 | Accepted | Day 30, still inside |
+| Sep 1 | Oct 2 | Rejected: window closed | Day 31 |
+| Sep 1 at 06:30 | Oct 1 | Accepted | The day is counted in store time (Vietnam), not UTC |
+| Not delivered | any | Rejected: not delivered | Order still in transit |
+
+The last two rows only appear when someone actually sits down to write examples. The "06:30" row came from a tester's question: the system stores delivery timestamps in UTC, and 06:30 on Sep 1 in Vietnam is 23:30 UTC on Aug 31. If the code derives the date from the UTC timestamp, the delivery date becomes Aug 31, and a request on Oct 1 becomes day 31 — the customer is wrongly rejected on the very last day. Nobody thought about this until they had to write an example with an actual time in it.
+
+Good examples tend to live at the **boundaries**: just before, exactly at and just after every threshold; empty values; states that haven't happened yet.
+
+## Gherkin: Given/When/Then done well and done badly
+
+Gherkin is the Given/When/Then syntax used by Cucumber and many BDD tools. It's useful when you want examples that business people can read and that can also run as tests. But bad Gherkin is worse than none: long, brittle, and read by nobody outside QA.
+
+### The UI-scripted style: describing clicks
+
+```text
+# features/returns-bad.feature
+Scenario: Return item
+  Given I open "https://shop.example/login"
+  And I type "an@example.com" into "#email"
+  And I type "secret123" into "#password"
+  And I click the button "Sign in"
+  And I click "My orders"
+  And I click the first row in the orders table
+  And I click "Return" next to "Basic T-shirt"
+  And I select "Doesn't fit" from "#reason"
+  And I click "Submit request"
+  Then I should see "Your request has been received"
+```
+
+What's wrong with it:
+
+- **It states no rule.** After reading it you don't know what it checks — the 30-day window? the card refund? When was the order delivered? Nobody knows.
+- **It's brittle.** Rename an input ID, change a button label, move "Return" into a kebab menu — the scenario goes red even though the business didn't change.
+- **It repeats itself.** Ten scenarios contain ten logins and ten trips to the orders page.
+
+### The declarative style: describing behaviour
+
+```text
+# features/returns/eligibility.feature
+Feature: Return eligibility
+
+  Rule: General items can be returned within 30 days of delivery
+
+    Background:
+      Given today is 2026-10-01 in the store's time zone
+
+    Scenario: Return on the last day of the window
+      Given a customer received a T-shirt on 2026-09-01
+      When she requests a return for the T-shirt
+      Then the return request is accepted
+      And the refund amount equals the price she paid
+
+    Scenario: Return one day after the window closes
+      Given a customer received a T-shirt on 2026-08-31
+      When she requests a return for the T-shirt
+      Then the return request is rejected because the return window has closed
+
+  Rule: Final-sale items cannot be returned
+
+    Scenario: Final-sale item is rejected even inside the window
+      Given a customer received a final-sale jacket on 2026-09-25
+      When she requests a return for the jacket
+      Then the return request is rejected because the item is final sale
+```
+
+This says **what**, not **how**. Signing in, navigation and button IDs live in the step definitions — one place to change when the UI changes. The PO can read it and point out what's wrong. The `Rule:` keyword (available since Gherkin 6) groups scenarios under the rule they illustrate, so the file structure mirrors the structure of the ACs.
+
+### Scenario Outline for example tables
+
+When a rule has several examples of the same shape, use a `Scenario Outline` with an `Examples` table rather than copy-pasting scenarios:
+
+```text
+# features/returns/window.feature
+Feature: Return window
+
+Rule: The return window depends on the product category
+
+  Scenario Outline: Window for <category>
+    Given a customer received a <category> item on <delivered>
+    And today is <today> in the store's time zone
+    When she requests a return for the item
+    Then the return request is <outcome>
+
+    Examples:
+      | category    | delivered  | today      | outcome  |
+      | general     | 2026-09-01 | 2026-10-01 | accepted |
+      | general     | 2026-09-01 | 2026-10-02 | rejected |
+      | electronics | 2026-09-01 | 2026-09-16 | accepted |
+      | electronics | 2026-09-01 | 2026-09-17 | rejected |
+```
+
+Don't overdo it: a twenty-row table with ten columns means you're testing a lookup table, and that belongs in a unit test, not in a feature file the PO is supposed to read.
+
+### The rules I follow
+
+- **One scenario, one behaviour.** Exactly one `When`. Two `When`s usually means two scenarios glued together.
+- **Given is state, not action.** "Given a customer received a T-shirt on 2026-09-01", not "Given I place an order and the courier delivers it".
+- **Then checks an outcome the business can observe**, not database rows or status codes.
+- **Use the third person or a persona** ("she", "Lan, a regular customer") rather than an ambiguous "I" — with several roles (customer, ops), who is "I"?
+- **Under ten lines.** Longer means too much detail unrelated to the rule.
+- **Keep the business vocabulary** — words in scenarios should be the words the PO and ops use every day. If the team says "final sale", don't write "non-refundable SKU flag".
+
+## Example Mapping: 25 minutes before any code
+
+Example Mapping (Matt Wynne, of Cucumber) is the technique I use for nearly every story with non-trivial business rules. It turns the three amigos session from "general chatting" into a structured map, and it tells you whether the story is ready.
+
+### Four colours of cards
+
+- **Yellow — story:** a single card at the top.
+- **Blue — rule:** one card per rule, laid out horizontally under the story.
+- **Green — example:** concrete examples, stacked under the rule they illustrate. Keep them short, like "Delivered Sep 1, requested Oct 1 → OK"; no Gherkin yet.
+- **Red — question:** anything nobody can answer right now. Write it down and move on; don't argue until it's settled.
+
+Time-box it to about 25 minutes. If the map is still a mess when time runs out, that is the information: the story isn't ready.
+
+### A real session
+
+Here's the map for story 1 after the first session, written out as text (on the real board it's sticky notes or a Miro/FigJam board):
+
+```text
+[STORY] Customer returns one item, refunded to the original card
+
+[RULE] 30-day window from delivery
+  [EX] Delivered Sep 1, requested Sep 15 → accepted
+  [EX] Delivered Sep 1, requested Oct 1 → accepted (day 30)
+  [EX] Delivered Sep 1, requested Oct 2 → rejected, window closed
+  [EX] Order in transit → rejected, not delivered
+
+[RULE] One open request per order line
+  [EX] Open request exists → return button hidden, "request already exists"
+  [EX] Previous request was cancelled → a new request is allowed
+
+[RULE] Refund the price paid, excluding shipping
+  [EX] Listed at 300k, bought with a 20% code → refund 240k
+  [EX] Two-item order with a 50k code on the whole order → ?
+
+[RULE] Final-sale items cannot be returned
+  [EX] Final-sale jacket delivered yesterday → rejected
+
+[Q] Which time zone defines a "day"? (Owner: PO, ask ops)
+[Q] How is an order-level discount split across lines? (Owner: BA + accounting)
+[Q] Is final sale part of this story or its own? (Owner: PO)
+```
+
+### Reading the signals
+
+The map tells you more than its content:
+
+- **Lots of red cards:** the story isn't ready. Pulling it into a sprint means carrying questions into the code, where developers will answer them with guesses.
+- **Lots of blue cards:** the story is too big. Each rule (or group of rules) is a candidate for its own story — that's the "split by business rule" pattern above. In the example, the final-sale rule became story 4.
+- **One rule with lots of examples:** it may actually be two rules. "Refund the price paid" with a dozen discount-code examples usually wants to become "allocate discounts per line" — a rule complex enough for its own story.
+- **A rule with no examples:** nobody really understands it yet.
+
+The order-level discount question above is the most valuable kind: it's about **money**, it has no obvious answer, and if a developer decides it alone, the mistake ends up in the accounting books. Twenty-five minutes to find it before coding is far cheaper than a reconciliation exercise after go-live.
+
+<Callout type="note" title="Example Mapping isn't a Gherkin-writing session">
+Don't write Given/When/Then in the meeting — it's slow and drags everyone into wording debates. Short examples are enough. Afterwards one person (usually the tester or a developer) turns the green cards into scenarios and sends them back to the PO for a quick look.
+</Callout>
+
+## Definition of Ready vs Definition of Done
+
+These two get confused, or used for the wrong purpose. The Definition of Ready (DoR) is the condition for a story to **start**; the Definition of Done (DoD) is the condition for **any** story to count as finished. Acceptance criteria are different again: they belong to one story.
+
+| | Definition of Ready | Acceptance criteria | Definition of Done |
+| --- | --- | --- | --- |
+| Applies to | Each story, before the sprint | Each story, individually | Every story, identically |
+| Owned by | The whole team, led by the PO | PO with the three amigos | The whole team (developers lead the technical part) |
+| Answers | Do we understand enough to start? | Does this story do the right thing? | Is it good enough to release? |
+| Example | ACs and examples exist; no blocking red cards; estimated; dependencies known | Final-sale items are rejected with a reason | Code reviewed; automated tests green; no accessibility regressions; logs and metrics in place; runbook updated |
+
+My current team's DoR is just five lines:
+
+```text
+Definition of Ready
+- The story has a clear beneficiary and sits on the story map
+- It has been through three amigos; rules and examples are on the ticket
+- No open question blocks starting (non-blocking questions have an owner)
+- It's estimable and fits in 1–3 days; if not, it's been split or has a spike
+- External dependencies (APIs, designs, data) exist or have a concrete date
+```
+
+<Callout type="warning" title="A DoR is a checklist, not a gate">
+I've seen teams turn the DoR into a wall: a story needs full mockups, an API spec, a data diagram and three sign-offs before it can enter a sprint. The result is a mini waterfall running ahead of every sprint, with people writing documents to pass the gate instead of to understand each other. A good DoR asks one question: "Is there anything we know will stop us halfway?" If not, start.
+</Callout>
+
+## Edge cases and non-functional criteria
+
+Most of the bugs I see after a release aren't on the happy path — they're in cases nobody wrote an example for. I keep a list of heuristics to sweep each story with, and it finds something almost every time.
+
+### An edge-case sweep
+
+- **Boundaries:** just before, exactly at and just after every threshold (dates, amounts, quantities). Quantity 0? More than was purchased?
+- **Empty and missing:** an order with no eligible items, a customer with no email, an empty reason.
+- **Time:** time zones, midnight, month end, an order delivered right as the date rolls over. Who defines "today"?
+- **Repeats and concurrency:** double-clicking submit, two tabs creating a request at once, ops and the customer cancelling simultaneously. This is where idempotency has to be stated as an AC.
+- **Permissions:** can customer A create a request for customer B's order by changing the ID in the URL? The AC should say so explicitly rather than leave it to defaults.
+- **Intermediate states:** an order mid-way through a partial refund, an item with a rejected request.
+- **Legacy data:** do orders created before the feature launched have the data you need (a delivery date, for example)?
+
+### Non-functional requirements must be measurable
+
+NFRs tend to be written as wishes. The fix is to turn them into numbers or verifiable behaviour, attached to the story or to the DoD depending on scope.
+
+| Vague NFR | Verifiable NFR |
+| --- | --- |
+| The returns page must be fast | The item-selection screen has an LCP under 2.5s at p75 on mobile, measured with real-user data |
+| It must be secure | Customers can only create requests for their own orders; accessing another customer's order returns 404 and writes an audit log entry |
+| It must be accessible | The whole flow works with a keyboard; every field has a label; errors are announced by screen readers |
+| No duplicates | Resubmitting the same request within 24 hours returns the existing request rather than creating a new record |
+| It must be logged | Every status change of a return request records who, when, and from which state to which |
+
+NFRs that apply to every feature (accessibility, audit logs, performance budgets) belong in the DoD; NFRs specific to one story (duplicate protection for returns) belong in that story's ACs.
+
+## From acceptance criteria to automated tests
+
+Written examples are tests that are already half designed. The remaining question is **which level** to run them at.
+
+### Not every example is an E2E test
+
+The most common mistake when a team adopts BDD is turning every Gherkin scenario into a browser test. Two hundred E2E scenarios at 20 seconds each, randomly red because of the network — and the team starts ignoring them. I pick the level based on the nature of the example:
+
+| Kind of example | Test level | Why |
+| --- | --- | --- |
+| Calculation rules (window, refund amount, discount allocation) | Domain unit tests | Fast; hundreds of examples run in seconds |
+| Rules involving data and permissions (no returns on others' orders, no duplicates) | API integration tests | Exercises auth, the database and constraints |
+| The main user journeys (the walking skeleton) | E2E with Playwright | A few scenarios prove the pieces are wired together |
+| Accessibility and error display | Component tests + automated a11y checks | Catches UI issues without standing up the whole system |
+
+### Rules become unit tests
+
+The return-window rule is pure logic, so it lives in the domain and is tested with a table of examples — the very table from the Example Mapping session:
+
+```ts
+// src/returns/eligibility.ts
+export type Category = "general" | "electronics";
+
+export interface ReturnableLine {
+  category: Category;
+  finalSale: boolean;
+  /** Delivery date on the store's calendar (Asia/Ho_Chi_Minh), as YYYY-MM-DD */
+  deliveredOn: string | null;
+  hasOpenReturn: boolean;
+}
+
+export type Rejection = "NOT_DELIVERED" | "FINAL_SALE" | "WINDOW_CLOSED" | "ALREADY_REQUESTED";
+export type Eligibility = { ok: true } | { ok: false; reason: Rejection };
+
+const WINDOW_DAYS: Record<Category, number> = { general: 30, electronics: 15 };
+
+function daysBetween(from: string, to: string): number {
+  const [y1, m1, d1] = from.split("-").map(Number);
+  const [y2, m2, d2] = to.split("-").map(Number);
+  return (Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000;
+}
+
+export function checkEligibility(line: ReturnableLine, today: string): Eligibility {
+  if (!line.deliveredOn) return { ok: false, reason: "NOT_DELIVERED" };
+  if (line.finalSale) return { ok: false, reason: "FINAL_SALE" };
+  if (line.hasOpenReturn) return { ok: false, reason: "ALREADY_REQUESTED" };
+  if (daysBetween(line.deliveredOn, today) > WINDOW_DAYS[line.category]) {
+    return { ok: false, reason: "WINDOW_CLOSED" };
+  }
+  return { ok: true };
+}
+```
+
+Notice the function takes `today` as a calendar date instead of calling `new Date()` itself. The "which time zone defines a day" question from Example Mapping has been answered (Vietnam time), and the answer lives in **one place** — where a timestamp is converted to the store's calendar date — rather than being scattered everywhere.
+
+```ts
+// src/returns/eligibility.test.ts
+import { describe, expect, it } from "vitest";
+import { checkEligibility, type ReturnableLine } from "./eligibility";
+
+const line = (overrides: Partial<ReturnableLine> = {}): ReturnableLine => ({
+  category: "general",
+  finalSale: false,
+  deliveredOn: "2026-09-01",
+  hasOpenReturn: false,
+  ...overrides,
+});
+
+describe("Rule: return window depends on category", () => {
+  it.each([
+    ["general", "2026-10-01", true],
+    ["general", "2026-10-02", false],
+    ["electronics", "2026-09-16", true],
+    ["electronics", "2026-09-17", false],
+  ] as const)("%s item, requested on %s → ok=%s", (category, today, ok) => {
+    expect(checkEligibility(line({ category }), today).ok).toBe(ok);
+  });
+});
+
+describe("Rule: final-sale items cannot be returned", () => {
+  it("rejects even inside the window", () => {
+    expect(checkEligibility(line({ finalSale: true }), "2026-09-02")).toEqual({
+      ok: false,
+      reason: "FINAL_SALE",
+    });
+  });
+});
+```
+
+The `describe` names are the rule sentences. When a test fails, the message speaks the business language, and the PO can tell what broke.
+
+### Feature files running on Playwright
+
+For the main journeys I use `playwright-bdd`: it generates Playwright tests from `.feature` files, so you get readable Gherkin while keeping Playwright's runner, fixtures, traces and reports. (Plain Cucumber.js plus Playwright works too, but you manage browsers and parallelism yourself.)
+
+The feature files in the Gherkin section above use fixed dates and a "today is ..." step, so they run at the domain or API level where the clock is injected. E2E scenarios run against a real environment with a real clock, so I write delivery dates **relatively**:
+
+```text
+# features/journeys/return-an-item.feature
+Feature: Return an item from a delivered order
+
+  Scenario: Customer returns a T-shirt inside the window
+    Given a customer received a "T-shirt" 10 days ago
+    When she requests a return for the "T-shirt"
+    Then the return request is accepted
+
+  Scenario: Customer is told the window has closed
+    Given a customer received a "T-shirt" 31 days ago
+    When she requests a return for the "T-shirt"
+    Then the return request is rejected because the return window has closed
+```
+
+```ts
+// playwright.config.ts
+import { defineConfig } from "@playwright/test";
+import { defineBddConfig } from "playwright-bdd";
+
+const testDir = defineBddConfig({
+  features: "features/journeys/*.feature",
+  steps: ["features/fixtures.ts", "features/steps/*.ts"],
+});
+
+export default defineConfig({
+  testDir,
+  use: { baseURL: process.env.BASE_URL ?? "http://localhost:3000", trace: "retain-on-failure" },
+});
+```
+
+Fixtures handle the "Given" part: data is created through an API that only exists in test environments, and sign-in uses stored auth state — nobody clicks through the login form in every scenario. State shared between steps (the order just created) lives in a per-test `ctx` fixture, so scenarios running in parallel don't trample each other.
+
+```ts
+// features/fixtures.ts
+import { test as base, createBdd } from "playwright-bdd";
+import { ReturnsPage } from "./pages/returns-page";
+
+type Seed = {
+  deliveredOrder(input: { product: string; daysAgo: number; finalSale?: boolean }): Promise<string>;
+};
+
+export const test = base.extend<{ seed: Seed; returnsPage: ReturnsPage; ctx: { orderId?: string } }>({
+  seed: async ({ request }, use) => {
+    await use({
+      async deliveredOrder(input) {
+        const res = await request.post("/test-api/orders/delivered", { data: input });
+        return (await res.json()).orderId as string;
+      },
+    });
+  },
+  returnsPage: async ({ page }, use) => use(new ReturnsPage(page)),
+  ctx: async ({}, use) => use({}),
+});
+
+export const { Given, When, Then } = createBdd(test);
+```
+
+```ts
+// features/steps/returns.steps.ts
+import { expect } from "@playwright/test";
+import { Given, When, Then } from "../fixtures";
+
+Given("a customer received a {string} {int} days ago", async ({ seed, ctx }, product: string, daysAgo: number) => {
+  ctx.orderId = await seed.deliveredOrder({ product, daysAgo });
+});
+
+When("she requests a return for the {string}", async ({ returnsPage, ctx }, product: string) => {
+  await returnsPage.open(ctx.orderId!);
+  await returnsPage.requestReturn(product, { reason: "Doesn't fit" });
+});
+
+Then("the return request is accepted", async ({ returnsPage }) => {
+  await expect(returnsPage.confirmation).toContainText(/Request number/);
+});
+
+Then("the return request is rejected because the return window has closed", async ({ returnsPage }) => {
+  await expect(returnsPage.error).toContainText("return window has closed");
+});
+```
+
+Element locators (`getByRole`, `getByLabel`) live in `ReturnsPage` — when the UI changes you edit one file and the feature files stay untouched. And notice there are only two E2E scenarios. The four category-window examples already live in unit tests, running in milliseconds; here we only need to prove the pieces are wired together and the error message reaches the user.
+
+### Keep the step library declarative
+
+The step library decides whether your Gherkin is still alive six months later. A few principles:
+
+- Steps talk about the **business** ("a customer received a ... on ..."), not the UI ("I click ...").
+- No generic steps like `I click {string}` — they invite everyone back to UI-scripted scenarios.
+- One step, one meaning. Two near-identical phrasings for the same behaviour get merged.
+- If every new scenario needs a new step, the example probably belongs at the unit level, not in E2E.
+
+## Mistakes I keep seeing
+
+**The story is the system's job, not the user's.** "The system sends a confirmation email" has no beneficiary. Asking "who needs that email, and why?" usually leads to an AC on a different story.
+
+**ACs written after the code.** At that point they just describe what was built; they're no longer confirmation. ACs must exist before the story enters the sprint, even if imperfect.
+
+**ACs full of detailed UI design.** "Orange button, 16px from the edge" belongs in the design file. When it's in the ACs, every small design tweak becomes "the story doesn't meet its ACs".
+
+**Splitting by technical layer** — covered above, but I still find it in almost every team that's new to Scrum.
+
+**Gherkin for everything.** A feature file for a simple CRUD form with no rules is cost without benefit. Gherkin earns its keep when there are business rules that non-developers need to read and confirm.
+
+**Nobody owns the red cards.** The questions get written down but have no owner and no deadline. Three weeks later a developer answers them with a guess.
+
+**Stories that never close because of "a few small things".** When you discover new work mid-story, create a new story. The current one closes when its ACs pass — which is exactly why the ACs must exist up front.
+
+**Estimating instead of clarifying.** A story the team splits between 3 and 13 points doesn't need another round of planning poker; it needs an Example Mapping session. A big spread in estimates is almost always a spread in understanding.
+
+## Summary
+
+<Checklist>
+
+- Treat the card as a promise to talk; real requirements appear in the three amigos session, and its output is recorded as rules, examples and owned questions.
+- Use INVEST to **fix** stories, not just score them; slice vertically through every layer, each story done in 1–3 days.
+- Build a story map before splitting: a backbone in the user's journey order, a walking skeleton that goes end to end, and ship whole rows rather than single columns.
+- Split with patterns: workflow steps, rule variations, happy then unhappy paths (money-protecting handling ships with the happy path), data variations, CRUD, time-boxed spikes.
+- Write ACs as rules plus concrete boundary examples; settle terms like "day" and "price paid" in the ACs themselves.
+- Keep Gherkin declarative: one behaviour per scenario, Given as state, Then as a business outcome, grouped by `Rule:`, with UI detail in step definitions.
+- Run a 25-minute Example Mapping session for stories with rules; many red cards means not ready, many blue cards means too big.
+- The DoR is a short checklist so you don't stall halfway, the DoD is the shared quality bar, ACs belong to one story — don't mix the three.
+- Sweep for edge cases (boundaries, empty, time, concurrency, permissions, legacy data) and write NFRs as numbers or verifiable behaviour.
+- Put each example at the right test level: calculation rules in unit tests, permissions and data in integration tests, a few key journeys in Playwright E2E.
+
+</Checklist>

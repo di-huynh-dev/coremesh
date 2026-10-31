@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#9CA3AF"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#16A34A"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#D97706"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#2F5BFF"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="52" fill="#111827" font-size="32" font-weight="800">Authorization code + PKCE through a BFF</text>
+  <text x="40" y="84" fill="#4B5563" font-size="18">The browser gets a one-time code and a cookie. Every token stays on the server.</text>
+
+  <!-- legend -->
+  <path d="M800 78H830" stroke="#2F5BFF" stroke-width="4" stroke-linecap="round"/>
+  <text x="838" y="84" fill="#4B5563" font-size="16">same origin</text>
+  <path d="M940 78H970" stroke="#D97706" stroke-width="4" stroke-linecap="round"/>
+  <text x="978" y="84" fill="#4B5563" font-size="16">via browser</text>
+  <path d="M1076 78H1106" stroke="#16A34A" stroke-width="4" stroke-linecap="round"/>
+  <text x="1114" y="84" fill="#4B5563" font-size="16">server</text>
+
+  <!-- BFF highlight column -->
+  <rect x="405" y="172" width="130" height="480" rx="18" fill="#2F5BFF" opacity="0.07"/>
+
+  <!-- lifelines -->
+  <g stroke="#B6BAC8" stroke-width="2" stroke-dasharray="6 7">
+    <path d="M150 172V652"/>
+    <path d="M470 172V652"/>
+    <path d="M800 172V652"/>
+    <path d="M1080 172V652"/>
+  </g>
+
+  <!-- headers -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="104" width="200" height="64" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="370" y="104" width="200" height="64" rx="18" fill="white" stroke="#2F5BFF" stroke-width="2.5"/>
+    <rect x="680" y="104" width="240" height="64" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="980" y="104" width="200" height="64" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="150" y="131" text-anchor="middle" fill="#111827" font-size="19" font-weight="700">Browser (SPA)</text>
+  <text x="150" y="155" text-anchor="middle" fill="#4B5563" font-size="16">only a cookie</text>
+  <text x="470" y="131" text-anchor="middle" fill="#2F5BFF" font-size="19" font-weight="700">BFF (Next.js)</text>
+  <text x="470" y="155" text-anchor="middle" fill="#4B5563" font-size="16">holds every token</text>
+  <text x="800" y="131" text-anchor="middle" fill="#111827" font-size="19" font-weight="700">Authorization server</text>
+  <text x="800" y="155" text-anchor="middle" fill="#4B5563" font-size="16">issues tokens</text>
+  <text x="1080" y="131" text-anchor="middle" fill="#111827" font-size="19" font-weight="700">API</text>
+  <text x="1080" y="155" text-anchor="middle" fill="#4B5563" font-size="16">checks access token</text>
+
+  <!-- notes -->
+  <rect x="488" y="186" width="272" height="34" rx="10" fill="white" stroke="#2F5BFF" stroke-width="1.5"/>
+  <text x="624" y="209" text-anchor="middle" fill="#2F5BFF" font-size="16" font-weight="600">verifier · state · nonce → Redis</text>
+  <rect x="818" y="302" width="232" height="34" rx="10" fill="white" stroke="#E5E7EF" stroke-width="1.5"/>
+  <text x="934" y="325" text-anchor="middle" fill="#4B5563" font-size="16" font-weight="600">user signs in, consents</text>
+  <rect x="488" y="496" width="272" height="34" rx="10" fill="white" stroke="#2F5BFF" stroke-width="1.5"/>
+  <text x="624" y="519" text-anchor="middle" fill="#2F5BFF" font-size="16" font-weight="600">tokens → Redis session</text>
+
+  <!-- messages -->
+  <g font-size="16" font-weight="600" stroke-linejoin="round">
+    <!-- 1 -->
+    <path d="M154 230H462" stroke="#2F5BFF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+    <text x="166" y="221" fill="#2F5BFF">1  GET /api/auth/login</text>
+    <!-- 2 -->
+    <path d="M466 268H158" stroke="#2F5BFF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+    <text x="166" y="259" fill="#2F5BFF">2  302 · cookie __Host-authtx</text>
+    <!-- 3 -->
+    <path d="M154 310H792" stroke="#D97706" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowAmber)"/>
+    <text x="166" y="301" fill="#D97706">3  GET /authorize · code_challenge (S256) · state · nonce</text>
+    <!-- 4 -->
+    <path d="M796 362H158" stroke="#D97706" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowAmber)"/>
+    <text x="166" y="353" fill="#D97706">4  302 → /callback?code · state · iss</text>
+    <!-- 5 -->
+    <path d="M154 402H462" stroke="#2F5BFF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+    <text x="166" y="393" fill="#2F5BFF">5  GET /callback + cookie</text>
+    <!-- 6 -->
+    <path d="M474 442H792" stroke="#16A34A" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+    <text x="486" y="433" fill="#16A34A">6  POST /token + code_verifier</text>
+    <!-- 7 -->
+    <path d="M796 482H478" stroke="#16A34A" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+    <text x="486" y="473" fill="#16A34A">7  ID · access · refresh tokens</text>
+    <!-- 8 -->
+    <path d="M466 556H158" stroke="#2F5BFF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+    <text x="166" y="547" fill="#2F5BFF">8  303 · __Host-sid (HttpOnly)</text>
+    <!-- 9 -->
+    <path d="M154 596H462" stroke="#2F5BFF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+    <text x="166" y="587" fill="#2F5BFF">9  fetch /api/bff/orders</text>
+    <!-- 10 -->
+    <path d="M478 596H1072" stroke="#16A34A" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+    <text x="486" y="587" fill="#16A34A">10  Authorization: Bearer access token</text>
+    <!-- 11 -->
+    <path d="M1076 636H158" stroke="#9CA3AF" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round" marker-end="url(#arrow)"/>
+    <text x="166" y="627" fill="#4B5563">11  JSON back to the browser, with no token in it</text>
+  </g>
+</svg>

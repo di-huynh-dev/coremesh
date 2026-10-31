@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#16A34A"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#D97706"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#2F5BFF"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#DC2626"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="58" fill="#111827" font-size="34" font-weight="800">Combobox: keys, states and ARIA</text>
+  <text x="40" y="92" fill="#4B5563" font-size="18">DOM focus never leaves the input. aria-activedescendant moves a virtual cursor through the listbox.</text>
+
+  <!-- Collapsed -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="200" width="260" height="160" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="170" y="240" text-anchor="middle" fill="#111827" font-size="24" font-weight="700">Collapsed</text>
+  <text x="62" y="276" fill="#374151" font-size="16" font-family="JetBrains Mono, Consolas, monospace">aria-expanded="false"</text>
+  <text x="62" y="302" fill="#374151" font-size="16" font-family="JetBrains Mono, Consolas, monospace">no activedescendant</text>
+  <text x="62" y="330" fill="#4B5563" font-size="16">Esc again: clear the text</text>
+
+  <!-- Open, nothing active -->
+  <g filter="url(#shadow)">
+    <rect x="470" y="200" width="260" height="160" rx="22" fill="white" stroke="#2F5BFF" stroke-width="2.5"/>
+  </g>
+  <text x="600" y="240" text-anchor="middle" fill="#111827" font-size="24" font-weight="700">Open</text>
+  <text x="492" y="276" fill="#374151" font-size="16" font-family="JetBrains Mono, Consolas, monospace">aria-expanded="true"</text>
+  <text x="492" y="302" fill="#374151" font-size="16" font-family="JetBrains Mono, Consolas, monospace">no activedescendant</text>
+  <text x="492" y="330" fill="#4B5563" font-size="16">caret edits the text</text>
+
+  <!-- Open, option active -->
+  <g filter="url(#shadow)">
+    <rect x="900" y="200" width="260" height="160" rx="22" fill="white" stroke="#D97706" stroke-width="2.5"/>
+  </g>
+  <text x="1030" y="240" text-anchor="middle" fill="#111827" font-size="24" font-weight="700">Option active</text>
+  <text x="918" y="276" fill="#374151" font-size="16" font-family="JetBrains Mono, Consolas, monospace">aria-expanded="true"</text>
+  <text x="918" y="302" fill="#374151" font-size="16" font-family="JetBrains Mono, Consolas, monospace">activedescendant=opt-3</text>
+  <text x="918" y="330" fill="#4B5563" font-size="16">↓ ↑ move it, may wrap</text>
+
+  <!-- Collapsed -> Option active (over the top) -->
+  <path d="M170 198C170 122 1030 122 1030 192" stroke="#2F5BFF" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+  <text x="600" y="128" text-anchor="middle" fill="#2F5BFF" font-size="18" font-weight="600">↓ opens on the first option · ↑ opens on the last</text>
+
+  <!-- Collapsed -> Open -->
+  <path d="M302 240H462" stroke="#2F5BFF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+  <text x="385" y="226" text-anchor="middle" fill="#2F5BFF" font-size="17" font-weight="600">type · Alt+↓</text>
+
+  <!-- Open -> Collapsed -->
+  <path d="M468 312H308" stroke="#DC2626" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowRed)"/>
+  <text x="385" y="342" text-anchor="middle" fill="#DC2626" font-size="17" font-weight="600">Esc · Tab · blur</text>
+
+  <!-- Open -> Option active -->
+  <path d="M732 240H892" stroke="#D97706" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowAmber)"/>
+  <text x="815" y="226" text-anchor="middle" fill="#D97706" font-size="17" font-weight="600">↓ / ↑</text>
+
+  <!-- Option active -> Open -->
+  <path d="M898 312H738" stroke="#D97706" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round" marker-end="url(#arrowAmber)"/>
+  <text x="815" y="342" text-anchor="middle" fill="#D97706" font-size="17" font-weight="600">type: refilter</text>
+
+  <!-- Option active -> Collapsed (Enter) -->
+  <path d="M1030 362C1030 470 170 470 170 368" stroke="#16A34A" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+  <text x="600" y="472" text-anchor="middle" fill="#16A34A" font-size="18" font-weight="600">Enter / click: commit the option, fill the input, collapse, onSelect()</text>
+  <text x="600" y="500" text-anchor="middle" fill="#4B5563" font-size="17">Esc · Tab · blur from here: collapse without committing</text>
+
+  <!-- Bottom strip -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="535" width="540" height="104" rx="22" fill="#EEF2FF" stroke="#2F5BFF" stroke-width="2"/>
+  </g>
+  <text x="64" y="572" fill="#2F5BFF" font-size="20" font-weight="700">Focus</text>
+  <text x="64" y="600" fill="#374151" font-size="17">DOM focus: always the input (keep typing works)</text>
+  <text x="64" y="624" fill="#374151" font-size="17">Option clicks: preventDefault on mousedown</text>
+
+  <g filter="url(#shadow)">
+    <rect x="620" y="535" width="540" height="104" rx="22" fill="#F0FDF4" stroke="#16A34A" stroke-width="2"/>
+  </g>
+  <text x="644" y="572" fill="#16A34A" font-size="20" font-weight="700">Live region</text>
+  <text x="644" y="600" fill="#374151" font-size="17" font-family="JetBrains Mono, Consolas, monospace">role="status"</text>
+  <text x="790" y="600" fill="#374151" font-size="17">"3 results available"</text>
+  <text x="644" y="624" fill="#374151" font-size="17">always mounted, debounced while typing</text>
+</svg>

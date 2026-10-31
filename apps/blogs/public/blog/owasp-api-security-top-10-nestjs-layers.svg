@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#16A34A"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="58" fill="#111827" font-size="32" font-weight="800">Where each API control lives in NestJS</text>
+  <text x="40" y="92" fill="#4B5563" font-size="18">The request runs top to bottom; the last row is the way back out.</text>
+
+  <!-- connectors between stage cards -->
+  <path d="M165 168V180M165 230V242M165 292V304M165 354V366M165 416V428M165 478V490" stroke="#9CA3AF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M290 515C312 515 312 577 296 577" stroke="#16A34A" stroke-width="3" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+
+  <!-- row lanes -->
+  <g fill="#FFFFFF" fill-opacity="0.75" stroke="#E5E7EF" stroke-width="2">
+    <rect x="310" y="118" width="860" height="50" rx="16"/>
+    <rect x="310" y="180" width="860" height="50" rx="16"/>
+    <rect x="310" y="242" width="860" height="50" rx="16"/>
+    <rect x="310" y="304" width="860" height="50" rx="16"/>
+    <rect x="310" y="366" width="860" height="50" rx="16"/>
+    <rect x="310" y="428" width="860" height="50" rx="16"/>
+    <rect x="310" y="490" width="860" height="50" rx="16"/>
+    <rect x="310" y="552" width="860" height="50" rx="16"/>
+  </g>
+
+  <!-- stage cards -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="118" width="250" height="50" rx="16" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="40" y="180" width="250" height="50" rx="16" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="40" y="242" width="250" height="50" rx="16" fill="white" stroke="#2F5BFF" stroke-width="2.5"/>
+    <rect x="40" y="304" width="250" height="50" rx="16" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="40" y="366" width="250" height="50" rx="16" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="40" y="428" width="250" height="50" rx="16" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="40" y="490" width="250" height="50" rx="16" fill="#FEF2F2" stroke="#DC2626" stroke-width="2.5"/>
+    <rect x="40" y="552" width="250" height="50" rx="16" fill="#F0FDF4" stroke="#16A34A" stroke-width="2.5"/>
+  </g>
+  <g fill="#111827" font-size="20" font-weight="700" text-anchor="middle">
+    <text x="165" y="150">Edge / gateway</text>
+    <text x="165" y="212">Middleware</text>
+    <text x="165" y="274">Guards</text>
+    <text x="165" y="336">Interceptors</text>
+    <text x="165" y="398">Pipes</text>
+    <text x="165" y="460">Service</text>
+    <text x="165" y="522">Scoped repository</text>
+    <text x="165" y="584">Response (out)</text>
+  </g>
+
+  <!-- controls -->
+  <g fill="#374151" font-size="18">
+    <text x="332" y="149">TLS, WAF, body size cap, only routes in the inventory</text>
+    <text x="332" y="211">helmet, CORS allowlist, trust proxy set correctly</text>
+    <text x="332" y="273">auth (global, default deny) → rate/cost limit → CASL policy</text>
+    <text x="332" y="335">Idempotency-Key replay, request timeouts</text>
+    <text x="332" y="397">ValidationPipe whitelist + forbidNonWhitelisted, page caps</text>
+    <text x="332" y="459">flow limits, SSRF-safe fetch, schema-checked 3rd-party data</text>
+    <text x="332" y="521">tenant + owner in every WHERE, Postgres RLS underneath</text>
+    <text x="332" y="583">response DTO / serializer, error filter that hides internals</text>
+  </g>
+
+  <!-- chips: access=red, identity/abuse=amber, outbound=blue, operations=violet -->
+  <g font-size="16" font-weight="700" text-anchor="middle" fill="#FFFFFF">
+    <rect x="952" y="128" width="64" height="30" rx="15" fill="#D97706"/><text x="984" y="149">API4</text>
+    <rect x="1024" y="128" width="64" height="30" rx="15" fill="#7C3AED"/><text x="1056" y="149">API8</text>
+    <rect x="1096" y="128" width="64" height="30" rx="15" fill="#7C3AED"/><text x="1128" y="149">API9</text>
+
+    <rect x="1096" y="190" width="64" height="30" rx="15" fill="#7C3AED"/><text x="1128" y="211">API8</text>
+
+    <rect x="952" y="252" width="64" height="30" rx="15" fill="#D97706"/><text x="984" y="273">API2</text>
+    <rect x="1024" y="252" width="64" height="30" rx="15" fill="#D97706"/><text x="1056" y="273">API4</text>
+    <rect x="1096" y="252" width="64" height="30" rx="15" fill="#DC2626"/><text x="1128" y="273">API5</text>
+
+    <rect x="1024" y="314" width="64" height="30" rx="15" fill="#D97706"/><text x="1056" y="335">API4</text>
+    <rect x="1096" y="314" width="64" height="30" rx="15" fill="#D97706"/><text x="1128" y="335">API6</text>
+
+    <rect x="1024" y="376" width="64" height="30" rx="15" fill="#DC2626"/><text x="1056" y="397">API3</text>
+    <rect x="1096" y="376" width="64" height="30" rx="15" fill="#D97706"/><text x="1128" y="397">API4</text>
+
+    <rect x="952" y="438" width="64" height="30" rx="15" fill="#D97706"/><text x="984" y="459">API6</text>
+    <rect x="1024" y="438" width="64" height="30" rx="15" fill="#2F5BFF"/><text x="1056" y="459">API7</text>
+    <rect x="1096" y="438" width="64" height="30" rx="15" fill="#2F5BFF"/><text x="1128" y="459">API10</text>
+
+    <rect x="1096" y="500" width="64" height="30" rx="15" fill="#DC2626"/><text x="1128" y="521">API1</text>
+
+    <rect x="1024" y="562" width="64" height="30" rx="15" fill="#DC2626"/><text x="1056" y="583">API3</text>
+    <rect x="1096" y="562" width="64" height="30" rx="15" fill="#7C3AED"/><text x="1128" y="583">API8</text>
+  </g>
+
+  <!-- legend -->
+  <g font-size="16" fill="#4B5563">
+    <circle cx="48" cy="634" r="7" fill="#DC2626"/><text x="62" y="640">access control</text>
+    <circle cx="208" cy="634" r="7" fill="#D97706"/><text x="222" y="640">identity &amp; abuse</text>
+    <circle cx="388" cy="634" r="7" fill="#2F5BFF"/><text x="402" y="640">outbound calls</text>
+    <circle cx="548" cy="634" r="7" fill="#7C3AED"/><text x="562" y="640">operations</text>
+    <text x="1160" y="640" text-anchor="end">chips = OWASP API Security Top 10 (2023)</text>
+  </g>
+</svg>

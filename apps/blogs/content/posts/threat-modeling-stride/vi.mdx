@@ -1,0 +1,644 @@
+---
+title: "Threat modeling cho team sản phẩm: STRIDE, sơ đồ luồng dữ liệu và ranh giới tin cậy, từ buổi họp 60 phút tới ticket"
+excerpt: "Cách mình chạy threat modeling thực tế cho một team sản phẩm: bốn câu hỏi, vẽ DFD với trust boundary, đi STRIDE từng phần tử trên một hệ thống thật có SPA, API, Postgres, S3, webhook thanh toán và admin panel, chấm rủi ro đơn giản, biến threat thành ticket và giữ threat model sống trong repo."
+---
+
+<Lead>Tính năng đính kèm file của một sản phẩm B2B mình từng làm đã chạy production được ba tháng thì có người báo: upload một file `.html`, gửi link xem file cho đồng nghiệp, và trình duyệt của đồng nghiệp chạy JavaScript ngay trên domain của app — đủ để đọc dữ liệu của họ. Không có dòng code nào "sai" theo nghĩa thông thường. Lỗi nằm ở thiết kế: file do người dùng upload được phục vụ từ cùng origin với ứng dụng. Một cuộc nói chuyện 30 phút lúc thiết kế, với câu hỏi "file này đi qua những ranh giới nào, và ai tin nó?", đã bắt được lỗi đó trước khi nó tồn tại. Đó là threat modeling: không phải nghi lễ của team bảo mật, không phải tài liệu 40 trang, mà là design review với chiếc mũ của kẻ tấn công. Bài này là cách mình chạy nó cho team sản phẩm — bốn câu hỏi, sơ đồ luồng dữ liệu với trust boundary, STRIDE trên một hệ thống thật, chấm rủi ro đủ đơn giản để dùng, biến threat thành ticket, và giữ threat model sống cạnh code.</Lead>
+
+## Threat modeling là gì, và không phải là gì
+
+Khung mình dùng là bốn câu hỏi của Adam Shostack, cũng là xương sống của Threat Modeling Manifesto:
+
+1. **Chúng ta đang xây gì?** — một mô hình của hệ thống, thường là sơ đồ luồng dữ liệu.
+2. **Điều gì có thể sai?** — liệt kê threat, có phương pháp (STRIDE) chứ không chỉ dựa vào cảm hứng.
+3. **Chúng ta sẽ làm gì với nó?** — giảm thiểu, chấp nhận, chuyển giao hoặc loại bỏ, và ghi lại quyết định.
+4. **Chúng ta đã làm tốt chưa?** — kiểm tra mitigation thực sự được làm, và mô hình còn đúng với hệ thống.
+
+Thứ threat modeling **không** phải:
+
+- **Không phải pentest.** Pentest tìm lỗ hổng trong thứ đã xây; threat modeling tìm lỗ hổng trong thứ *sắp* xây, khi sửa còn rẻ — đổi một mũi tên trên bảng trắng thay vì migrate dữ liệu.
+- **Không phải danh sách đầy đủ mọi rủi ro.** Mục tiêu là tìm những threat quan trọng nhất và làm gì đó với chúng, không phải đạt độ phủ 100%.
+- **Không phải việc của riêng team bảo mật.** Người hiểu rõ nhất luồng dữ liệu là người đang thiết kế nó. Team bảo mật là người hỗ trợ và đặt câu hỏi khó, không phải người làm thay.
+
+| Hoạt động | Khi nào | Tìm được gì | Chi phí sửa lỗi tìm được |
+| --- | --- | --- | --- |
+| Threat modeling | Lúc thiết kế, trước và trong khi code | Lỗi thiết kế: sai ranh giới tin cậy, thiếu xác thực ở một luồng, dữ liệu đi sai chỗ | Thấp — sửa sơ đồ |
+| Code review có góc nhìn bảo mật | Mỗi PR | Lỗi hiện thực: thiếu kiểm tra quyền, injection | Trung bình |
+| SAST / dependency scanning | Trong CI | Pattern nguy hiểm đã biết, thư viện có CVE | Thấp tới trung bình |
+| DAST / pentest | Sau khi chạy được | Lỗ hổng khai thác được thực sự | Cao — có khi phải thiết kế lại |
+| Bug bounty / sự cố | Production | Những gì mọi thứ khác bỏ sót | Cao nhất |
+
+Chúng bổ sung cho nhau. Nhưng chỉ threat modeling bắt được lớp lỗi "mọi dòng code đều đúng, nhưng thiết kế thì sai" — như câu chuyện file HTML ở trên.
+
+## Câu hỏi 1: chúng ta đang xây gì?
+
+Hệ thống ví dụ xuyên suốt bài: một SaaS lập hoá đơn cho doanh nghiệp nhỏ. Mỗi khách hàng là một **tenant**.
+
+- **SPA React** chạy trong trình duyệt khách hàng.
+- **API NestJS** — xác thực bằng session cookie, phục vụ SPA.
+- **Postgres** — tenant, người dùng, hoá đơn, thanh toán.
+- **S3 bucket** chứa file đính kèm (hợp đồng, biên lai). Trình duyệt upload **trực tiếp** lên S3 bằng presigned POST, không đi qua API.
+- **Worker** nhận sự kiện "object created", quét malware, tạo thumbnail và preview, ghi kết quả vào Postgres.
+- **Cổng thanh toán (PSP)** bên thứ ba: API tạo checkout session, PSP gọi lại bằng **webhook** khi thanh toán thành công.
+- **Admin panel** cho nhân viên support: tra cứu tenant, hoàn tiền, xem với tư cách khách hàng để debug.
+
+### Vẽ sơ đồ luồng dữ liệu
+
+Data Flow Diagram (DFD) chỉ có năm loại phần tử, và chính sự đơn giản đó làm nó hữu ích:
+
+| Phần tử | Ký hiệu thường dùng | Trong ví dụ |
+| --- | --- | --- |
+| External entity — thứ bạn không kiểm soát | Hình chữ nhật | Trình duyệt khách hàng, nhân viên support, PSP |
+| Process — code của bạn chạy | Hình tròn hoặc chữ nhật bo tròn | API, worker, admin panel |
+| Data store — nơi dữ liệu nằm yên | Hai đường kẻ song song | Postgres, S3 bucket |
+| Data flow — dữ liệu di chuyển | Mũi tên | HTTPS request, webhook, câu SQL, sự kiện S3 |
+| Trust boundary — nơi mức độ tin cậy thay đổi | Đường nét đứt | Internet / cloud, staff / admin zone, PSP / API |
+
+Vài quy tắc mình áp khi vẽ:
+
+- **Mỗi mũi tên là một luồng dữ liệu cụ thể**, có nhãn ("webhook payment.succeeded", không phải "giao tiếp"). Nếu bạn không đặt được tên cho mũi tên, bạn chưa hiểu luồng đó.
+- **Không có mũi tên nào nối thẳng hai data store**, và không có data store nào nói chuyện trực tiếp với external entity. Luôn phải có một process ở giữa — nếu không, sơ đồ đang giấu một process (ví dụ: "S3 gửi sự kiện" thực ra là một cấu hình notification cộng một consumer).
+- **Đúng mức chi tiết** là mức mà mỗi trust boundary đều hiện rõ. Không cần vẽ từng microservice nếu chúng cùng nằm sau một ranh giới.
+
+Mình giữ sơ đồ dạng code trong repo, để nó được review và diff như mọi thứ khác:
+
+```text
+%% docs/design/attachments/dfd.mmd (Mermaid)
+flowchart LR
+  subgraph internet[Internet - untrusted]
+    browser[Customer browser / React SPA]
+  end
+  subgraph staff[Staff devices]
+    support[Support staff]
+  end
+  subgraph cloud[Our cloud account]
+    api((API - NestJS))
+    worker((Worker))
+    s3[(S3 uploads)]
+    pg[(Postgres)]
+    subgraph adminzone[Admin zone]
+      admin((Admin panel))
+    end
+  end
+  subgraph psp[Payment provider]
+    pay[PSP]
+  end
+  browser -- HTTPS + session cookie --> api
+  browser -- presigned POST upload --> s3
+  s3 -- object created --> worker
+  worker -- scan result, thumbnails --> pg
+  api -- SQL --> pg
+  api -- create checkout session --> pay
+  pay -- webhook payment.succeeded --> api
+  support -- SSO --> admin
+  admin -- SQL --> pg
+```
+
+### Trust boundary: chỗ đáng nhìn nhất
+
+Trust boundary là nơi dữ liệu hoặc lệnh đi từ vùng ít tin cậy sang vùng tin cậy hơn — hoặc ngược lại. Phần lớn threat thực sự nằm ở đó, nên đây là nơi bạn dành phần lớn thời gian. Trong ví dụ có năm ranh giới, và ba trong số đó dễ bị bỏ qua:
+
+- **Trình duyệt → S3.** Upload trực tiếp nghĩa là API **không đứng giữa**. Mọi kiểm tra bạn quen làm ở API (kích thước, loại file, quyền) phải được mã hoá vào presigned policy hoặc kiểm tra lại sau khi upload.
+- **S3 → worker.** Worker chạy trong VPC của bạn, nhưng nội dung nó xử lý là **byte do kẻ lạ chọn**. Ranh giới tin cậy không đi theo mạng; nó đi theo nguồn gốc dữ liệu.
+- **Nhân viên → admin panel.** Cùng công ty không có nghĩa là cùng mức tin cậy. Admin panel có quyền trên **mọi** tenant, nên tài khoản nhân viên là mục tiêu giá trị nhất của hệ thống.
+
+<Figure src="/blog/threat-modeling-stride-dfd.svg" alt="Sơ đồ luồng dữ liệu của SaaS lập hoá đơn với các trust boundary nét đứt màu đỏ: vùng Internet chứa trình duyệt khách hàng chạy React SPA; vùng thiết bị nhân viên chứa support staff; vùng cloud của chúng ta chứa API NestJS, S3 uploads, Postgres, worker quét file và tạo thumbnail, và một admin zone lồng bên trong chứa admin panel; vùng payment provider chứa PSP. Mũi tên: trình duyệt hai chiều với API, gắn nhãn S I E; trình duyệt upload thẳng lên S3 bằng presigned POST, gắn nhãn T I D; S3 kích hoạt worker, worker ghi kết quả vào Postgres, gắn nhãn E D; API ghi Postgres; API tạo checkout session ở PSP; PSP gửi webhook payment.succeeded về API, gắn nhãn S T R D; nhân viên support thao tác qua admin panel, gắn nhãn S R E; admin panel ghi Postgres. Một chú giải bên phải giải thích sáu chữ cái STRIDE" caption="Mỗi luồng đi qua một đường nét đứt là nơi đặt câu hỏi STRIDE. Nhãn đỏ là các nhóm threat chính mình tìm thấy ở từng chỗ giao cắt — chú ý upload trực tiếp lên S3 và worker xử lý file, hai chỗ API không đứng giữa." />
+
+## Câu hỏi 2: điều gì có thể sai? STRIDE
+
+STRIDE, do Microsoft đưa ra, là sáu loại threat, mỗi loại vi phạm một thuộc tính bảo mật:
+
+| Threat | Vi phạm | Câu hỏi để hỏi | Mitigation điển hình |
+| --- | --- | --- | --- |
+| **S**poofing | Xác thực | Ai đó có thể giả làm người dùng, service hay hệ thống khác không? | Xác thực mạnh, chữ ký, mTLS, passkey |
+| **T**ampering | Toàn vẹn | Dữ liệu có thể bị sửa trên đường đi, lúc lưu, hay bởi chính client không? | Chữ ký, MAC, validate phía server, quyền ghi tối thiểu |
+| **R**epudiation | Không thể chối bỏ | Ai đó có thể làm một việc rồi chối, và ta không chứng minh được không? | Audit log append-only, log có danh tính và thời điểm |
+| **I**nformation disclosure | Bảo mật | Dữ liệu có thể lọt tới người không được xem không? | Phân quyền, mã hoá, giảm dữ liệu trả về, redact log |
+| **D**enial of service | Sẵn sàng | Ai đó có thể làm hệ thống chậm hoặc chết với chi phí thấp không? | Rate limit, quota, timeout, giới hạn tài nguyên |
+| **E**levation of privilege | Phân quyền | Ai đó có thể làm được việc vượt quyền của họ không? | Kiểm tra quyền ở server, least privilege, sandbox |
+
+### STRIDE theo từng loại phần tử
+
+Không phải loại threat nào cũng áp dụng cho mọi phần tử. Bảng "STRIDE-per-element" kinh điển giúp bạn không hỏi những câu vô nghĩa:
+
+| Loại phần tử | S | T | R | I | D | E |
+| --- | --- | --- | --- | --- | --- | --- |
+| External entity | ✓ | | ✓ | | | |
+| Process | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Data store | | ✓ | ✓ (nếu là log) | ✓ | ✓ | |
+| Data flow | | ✓ | | ✓ | ✓ | |
+
+Mình dùng bảng này như **gợi ý**, không phải luật. Mục đích của STRIDE là bắt bạn nhìn mỗi phần tử từ sáu góc thay vì chỉ góc quen thuộc nhất — kỹ sư backend thường nghĩ tới injection và quên mất repudiation; kỹ sư frontend nghĩ tới XSS và quên mất DoS.
+
+## Đi STRIDE qua ví dụ
+
+Thay vì liệt kê đủ 6 × 9 ô, mình đi theo từng **chỗ giao cắt ranh giới**, bắt đầu từ chỗ nguy hiểm nhất.
+
+### Webhook từ cổng thanh toán: S, T, R, D
+
+Endpoint webhook là một URL công khai mà **ai trên internet cũng gọi được**. Nếu API tin bất kỳ request nào nói "payment.succeeded", kẻ tấn công tự kích hoạt gói trả phí mà không trả tiền.
+
+- **S** — giả mạo PSP: xác minh chữ ký HMAC trên **raw body**.
+- **T** — sửa nội dung: chữ ký bao phủ toàn bộ body, nên sửa một byte là chữ ký sai.
+- **R / replay** — gửi lại một sự kiện hợp lệ cũ: kiểm tra timestamp trong chữ ký và lưu `event.id` với unique constraint.
+- **D** — flood endpoint: xác minh chữ ký trước mọi việc nặng, rate limit ở edge, xử lý bất đồng bộ.
+
+```ts
+// src/billing/payment-webhook.controller.ts
+import {
+  Controller, Headers, HttpCode, Post, Req, UnauthorizedException, type RawBodyRequest,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import type { Request } from "express";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { BillingService } from "./billing.service";
+
+const TOLERANCE_SECONDS = 300;
+
+function parseSignature(header: string): { t?: string; v1?: string } {
+  return Object.fromEntries(header.split(",").map((part) => part.trim().split("=", 2)));
+}
+
+@Controller("webhooks/payments")
+export class PaymentWebhookController {
+  constructor(
+    private readonly billing: BillingService,
+    private readonly config: ConfigService,
+  ) {}
+
+  @Post()
+  @HttpCode(200)
+  async handle(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers("x-signature") signature?: string,
+  ) {
+    const raw = req.rawBody; // cần NestFactory.create(AppModule, { rawBody: true })
+    if (!raw || !signature) throw new UnauthorizedException();
+
+    const { t, v1 } = parseSignature(signature);
+    const ts = Number(t);
+    if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > TOLERANCE_SECONDS) {
+      throw new UnauthorizedException("stale or missing timestamp");
+    }
+
+    const expected = createHmac("sha256", this.config.getOrThrow<string>("PAYMENT_WEBHOOK_SECRET"))
+      .update(`${t}.`)
+      .update(raw)
+      .digest();
+    const given = Buffer.from(v1 ?? "", "hex");
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+      throw new UnauthorizedException("bad signature");
+    }
+
+    const event = JSON.parse(raw.toString("utf8")) as { id: string; type: string };
+    // Idempotent: INSERT ... ON CONFLICT (provider_event_id) DO NOTHING, rồi đẩy vào queue.
+    await this.billing.recordWebhook(event.id, event.type);
+  }
+}
+```
+
+Định dạng header ở đây mô phỏng kiểu `t=...,v1=...` mà nhiều PSP dùng. Nếu PSP của bạn có SDK với hàm verify chính thức (ví dụ `stripe.webhooks.constructEvent`), hãy dùng nó thay vì tự viết. Ba chi tiết thường bị làm sai:
+
+- **Phải ký trên raw body.** Parse JSON rồi `JSON.stringify` lại sẽ đổi thứ tự key, khoảng trắng — chữ ký không bao giờ khớp, và người ta "sửa" bằng cách tắt kiểm tra.
+- **So sánh bằng `timingSafeEqual`**, không bằng `===`.
+- **Không tin số tiền trong payload.** Worker xử lý sự kiện gọi lại API của PSP theo id để lấy trạng thái thật trước khi kích hoạt gói. Chữ ký chứng minh nguồn gốc; tra lại chứng minh trạng thái hiện tại. Phần idempotency và outbox cho worker này mình đã viết chi tiết trong bài [background job với BullMQ](/blog/nestjs-background-jobs-bullmq).
+
+### Upload trực tiếp lên S3: T, I, D
+
+Presigned URL là một **giấy uỷ quyền** API cấp cho trình duyệt. Mọi thứ không ghi trong giấy đó thì trình duyệt tự quyết.
+
+- **T** — upload file 2 GB, upload `.html` khai báo là `image/png`, ghi đè key của người khác.
+- **I** — bucket hoặc object public, key đoán được, link xem sống quá lâu.
+- **D** — upload hàng loạt file lớn làm phình chi phí lưu trữ và làm nghẽn worker.
+
+```ts
+// src/attachments/attachments.service.ts
+import { S3Client } from "@aws-sdk/client-s3";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import { BadRequestException, Injectable } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
+
+const ALLOWED = new Map([
+  ["application/pdf", "pdf"],
+  ["image/png", "png"],
+  ["image/jpeg", "jpg"],
+]);
+const MAX_BYTES = 10 * 1024 * 1024;
+
+@Injectable()
+export class AttachmentsService {
+  constructor(
+    private readonly s3: S3Client,
+    private readonly repo: AttachmentsRepository,
+  ) {}
+
+  async createUpload(ctx: { tenantId: string; userId: string }, contentType: string) {
+    const ext = ALLOWED.get(contentType);
+    if (!ext) throw new BadRequestException("unsupported file type");
+
+    // Server chọn key: có namespace theo tenant, ngẫu nhiên, nằm trong vùng cách ly
+    const key = `quarantine/${ctx.tenantId}/${randomUUID()}.${ext}`;
+
+    const { url, fields } = await createPresignedPost(this.s3, {
+      Bucket: process.env.UPLOADS_BUCKET!,
+      Key: key,
+      Conditions: [
+        ["content-length-range", 1, MAX_BYTES],
+        ["eq", "$Content-Type", contentType],
+      ],
+      Fields: { "Content-Type": contentType },
+      Expires: 300, // giây
+    });
+
+    await this.repo.insert({ key, tenantId: ctx.tenantId, uploadedBy: ctx.userId, status: "pending_scan" });
+    return { url, fields, attachmentKey: key };
+  }
+}
+```
+
+Mình dùng presigned POST thay vì PUT vì policy của POST hỗ trợ điều kiện `content-length-range`. Nhưng hãy nhớ `Content-Type` vẫn là **thứ client khai báo** — policy chỉ đảm bảo nó khớp với giá trị bạn cho phép, không đảm bảo byte bên trong là PDF thật. Worker phải kiểm tra magic bytes, và file chỉ được chuyển từ `quarantine/` sang vùng chính thức sau khi qua kiểm tra.
+
+Còn phía **phục vụ** file — chính lỗi trong phần mở đầu:
+
+```ts
+import { GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+const url = await getSignedUrl(
+  s3,
+  new GetObjectCommand({
+    Bucket: process.env.UPLOADS_BUCKET!,
+    Key: attachment.key,
+    ResponseContentDisposition: `attachment; filename="${attachment.safeFileName}"`,
+    ResponseContentType: "application/octet-stream",
+  }),
+  { expiresIn: 60 },
+);
+```
+
+File người dùng upload được phục vụ từ **domain riêng** (domain của S3 hay một domain user-content riêng, không bao giờ là subdomain của app), với `Content-Disposition: attachment` và `X-Content-Type-Options: nosniff`. Preview trong app là ảnh do worker **render lại** từ file gốc, không phải file gốc. Phần XSS và CSP ở phía trình duyệt mình đã đi sâu trong bài [bảo mật frontend thực chiến](/blog/frontend-security-in-practice).
+
+### Worker xử lý file: E, D
+
+Thư viện xử lý ảnh, PDF và office document có lịch sử dài các lỗ hổng thực thi code từ file độc. Worker của bạn đang chạy những thư viện đó trên byte do người lạ chọn.
+
+- **E** — file khai thác lỗi parser để chạy code trong worker, rồi dùng credentials của worker để đọc toàn bộ bucket hoặc database.
+- **D** — "decompression bomb": ảnh vài KB giải nén thành hàng tỉ pixel, PDF hàng nghìn trang, zip lồng nhau.
+
+Mitigation không phải "dùng thư viện không có lỗi" — không tồn tại. Mà là **giới hạn thiệt hại**: worker chạy trong container riêng không có quyền ghi gì ngoài prefix của nó, không có network egress ra internet, IAM role chỉ đọc `quarantine/` và ghi `previews/`, user Postgres chỉ được ghi bảng `attachment_scans`. Thêm giới hạn pixel, số trang, bộ nhớ và timeout cho mỗi job. Nếu bị khai thác, kẻ tấn công có được một container không làm được gì nhiều.
+
+### API và Postgres: I, E — IDOR và mass assignment
+
+Đây là lỗi mình gặp nhiều nhất ở SaaS nhiều tenant: `GET /invoices/:id` kiểm tra người dùng **đã đăng nhập** nhưng không kiểm tra hoá đơn **thuộc tenant của họ**. Đổi id là đọc được hoá đơn của công ty khác.
+
+```ts
+// src/invoices/invoices.repository.ts
+async findForTenant(ctx: RequestContext, id: string) {
+  const invoice = await this.prisma.invoice.findFirst({
+    where: { id, tenantId: ctx.tenantId }, // điều kiện tenant nằm trong chính câu truy vấn
+  });
+  // 404 chứ không phải 403: không xác nhận cho kẻ dò rằng id này tồn tại
+  if (!invoice) throw new NotFoundException();
+  return invoice;
+}
+```
+
+Lớp thứ hai, cho khi ai đó quên điều kiện tenant ở một query mới — Row-Level Security của Postgres:
+
+```sql
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON invoices
+  USING (tenant_id = current_setting('app.tenant_id')::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id')::uuid);
+
+-- Trong mỗi transaction của request:
+-- SET LOCAL app.tenant_id = '<tenant id từ session>';
+```
+
+Hai lưu ý thực tế: chủ sở hữu bảng mặc định **bỏ qua** RLS (trừ khi bạn dùng `FORCE ROW LEVEL SECURITY`), nên ứng dụng phải kết nối bằng một role không phải owner; và với connection pool, `SET LOCAL` phải nằm trong transaction để không rò sang request khác.
+
+**Mass assignment** là anh em của IDOR: endpoint cập nhật profile nhận cả body và truyền thẳng vào ORM, kẻ tấn công thêm `"role": "owner"` hay `"tenantId": "..."`. Trong NestJS, `ValidationPipe` với `whitelist: true` và `forbidNonWhitelisted: true` cùng DTO tường minh chặn được phần lớn — và không bao giờ đọc `tenantId` từ body, chỉ từ session.
+
+### Admin panel: S, R, E
+
+- **S** — phishing tài khoản nhân viên support. Mitigation: SSO với MFA chống phishing (passkey hoặc security key), session ngắn, admin panel ở origin riêng. Mình đã viết về passkey trong bài [xác thực NestJS với passkey và session](/blog/nestjs-auth-passkeys-sessions).
+- **R** — nhân viên xem dữ liệu khách hoặc hoàn tiền rồi không ai truy được ai làm, vì sao.
+- **E** — tính năng "xem với tư cách khách hàng" trở thành cửa sau để đổi thông tin thanh toán của tenant.
+
+```sql
+CREATE TABLE admin_audit_log (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  actor_id    uuid        NOT NULL,
+  action      text        NOT NULL,        -- 'tenant.viewed', 'refund.issued', 'impersonation.started'
+  tenant_id   uuid,
+  target      text,
+  reason      text        NOT NULL,        -- bắt buộc: ticket support hoặc lý do
+  request_id  text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- Role của admin panel chỉ được thêm và đọc, không sửa hay xoá lịch sử
+GRANT INSERT, SELECT ON admin_audit_log TO admin_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON admin_audit_log FROM admin_app;
+```
+
+Audit log trong cùng database mà admin có thể chạm tới vẫn có thể bị xoá bởi ai đó có quyền cao hơn — nên mình đẩy thêm một bản sang nơi lưu log riêng mà team ứng dụng không có quyền xoá. Còn impersonation: mặc định chỉ đọc, giới hạn thời gian, cần lý do, và **khách hàng thấy được** trong lịch sử hoạt động của họ. Cái cuối cùng là mitigation repudiation rẻ và hiệu quả nhất mình biết.
+
+### SPA và người dùng: S, I
+
+Ở phía trình duyệt, threat chính là chiếm session (credential stuffing, XSS lấy cắp hoặc lợi dụng session) và lộ dữ liệu qua những thứ như URL chứa token, log của analytics. Mitigation chi tiết — cookie `HttpOnly` với `SameSite`, CSP với nonce, Trusted Types — nằm trong bài [bảo mật frontend](/blog/frontend-security-in-practice). Nếu sản phẩm có tính năng AI đọc hoá đơn hoặc email của khách, hãy thêm một phần tử LLM vào DFD và đi tiếp với bài [bảo mật ứng dụng LLM và prompt injection](/blog/llm-app-security-prompt-injection) — mô hình đó có những threat STRIDE không mô tả tốt.
+
+### Bảng threat
+
+Đây là đầu ra thật sự của buổi threat modeling — một bảng, không phải một bài luận:
+
+| ID | Phần tử | STRIDE | Threat | Mitigation | L × I | Ticket |
+| --- | --- | --- | --- | --- | --- | --- |
+| T01 | Webhook | S | Gửi `payment.succeeded` giả để kích hoạt gói trả phí | HMAC trên raw body, tra lại trạng thái ở PSP | 3 × 3 = 9 | SEC-101 |
+| T02 | Webhook | T, R | Replay một sự kiện hợp lệ cũ | Dung sai timestamp 5 phút, unique `provider_event_id` | 2 × 2 = 4 | SEC-102 |
+| T03 | Webhook | D | Flood endpoint công khai | Verify chữ ký trước, rate limit ở edge, xử lý async | 2 × 2 = 4 | SEC-103 |
+| T04 | Trình duyệt → S3 | T, D | File quá lớn hoặc sai loại so với khai báo | `content-length-range`, `eq Content-Type`, worker kiểm tra magic bytes | 3 × 2 = 6 | SEC-104 |
+| T05 | S3 bucket | I | Object public hoặc key đoán được | Block Public Access, key ngẫu nhiên, presigned GET 60 giây | 2 × 3 = 6 | SEC-105 |
+| T06 | Phục vụ file | E, I | HTML/SVG upload chạy script trên origin của app | Domain riêng, `attachment`, `nosniff`, preview render lại | 3 × 3 = 9 | SEC-106 |
+| T07 | Worker | E | File độc khai thác lỗi parser | Container sandbox, không egress, IAM tối thiểu, cập nhật thư viện | 2 × 3 = 6 | SEC-107 |
+| T08 | Worker | D | Decompression bomb, PDF nghìn trang | Giới hạn pixel, trang, bộ nhớ, timeout | 2 × 2 = 4 | SEC-108 |
+| T09 | API | I, E | IDOR: đọc hoá đơn tenant khác bằng cách đổi id | Điều kiện tenant trong query, RLS, test tự động | 3 × 3 = 9 | SEC-109 |
+| T10 | API | T, E | Mass assignment `role`, `tenantId` | DTO whitelist, `forbidNonWhitelisted`, tenant từ session | 2 × 3 = 6 | SEC-110 |
+| T11 | API | S | Credential stuffing vào form đăng nhập | Passkey, rate limit theo IP và tài khoản, kiểm tra mật khẩu đã lộ | 3 × 2 = 6 | SEC-111 |
+| T12 | Admin panel | S | Phishing tài khoản support | SSO + passkey, session ngắn, origin riêng | 2 × 3 = 6 | SEC-112 |
+| T13 | Admin panel | R | Hành động của nhân viên không truy vết được | Audit log append-only có lý do, bản sao ngoài hệ thống | 2 × 2 = 4 | SEC-113 |
+| T14 | Admin panel | E | Impersonation dùng để đổi thông tin thanh toán | Impersonation chỉ đọc, có thời hạn, khách hàng thấy được | 2 × 3 = 6 | SEC-114 |
+| T15 | Postgres | I | Backup hoặc credentials bị lộ | Backup mã hoá, role riêng mỗi service, secrets manager | 1 × 3 = 3 | Chấp nhận, xem lại Q1 |
+| T16 | Log | I | Token, email, số tài khoản nằm trong log | Redact ở logger, không log request body | 2 × 2 = 4 | SEC-116 |
+
+## Câu hỏi 3: chúng ta sẽ làm gì? Chấm rủi ro và quyết định
+
+### Likelihood × impact, giữ thật đơn giản
+
+Mình dùng thang 1–3 cho cả hai trục, với định nghĩa cụ thể để hai người chấm ra cùng một số:
+
+| | Thấp (1) | Trung bình (2) | Cao (3) |
+| --- | --- | --- | --- |
+| **Likelihood** | Cần insider, hoặc một chuỗi nhiều điều kiện hiếm | Cần tài khoản hợp lệ và kỹ năng nhất định | Bất kỳ ai trên internet, công cụ có sẵn |
+| **Impact** | Một người dùng, khôi phục được | Dữ liệu một tenant, hoặc downtime vài giờ | Dữ liệu nhiều tenant, mất tiền, mất quyền admin |
+
+Điểm = likelihood × impact. **6–9: sửa trước khi ra mắt. 3–4: có owner và hạn trong quý. 1–2: backlog hoặc chấp nhận.** Thế thôi. Mục đích của con số là **xếp thứ tự**, không phải đo lường chính xác. Nếu team tranh luận 15 phút xem một threat là 4 hay 6, đó là dấu hiệu nên chọn số cao hơn và đi tiếp.
+
+<Callout type="warning" title="Vì sao mình không dùng DREAD">
+  DREAD (Damage, Reproducibility, Exploitability, Affected users, Discoverability) trông khoa học hơn với năm trục và thang điểm 10, nhưng trên thực tế điểm rất chủ quan — hai người chấm cùng một threat thường ra kết quả khác xa nhau. Trục Discoverability còn khuyến khích tư duy "không ai tìm ra đâu", tức là bảo mật nhờ che giấu. Chính Microsoft, nơi sinh ra DREAD, đã ngừng dùng nó từ lâu. Thêm trục không làm điểm chính xác hơn; nó chỉ làm cuộc tranh luận dài hơn. CVSS thì dành cho lỗ hổng cụ thể đã biết, không phải cho threat ở mức thiết kế.
+</Callout>
+
+### Bốn lựa chọn cho mỗi threat
+
+- **Giảm thiểu (mitigate):** đa số trường hợp — thêm kiểm soát.
+- **Loại bỏ (eliminate):** thay đổi thiết kế để threat không còn tồn tại. Không lưu số thẻ thì không lộ số thẻ — đó là lý do dùng trang checkout của PSP.
+- **Chuyển giao (transfer):** để bên khác chịu, ví dụ PSP chịu phạm vi PCI DSS. Không phải "đẩy cho người khác rồi quên" — vẫn phải kiểm tra họ làm tốt.
+- **Chấp nhận (accept):** hợp lệ, **với điều kiện** có người có thẩm quyền ký tên, có lý do, và có **ngày hết hạn** để xem lại. Rủi ro được chấp nhận mà không có ngày hết hạn là rủi ro bị quên.
+
+## Từ threat thành ticket
+
+Threat model không ai làm theo thì không có giá trị. Mỗi threat có điểm từ 3 trở lên trở thành một ticket với **tiêu chí chấp nhận kiểm chứng được** — lý tưởng nhất là một test:
+
+```text
+SEC-109  Chặn IDOR trên tài nguyên theo tenant
+Threat:     T09 — người dùng tenant B đọc hoá đơn tenant A bằng cách đổi id (I, E). Điểm 9.
+Phạm vi:    /invoices/:id, /invoices/:id/pdf, /attachments/:id, /payments/:id
+Mitigation:
+  - Mọi query theo id có điều kiện tenant_id lấy từ session
+  - Bật RLS trên invoices, attachments, payments; app kết nối bằng role không phải owner
+Tiêu chí chấp nhận:
+  - Test e2e: user tenant B gọi từng endpoint với id của tenant A nhận 404
+  - Test: query không SET app.tenant_id trả về 0 dòng
+  - Rule lint/review: repository mới phải nhận RequestContext
+Liên kết:   docs/design/attachments/threats.yaml (T09)
+```
+
+Test tương ứng:
+
+```ts
+// test/invoices.idor.e2e-spec.ts
+describe("cô lập tenant", () => {
+  it.each(["/invoices/%s", "/invoices/%s/pdf", "/attachments/%s"])(
+    "tenant B không đọc được %s của tenant A",
+    async (path) => {
+      const { invoiceId } = await seedInvoice({ tenantId: tenantA.id });
+
+      await request(app.getHttpServer())
+        .get(path.replace("%s", invoiceId))
+        .set("Cookie", await sessionCookieFor(userOfTenantB))
+        .expect(404);
+    },
+  );
+});
+```
+
+Test này không chỉ chứng minh mitigation đã làm — nó **giữ** mitigation đó khỏi bị gỡ nhầm trong refactor sáu tháng sau. Threat mà không test được (ví dụ phishing nhân viên) thì tiêu chí chấp nhận là một cấu hình kiểm chứng được: "SSO bắt buộc phương thức chống phishing cho group support".
+
+## Attack tree, ngắn gọn
+
+STRIDE tốt cho việc quét rộng. Khi có một mục tiêu mà kẻ tấn công thực sự muốn, **attack tree** (Bruce Schneier phổ biến từ cuối những năm 1990) giúp đào sâu: gốc là mục tiêu, các nhánh là cách đạt được, với nút OR (một trong các cách) và AND (cần tất cả).
+
+```text
+Mục tiêu: dùng gói trả phí mà không trả tiền
+├── OR  Giả mạo webhook payment.succeeded
+│   ├── AND Biết URL webhook (dễ — nằm trong tài liệu)
+│   │   └── Có secret ký webhook
+│   │       ├── OR  Secret lộ trong repo / log / biến môi trường của CI
+│   │       └── OR  Endpoint không kiểm tra chữ ký            ← T01
+│   └── Replay một sự kiện thanh toán hợp lệ của tenant khác   ← T02
+├── OR  Sửa giá trong request tạo checkout session (giá lấy từ client)
+├── OR  Lạm dụng hoàn tiền: thanh toán, nhận gói, chargeback, gói không bị thu hồi
+└── OR  Social engineering support để "kích hoạt thủ công"     ← T12, T14
+```
+
+Cây này lộ ra hai threat bảng STRIDE ban đầu bỏ sót: **giá lấy từ client** (luôn tính giá ở server từ id gói) và **chargeback không thu hồi gói** (một lỗ hổng logic nghiệp vụ, không phải lỗi kỹ thuật). Mình chỉ vẽ attack tree cho hai, ba mục tiêu giá trị nhất — vẽ cho mọi thứ thì rất tốn công.
+
+## LINDDUN: khi câu hỏi là quyền riêng tư
+
+STRIDE hỏi "kẻ tấn công có thể làm gì". Nhưng nhiều rủi ro về dữ liệu cá nhân xảy ra khi **hệ thống hoạt động đúng như thiết kế**. LINDDUN là framework threat modeling quyền riêng tư, dùng cùng DFD:
+
+| Loại | Câu hỏi | Trong ví dụ |
+| --- | --- | --- |
+| **L**inking | Có thể nối các dữ liệu rời rạc về cùng một người không? | Analytics nối hành vi trong app với email marketing |
+| **I**dentifying | Có thể xác định danh tính từ dữ liệu "ẩn danh" không? | Export "ẩn danh" vẫn có mã số thuế công ty |
+| **N**on-repudiation | Người dùng có bị ràng buộc với hành động mà họ cần được chối không? | Ít gặp với hoá đơn; quan trọng với tính năng tố giác, khảo sát nội bộ |
+| **D**etecting | Có thể suy ra sự tồn tại của một người hay quan hệ không? | Form "quên mật khẩu" tiết lộ email đã đăng ký |
+| **D**ata disclosure | Có thu thập, lưu, chia sẻ quá mức cần thiết không? | Gửi toàn bộ hoá đơn sang công cụ support bên thứ ba |
+| **U**nawareness & unintervenability | Người dùng có biết và có quyền can thiệp không? | Không có cách xem, xuất hay xoá dữ liệu của mình |
+| **N**on-compliance | Có vi phạm luật và chính sách không? | Thời hạn lưu trữ, xử lý dữ liệu cá nhân theo luật địa phương |
+
+Mình không chạy LINDDUN đầy đủ mỗi lần. Nhưng với tính năng chạm vào dữ liệu cá nhân — analytics, export, tích hợp bên thứ ba, AI — mình thêm 15 phút đi qua bảng này.
+
+## Chạy một buổi threat modeling 60 phút
+
+### Chuẩn bị (người thiết kế, khoảng 30 phút)
+
+- Bản nháp DFD và một đoạn mô tả tính năng gửi trước **một ngày**. Không ai nên nhìn sơ đồ lần đầu trong buổi họp.
+- Đánh dấu sẵn các trust boundary và câu hỏi mở.
+- Mời 4–6 người: người thiết kế, một kỹ sư sẽ code phần đó, một người hiểu vận hành/hạ tầng, một người từ bảo mật nếu có, và **một người hoài nghi** — thường là người không làm trực tiếp tính năng này.
+
+### Agenda
+
+| Phút | Việc | Đầu ra |
+| --- | --- | --- |
+| 0–10 | Người thiết kế đi qua DFD. Mọi người sửa sơ đồ: "mũi tên này thiếu", "cái này thực ra gọi qua queue" | DFD đã được thống nhất |
+| 10–40 | Đi từng trust boundary, hỏi STRIDE. Ghi mọi threat, **chưa** tranh luận mitigation | Danh sách threat thô |
+| 40–50 | Gộp trùng, chấm L × I, chọn quyết định cho threat điểm cao | Bảng threat có điểm |
+| 50–60 | Gán owner, tạo ticket, ghi rủi ro được chấp nhận và ngày xem lại | Ticket, owner, ngày xem lại |
+
+### Mẹo điều phối
+
+- **Tách "tìm threat" khỏi "sửa threat".** Khi ai đó bắt đầu thiết kế mitigation ở phút 15, ghi lại và đi tiếp. Nếu không, 40 phút sẽ hết ở threat đầu tiên.
+- **Hỏi "và rồi sao?"** Kẻ tấn công vào được worker — rồi sao? Họ có credentials gì, chạm tới được gì? Câu hỏi đó biến threat mơ hồ thành threat có impact rõ.
+- **Không có câu hỏi ngớ ngẩn.** Người mới thường hỏi "nếu gọi thẳng endpoint này không qua UI thì sao?" — và đó thường là câu hỏi tốt nhất trong buổi.
+- **Đừng để buổi họp thành phiên tòa.** Mục tiêu là tìm lỗ hổng trong thiết kế, không phải trong người thiết kế.
+
+<Callout type="tip" title="Bắt đầu nhỏ">
+  Buổi đầu tiên, chọn một tính năng đang thiết kế — không phải toàn bộ hệ thống. "Threat model toàn bộ nền tảng" là dự án không bao giờ kết thúc. Một tính năng, một giờ, năm ticket là một thành công có thể lặp lại.
+</Callout>
+
+## Làm cho nó liên tục
+
+Threat model viết một lần rồi để trong wiki sẽ sai sau ba sprint. Cách duy nhất mình thấy hiệu quả là để nó sống **cạnh code và design doc**, đổi cùng với chúng.
+
+### Threat model trong repo
+
+```text
+docs/design/attachments/
+├── design.md            # design doc: bối cảnh, phương án, quyết định
+├── dfd.mmd              # sơ đồ Mermaid, review như code
+└── threats.yaml         # bảng threat có cấu trúc
+```
+
+```yaml
+# docs/design/attachments/threats.yaml
+feature: attachments
+last_reviewed: 2026-10-11
+reviewers: [di.huynh, an.tran, security-guild]
+threats:
+  - id: T06
+    element: file-serving
+    stride: [E, I]
+    title: HTML/SVG upload chạy script trên origin của app
+    likelihood: 3
+    impact: 3
+    decision: mitigate
+    ticket: SEC-106
+    status: done
+    verified_by: test/attachments.serving.e2e-spec.ts
+  - id: T15
+    element: postgres
+    stride: [I]
+    title: Backup hoặc credentials bị lộ
+    likelihood: 1
+    impact: 3
+    decision: accept
+    accepted_by: cto
+    reason: Backup đã mã hoá bởi dịch vụ managed; tách role mỗi service lên kế hoạch Q1
+    review_by: 2027-01-31
+```
+
+Định dạng có cấu trúc cho phép CI làm những kiểm tra nhàm chán: threat điểm từ 6 trở lên phải có ticket, threat `accept` phải có `accepted_by` và `review_by`, và `review_by` đã qua thì build cảnh báo.
+
+```ts
+// scripts/check-threats.ts
+import { globSync, readFileSync } from "node:fs";
+import { parse } from "yaml";
+
+type Threat = {
+  id: string; likelihood: number; impact: number; decision: string;
+  ticket?: string; accepted_by?: string; review_by?: string;
+};
+
+let problems = 0;
+for (const file of globSync("docs/design/**/threats.yaml")) {
+  const { threats } = parse(readFileSync(file, "utf8")) as { threats: Threat[] };
+  for (const t of threats) {
+    const score = t.likelihood * t.impact;
+    if (score >= 6 && t.decision !== "accept" && !t.ticket) {
+      problems++; console.error(`${file} ${t.id}: điểm ${score} nhưng chưa có ticket`);
+    }
+    if (t.decision === "accept" && (!t.accepted_by || !t.review_by)) {
+      problems++; console.error(`${file} ${t.id}: chấp nhận rủi ro thiếu người ký hoặc ngày xem lại`);
+    }
+    if (t.review_by && new Date(t.review_by) < new Date()) {
+      problems++; console.error(`${file} ${t.id}: đã quá hạn xem lại (${t.review_by})`);
+    }
+  }
+}
+process.exit(problems ? 1 : 0);
+```
+
+`fs.globSync` có sẵn trong Node 22 trở lên, nên script không cần thêm dependency nào ngoài parser YAML.
+
+### Khi nào phải xem lại
+
+Threat model không cần cập nhật mỗi PR. Nó cần cập nhật khi **sơ đồ thay đổi**:
+
+- Thêm external entity mới: một bên thứ ba, một loại người dùng mới, một tích hợp.
+- Thêm hoặc dời trust boundary: tách service, chuyển sang upload trực tiếp, mở API cho đối tác.
+- Đổi cách xác thực hoặc phân quyền.
+- Bắt đầu lưu loại dữ liệu nhạy cảm mới.
+- Sau mỗi sự cố bảo mật — threat đó có trong mô hình không? Nếu không, vì sao bỏ sót?
+
+Một dòng trong PR template là đủ để nhắc:
+
+```text
+## Bảo mật
+- [ ] PR này thêm/đổi external entity, trust boundary, cách xác thực hay loại dữ liệu nhạy cảm?
+      Nếu có: cập nhật docs/design/<feature>/dfd.mmd và threats.yaml, tag @security-guild.
+```
+
+### Câu hỏi 4: chúng ta đã làm tốt chưa?
+
+Mình xem lại mỗi quý, ngắn gọn:
+
+- Bao nhiêu ticket từ threat model đã đóng, bao nhiêu còn treo? Threat điểm 9 nào vẫn mở?
+- Mitigation có được kiểm chứng bằng test hay cấu hình, hay chỉ "đã làm" trên ticket?
+- Các sự cố và báo cáo lỗ hổng trong quý — cái nào đã có trong threat model? Cái nào bị bỏ sót, và bỏ sót vì sơ đồ sai hay vì không ai hỏi đúng câu?
+- Rủi ro được chấp nhận nào đã tới hạn xem lại?
+
+Câu hỏi thứ ba là thước đo chất lượng thật. Một threat model tốt không phải là cái dài nhất, mà là cái mà khi sự cố xảy ra, bạn thấy nó đã được dự đoán — hoặc bạn hiểu chính xác tại sao không.
+
+Về công cụ: bảng trắng và một file Mermaid là đủ để bắt đầu. Khi cần nhiều hơn, OWASP Threat Dragon và Microsoft Threat Modeling Tool cho phép vẽ DFD và gợi ý threat theo STRIDE; pytm và Threagile cho phép mô tả hệ thống bằng code rồi sinh threat tự động. Công cụ giúp với độ phủ, nhưng threat quan trọng nhất thường đến từ một người trong phòng hỏi "khoan, file này được phục vụ từ domain nào?".
+
+## Những lỗi mình hay gặp
+
+**Threat model như tài liệu compliance.** Bốn mươi trang, viết một lần cho audit, không ai đọc lại. Một bảng threat trong repo có ticket kèm theo giá trị hơn nhiều.
+
+**Làm sau khi đã code xong.** Lúc đó mọi phát hiện đều đắt, và áp lực ra mắt khiến mọi thứ được "chấp nhận". Threat modeling thuộc về giai đoạn design doc.
+
+**Sơ đồ không có trust boundary.** Một sơ đồ kiến trúc đẹp với các hộp và mũi tên, nhưng không có đường nét đứt nào. Không có ranh giới thì không biết hỏi STRIDE ở đâu.
+
+**Coi mạng nội bộ là tin cậy.** "Worker nằm trong VPC nên an toàn" — trong khi nó xử lý file của người lạ. Tin cậy đi theo nguồn gốc dữ liệu, không theo địa chỉ IP.
+
+**Bỏ qua người trong nhà.** Admin panel, công cụ support, script vận hành có quyền rộng nhất hệ thống và thường được bảo vệ kém nhất.
+
+**Tin dữ liệu từ bên thứ ba vì nó đến từ "đối tác".** Webhook không xác minh chữ ký, dữ liệu từ API đối tác không validate. Đối tác cũng có thể bị xâm nhập, và URL của bạn thì ai cũng gọi được.
+
+**Chấm điểm thay vì quyết định.** Hai mươi phút tranh luận 4 hay 6, không phút nào cho "vậy ai sửa, khi nào". Con số chỉ để xếp thứ tự.
+
+**Chấp nhận rủi ro không có hạn.** "Accepted" không có tên người ký và ngày xem lại là một cách lịch sự để nói "quên đi".
+
+**Một buổi duy nhất cho cả hệ thống.** Phạm vi quá lớn, buổi họp lan man, kết quả nông. Mỗi tính năng một buổi, và một mô hình tổng thể được ghép dần từ những mảnh đó.
+
+## Tóm tắt
+
+<Checklist>
+
+- Dùng bốn câu hỏi: đang xây gì, điều gì có thể sai, sẽ làm gì, đã làm tốt chưa — và trả lời từng câu bằng một đầu ra cụ thể.
+- Vẽ DFD với external entity, process, data store, data flow có tên, và trust boundary rõ ràng; giữ nó dạng code trong repo.
+- Dành phần lớn thời gian ở các chỗ giao cắt ranh giới, đặc biệt những chỗ API không đứng giữa: upload trực tiếp, worker xử lý dữ liệu của người lạ, webhook công khai, admin panel.
+- Đi STRIDE theo từng phần tử, dùng bảng STRIDE-per-element làm gợi ý chứ không phải luật.
+- Webhook: chữ ký HMAC trên raw body, `timingSafeEqual`, dung sai timestamp, idempotency theo event id, tra lại trạng thái ở bên thứ ba.
+- File upload: server chọn key, presigned POST với `content-length-range`, kiểm tra magic bytes, vùng cách ly, phục vụ từ domain riêng với `attachment` và `nosniff`; worker trong sandbox không egress.
+- Nhiều tenant: điều kiện tenant trong mọi query, RLS làm lớp hai, DTO whitelist, test IDOR tự động.
+- Admin: SSO với MFA chống phishing, audit log append-only có lý do, impersonation chỉ đọc và khách hàng thấy được.
+- Chấm rủi ro bằng likelihood × impact thang 1–3 với định nghĩa cụ thể; tránh DREAD; con số để xếp thứ tự, không phải để tranh luận.
+- Mỗi threat quan trọng thành ticket có tiêu chí chấp nhận kiểm chứng được, lý tưởng là một test; rủi ro được chấp nhận có người ký và ngày xem lại.
+- Dùng attack tree cho vài mục tiêu giá trị nhất, LINDDUN cho tính năng chạm vào dữ liệu cá nhân.
+- Chạy buổi 60 phút với DFD gửi trước, tách tìm threat khỏi sửa threat, kết thúc bằng owner và ticket.
+- Xem lại khi sơ đồ thay đổi, kiểm tra bằng CI, và mỗi quý so sự cố thật với những gì mô hình đã dự đoán.
+
+</Checklist>

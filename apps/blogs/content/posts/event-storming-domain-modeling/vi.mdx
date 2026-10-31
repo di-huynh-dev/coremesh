@@ -1,0 +1,696 @@
+---
+title: "Event Storming thực chiến: từ bức tường sticky note đến bounded context, aggregate và code NestJS"
+excerpt: "Event Storming là cầu nối giữa phân tích nghiệp vụ và thiết kế phần mềm. Bài này đi qua ba cấp độ workshop, ngữ pháp sticky note, cách điều phối, một ví dụ đặt lịch khám thật, cách tìm bounded context, context mapping và biến kết quả thành aggregate, command, event trong NestJS."
+---
+
+<Lead>Dự án tệ nhất mình từng tham gia không thất bại vì code dở. Nó thất bại vì ba tháng sau khi go-live, mình mới phát hiện chữ "lịch hẹn" mà lễ tân dùng, chữ "lịch hẹn" mà bác sĩ dùng và chữ "lịch hẹn" trong bảng `appointments` là ba thứ khác nhau. Tài liệu yêu cầu dày 60 trang không cứu được, vì nó được viết bởi một người, đọc bởi một người khác, và không ai ngồi cùng nhau để thấy chỗ hai cách hiểu va vào nhau. Event Storming là kỹ thuật mình dùng từ đó đến giờ để tránh lặp lại chuyện này: đưa người hiểu nghiệp vụ và người viết code đứng trước cùng một bức tường, kể lại câu chuyện của hệ thống bằng các sự kiện, rồi dùng chính bức tường đó để tìm bounded context, aggregate và cả tên class trong code. Bài này là những gì mình thực sự làm — từ cách điều phối buổi workshop đến lúc command và event chạy trong NestJS.</Lead>
+
+## Vì sao BA và dev hay nói hai thứ tiếng
+
+Quy trình "truyền thống" mà nhiều team mình gặp vẫn chạy như sau: BA phỏng vấn nghiệp vụ, viết tài liệu, chuyển cho dev; dev đọc, hỏi lại vài câu qua chat, rồi tự điền vào chỗ trống bằng giả định của mình. Mỗi lần chuyển tay là một lần mất thông tin, và thứ bị mất thường là thứ quan trọng nhất: **những trường hợp ngoại lệ mà chuyên gia nghiệp vụ coi là "hiển nhiên" nên không ai nhắc tới**.
+
+Ví dụ trong dự án đặt lịch khám mình kể ở trên:
+
+- **Lễ tân** nói "lịch hẹn" là một dòng trong sổ: bệnh nhân, giờ, bác sĩ. Huỷ thì gạch đi.
+- **Bác sĩ** nói "lịch hẹn" là lượt khám: có hồ sơ, có chỉ định, có đơn thuốc. Một lịch hẹn có thể kéo thành hai lượt khám nếu phải chụp X-quang rồi quay lại.
+- **Kế toán** nói "lịch hẹn" là thứ phát sinh tiền: cọc, phí huỷ muộn, hoàn tiền.
+- **Bảng `appointments`** trong database cố gắng làm cả ba việc, với 40 cột nullable và một cột `status` có 14 giá trị.
+
+Không ai sai. Mỗi người mô tả đúng phần thế giới của họ. Vấn đề là phần mềm chỉ có một model, và model đó vỡ ngay ở chỗ các thế giới chạm nhau. Event Storming không phải phép màu, nhưng nó buộc những va chạm này lộ ra **trong một buổi chiều**, thay vì ba tháng sau trong một incident.
+
+<Callout type="note" title="Event Storming đến từ đâu">
+
+Kỹ thuật này do Alberto Brandolini đề xuất, và được mô tả chi tiết trong cuốn *Introducing EventStorming* của ông. Bài này dùng các khái niệm và quy ước màu phổ biến của cộng đồng; nhiều team tự điều chỉnh màu hay tên gọi, và điều đó hoàn toàn ổn miễn là cả phòng dùng chung một chú giải.
+
+</Callout>
+
+## Ba cấp độ: big picture, process level, design level
+
+Một lỗi phổ biến là coi Event Storming là "một buổi họp". Thực ra có ba kiểu workshop với mục tiêu, người tham gia và đầu ra khác nhau. Chọn sai cấp độ là lý do số một khiến buổi workshop trở thành một cuộc họp dài vô ích.
+
+| | Big picture | Process level | Design level |
+| --- | --- | --- | --- |
+| **Câu hỏi chính** | Toàn bộ nghiệp vụ chạy thế nào? Chỗ nào đau? | Một quy trình cụ thể chạy thế nào, theo luật gì? | Phần mềm nên được cắt thành những khối nào? |
+| **Phạm vi** | Cả tổ chức hoặc cả sản phẩm | Một luồng: đặt lịch, thanh toán, hoàn tiền | Một bounded context |
+| **Người tham gia** | Chuyên gia nghiệp vụ từ nhiều phòng ban, BA, PO, tech lead | Người vận hành quy trình, BA, dev, QA | Dev, tech lead, BA, một chuyên gia nghiệp vụ để hỏi |
+| **Thời lượng** | Nửa ngày đến một ngày | Hai đến bốn tiếng mỗi quy trình | Hai đến ba tiếng, có thể lặp lại |
+| **Sticky note dùng** | Chủ yếu event, hotspot, actor, external system | Thêm command, policy, read model | Thêm aggregate/constraint, chi tiết invariant |
+| **Đầu ra** | Bản đồ nghiệp vụ, danh sách hotspot, ứng viên bounded context | Quy trình có luật rõ ràng, câu hỏi cụ thể cho nghiệp vụ | Aggregate, command, event, ranh giới module |
+
+Thứ tự mình hay dùng: một buổi big picture ở đầu dự án (hoặc khi tiếp quản một hệ thống cũ), sau đó process level cho hai hoặc ba quy trình có nhiều hotspot nhất, rồi design level cho bounded context sắp được code. Không phải dự án nào cũng cần cả ba. Một feature nhỏ trong context đã ổn định thì process level là đủ.
+
+### Big picture: đừng bỏ qua dù bạn chỉ làm một module
+
+Dev thường muốn nhảy thẳng vào design level vì nó "gần code". Mình từng làm vậy và hối hận: nhóm mình thiết kế rất đẹp context Đặt lịch, rồi phát hiện ra phòng khám có một quy trình "khám theo gói doanh nghiệp" mà lịch hẹn được công ty đặt hàng loạt, cọc bằng hợp đồng chứ không qua cổng thanh toán. Một buổi big picture hai tiếng lẽ ra đã cho thấy điều đó ngay trên tường.
+
+## Ngữ pháp sticky note
+
+Sức mạnh của Event Storming nằm ở chỗ nó có một "ngữ pháp" đủ đơn giản để người không biết kỹ thuật dùng được sau năm phút giải thích, nhưng đủ chặt để kết quả map thẳng sang thiết kế phần mềm.
+
+| Loại | Màu quy ước | Viết thế nào | Ví dụ |
+| --- | --- | --- | --- |
+| Domain event | Cam | Động từ ở thể bị động/quá khứ, điều đã xảy ra và nghiệp vụ quan tâm | "Lịch hẹn đã được đặt" |
+| Command | Xanh dương | Mệnh lệnh, ý định của ai đó | "Đặt lịch hẹn" |
+| Actor | Vàng (nhỏ) | Vai trò người, không phải tên người | "Bệnh nhân", "Lễ tân" |
+| Policy | Tím nhạt | "Mỗi khi X thì Y" | "Mỗi khi cọc đã thanh toán, xác nhận lịch hẹn" |
+| Read model | Xanh lá | Thông tin người dùng cần nhìn để ra quyết định | "Danh sách khung giờ trống" |
+| External system | Hồng (dài) | Hệ thống ngoài phạm vi kiểm soát | "VNPay", "Zalo ZNS", "Hệ thống BHYT" |
+| Hotspot | Đỏ/hồng đậm, dán xéo | Câu hỏi, tranh cãi, rủi ro, chỗ đau | "Cọc về sau khi hết giữ chỗ thì sao?" |
+| Aggregate / constraint | Vàng nhạt (lớn) | Thứ nắm giữ luật, quyết định command được chấp nhận hay không | "Lịch hẹn", "Lịch làm việc bác sĩ" |
+
+Khi ghép lại, chúng tạo thành một câu đọc được từ trái sang phải:
+
+```text
+Actor nhìn Read model → ra Command → Aggregate kiểm tra luật → sinh Domain event
+Domain event → kích hoạt Policy → ra Command mới (hoặc gọi External system) → ...
+```
+
+Đây là "vòng lặp" cốt lõi. Khi một đoạn trên tường không đọc được thành câu như vậy — ví dụ có event mà không biết ai hay cái gì gây ra nó — đó chính là chỗ cần hỏi thêm.
+
+### Domain event: viết ở thì quá khứ, bằng ngôn ngữ nghiệp vụ
+
+Event là xương sống của cả bức tường, và cũng là nơi người mới hay sai nhất. Vài quy tắc mình nhắc ngay đầu buổi:
+
+- **Thì quá khứ.** "Lịch hẹn đã được xác nhận", không phải "Xác nhận lịch hẹn" (đó là command). Thì quá khứ buộc người viết nghĩ về *sự thật đã xảy ra*, thứ không thể tranh cãi.
+- **Nghiệp vụ quan tâm.** "Nút Đặt lịch đã được bấm" là sự kiện UI; "Form đã được validate" là chi tiết kỹ thuật. Hỏi: "Nếu chuyện này xảy ra, có ai ở phòng khám muốn biết không?"
+- **Không phải CRUD.** "Lịch hẹn đã được cập nhật" gần như vô nghĩa. Cập nhật *cái gì*, *vì sao*? "Lịch hẹn đã được dời sang ngày khác" và "Bác sĩ phụ trách đã được thay" là hai sự kiện với hệ quả rất khác nhau.
+
+| Kém | Tốt hơn | Vì sao |
+| --- | --- | --- |
+| "Appointment updated" | "Lịch hẹn đã được dời", "Bác sĩ đã được thay" | Mỗi lý do thay đổi có policy riêng |
+| "Đã bấm thanh toán" | "Cọc đã được thanh toán" | Sự thật nghiệp vụ, không phải thao tác UI |
+| "Lỗi thanh toán" | "Thanh toán cọc đã thất bại" | Vẫn là sự kiện, không phải exception |
+| "Gửi SMS" | "Nhắc lịch đã được gửi" | Đó là command/kết quả, viết dạng sự thật |
+
+### Command, actor và read model
+
+Command là **ý định**, và nó có thể bị từ chối. "Đặt lịch hẹn" có thể thất bại vì khung giờ đã có người lấy. Đây là khác biệt quan trọng với event: event không bao giờ bị từ chối, vì nó đã xảy ra rồi.
+
+Mỗi command cần trả lời được: *ai* ra lệnh (actor), hoặc *cái gì* ra lệnh (policy, timer), và người đó *nhìn thấy gì* để quyết định (read model). Read model hay bị bỏ qua, nhưng nó là chỗ sinh ra rất nhiều yêu cầu UI và query: "Bệnh nhân cần thấy khung giờ trống của bác sĩ trong 14 ngày tới, kèm phí khám" là một yêu cầu cụ thể mà dev ước lượng được.
+
+### Policy: phản ứng tự động của tổ chức
+
+Policy là "mỗi khi X thì Y" — quy tắc phản ứng, có thể do người làm (lễ tân gọi điện khi bệnh nhân chưa xác nhận) hoặc do máy làm (hệ thống tự huỷ giữ chỗ sau 15 phút). Policy là nơi ẩn nhiều nghiệp vụ nhất, vì chuyên gia nghiệp vụ làm chúng theo phản xạ. Câu hỏi mình dùng để đào policy:
+
+- "Sau khi chuyện này xảy ra, *ngay sau đó* ai làm gì?"
+- "Có khi nào chuyện này xảy ra mà *không ai* làm gì tiếp không? Như vậy có ổn không?"
+- "Việc đó luôn luôn xảy ra, hay chỉ trong một số trường hợp?"
+
+Câu cuối thường mở ra một nhánh: "Thường thì xác nhận luôn, *trừ khi* là bệnh nhân có lịch sử no-show, khi đó lễ tân gọi xác nhận lại."
+
+### External system và hotspot
+
+External system là thứ bạn không kiểm soát: cổng thanh toán, Zalo, hệ thống bảo hiểm y tế, phần mềm HIS có sẵn của bệnh viện. Đặt chúng lên tường sớm vì chúng là nguồn của độ trễ, lỗi và ràng buộc về format.
+
+Hotspot là sticky note quan trọng nhất về mặt giá trị. Bất kỳ khi nào có tranh cãi, câu hỏi không ai trả lời được, hay một người nói "chỗ này lúc nào cũng có vấn đề" — dán hotspot lên ngay, **và đi tiếp**. Hotspot không phải để giải quyết trong buổi workshop; nó là danh sách việc cần làm sau đó.
+
+### Aggregate, hay "constraint"
+
+Ở design level, bạn nhóm các command và event quanh "thứ" quyết định command có được chấp nhận không — trong DDD gọi là aggregate. Nhiều facilitator tránh từ "aggregate" khi có người nghiệp vụ trong phòng và dùng những từ như "constraint" hay "hệ thống quyết định", vì từ kỹ thuật làm người nghiệp vụ lùi lại. Mình hay hỏi: "Để quyết định có cho đặt lịch này hay không, cần nhìn vào thông tin gì?" — câu trả lời chính là ranh giới của aggregate.
+
+## Điều phối buổi workshop
+
+Kỹ thuật thì đơn giản; điều phối mới khó. Một buổi Event Storming tốt trông như hỗn loạn có kiểm soát.
+
+### Chuẩn bị
+
+- **Người tham gia: 6–12 người.** Ít hơn thì thiếu góc nhìn; nhiều hơn thì một nửa đứng xem. Bắt buộc có người *thực sự làm* nghiệp vụ (lễ tân trưởng, điều dưỡng, kế toán), không chỉ quản lý của họ.
+- **Không gian:** một bức tường dài ít nhất 6–8 mét, giấy cuộn khổ lớn, sticky note đủ màu, bút dạ nét đậm (không dùng bút bi — đứng xa không đọc được). Bỏ bàn ghế giữa phòng: người ngồi thì không tham gia.
+- **Chú giải:** dán một bảng màu ở góc tường. Mọi người sẽ nhìn nó cả buổi.
+- **Một câu mở đầu rõ ràng**, ví dụ: "Hôm nay chúng ta kể lại toàn bộ hành trình từ lúc bệnh nhân tìm bác sĩ đến lúc thanh toán xong, bằng những sự kiện đã xảy ra."
+
+### Pha 1: khám phá hỗn loạn
+
+Phát sticky note cam cho mọi người, yêu cầu mỗi người tự viết các domain event mình biết và dán lên tường, **đại khái theo thời gian**, không thảo luận, không xin phép, trong 15–20 phút.
+
+Pha này cố tình hỗn loạn. Mục tiêu là lấy được kiến thức ra khỏi đầu mọi người *trước khi* người nói to nhất định hướng cả nhóm. Trùng lặp là tốt — hai sticky note "Lịch hẹn đã được xác nhận" và "Lịch hẹn đã được chốt" dán cạnh nhau là dấu hiệu đầu tiên của một vấn đề ngôn ngữ.
+
+### Pha 2: ép thành timeline
+
+Bây giờ cả nhóm sắp xếp lại: một dòng thời gian duy nhất từ trái sang phải, gộp trùng lặp, tách các nhánh song song thành swimlane. Đây là lúc tranh cãi xảy ra, và đó là điều bạn muốn.
+
+- "Thanh toán cọc trước hay xác nhận trước?" → hotspot nếu không thống nhất.
+- Hai sticky note có vẻ trùng nhưng người viết giải thích khác nhau → giữ cả hai, dán hotspot về ngôn ngữ.
+- Một đoạn timeline trống trơn mà ai cũng biết "chỗ đó có làm gì đó" → hỏi người vận hành thật.
+
+### Pha 3: pivotal event và swimlane
+
+Tìm vài **pivotal event** — sự kiện đánh dấu một bước chuyển lớn, sau đó thế giới khác hẳn. Trong ví dụ phòng khám: "Lịch hẹn đã được xác nhận", "Bệnh nhân đã check-in", "Lượt khám đã kết thúc", "Hoá đơn đã được xuất". Dùng băng dính màu kẻ dọc tường tại các pivotal event. Chúng chia timeline thành các chương, và ranh giới giữa các chương thường gần trùng với ranh giới bounded context.
+
+### Pha 4: người, hệ thống và vấn đề
+
+Thêm actor và external system. Sau đó cho mọi người đi dọc tường, dán hotspot đỏ vào mọi chỗ có vấn đề, và sticky note xanh lá cho cơ hội cải thiện. Cuối buổi, mỗi người có hai hoặc ba phiếu (chấm tròn) để bầu cho hotspot quan trọng nhất. Đây là input trực tiếp cho backlog và cho buổi process level tiếp theo.
+
+<Callout type="tip" title="Mẹo điều phối mình học được bằng cách làm sai">
+
+- **Đứng ở cuối timeline, không đứng ở đầu.** Người ta có xu hướng bắt đầu từ chỗ facilitator đứng; đứng cuối buộc nhóm nghĩ về kết quả trước.
+- **Bắt đầu bằng một event ở giữa**, kiểu "Bệnh nhân đã check-in", rồi hỏi "trước đó là gì, sau đó là gì". Bắt đầu từ đầu thì nhóm sa lầy ở đăng ký tài khoản.
+- **Không sửa sticky note của người khác.** Viết cái mới, dán cạnh, đánh hotspot.
+- **Đếm thời gian công khai.** Một cái đồng hồ to trên tường giúp facilitator không phải là người "cắt lời".
+
+</Callout>
+
+## Ví dụ thực tế: đặt lịch khám ở một chuỗi phòng khám
+
+Bối cảnh: một chuỗi phòng khám đa khoa muốn cho bệnh nhân đặt lịch online, cọc trước để giảm no-show, nhắc lịch qua Zalo, và đồng bộ với phần mềm quản lý phòng khám có sẵn. Đây là phần big picture sau khi đã ép timeline, viết lại dạng text cho dễ đọc:
+
+```text
+[Lịch làm việc bác sĩ đã được công bố]
+  → [Lịch hẹn đã được đặt] → [Yêu cầu cọc đã được tạo] → [Cọc đã được thanh toán] | [Thanh toán cọc đã thất bại]
+  → [Lịch hẹn đã được xác nhận]          ‖ pivotal
+  → [Nhắc lịch đã được gửi (24h)] → [Nhắc lịch đã được gửi (2h)]
+  → [Bệnh nhân đã check-in]              ‖ pivotal
+  → [Lượt khám đã bắt đầu] → [Chỉ định đã được tạo] → [Đơn thuốc đã được kê]
+  → [Lượt khám đã kết thúc]              ‖ pivotal
+  → [Hoá đơn đã được xuất] → [Cọc đã được cấn trừ]
+
+Nhánh phụ:
+  [Giữ chỗ đã hết hạn] → [Khung giờ đã được giải phóng]
+  [Lịch hẹn đã bị huỷ bởi bệnh nhân] → [Cọc đã bị giữ lại] | [Cọc đã được hoàn]
+  [Bệnh nhân đã không đến]  → [Cọc đã bị giữ lại]
+  [Bác sĩ đã báo nghỉ]     → [Lịch hẹn đã được đề xuất dời] → ...
+
+Hotspot:
+  ⚠ Giữ chỗ bao lâu? Lễ tân nói 10 phút, quản lý nói 15.
+  ⚠ Cọc về SAU khi giữ chỗ đã hết hạn và khung giờ đã cho người khác?
+  ⚠ Huỷ muộn là trước bao nhiêu giờ? Áp dụng cho khám gói doanh nghiệp không?
+  ⚠ Bác sĩ nghỉ đột xuất: ai gọi cho 20 bệnh nhân? Hiện tại làm bằng Excel.
+  ⚠ "Xác nhận" của lễ tân (gọi điện) khác "xác nhận" của hệ thống (đã cọc)?
+```
+
+Hotspot thứ hai là ví dụ điển hình của thứ Event Storming tìm ra mà tài liệu yêu cầu bỏ sót. Bệnh nhân mở trang VNPay, đi pha cà phê, quay lại thanh toán sau 20 phút. Giữ chỗ đã hết hạn sau 15 phút, khung giờ đã được người khác đặt. Callback thanh toán thành công về — hệ thống làm gì? Không ai trong phòng có câu trả lời, và bản thiết kế ban đầu (xác nhận lịch hẹn mỗi khi nhận callback thành công) sẽ tạo ra đặt trùng giờ. Câu trả lời cuối cùng mà nghiệp vụ chọn: hoàn tiền tự động và đề xuất khung giờ gần nhất — một policy mới hoàn toàn.
+
+Hotspot cuối là vấn đề ngôn ngữ: lễ tân dùng "xác nhận" cho việc gọi điện hỏi bệnh nhân có đến không, còn hệ thống dùng nó cho trạng thái đã cọc. Hai khái niệm này cần hai tên khác nhau.
+
+### Zoom vào process level: luồng đặt lịch có cọc
+
+Ở buổi process level cho luồng đặt lịch, nhóm thêm command, policy và read model:
+
+<Figure src="/blog/event-storming-domain-modeling-board.svg" alt="Một đoạn bảng Event Storming cho luồng đặt lịch khám. Trong khung Scheduling: actor Bệnh nhân nhìn read model Khung giờ trống, ra command Đặt lịch hẹn, aggregate Lịch hẹn kiểm tra luật và sinh event Lịch hẹn đã được đặt. Policy 'mỗi khi đã đặt thì yêu cầu cọc' dẫn sang khung Payments, nơi cổng thanh toán VNPay/MoMo trả về event Cọc đã thanh toán hoặc Thanh toán cọc thất bại qua IPN. Event Cọc đã thanh toán đi ngược về khung Scheduling dưới dạng published event, kích hoạt policy 'mỗi khi cọc đã thanh toán thì xác nhận', command Xác nhận lịch hẹn và event Lịch hẹn đã được xác nhận. Một hotspot hỏi giữ chỗ hết hạn sau 10 hay 15 phút. Chú giải màu ở dưới: event cam, command xanh dương, actor vàng, policy tím, read model xanh lá, external system hồng, hotspot đỏ, aggregate vàng nhạt." caption="Một lát cắt của bảng đặt lịch. Event cam chạy theo thời gian, policy tím nối các bước, và khung đứt nét là bounded context mà bức tường làm lộ ra: Cọc đã thanh toán đi qua ranh giới dưới dạng event được publish, không phải bảng dùng chung." />
+
+Đọc lại thành câu: *Bệnh nhân nhìn danh sách khung giờ trống, ra lệnh đặt lịch hẹn; Lịch hẹn kiểm tra luật và ghi nhận "Lịch hẹn đã được đặt". Mỗi khi lịch hẹn đã được đặt, Payments tạo yêu cầu cọc và chuyển bệnh nhân sang cổng thanh toán. Khi cọc đã thanh toán, Scheduling xác nhận lịch hẹn.* Nếu một đoạn không đọc được như vậy, quay lại hỏi.
+
+## Tìm bounded context và ubiquitous language
+
+Sau big picture và vài buổi process level, bức tường có đủ thông tin để vẽ ranh giới. Bounded context là phạm vi trong đó một model — và bộ từ vựng của nó — nhất quán. Không có thuật toán; có các heuristic:
+
+- **Pivotal event là đường biên tự nhiên.** Trước "Bệnh nhân đã check-in" là thế giới đặt lịch; sau đó là thế giới khám bệnh. Ngôn ngữ, người làm và luật đều đổi.
+- **Cùng một từ, nghĩa khác nhau** — dấu hiệu chắc chắn nhất. "Lịch hẹn" ở Scheduling là một khung giờ được giữ cho một bệnh nhân; ở Clinical là lượt khám có hồ sơ; ở Billing là một khoản có thể phát sinh tiền.
+- **Actor khác nhau, phòng ban khác nhau.** Nhóm sticky note mà chỉ kế toán viết thường thuộc về một context riêng.
+- **Tốc độ thay đổi khác nhau.** Luật cọc thay đổi theo quý, quy trình khám thay đổi theo quy định của Bộ Y tế. Gói chúng chung thì mỗi lần sửa cái này phải test lại cái kia.
+- **Swimlane tách biệt** — một nhánh chạy song song mà không cần biết nhiều về nhánh chính.
+
+Kết quả cho ví dụ phòng khám:
+
+| Bounded context | Trách nhiệm | Từ khoá chính | Không quan tâm đến |
+| --- | --- | --- | --- |
+| Scheduling (Đặt lịch) | Lịch làm việc, khung giờ, lịch hẹn, giữ chỗ, dời, huỷ | Khung giờ, giữ chỗ, lịch hẹn, xác nhận | Chẩn đoán, đơn thuốc |
+| Payments (Thanh toán) | Yêu cầu cọc, giao dịch, hoàn tiền, đối soát | Yêu cầu thanh toán, giao dịch, hoàn tiền | Bác sĩ nào, khám gì |
+| Clinical (Khám bệnh) | Lượt khám, chỉ định, đơn thuốc | Lượt khám, chỉ định, kết luận | Cọc, giữ chỗ |
+| Billing (Hoá đơn) | Hoá đơn, cấn trừ cọc, bảo hiểm | Hoá đơn, dòng phí, cấn trừ | Lịch làm việc |
+| Notifications (Thông báo) | Gửi Zalo/SMS, template, kênh dự phòng | Tin nhắn, kênh, template | Luật nghiệp vụ |
+
+### Ubiquitous language: viết nó ra, rồi dùng nó trong code
+
+Ubiquitous language không phải glossary để trong Confluence. Nó là ngôn ngữ mà *cả nghiệp vụ lẫn code* dùng, trong một bounded context cụ thể. Mình giữ một bảng ngắn cho mỗi context, cập nhật sau mỗi buổi workshop:
+
+| Thuật ngữ | Context | Nghĩa | Tên trong code |
+| --- | --- | --- | --- |
+| Giữ chỗ | Scheduling | Khung giờ bị khoá tạm cho một bệnh nhân trong lúc chờ cọc | `hold`, `holdExpiresAt` |
+| Lịch hẹn đã xác nhận | Scheduling | Lịch hẹn đã có cọc hợp lệ | `AppointmentConfirmed` |
+| Gọi xác nhận | Scheduling | Lễ tân gọi điện hỏi bệnh nhân có đến không | `AttendanceCallLogged` |
+| Huỷ muộn | Scheduling | Bệnh nhân huỷ trong vòng 24 giờ trước giờ hẹn | `isLateCancellation()` |
+| Lượt khám | Clinical | Một lần bác sĩ tiếp bệnh nhân, có hồ sơ | `Encounter` |
+| Cấn trừ | Billing | Dùng tiền cọc trừ vào hoá đơn | `DepositApplied` |
+
+Để ý dòng thứ ba: hotspot "xác nhận vs xác nhận" được giải quyết bằng cách *đặt tên mới* cho khái niệm của lễ tân. Đây là một quyết định nhỏ nhưng tiết kiệm hàng chục cuộc hội thoại nhầm lẫn về sau.
+
+<Callout type="warning" title="Đừng dịch ubiquitous language qua lại">
+
+Nhóm mình viết code bằng tiếng Anh, nghiệp vụ nói tiếng Việt. Cách mình xử lý: bảng thuật ngữ có cột tên trong code, và **chỉ có một bản dịch được chấp nhận** cho mỗi khái niệm. Nếu dev tự dịch "giữ chỗ" lúc thành `reservation`, lúc thành `lock`, lúc thành `hold`, bạn vừa tạo ra ba khái niệm trong code cho một khái niệm trong đầu người dùng.
+
+</Callout>
+
+## Context mapping: các context nói chuyện với nhau thế nào
+
+Bounded context không sống một mình. Context map mô tả quan hệ giữa chúng — cả về kỹ thuật lẫn về tổ chức (team nào phụ thuộc team nào). Các pattern mình dùng nhiều nhất:
+
+| Pattern | Ý nghĩa | Trong ví dụ | Rủi ro |
+| --- | --- | --- | --- |
+| Customer / Supplier | Downstream (customer) có tiếng nói trong backlog của upstream (supplier) | Scheduling là customer của Payments: cần API yêu cầu cọc và event kết quả | Supplier ưu tiên việc khác, customer bị chặn |
+| Conformist | Downstream chấp nhận nguyên model của upstream, không dịch | Notifications dùng nguyên format template của Zalo ZNS | Model ngoài rò vào code của bạn |
+| Anticorruption Layer (ACL) | Downstream dựng lớp dịch để bảo vệ model của mình | Payments bọc VNPay/MoMo sau một port; Scheduling bọc phần mềm HIS cũ | Tốn công viết và bảo trì lớp dịch |
+| Shared Kernel | Hai context dùng chung một phần model nhỏ, đổi phải hai bên đồng ý | Value object `Money`, `PatientId` | Lớn dần thành "common module" chứa mọi thứ |
+| Open Host Service / Published Language | Upstream công bố API hoặc event với format ổn định, có version | Payments publish `DepositPaid` v1 cho mọi context | Phải giữ tương thích ngược |
+| Separate Ways | Không tích hợp, chấp nhận trùng lặp | Báo cáo marketing tự lấy dữ liệu từ data warehouse | Dữ liệu lệch nhau |
+
+### Anticorruption layer cho cổng thanh toán
+
+Đây là pattern mình thấy đáng tiền nhất. Cổng thanh toán có từ vựng riêng (`vnp_ResponseCode`, `vnp_TxnRef`, số tiền nhân 100) và chúng không nên đi xa hơn một file adapter. Model của Payments chỉ biết "giao dịch đã thành công" hay "đã thất bại":
+
+```ts
+// payments/infrastructure/vnpay.adapter.ts
+import { Injectable } from "@nestjs/common";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { GatewayCallback, PaymentGatewayPort } from "../domain/payment-gateway.port";
+import { PaymentsConfig } from "../payments.config";
+
+@Injectable()
+export class VnpayAdapter implements PaymentGatewayPort {
+  constructor(private readonly config: PaymentsConfig) {}
+
+  /** Dịch callback IPN của VNPay sang ngôn ngữ của Payments context. */
+  parseCallback(query: Record<string, string>): GatewayCallback {
+    const { vnp_SecureHash: signature, vnp_SecureHashType: _type, ...fields } = query;
+    if (!signature || !this.verify(fields, signature)) {
+      return { kind: "invalid_signature" };
+    }
+
+    const transactionId = fields.vnp_TxnRef;
+    const amountVnd = Number(fields.vnp_Amount) / 100; // VNPay gửi số tiền nhân 100
+    const succeeded = fields.vnp_ResponseCode === "00" && fields.vnp_TransactionStatus === "00";
+
+    return succeeded
+      ? { kind: "succeeded", transactionId, amountVnd, gatewayRef: fields.vnp_TransactionNo }
+      : { kind: "failed", transactionId, reason: `vnpay:${fields.vnp_ResponseCode}` };
+  }
+
+  private verify(fields: Record<string, string>, signature: string): boolean {
+    // Đơn giản hoá: thứ tự field và cách encode phải theo đúng tài liệu tích hợp của VNPay.
+    const data = Object.keys(fields)
+      .sort()
+      .map((k) => `${k}=${encodeURIComponent(fields[k]).replace(/%20/g, "+")}`)
+      .join("&");
+    const expected = createHmac("sha512", this.config.vnpayHashSecret).update(data).digest("hex");
+    return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  }
+}
+```
+
+Khi thêm MoMo, bạn viết `MomoAdapter` trả về đúng `GatewayCallback`. Không dòng code nào trong domain của Payments, càng không phải trong Scheduling, phải biết MoMo tồn tại.
+
+<Callout type="danger" title="Shared Kernel là con dốc trơn">
+
+Mình đã thấy "shared kernel" bắt đầu bằng `Money` và `PatientId`, rồi sáu tháng sau chứa cả `AppointmentStatus`, `UserEntity` và một hàm `formatInvoice`. Lúc đó nó không còn là kernel; nó là một context thứ sáu mà không ai sở hữu, và mọi thay đổi đều cần năm team đồng ý. Quy tắc của mình: shared kernel chỉ chứa value object bất biến, không có logic nghiệp vụ, và mỗi PR sửa nó cần review từ mọi team dùng nó.
+
+</Callout>
+
+## Từ design level đến aggregate có invariant
+
+Design level là lúc bức tường chuyển thành thiết kế. Câu hỏi trung tâm: **luật nào phải luôn đúng, ngay lập tức, sau mỗi command?** Đó là invariant, và aggregate là ranh giới nhất quán bảo vệ chúng.
+
+Từ các hotspot và policy của buổi process level, nhóm liệt kê luật của Scheduling:
+
+1. Một khung giờ của một bác sĩ chỉ có tối đa một lịch hẹn đang hoạt động.
+2. Lịch hẹn chờ cọc tự hết hạn sau 15 phút (hotspot đã được nghiệp vụ chốt).
+3. Chỉ lịch hẹn đang chờ cọc và chưa hết hạn mới được xác nhận.
+4. Không đặt lịch trong vòng 2 giờ trước giờ khám.
+5. Bệnh nhân huỷ trong vòng 24 giờ trước giờ hẹn thì cọc bị giữ lại.
+6. Cọc về sau khi giữ chỗ hết hạn → hoàn tiền, không xác nhận.
+
+Luật 3, 4, 5, 6 chỉ cần dữ liệu của *một* lịch hẹn — chúng thuộc về aggregate `Appointment`. Luật 1 thì khác: nó nói về *quan hệ giữa nhiều* lịch hẹn.
+
+### Invariant xuyên nhiều aggregate: chọn ranh giới có chủ đích
+
+Có hai cách mô hình hoá luật 1, và đây là một trade-off thật:
+
+| | Aggregate lớn: `DoctorDaySchedule` | Aggregate nhỏ: `Appointment` + unique constraint |
+| --- | --- | --- |
+| **Invariant nằm ở** | Code domain, trong một aggregate | Database (partial unique index) |
+| **Tranh chấp ghi** | Mọi lịch hẹn cùng bác sĩ, cùng ngày tranh nhau một version | Chỉ tranh chấp khi trùng đúng khung giờ |
+| **Load** | Phải load cả ngày để đặt một lịch | Load một lịch hẹn |
+| **Biểu đạt luật phức tạp** | Dễ: "tối đa 3 ca thủ thuật mỗi buổi" | Khó, phải thêm query hoặc constraint |
+| **Phù hợp khi** | Luật thật sự cần nhìn cả ngày | Luật chỉ là "không trùng khung giờ" |
+
+Với luật hiện tại, mình chọn aggregate nhỏ và để database bảo vệ luật 1 — nhưng *ghi rõ* quyết định đó trong ADR, vì nếu sau này nghiệp vụ thêm luật kiểu "tối đa 3 ca thủ thuật mỗi buổi", ranh giới cần được xem lại.
+
+```sql
+-- Một khung giờ chỉ có một lịch hẹn đang hoạt động
+CREATE UNIQUE INDEX appointments_active_slot_uq
+  ON appointments (doctor_id, slot_start)
+  WHERE status IN ('pending_deposit', 'confirmed', 'checked_in');
+```
+
+### Aggregate Appointment trong TypeScript
+
+Domain model không phụ thuộc NestJS hay ORM. Nó nhận thời gian từ bên ngoài (để test được), ghi lại event nó sinh ra, và nói bằng ubiquitous language:
+
+```ts
+// scheduling/domain/appointment.ts
+import { DomainError } from "./domain-error";
+import type { AppointmentEvent } from "./appointment.events";
+
+export type AppointmentStatus =
+  | "pending_deposit"
+  | "confirmed"
+  | "expired"
+  | "cancelled"
+  | "checked_in"
+  | "no_show";
+
+const HOLD_MS = 15 * 60_000;
+const MIN_LEAD_MS = 2 * 60 * 60_000;
+const LATE_CANCEL_MS = 24 * 60 * 60_000;
+
+export interface Slot {
+  doctorId: string;
+  startsAt: Date;
+}
+
+export class Appointment {
+  private pending: AppointmentEvent[] = [];
+
+  private constructor(
+    readonly id: string,
+    readonly patientId: string,
+    readonly slot: Slot,
+    private status: AppointmentStatus,
+    private holdExpiresAt: Date,
+    readonly version: number,
+  ) {}
+
+  static book(input: { id: string; patientId: string; slot: Slot }, now: Date): Appointment {
+    if (input.slot.startsAt.getTime() - now.getTime() < MIN_LEAD_MS) {
+      throw new DomainError("booking_too_late", "Không thể đặt lịch trong vòng 2 giờ trước giờ khám");
+    }
+    const holdExpiresAt = new Date(now.getTime() + HOLD_MS);
+    const appt = new Appointment(input.id, input.patientId, input.slot, "pending_deposit", holdExpiresAt, 0);
+    appt.record({
+      type: "AppointmentBooked",
+      appointmentId: appt.id,
+      patientId: appt.patientId,
+      doctorId: appt.slot.doctorId,
+      slotStart: appt.slot.startsAt.toISOString(),
+      holdExpiresAt: holdExpiresAt.toISOString(),
+    });
+    return appt;
+  }
+
+  /** Policy "mỗi khi cọc đã thanh toán thì xác nhận". Idempotent với cùng paymentId. */
+  confirm(paymentId: string, now: Date): void {
+    if (this.status === "confirmed") return;
+    if (this.status !== "pending_deposit") {
+      throw new DomainError("not_awaiting_deposit", `Lịch hẹn đang ở trạng thái ${this.status}`);
+    }
+    if (now > this.holdExpiresAt) {
+      // Luật 6: cọc về muộn không được xác nhận; policy bên ngoài sẽ hoàn tiền.
+      throw new DomainError("hold_expired", "Giữ chỗ đã hết hạn trước khi cọc về");
+    }
+    this.status = "confirmed";
+    this.record({ type: "AppointmentConfirmed", appointmentId: this.id, paymentId });
+  }
+
+  expireHold(now: Date): void {
+    if (this.status !== "pending_deposit") return; // đã xác nhận hoặc huỷ: không làm gì
+    if (now < this.holdExpiresAt) {
+      throw new DomainError("hold_still_active", "Chưa đến hạn giữ chỗ");
+    }
+    this.status = "expired";
+    this.record({ type: "HoldExpired", appointmentId: this.id });
+  }
+
+  cancel(by: "patient" | "clinic", now: Date): void {
+    if (this.status !== "pending_deposit" && this.status !== "confirmed") {
+      throw new DomainError("not_cancellable", `Không thể huỷ lịch hẹn ở trạng thái ${this.status}`);
+    }
+    const wasConfirmed = this.status === "confirmed";
+    const late = by === "patient" && this.slot.startsAt.getTime() - now.getTime() < LATE_CANCEL_MS;
+    this.status = "cancelled";
+    this.record({
+      type: "AppointmentCancelled",
+      appointmentId: this.id,
+      cancelledBy: by,
+      depositForfeited: wasConfirmed && late,
+    });
+  }
+
+  pullEvents(): AppointmentEvent[] {
+    const events = this.pending;
+    this.pending = [];
+    return events;
+  }
+
+  private record(event: AppointmentEvent): void {
+    this.pending.push(event);
+  }
+}
+```
+
+Vài điểm đáng chú ý:
+
+- **Tên method là command, tên event là sự thật** — đọc code giống đọc lại bức tường. `book`, `confirm`, `expireHold`, `cancel` map thẳng với sticky note xanh dương.
+- **`confirm` idempotent.** Cổng thanh toán gửi IPN nhiều lần là chuyện thường; aggregate không nên phát `AppointmentConfirmed` hai lần.
+- **`expireHold` không ném lỗi khi đã xác nhận.** Timer và callback thanh toán chạy đua nhau; bên thua chỉ đơn giản không làm gì.
+- **Luật "hoàn tiền khi cọc về muộn" không nằm trong aggregate.** Aggregate chỉ từ chối; một policy ở tầng application bắt lỗi `hold_expired` và yêu cầu Payments hoàn tiền. Đó là hai context khác nhau.
+
+### Test aggregate bằng chính câu chuyện trên tường
+
+Test cho aggregate viết theo dạng given–when–then dùng event, và đọc lên gần giống sticky note:
+
+```ts
+// scheduling/domain/appointment.spec.ts
+import { describe, expect, it } from "vitest";
+import { Appointment } from "./appointment";
+
+const slot = { doctorId: "dr-1", startsAt: new Date("2026-10-10T09:00:00+07:00") };
+const bookedAt = new Date("2026-10-08T08:00:00+07:00");
+
+describe("Appointment", () => {
+  it("không xác nhận khi cọc về sau khi giữ chỗ đã hết hạn", () => {
+    const appt = Appointment.book({ id: "a-1", patientId: "p-1", slot }, bookedAt);
+    appt.pullEvents();
+
+    const twentyMinutesLater = new Date(bookedAt.getTime() + 20 * 60_000);
+    expect(() => appt.confirm("pay-1", twentyMinutesLater)).toThrowError(/hết hạn/);
+    expect(appt.pullEvents()).toEqual([]);
+  });
+
+  it("giữ cọc khi bệnh nhân huỷ trong vòng 24 giờ", () => {
+    const appt = Appointment.book({ id: "a-2", patientId: "p-1", slot }, bookedAt);
+    appt.confirm("pay-2", new Date(bookedAt.getTime() + 60_000));
+    appt.pullEvents();
+
+    appt.cancel("patient", new Date("2026-10-09T20:00:00+07:00"));
+    expect(appt.pullEvents()).toContainEqual(expect.objectContaining({ type: "AppointmentCancelled", depositForfeited: true }));
+  });
+});
+```
+
+Tên test chính là hotspot đã được giải quyết. Khi nghiệp vụ hỏi "hệ thống xử lý cọc về muộn thế nào", bạn chỉ cho họ đúng test đó.
+
+## Command và event trong NestJS
+
+Bây giờ nối domain vào NestJS. Mỗi bounded context là một module (hoặc nhóm module) có ranh giới rõ ràng; cách tổ chức module, error model và request context mình đã viết chi tiết trong bài [NestJS trong production: request lifecycle, DI và ranh giới module](/blog/nestjs-request-lifecycle-architecture). Ở đây mình tập trung vào phần command và event.
+
+```text
+src/
+  scheduling/
+    domain/            appointment.ts, appointment.events.ts, domain-error.ts
+    application/       book-appointment.handler.ts, confirm-appointment.handler.ts, policies/
+    infrastructure/    appointment.repository.ts, outbox.ts
+    http/              appointments.controller.ts
+    scheduling.module.ts
+  payments/
+    domain/  application/  infrastructure/  payments.module.ts
+  contracts/           deposit-paid.v1.ts, appointment-booked.v1.ts   ← published language
+```
+
+Thư mục `contracts` là published language: event mà context khác được phép nghe. Event nội bộ của aggregate (`AppointmentEvent`) không được import từ context khác.
+
+### Command handler
+
+Mình dùng `@nestjs/cqrs` cho command bus và event bus trong process — nó nhẹ và map tốt với ngôn ngữ của bức tường. Bạn cũng hoàn toàn có thể gọi service trực tiếp; điều quan trọng là *tên* và *ranh giới*, không phải thư viện.
+
+```ts
+// scheduling/application/book-appointment.handler.ts
+import { CommandHandler, type ICommandHandler } from "@nestjs/cqrs";
+import { randomUUID } from "node:crypto";
+import { Appointment } from "../domain/appointment";
+import { DomainError } from "../domain/domain-error";
+import { AppointmentRepository } from "../infrastructure/appointment.repository";
+import { DoctorScheduleReader } from "../infrastructure/doctor-schedule.reader";
+import { Clock } from "../../shared/clock";
+
+export class BookAppointmentCommand {
+  constructor(
+    readonly patientId: string,
+    readonly doctorId: string,
+    readonly slotStart: Date,
+  ) {}
+}
+
+@CommandHandler(BookAppointmentCommand)
+export class BookAppointmentHandler implements ICommandHandler<BookAppointmentCommand, string> {
+  constructor(
+    private readonly appointments: AppointmentRepository,
+    private readonly schedule: DoctorScheduleReader,
+    private readonly clock: Clock,
+  ) {}
+
+  async execute(cmd: BookAppointmentCommand): Promise<string> {
+    const slot = await this.schedule.findPublishedSlot(cmd.doctorId, cmd.slotStart);
+    if (!slot) throw new DomainError("slot_not_published", "Bác sĩ không làm việc vào khung giờ này");
+
+    const appointment = Appointment.book({ id: randomUUID(), patientId: cmd.patientId, slot }, this.clock.now());
+    await this.appointments.save(appointment); // unique index bảo vệ luật "không trùng khung giờ"
+    return appointment.id;
+  }
+}
+```
+
+### Repository: lưu aggregate và event trong cùng transaction
+
+Event sinh ra bởi aggregate phải được lưu cùng transaction với trạng thái — nếu không, bạn sẽ có lịch hẹn đã đặt mà Payments không bao giờ biết để tạo yêu cầu cọc. Đây là transactional outbox, mình đã viết kỹ trong bài về [background job với BullMQ](/blog/nestjs-background-jobs-bullmq).
+
+```ts
+// scheduling/infrastructure/appointment.repository.ts
+import { Injectable } from "@nestjs/common";
+import { Database } from "../../shared/database";
+import { Appointment } from "../domain/appointment";
+import { DomainError } from "../domain/domain-error";
+
+@Injectable()
+export class AppointmentRepository {
+  constructor(private readonly db: Database) {}
+
+  async save(appt: Appointment): Promise<void> {
+    const events = appt.pullEvents();
+    try {
+      await this.db.transaction(async (tx) => {
+        const row = toRow(appt);
+        const result = await tx.query(
+          `INSERT INTO appointments (id, patient_id, doctor_id, slot_start, status, hold_expires_at, version)
+           VALUES ($1, $2, $3, $4, $5, $6, 1)
+           ON CONFLICT (id) DO UPDATE
+             SET status = EXCLUDED.status, version = appointments.version + 1
+             WHERE appointments.version = $7`,
+          [row.id, row.patientId, row.doctorId, row.slotStart, row.status, row.holdExpiresAt, appt.version],
+        );
+        if (result.rowCount === 0) throw new DomainError("concurrent_update", "Lịch hẹn vừa được thay đổi, thử lại");
+
+        for (const event of events) {
+          await tx.query(`INSERT INTO outbox_events (id, type, payload) VALUES (gen_random_uuid(), $1, $2)`, [
+            event.type,
+            JSON.stringify(event),
+          ]);
+        }
+      });
+    } catch (err) {
+      if (isUniqueViolation(err, "appointments_active_slot_uq")) {
+        throw new DomainError("slot_taken", "Khung giờ vừa có người đặt");
+      }
+      throw err;
+    }
+  }
+}
+```
+
+`toRow` và `isUniqueViolation` (kiểm tra mã lỗi Postgres `23505` và tên constraint) là helper nhỏ, mình lược bỏ. Điểm chính: optimistic concurrency qua cột `version`, và vi phạm unique index được dịch thành lỗi domain có tên mà nghiệp vụ hiểu.
+
+### Policy là event handler
+
+Policy trên tường trở thành event handler: nhận một event, ra một command. Tên class mình giữ đúng câu trên sticky note:
+
+```ts
+// scheduling/application/policies/confirm-on-deposit-paid.policy.ts
+import { CommandBus, EventsHandler, type IEventHandler } from "@nestjs/cqrs";
+import { DepositPaidV1 } from "../../../contracts/deposit-paid.v1";
+import { ConfirmAppointmentCommand } from "../confirm-appointment.handler";
+import { RequestRefundCommand } from "../../../payments/application/request-refund.handler";
+import { DomainError } from "../../domain/domain-error";
+
+/** Mỗi khi cọc đã thanh toán, xác nhận lịch hẹn. Nếu giữ chỗ đã hết hạn, yêu cầu hoàn tiền. */
+@EventsHandler(DepositPaidV1)
+export class ConfirmOnDepositPaidPolicy implements IEventHandler<DepositPaidV1> {
+  constructor(private readonly commands: CommandBus) {}
+
+  async handle(event: DepositPaidV1): Promise<void> {
+    try {
+      await this.commands.execute(new ConfirmAppointmentCommand(event.appointmentId, event.paymentId));
+    } catch (err) {
+      if (err instanceof DomainError && err.code === "hold_expired") {
+        await this.commands.execute(new RequestRefundCommand(event.paymentId, "hold_expired"));
+        return;
+      }
+      throw err;
+    }
+  }
+}
+```
+
+<Callout type="warning" title="EventBus trong process không bền vững">
+
+`EventBus` của `@nestjs/cqrs` chạy trong bộ nhớ: process chết giữa chừng là event mất. Với policy *trong cùng* context và có thể chạy lại, mình chấp nhận được. Với policy *xuyên context* như trên — tiền của bệnh nhân đang nằm đó — event phải đi qua outbox và một hàng đợi bền vững, handler phải idempotent. Trong code thật, `ConfirmOnDepositPaidPolicy` chạy trong một BullMQ worker đọc từ outbox của Payments, không phải từ `EventBus` trong bộ nhớ.
+
+</Callout>
+
+Còn import `RequestRefundCommand` từ module `payments` ở trên? Đó là chỗ mình cố tình để lộ để nói: trong codebase thật, Scheduling không nên import handler của Payments. Policy nên gọi qua một port (`PaymentsPort.requestRefund`) mà module Payments export, hoặc publish một event `RefundRequested` để Payments tự xử lý. Context map quyết định cách nào: Scheduling là customer của Payments, nên một API được Payments công bố là hợp lý.
+
+### Controller chỉ dịch HTTP sang command
+
+Controller không chứa luật nghiệp vụ: nó validate DTO, lấy `patientId` từ session, tạo `BookAppointmentCommand` và gọi `commandBus.execute`. `DomainError` được một exception filter dịch sang response lỗi thống nhất (problem details) — cùng cách mình mô tả trong bài về request lifecycle. Mã lỗi như `slot_taken`, `hold_expired` cũng là ubiquitous language: frontend hiển thị thông báo dựa trên chúng, QA viết test dựa trên chúng.
+
+## Điều phối từ xa với Miro hoặc FigJam
+
+Từ sau 2020, phần lớn workshop mình làm là remote hoặc hybrid. Nó chạy được, nhưng mất đi một nửa năng lượng của bức tường thật nếu bạn chỉ "chuyển nguyên" sang online. Những gì mình đã điều chỉnh:
+
+### Chuẩn bị board
+
+- **Template có sẵn:** một board dài với vùng timeline, chú giải màu cố định ở góc, và các "xấp sticky note" đã đúng màu để mọi người copy. Cả Miro và FigJam đều có template Event Storming do cộng đồng làm; mình thường tự làm template riêng cho đồng bộ màu.
+- **Khoá phần chú giải và khung** để không ai vô tình kéo lệch.
+- **Mỗi người một "bãi đáp"** ở pha khám phá hỗn loạn: một vùng riêng để viết, tránh mười con trỏ dán chồng lên nhau, sau đó mới kéo vào timeline chung.
+- **Gửi link trước một ngày** kèm video 3 phút hướng dẫn thao tác cơ bản. Mười phút đầu workshop không nên dùng để dạy cách tạo sticky note.
+
+### Trong buổi
+
+- **Chia ngắn hơn:** hai buổi 2 tiếng tốt hơn một buổi 4 tiếng. Mệt mỏi trên video đến nhanh hơn nhiều so với đứng trước tường.
+- **Một facilitator, một "scribe".** Facilitator giữ nhịp và hỏi; scribe gom trùng lặp, dán hotspot những câu hỏi bị nói lướt qua.
+- **Bật camera ở các pha thảo luận** (ép timeline, bầu hotspot), có thể tắt ở pha viết riêng.
+- **Dùng tính năng vote và timer có sẵn** của công cụ — nó công khai hơn việc facilitator tự đếm.
+- **Breakout room theo swimlane** khi nhóm lớn: mỗi phòng làm một nhánh rồi quay lại ráp.
+
+### Sau buổi
+
+Lợi thế lớn nhất của remote: bức tường không bị gỡ xuống. Mình giữ board làm tài liệu sống, link từ ticket và ADR, và cập nhật sau các buổi process level. Nhưng nhớ rằng board là *phương tiện*, không phải sản phẩm — đầu ra thật là danh sách hotspot có người chịu trách nhiệm, bảng ubiquitous language, và context map.
+
+## Những lỗi mình hay gặp
+
+**Chỉ có dev trong phòng.** Event Storming không có chuyên gia nghiệp vụ là dev đoán nghiệp vụ với nhau bằng sticky note màu. Nếu nghiệp vụ không đến được, hoãn buổi.
+
+**Nhảy thẳng vào design level.** Vẽ aggregate trước khi hiểu quy trình dẫn đến model đẹp cho nghiệp vụ sai. Ít nhất làm một buổi process level trước.
+
+**Event là thao tác UI hoặc CRUD.** "Đã bấm nút", "Đã cập nhật bản ghi". Mỗi khi thấy, hỏi lại: "Chuyện gì đã xảy ra trong thế giới thật?"
+
+**Facilitator viết hộ, hoặc tranh luận thay.** Facilitator hỏi, không trả lời. Khi bạn vừa là tech lead vừa điều phối, rất dễ vô thức hướng nhóm về thiết kế bạn đã nghĩ sẵn.
+
+**Cố giải quyết mọi hotspot ngay trong buổi.** Hotspot là để đánh dấu và đi tiếp. Mười lăm phút tranh luận về chính sách hoàn tiền là mười lăm phút không khám phá phần còn lại của quy trình.
+
+**Mỗi danh từ một aggregate.** `Patient`, `Doctor`, `Slot`, `Appointment`, `Payment` — mỗi bảng một aggregate là thiết kế CRUD đội lốt DDD. Aggregate được xác định bởi invariant, không phải bởi danh từ.
+
+**Một context dùng chung database với context khác.** Payments đọc thẳng bảng `appointments` "cho nhanh" là xoá bỏ toàn bộ ranh giới bạn vừa vẽ. Qua API hoặc event, không qua bảng.
+
+**Bức tường bị chụp ảnh rồi quên.** Nếu không có ai chịu trách nhiệm biến hotspot thành câu hỏi có hạn trả lời, buổi workshop chỉ là một buổi team building tốn kém.
+
+## Đọc thêm
+
+- [Introducing EventStorming](https://leanpub.com/introducing_eventstorming) — Alberto Brandolini, nguồn gốc của kỹ thuật.
+- *Domain-Driven Design* của Eric Evans và *Implementing Domain-Driven Design* của Vaughn Vernon — bounded context, aggregate, context map.
+- [DDD Crew: Context Mapping](https://github.com/ddd-crew/context-mapping) và [Bounded Context Canvas](https://github.com/ddd-crew/bounded-context-canvas) — template thực hành miễn phí.
+- [NestJS: CQRS](https://docs.nestjs.com/recipes/cqrs) — `CommandBus`, `EventBus`, `@CommandHandler`, `@EventsHandler`.
+
+## Tóm tắt
+
+<Checklist>
+
+- Chọn đúng cấp độ: big picture để hiểu toàn cảnh và tìm hotspot, process level cho từng quy trình, design level để cắt aggregate và module.
+- Mời người thực sự làm nghiệp vụ, 6–12 người, đứng trước một bức tường dài với chú giải màu rõ ràng.
+- Event viết ở thì quá khứ, bằng ngôn ngữ nghiệp vụ, không phải thao tác UI hay CRUD.
+- Khám phá hỗn loạn trước, ép timeline sau, đánh dấu pivotal event và swimlane, dán hotspot rồi đi tiếp.
+- Mỗi đoạn tường phải đọc được thành câu: actor nhìn read model, ra command, aggregate sinh event, policy phản ứng.
+- Tìm bounded context từ pivotal event, từ cùng-chữ-khác-nghĩa, từ actor và tốc độ thay đổi; ghi ubiquitous language kèm tên trong code.
+- Vẽ context map: customer/supplier, ACL cho hệ thống ngoài, published language cho event xuyên context, shared kernel thật nhỏ.
+- Aggregate được xác định bởi invariant; invariant xuyên nhiều aggregate thì chọn ranh giới có chủ đích và ghi ADR.
+- Trong NestJS: method của aggregate là command, event là sự thật, policy là event handler; event xuyên context đi qua outbox và hàng đợi bền vững.
+- Remote: template sẵn, buổi ngắn, một facilitator một scribe, và biến hotspot thành việc có người chịu trách nhiệm.
+
+</Checklist>

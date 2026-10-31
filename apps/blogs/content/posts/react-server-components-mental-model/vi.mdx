@@ -1,359 +1,623 @@
 ---
-title: "React Server Components: xây lại mô hình tư duy cho đúng"
-excerpt: "Hai đồ thị module thay vì hai loại component, \"use client\" thực chất là một ranh giới, props phải serialize được, truyền Server Component qua children, RSC payload, server function là endpoint RPC công khai, những lỗi hay gặp và cách cache với Cache Components trong Next.js 16."
+title: "Mô hình tư duy đúng cho React Server Components: hai module graph, một ranh giới"
+excerpt: "\"use client\" không đánh dấu loại component mà đánh dấu điểm bắt đầu của client graph. Bài này dựng lại mô hình tư duy cho RSC trong Next.js 16: thứ gì đi qua ranh giới, data fetching đặt ở đâu, waterfall, streaming và những lỗi khiến bundle phình hoặc lộ dữ liệu."
 ---
 
-<Lead>Một buổi review, mình thấy một PR chỉ thêm đúng một nút "Thích" vào trang bài viết, nhưng bundle JavaScript của route đó phình to thấy rõ. Lý do: để gắn `onClick`, bạn ấy thêm `"use client"` lên đầu file `page.tsx`. Thế là parser markdown, thư viện highlight code — những thứ trước đây chỉ chạy trên server — theo nhau xuống trình duyệt. Code không sai, chỉ mô hình tư duy sai. Bài này là mô hình mình dùng để giải thích React Server Components (RSC) cho team, và hệ quả thực tế của nó trong Next.js 16.</Lead>
+<Lead>Hơn hai năm làm App Router, mình nhận ra phần lớn bug và quyết định kiến trúc tệ liên quan đến React Server Components không đến từ API khó, mà từ một mô hình tư duy sai: coi "Server Component" và "Client Component" là hai *loại* component, như class và function ngày xưa. Thực ra React đang dựng hai module graph riêng biệt, và `"use client"` chỉ là cánh cửa nối giữa chúng. Khi nhìn đúng như vậy, những câu hỏi như "sao component này lại vào bundle", "sao không truyền được hàm xuống", "fetch dữ liệu ở đâu" đều tự có câu trả lời. Bài này là mô hình mình dùng để review code RSC hằng ngày trên Next.js 16 và React 19.</Lead>
 
-## Không phải hai loại component, mà là hai đồ thị module
+## Đừng hỏi "component chạy ở đâu", hãy hỏi "module nằm trong graph nào"
 
-Cách hiểu phổ biến và gây hại nhất là "có Server Component và Client Component, hai loại khác nhau". Thực tế, khi build, bundler dựng **hai đồ thị module**: một cho môi trường server, một cho môi trường client. Một file không "là" server hay client; nó thuộc về đồ thị nào tuỳ vào việc **ai import nó**.
+Cách giải thích phổ biến nhất về RSC là: "Server Component chạy trên server, Client Component chạy trên client". Câu này không sai, nhưng nó dẫn đến một loạt suy luận sai. Ví dụ: Client Component thì không render trên server (sai — nó vẫn được SSR ra HTML ở lần tải đầu), hay một file là "client component" vì nó dùng `useState` (sai — chính chỗ nó được import mới quyết định).
 
-Hàm `formatCount` chỉ được Server Component import thì chỉ tồn tại ở server; được một module client import thì nó vào bundle trình duyệt. Component cũng vậy: component không có directive là Server Component khi render từ cây server, và là Client Component khi được import từ một module client.
+Mô hình mình thấy chính xác hơn: **bundler dựng hai module graph từ cùng một codebase**.
 
-| | Đồ thị server | Đồ thị client |
+### Hai module graph, hai thế giới
+
+- **Server graph** bắt đầu từ các entry của App Router: `layout.tsx`, `page.tsx`, `template.tsx`, `route.ts`... Mọi module được import từ đây mặc định nằm trong server graph. Code ở đây chạy trên server, được phép `await` trực tiếp, đọc database, đọc biến môi trường bí mật, dùng thư viện nặng — và **không bao giờ** được gửi xuống trình duyệt.
+- **Client graph** bắt đầu từ những module có directive `"use client"` ở đầu file. Mỗi file như vậy là một *entry point* mới. Mọi thứ nó import — kể cả những file không có directive nào — bị kéo theo vào client bundle.
+
+Ranh giới giữa hai graph chính là các file `"use client"`. Khi một module trong server graph import một file `"use client"`, bundler không đưa code của file đó vào server render tree như một component server; thay vào đó nó tạo một *client reference* — một con trỏ kiểu "ở chỗ này sẽ có component X, code nằm ở chunk Y, props là Z". Phía client nhận con trỏ đó, tải chunk, rồi render.
+
+<Figure src="/blog/react-server-components-mental-model-boundary.svg" alt="Sơ đồ hai module graph. Bên trái là server graph gồm app/page.tsx, ProductInfo.tsx, lib/data.ts có import server-only, Reviews.tsx chạy trong Suspense và actions.ts có directive use server. Bên phải là client graph gồm AddToCart.tsx có use client là entry point, useCart.ts, ReviewsDrawer.tsx có use client nhận children, và Button.tsx không có directive nhưng vẫn vào client vì được AddToCart import. Một đường đứt nét ở giữa là ranh giới. Ba mũi tên đi qua ranh giới: props từ ProductInfo sang AddToCart, children là output đã render của Reviews đi vào ReviewsDrawer, và lời gọi Server Function từ ReviewsDrawer quay về actions.ts dưới dạng POST request. Dải dưới cùng liệt kê thứ được đi qua: props serialize được, JSX render trên server, Promise đọc bằng use(), Server Functions; thứ bị chặn: hàm thường, instance của class, closure; và lưu ý secret truyền qua props không bị chặn." caption="Ranh giới nằm ở những file có directive use client. Button.tsx không có directive nhưng vẫn vào bundle vì một entry client import nó. Thứ đi qua ranh giới chỉ có props serialize được, JSX đã render, Promise và lời gọi Server Function." />
+
+### Client Component vẫn render trên server
+
+Đây là chỗ cái tên gây hiểu nhầm nhiều nhất. Ở lần tải trang đầu, Next.js làm hai việc trên server: render cây Server Component ra **RSC payload** (một định dạng stream mô tả cây UI), rồi dùng payload đó cộng với code của Client Component để **SSR ra HTML**. Nghĩa là `AddToCart` vẫn chạy trên server một lần để sinh HTML, rồi chạy lại trên trình duyệt để hydrate.
+
+Hệ quả thực tế:
+
+- Trong thân Client Component, không được đụng `window`, `localStorage`, `document` ở lúc render — đưa vào `useEffect` hoặc event handler.
+- "Client" nghĩa là **"code được gửi xuống trình duyệt và có thể có state, effect, event"**, không phải "chỉ chạy ở trình duyệt".
+- Server Component thì ngược lại: chạy **chỉ** trên server (lúc request hoặc lúc prerender), code không có trong bundle, và không bao giờ "re-render" trên client. Khi bạn điều hướng, client nhận RSC payload mới chứ không chạy lại code server ở trình duyệt.
+
+### Bảng so sánh nhanh
+
+| | Server Component | Client Component |
 | --- | --- | --- |
-| Chạy ở đâu | Chỉ trên server (lúc build hoặc lúc request) | Server (để SSR ra HTML) và trình duyệt |
-| Được dùng | `async` component, database, secret, file system | state, effect, event handler, API trình duyệt |
-| Không được dùng | `useState`, `useEffect`, `onClick` | secret, module server-only |
-| Có ship JS xuống trình duyệt? | Không | Có, toàn bộ cây import |
+| Code có trong JS bundle | Không | Có |
+| Chạy ở lần tải đầu | Trên server | Trên server (SSR) rồi hydrate ở trình duyệt |
+| `async` / `await` trong thân component | Có | Không (dùng `use()` với Promise) |
+| `useState`, `useEffect`, event handler | Không | Có |
+| Đọc DB, secret, filesystem | Có | Không |
+| Đọc Context | Không | Có |
+| Cập nhật khi nào | Request mới, điều hướng, `router.refresh()`, revalidate | State/props thay đổi trên client |
 
-Dòng cuối quan trọng nhất: chi phí của một Client Component là **mọi thứ nó kéo theo**.
+## "use client" đánh dấu ranh giới, không đánh dấu loại component
 
-## `"use client"` đánh dấu một ranh giới, không phải một loại component
+Câu mình hay nói khi review: **`"use client"` không phải là thuộc tính của component, nó là thuộc tính của một cạnh import**. Directive nói với bundler: "từ file này trở đi, mọi thứ thuộc về client graph".
 
-Directive `"use client"` nói với bundler: "từ module này trở xuống, chuyển sang đồ thị client". Nó là **điểm vào** của đồ thị client, chứ không phải nhãn dán cho từng component. Vì vậy:
+### Một component, hai số phận
 
-- Chỉ cần đặt nó ở module nằm ngay ranh giới — module được Server Component import. Những gì nó import tự động thuộc đồ thị client.
-- Đặt `"use client"` ở module chỉ được module client khác import thì không có tác dụng gì.
-- Client Component **vẫn được render ra HTML trên server** khi SSR. "Client" nghĩa là code được gửi xuống và hydrate, không phải "chỉ render ở trình duyệt". Truy cập `window` trong thân component vẫn nổ khi SSR.
-
-Quay lại PR ở đầu bài. Cách sửa là để `page.tsx` tiếp tục là Server Component và tách đúng phần tương tác ra thành một module có ranh giới riêng:
+Xét một component không có directive nào:
 
 ```tsx
-import { getPost } from "@/data/posts";
-import { renderMarkdown } from "@/lib/markdown";
-import { LikeButton } from "./like-button";
+// components/price.tsx
+import { formatCurrency } from "@/lib/format";
 
-export default async function PostPage({ params }: PageProps<"/posts/[slug]">) {
-  const { slug } = await params;
-  const post = await getPost(slug);
-  const content = await renderMarkdown(post.body);
-
-  return (
-    <article>
-      <h1>{post.title}</h1>
-      {content}
-      <LikeButton postId={post.id} initialCount={post.likeCount} />
-    </article>
-  );
+export function Price({ amount, currency }: { amount: number; currency: string }) {
+  return <span className="tabular-nums">{formatCurrency(amount, currency)}</span>;
 }
 ```
 
-File `like-button.tsx` là nơi duy nhất cần directive:
+- Nếu `Price` được import từ `app/products/[id]/page.tsx`, nó là Server Component. Code không vào bundle.
+- Nếu `Price` được import từ `add-to-cart.tsx` (file có `"use client"`), nó là Client Component, code và cả `formatCurrency` vào bundle.
+- Nếu được import từ cả hai chỗ, nó tồn tại ở **cả hai** graph. Không có gì sai, chỉ là bạn cần biết code của nó đang được gửi xuống.
+
+Đó là lý do mình không thêm `"use client"` vào mọi file "có vẻ là client". Directive chỉ cần ở **entry** — file mà một Server Component import trực tiếp. Thêm vào file lá không làm gì hại ngay, nhưng làm nhiễu tín hiệu: người đọc không còn phân biệt được đâu là cửa vào thật sự của client graph.
+
+Ngược lại, chiều kia là bất khả: **Client Component không thể import Server Component**. Nếu `ReviewsDrawer` (client) import `Reviews` (một async component đọc DB), `Reviews` bị kéo vào client graph — và hoặc build lỗi vì nó import `server-only`, hoặc tệ hơn, nó âm thầm chạy ở client và hỏng. Cách đúng là truyền qua `children`, phần sau sẽ nói kỹ.
+
+### "use server" không phải là đối của "use client"
+
+Một hiểu nhầm khác: "Server Component thì đánh dấu `"use server"`". Không. Server Component không cần directive nào — đó là mặc định. `"use server"` dùng để đánh dấu **Server Functions** (trước đây gọi là Server Actions): các hàm async chạy trên server nhưng có thể được gọi từ client. Đặt `"use server"` ở đầu file nghĩa là mọi export của file đó trở thành endpoint có thể gọi từ trình duyệt.
+
+<Callout type="warning" title="Đặt nhầm use server là mở endpoint">
+  Mình từng thấy một file `lib/data.ts` có `"use server"` ở đầu chỉ vì tác giả muốn "chắc chắn nó chạy trên server". Kết quả: mọi hàm export trong đó, kể cả `getUserById(id)` không kiểm tra quyền, đều trở thành endpoint POST mà client nào cũng có thể gọi nếu nó được tham chiếu trong client graph. Muốn khẳng định một module chỉ chạy trên server, hãy dùng `import "server-only"`, không phải `"use server"`.
+</Callout>
+
+## Thứ gì được phép đi qua ranh giới
+
+Mọi thứ đi từ server graph sang client graph đều phải đi qua RSC payload, tức là phải **serialize được**. React hỗ trợ nhiều hơn JSON thuần, nhưng vẫn có giới hạn rõ ràng:
+
+| Loại | Đi qua được? | Ghi chú |
+| --- | --- | --- |
+| string, number, boolean, null, undefined, bigint | Có | |
+| Object thuần, array | Có | Chỉ object literal, không phải instance của class |
+| `Date`, `Map`, `Set`, typed array, `ArrayBuffer` | Có | React tự serialize, khác với `JSON.stringify` |
+| JSX / React element | Có | Kể cả output của Server Component |
+| `Promise` | Có | Client đọc bằng `use()` |
+| Server Function (`"use server"`) | Có | Client nhận một reference, gọi thì thành POST |
+| Hàm thường, callback | Không | Lỗi lúc render |
+| Instance của class (ORM entity, `Decimal`, `URL`...) | Không | Chuyển về object thuần trước |
+| Symbol không đăng ký toàn cục | Không | |
+
+### Props phải serialize được, và chúng là public
+
+Lỗi thường gặp nhất ở bảng trên là truyền callback:
 
 ```tsx
-"use client";
-
-import { useOptimistic, useTransition } from "react";
-import { formatCount } from "@/lib/format";
-import { likePost } from "./actions";
-
-export function LikeButton({ postId, initialCount }: { postId: string; initialCount: number }) {
-  const [optimisticCount, setOptimisticCount] = useOptimistic(initialCount);
-  const [isPending, startTransition] = useTransition();
-
-  function handleLike() {
-    startTransition(async () => {
-      setOptimisticCount(optimisticCount + 1);
-      await likePost(postId);
-    });
-  }
-
-  return (
-    <button type="button" onClick={handleLike} disabled={isPending}>
-      Thích · {formatCount(optimisticCount)}
-    </button>
-  );
-}
+// app/products/page.tsx (Server Component)
+// ❌ Lỗi: Functions cannot be passed directly to Client Components
+<ProductFilter onChange={(value) => console.log(value)} />
 ```
 
-`formatCount` giờ thuộc đồ thị client, cùng mọi thứ mà `lib/format.ts` import. Khi review, mình luôn đọc danh sách import của mọi file có `"use client"` — đó là chỗ bundle phình ra.
+Callback chỉ sống trong client graph. Nếu thật sự cần logic server khi filter thay đổi, có hai hướng: đẩy filter vào URL (`searchParams`) để Server Component đọc, hoặc truyền một Server Function.
 
-## Props đi qua ranh giới phải serialize được
+Điểm thứ hai quan trọng hơn: **mọi prop đi qua ranh giới đều nằm trong RSC payload, và payload đó được nhúng thẳng vào HTML** ở lần tải đầu. Ai mở "View source" cũng đọc được. Không có khái niệm "prop riêng tư".
 
-Server Component không truyền object JavaScript cho Client Component theo nghĩa thông thường. Props được **serialize** vào payload, gửi qua mạng rồi dựng lại ở client. Vì thế chỉ một số kiểu được phép:
+### Server Component làm children: cách xuyên qua ranh giới đúng
 
-| Được phép | Không được phép |
-| --- | --- |
-| string, number, bigint, boolean, `null`, `undefined` | Hàm thường (callback, event handler) |
-| Plain object, Array, Map, Set, Date, TypedArray, ArrayBuffer | Instance của class tự định nghĩa |
-| JSX (cả Server lẫn Client Component element) | Object có prototype `null` |
-| `Promise` (đọc ở client bằng `use`) | Symbol không đăng ký qua `Symbol.for` |
-| Server function (hàm đánh dấu `"use server"`) | |
-
-Lỗi truyền hàm thì sửa nhanh. Vấn đề nguy hiểm là chiều ngược lại: thứ **serialize được** thì sẽ được serialize. Truyền nguyên bản ghi `user` từ database vào một Client Component nghĩa là mọi field — kể cả `passwordHash` hay ghi chú nội bộ — nằm trong payload, ai mở DevTools cũng đọc được. Component chỉ hiển thị `displayName` không làm thay đổi điều đó.
-
-Cách mình phòng tránh là trả về DTO tối thiểu ngay tại lớp truy cập dữ liệu, trong module có `import "server-only"`:
-
-```ts
-import "server-only";
-import { db } from "@/lib/db";
-
-export type AuthorCard = {
-  id: string;
-  displayName: string;
-  avatarUrl: string | null;
-  joinedAt: Date;
-};
-
-export async function getAuthorCard(authorId: string): Promise<AuthorCard> {
-  const author = await db.user.findUniqueOrThrow({ where: { id: authorId } });
-  return {
-    id: author.id,
-    displayName: author.displayName,
-    avatarUrl: author.avatarUrl,
-    joinedAt: author.createdAt,
-  };
-}
-```
-
-Kiểu này cũng là tài liệu: reviewer nhìn vào là biết chính xác cái gì sẽ ra khỏi server.
-
-## Truyền Server Component vào Client Component qua `children`
-
-Một Client Component không thể `import` một Server Component — import đó sẽ kéo module vào đồ thị client. Nhưng nó có thể **nhận** Server Component đã render sẵn qua props, thường là `children`. Đây là pattern mình dùng nhiều nhất:
+Đây là pattern quan trọng nhất của RSC, và cũng là cái bị bỏ qua nhiều nhất. Client Component không import được Server Component, nhưng **nhận được output của Server Component qua props**:
 
 ```tsx
+// app/products/[id]/reviews-drawer.tsx
 "use client";
 
 import { useState, type ReactNode } from "react";
 
-export function Collapsible({ title, children }: { title: string; children: ReactNode }) {
+export function ReviewsDrawer({ count, children }: { count: number; children: ReactNode }) {
   const [open, setOpen] = useState(false);
-
   return (
     <section>
-      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {title}
+      <button onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        {open ? "Ẩn" : "Xem"} {count} đánh giá
       </button>
-      <div hidden={!open}>{children}</div>
+      {open && <div className="mt-4">{children}</div>}
     </section>
   );
 }
 ```
 
 ```tsx
-import { Collapsible } from "@/components/collapsible";
-import { CommentList } from "./comment-list";
+// app/products/[id]/page.tsx
+import { Suspense } from "react";
+import { ReviewsDrawer } from "./reviews-drawer";
+import { Reviews } from "./reviews";
 
-export function PostComments({ postId }: { postId: string }) {
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   return (
-    <Collapsible title="Bình luận">
-      <CommentList postId={postId} />
-    </Collapsible>
+    <ReviewsDrawer count={42}>
+      <Suspense fallback={<p>Đang tải đánh giá…</p>}>
+        <Reviews productId={id} />
+      </Suspense>
+    </ReviewsDrawer>
   );
 }
 ```
 
-`CommentList` vẫn là Server Component, vẫn query database được, vì nó được `PostComments` (server) import và render. `Collapsible` chỉ nhận kết quả đã render. Quan hệ cha–con trong cây render không quyết định môi trường chạy; quan hệ import mới quyết định.
+`Reviews` được render trên server, *trước khi* `ReviewsDrawer` biết gì về nó. Cái drawer nhận về `children` là một cây UI đã render sẵn — giống như một tham số kiểu "lỗ hổng" mà server lấp vào. Code của `Reviews` (và thư viện markdown nó dùng, nếu có) không bao giờ vào bundle. Pattern này áp dụng cho mọi prop kiểu `ReactNode`, không chỉ `children`: `sidebar`, `header`, `actions`...
 
-Một hệ quả dễ bỏ qua: `children` được render trên server **bất kể** client có hiển thị hay không. `Collapsible` đang đóng vẫn tốn một query và vẫn chiếm chỗ trong payload; nội dung nặng, ít khi mở thì nên tải theo yêu cầu.
+Mình gọi đó là **"client shell, server content"**: phần vỏ có tương tác (tab, accordion, modal, layout có sidebar thu gọn) là client, phần ruột là server.
 
-## Thứ thực sự đi qua mạng: RSC payload
+### Promise và use(): bắt đầu ở server, đọc ở client
 
-Render cây server không cho ra HTML, mà ra **RSC payload** (React gọi giao thức này là Flight). Về khái niệm, nó chứa ba thứ:
+React 19 cho phép truyền một `Promise` từ Server Component xuống Client Component, rồi đọc nó bằng `use()`. Điều này mở ra một cách stream dữ liệu rất gọn: server **bắt đầu** fetch nhưng không `await`, phần còn lại của trang render ngay, và client component suspend tại đúng chỗ cần dữ liệu.
 
-- **Output của Server Component**, đã "làm phẳng" thành thẻ HTML thường; bản thân hàm component không tồn tại ở client.
-- **Tham chiếu tới Client Component**: định danh module, tên export và props đã serialize, để client tải đúng chunk JS.
-- **Chỗ trống** cho phần sau `Suspense` hoặc `Promise`, được điền vào sau — nên payload stream được.
+```tsx
+// app/products/[id]/page.tsx
+import { Suspense } from "react";
+import { getRelatedProducts } from "@/lib/data/products";
+import { RelatedCarousel } from "./related-carousel";
 
-Hình dung đơn giản hoá (không phải định dạng thật trên dây, vốn là dạng từng dòng với các tham chiếu):
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const relatedPromise = getRelatedProducts(id); // không await
 
-```json
-{
-  "type": "article",
-  "children": [
-    { "type": "h1", "children": "React Server Components" },
-    {
-      "type": { "clientReference": "app/posts/like-button.tsx#LikeButton" },
-      "props": { "postId": "p_42", "initialCount": 128 }
-    }
-  ]
+  return (
+    <Suspense fallback={<CarouselSkeleton />}>
+      <RelatedCarousel relatedPromise={relatedPromise} />
+    </Suspense>
+  );
 }
 ```
 
-Trong Next.js, lần tải đầu trả về HTML **và** payload nhúng trong các thẻ script để React hydrate. Khi điều hướng phía client, router chỉ fetch payload (request có header `rsc: 1`). Hai hệ quả:
+```tsx
+// app/products/[id]/related-carousel.tsx
+"use client";
 
-- **Dữ liệu bị gửi hai lần ở lần tải đầu.** Props của Client Component có mặt trong payload, và kết quả render từ chúng có mặt trong HTML. Truyền một mảng 5.000 phần tử xuống client là trả giá gấp đôi.
-- **Server Component không "re-render" ở client.** Muốn nó cập nhật, phải yêu cầu server render lại (qua navigation, `router.refresh()`, hoặc revalidate sau một mutation).
+import { use, useState } from "react";
+import type { ProductCard } from "@/lib/data/types";
 
-<Callout>
-Mô hình gọn nhất mình biết: Server Component chạy một lần và trả về **dữ liệu mô tả UI**; Client Component là **code** được gửi xuống để chạy tiếp. Mọi câu hỏi kiểu "cái này có xuống trình duyệt không?" đều trả lời được bằng cách hỏi: nó là dữ liệu trong payload, hay là module trong đồ thị client?
-</Callout>
+export function RelatedCarousel({ relatedPromise }: { relatedPromise: Promise<ProductCard[]> }) {
+  const items = use(relatedPromise);
+  const [index, setIndex] = useState(0);
+  // ...carousel có state, nên phải là client
+}
+```
 
-## Server function là endpoint RPC công khai
+Hai lưu ý:
 
-`"use server"` làm điều ngược lại: nó đánh dấu những hàm mà client được phép **gọi**. Ở phía client, compiler thay hàm bằng một ID; khi gọi, framework gửi request `POST` kèm tham số đã serialize, server tìm đúng hàm và chạy. Mỗi server function là một **endpoint HTTP** — chỉ là bạn không tự viết route.
+- **Promise phải được tạo ở server (hoặc được cache)**, không phải tạo trong thân Client Component. Nếu bạn gọi `use(fetch(...))` trực tiếp trong client component, mỗi lần render tạo ra một Promise mới, component suspend mãi không dứt.
+- Nếu Promise reject, lỗi được ném ra tại chỗ `use()` và bắt bởi Error Boundary gần nhất (`error.tsx` trong Next.js). Hãy chắc rằng có một boundary hợp lý quanh nó.
 
-Như mọi endpoint, ai cũng gọi được nó mà không cần qua UI của bạn. Những điều mình coi là bắt buộc:
+Khi nào dùng Promise + `use()` thay vì để một async Server Component tự fetch? Khi component cần dữ liệu **lại phải là client** (có state, có event). Nếu nó chỉ hiển thị, cứ để async Server Component — đơn giản hơn và không tốn bundle.
 
-- **Xác thực và phân quyền trong từng hàm.** Kiểm tra ở `page.tsx` chỉ quyết định UI nào được render, không bảo vệ server function định nghĩa trong trang đó.
-- **Validate tham số lúc runtime.** Kiểu TypeScript biến mất sau build; request giả mạo gửi gì cũng được.
-- **Kiểm tra quyền sở hữu tài nguyên**, không chỉ "đã đăng nhập chưa", để tránh lỗi IDOR.
-- **Trả về tối thiểu.** Giá trị trả về cũng được serialize xuống client.
+### Server Functions: chiều ngược lại
+
+Server Functions là cách duy nhất để client "gọi vào" server graph mà không cần tự viết API route. Mỗi lời gọi là một POST request; argument và giá trị trả về cũng phải serialize được.
 
 ```ts
+// app/products/[id]/actions.ts
 "use server";
 
 import { z } from "zod";
-import { updateTag } from "next/cache";
-import { requireUser } from "@/data/auth";
-import { db } from "@/lib/db";
+import { revalidatePath } from "next/cache";
+import { getSession } from "@/lib/auth";
+import { cartRepo } from "@/lib/data/cart";
 
-const renameProjectInput = z.object({
-  projectId: z.string().min(1),
-  name: z.string().trim().min(1).max(80),
+const Input = z.object({
+  productId: z.string().min(1),
+  quantity: z.number().int().min(1).max(10),
 });
 
-export async function renameProject(input: unknown) {
-  const user = await requireUser();
-  const { projectId, name } = renameProjectInput.parse(input);
+export async function addToCart(raw: unknown) {
+  const session = await getSession();
+  if (!session) return { ok: false as const, error: "Bạn cần đăng nhập" };
 
-  const project = await db.project.findUnique({ where: { id: projectId } });
-  if (!project || project.ownerId !== user.id) {
-    throw new Error("Forbidden");
-  }
+  const parsed = Input.safeParse(raw);
+  if (!parsed.success) return { ok: false as const, error: "Dữ liệu không hợp lệ" };
 
-  await db.project.update({ where: { id: projectId }, data: { name } });
-  updateTag(`project:${projectId}`);
+  await cartRepo.add(session.userId, parsed.data.productId, parsed.data.quantity);
+  revalidatePath("/cart");
   return { ok: true as const };
 }
 ```
 
-Next.js có thêm phòng thủ chiều sâu — ID action đổi theo build, loại bỏ action không dùng, so `Origin` với `Host` để chặn CSRF, mã hoá biến closure của inline server function — nhưng không thứ nào thay được việc kiểm tra quyền. Biến closure vẫn đi một vòng qua client; đừng để secret ở đó.
+Mình viết mọi Server Function theo đúng thứ tự đó: **xác thực → validate input → phân quyền → làm việc → revalidate**. Lý do là kiểu TypeScript của tham số không bảo vệ gì cả — ai cũng có thể gửi POST với payload tuỳ ý. Coi nó như một route handler công khai, vì nó đúng là như vậy.
 
-<Callout>
-Bề mặt tấn công không chỉ là code của bạn. Tháng 12/2025, React công bố CVE-2025-55182: lỗi thực thi mã từ xa không cần xác thực (CVSS 10.0) trong cách các gói `react-server-dom-*` giải mã payload gửi tới endpoint server function, ảnh hưởng cả Next.js và các framework RSC khác. Sau đó còn vài CVE về DoS và lộ mã nguồn. Bài học: nâng cấp React/Next.js khi có bản vá phải là việc trong ngày, không phải sprint sau.
-</Callout>
+Theo tài liệu của React, Server Functions được thiết kế cho **mutation**, không phải để đọc dữ liệu: framework thường xử lý từng lời gọi một và không cache giá trị trả về. Dùng Server Function để fetch danh sách trong `useEffect` là đang đi ngược thiết kế — đọc dữ liệu hãy để Server Component lo, hoặc dùng một thư viện như TanStack Query với route handler.
 
-## Những lỗi mình gặp nhiều nhất
+## Data fetching thuộc về đâu
 
-| Lỗi | Triệu chứng | Cách sửa |
-| --- | --- | --- |
-| Import code server vào module client | Lỗi build khó hiểu, hoặc secret, ORM bị bundle xuống client | `import "server-only"` ở module chạm DB hay secret |
-| Ranh giới client quá to | `"use client"` ở layout hoặc page, bundle phình | Đẩy ranh giới xuống lá |
-| Provider bọc cả app | Đặt `"use client"` ở root layout chỉ để dùng context | Tách provider thành Client Component nhận `children` |
-| Đọc context trong Server Component | Server Component không có context | Dùng `cache` của React để chia sẻ dữ liệu trong một request |
+Quy tắc của mình: **fetch ở Server Component, càng gần nơi dùng càng tốt, và không sợ gọi trùng**. Ba vế đó cần giải thích.
 
-Theme, i18n, TanStack Query đều cần context, mà context chỉ có ở client. Đừng biến layout thành client; hãy bọc provider trong một module client nhỏ:
+### Một data layer server-only, cache theo request
 
-```tsx
-"use client";
-
-import { createContext, use, type ReactNode } from "react";
-
-type Theme = "light" | "dark";
-
-const ThemeContext = createContext<Theme>("light");
-
-export function ThemeProvider({ theme, children }: { theme: Theme; children: ReactNode }) {
-  return <ThemeContext value={theme}>{children}</ThemeContext>;
-}
-
-export function useTheme() {
-  return use(ThemeContext);
-}
-```
-
-Layout vẫn là Server Component, render `ThemeProvider` quanh `children`, nên các trang con vẫn là Server Component. Mình cũng đặt provider **sâu nhất có thể**: provider chỉ dùng cho dashboard thì nằm ở layout của dashboard, không phải root.
-
-Phía server, thay cho context là `cache` của React — memo hoá theo request, nhiều component gọi cùng hàm chỉ tốn một lần:
+Thay vì truyền dữ liệu qua năm tầng props, mỗi Server Component tự gọi hàm lấy dữ liệu nó cần. Để không bị gọi trùng trong cùng một request, bọc hàm bằng `cache` của React — nó memoize theo argument trong phạm vi một lần render server.
 
 ```ts
+// lib/data/products.ts
 import "server-only";
 import { cache } from "react";
-import { cookies } from "next/headers";
-import { verifySession } from "@/lib/session";
+import { db } from "@/lib/db";
 
-export const getCurrentUser = cache(async () => {
-  const token = (await cookies()).get("session")?.value;
-  return token ? verifySession(token) : null;
+export type ProductDTO = {
+  id: string;
+  name: string;
+  price: number;
+  currency: string;
+  inStock: boolean;
+  reviewCount: number;
+};
+
+export const getProduct = cache(async (id: string): Promise<ProductDTO | null> => {
+  const row = await db.product.findUnique({ where: { id } });
+  if (!row) return null;
+  // Chỉ trả về đúng những field UI cần — không trả nguyên entity
+  return {
+    id: row.id,
+    name: row.name,
+    price: row.price.toNumber(),
+    currency: row.currency,
+    inStock: row.stock > 0,
+    reviewCount: row.reviewCount,
+  };
 });
 ```
 
-## Cache trong Next.js 16: Cache Components
+Ba quyết định trong file này đều có chủ đích:
 
-Từ Next.js 16, bật `cacheComponents: true` thì **mọi thứ mặc định là dynamic**, và bạn chủ động chọn cái gì được cache bằng directive `"use cache"`. Cờ `experimental.ppr` cũ đã bị gỡ; Partial Prerendering giờ là hành vi mặc định của Cache Components. Không bật cờ thì app vẫn chạy theo mô hình cũ. Các bản 16.x mới hơn còn có tuỳ chọn `partialPrefetching` mà docs khuyên đặt rõ cùng lúc — hãy đọc docs đúng phiên bản bạn dùng.
+- `import "server-only"`: nếu ai đó lỡ import file này từ client graph, build lỗi ngay thay vì âm thầm đưa code truy vấn DB vào bundle.
+- `cache(...)`: `generateMetadata`, `layout` và `page` cùng gọi `getProduct(id)` thì chỉ có một truy vấn.
+- Trả về **DTO** chứ không phải row: `Decimal` của ORM không serialize được qua ranh giới, và quan trọng hơn, row có thể chứa field không nên rời khỏi server.
 
-```ts
-import type { NextConfig } from "next";
+<Callout type="note" title="Còn cache giữa các request?">
+  `cache` của React chỉ sống trong một request. Cache dài hơn — giữa nhiều request, nhiều người dùng — là chuyện của `"use cache"`, `cacheLife` và `cacheTag` khi bật Cache Components trong Next.js 16. Đó là một chủ đề riêng; ở đây chỉ cần nhớ: từ Next.js 15 trở đi, `fetch` và truy vấn không còn được cache ngầm, bạn phải chọn cache một cách tường minh.
+</Callout>
 
-const nextConfig: NextConfig = {
-  cacheComponents: true,
-};
+### Đừng fetch API route của chính mình từ Server Component
 
-export default nextConfig;
-```
-
-Quy tắc cốt lõi: khi prerender, một component đọc dữ liệu chưa cache hoặc dùng runtime API (`cookies()`, `headers()`, `searchParams`) phải nằm trong `Suspense` hoặc được cache. Nếu không, Next.js báo lỗi "blocking route". Phần tĩnh và phần đã cache thành static shell; phần dynamic stream vào sau.
+Một pattern mình vẫn gặp khi team chuyển từ Pages Router sang:
 
 ```tsx
-import { Suspense } from "react";
-import { cacheLife, cacheTag } from "next/cache";
-import { getCurrentUser } from "@/data/auth";
-import { db } from "@/lib/db";
+// ❌ Server Component gọi HTTP tới chính server của nó
+const res = await fetch(`${process.env.APP_URL}/api/products/${id}`);
+```
 
-async function getProject(projectId: string) {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(`project:${projectId}`);
-  return db.project.findUniqueOrThrow({ where: { id: projectId } });
-}
+Bạn đang ở trên server rồi. Request này đi ra mạng, qua lại proxy/load balancer, chạy lại middleware, serialize JSON hai lần, và cần một URL tuyệt đối mà lúc build có khi chưa tồn tại. Gọi thẳng data layer: `await getProduct(id)`. Route handler chỉ còn cần cho client bên ngoài (mobile app, webhook) hoặc cho fetch phía client.
 
-async function ProjectHeader({ projectId }: { projectId: string }) {
-  const project = await getProject(projectId);
-  return <h1>{project.name}</h1>;
-}
+### Waterfall: kẻ thù số một
 
-async function ViewerBadge() {
-  const user = await getCurrentUser();
-  return <span>{user ? user.displayName : "Khách"}</span>;
-}
+RSC giúp đặt fetch gần nơi dùng, nhưng cũng làm waterfall rất dễ xảy ra. Có hai kiểu:
 
-export default function ProjectPage({ params }: PageProps<"/projects/[id]">) {
+**Waterfall trong cùng một component** — `await` tuần tự những thứ không phụ thuộc nhau:
+
+```tsx
+// ❌ Ba request chạy nối đuôi nhau
+const product = await getProduct(id);
+const reviews = await getReviews(id);
+const related = await getRelatedProducts(id);
+```
+
+```tsx
+// ✅ Chạy song song, tổng thời gian bằng request chậm nhất
+const [product, reviews, related] = await Promise.all([
+  getProduct(id),
+  getReviews(id),
+  getRelatedProducts(id),
+]);
+```
+
+**Waterfall giữa cha và con** — tinh vi hơn. Nếu component cha `await` xong mới render con, và con lại `await` thứ khác, request của con chỉ bắt đầu khi cha xong. Các Server Component *anh em* thì được render đồng thời, nên mỗi đứa tự fetch là song song; vấn đề chỉ xảy ra khi lồng nhau theo chiều dọc. Có ba cách gỡ:
+
+1. **Đưa fetch lên và bắt đầu sớm**: cha tạo Promise (không await), truyền xuống con, con `await` hoặc `use()`.
+2. **Preload**: gọi `void getReviews(id)` ở đầu cha — nhờ `cache`, khi con gọi lại `getReviews(id)` nó nhận đúng Promise đang chạy.
+3. **Tách thành anh em** trong các Suspense boundary riêng thay vì lồng nhau.
+
+```ts
+// lib/data/reviews.ts
+import "server-only";
+import { cache } from "react";
+
+export const getReviews = cache(async (productId: string) => {
+  // ...
+});
+
+// Gọi sớm để "khởi động" request, không chờ kết quả
+export const preloadReviews = (productId: string) => {
+  void getReviews(productId);
+};
+```
+
+Trong Next.js, layout và page của cùng một route cũng được render song song, nên đừng cố "truyền dữ liệu từ layout xuống page" — page tự gọi hàm có `cache` là đủ.
+
+### Suspense và streaming: chọn chỗ đặt boundary
+
+Không phải mọi dữ liệu đều đáng để chặn cả trang. Nguyên tắc mình dùng: **dữ liệu quyết định trang có tồn tại hay không** (sản phẩm có tồn tại, người dùng có quyền xem) thì `await` ở trên cùng — vì bạn cần gọi `notFound()` hay `redirect()` trước khi gửi gì đi. **Dữ liệu phụ** (đánh giá, gợi ý, số liệu thống kê) thì bọc trong `Suspense` để stream sau.
+
+```tsx
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  preloadReviews(id);
+
+  const product = await getProduct(id); // quyết định 404 hay không
+  if (!product) notFound();
+
   return (
     <>
-      <Suspense fallback={<h1>Đang tải…</h1>}>
-        {params.then(({ id }) => <ProjectHeader projectId={id} />)}
-      </Suspense>
-      <Suspense fallback={<span>…</span>}>
-        <ViewerBadge />
+      <ProductInfo product={product} />
+      <Suspense fallback={<ReviewsSkeleton />}>
+        <Reviews productId={id} />
       </Suspense>
     </>
   );
 }
 ```
 
-Vài điều mình rút ra khi chuyển sang mô hình này:
+Khi Next.js 16 bật Cache Components, quy tắc này còn được framework cưỡng chế: truy cập dữ liệu động không cache bên ngoài `Suspense` sẽ bị báo lỗi lúc build, vì nó chặn static shell. Mình thấy đó là một ràng buộc tốt — nó buộc bạn nghĩ về boundary ngay từ đầu.
 
-- **Tham số và biến closure là cache key**, nên chúng cũng phải serialize được — cùng luật với props qua ranh giới.
-- **Không đọc `cookies()` bên trong `"use cache"`.** Đọc ở ngoài rồi truyền giá trị vào làm tham số, hoặc dùng biến thể `"use cache: private"` cho dữ liệu theo từng người dùng.
-- **Cache mặc định nằm trong bộ nhớ từng instance**, có thể không sống qua các request serverless. `"use cache: remote"` đưa nó sang handler dùng chung, đổi lại một round-trip.
-- **Invalidate theo tag.** Trong server function, `updateTag` cho trải nghiệm "đọc ngay thứ mình vừa ghi"; `revalidateTag(tag, "max")` cho kiểu stale-while-revalidate, gọi được cả trong Route Handler, ví dụ webhook từ CMS.
+Một lưu ý về UX: đặt boundary quá nhỏ sinh ra "popcorn UI" — mười skeleton bật ra lần lượt. Gom những phần liên quan vào một boundary, và để skeleton có cùng kích thước với nội dung thật để không gây layout shift.
 
-Lớp cache HTTP và CDN phía trước mình đã viết ở [bài về caching](/blog/caching-for-frontend-developers).
+## Giữ ranh giới không bị rò
+
+Ranh giới chỉ có giá trị khi nó được giữ. Đây là những công cụ mình dùng.
+
+### server-only và client-only
+
+```ts
+// lib/db.ts
+import "server-only";
+```
+
+Package `server-only` không làm gì khi chạy trên server, nhưng khiến build lỗi nếu module bị kéo vào client graph. Mình đặt nó ở **mọi** module chạm vào database, secret, SDK có API key, hoặc filesystem. Package `client-only` là chiều ngược lại — dành cho module đụng `window` ngay khi import, ví dụ wrapper của một SDK analytics.
+
+### Biến môi trường
+
+Next.js chỉ inline vào client bundle những biến có tiền tố `NEXT_PUBLIC_`. Biến khác đọc trong client graph sẽ là `undefined`. Nghe an toàn, nhưng có hai cái bẫy: đặt nhầm tiền tố `NEXT_PUBLIC_` cho một secret thì nó nằm vĩnh viễn trong JS công khai; và đọc secret ở Server Component rồi **truyền giá trị đó qua props** thì nó lại vào payload. Tiền tố bảo vệ module, không bảo vệ dữ liệu bạn chủ động gửi đi.
+
+### Taint API: lớp phòng thủ thêm
+
+React có các API thử nghiệm `experimental_taintObjectReference` và `experimental_taintUniqueValue` để đánh dấu một object hay một giá trị là "không được phép đi qua ranh giới" — nếu bị truyền xuống client, React ném lỗi. Trong Next.js cần bật `experimental.taint`. Mình coi nó là lưới an toàn bổ sung cho token hay row người dùng, không thay thế cho thói quen trả về DTO.
+
+## Context provider, thư viện bên thứ ba và ranh giới
+
+### Provider là client, nhưng children vẫn là server
+
+Server Component không đọc được Context. Theme, i18n client-side, query client... đều cần một provider là Client Component. Pattern chuẩn:
+
+```tsx
+// app/providers.tsx
+"use client";
+
+import { ThemeProvider } from "next-themes";
+import type { ReactNode } from "react";
+
+export function Providers({ children }: { children: ReactNode }) {
+  return (
+    <ThemeProvider attribute="class" defaultTheme="system">
+      {children}
+    </ThemeProvider>
+  );
+}
+```
+
+```tsx
+// app/layout.tsx
+import { Providers } from "./providers";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="vi" suppressHydrationWarning>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  );
+}
+```
+
+Bọc provider ở root **không** biến cả app thành client — `children` vẫn là output của Server Component, đúng pattern "client shell, server content". Nhưng mình vẫn đặt provider **sâu nhất có thể**: provider chỉ dùng cho dashboard thì để ở `app/(dashboard)/layout.tsx`, không phải root. Mỗi provider ở root là thêm code vào mọi trang, kể cả landing page không cần nó.
+
+### Thư viện chưa có "use client"
+
+Thư viện dùng hook nhưng không khai báo `"use client"` sẽ lỗi khi bạn import thẳng từ Server Component. Cách xử lý là tạo một file re-export:
+
+```tsx
+// components/ui/carousel.tsx
+"use client";
+
+export { Carousel, CarouselItem } from "some-carousel-lib";
+```
+
+Giờ file này là entry của client graph, và Server Component import từ đây thoải mái.
+
+## Những lỗi mình gặp nhiều nhất
+
+### "use client" ở layout hoặc page
+
+Kịch bản điển hình: layout của dashboard cần `usePathname()` để highlight menu đang active. Thế là ai đó thêm `"use client"` lên đầu `app/(dashboard)/layout.tsx`. Từ khoảnh khắc đó, mọi thứ layout import — header, sidebar, thư viện icon, formatter ngày tháng — vào bundle. Tệ hơn, những gì cần đọc dữ liệu trong layout giờ phải chuyển sang fetch phía client.
+
+Cách sửa luôn là **đẩy directive xuống lá**: tách đúng phần cần `usePathname` thành `NavLink` client, layout giữ nguyên là server.
+
+```tsx
+// app/(dashboard)/nav-link.tsx
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+export function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+  const active = usePathname().startsWith(href);
+  return (
+    <Link href={href} aria-current={active ? "page" : undefined} className={active ? "font-semibold" : ""}>
+      {children}
+    </Link>
+  );
+}
+```
+
+### Rò secret qua props
+
+```tsx
+// ❌ user là nguyên row từ DB: có passwordHash, email, stripeCustomerId...
+const user = await db.user.findUnique({ where: { id: session.userId } });
+return <ProfileMenu user={user} />;
+```
+
+`ProfileMenu` chỉ hiển thị tên và avatar, nhưng cả row đã nằm trong HTML. Mình đã thấy chuyện này ở code review nhiều lần hơn mình muốn — và nó không bị phát hiện bằng test thông thường vì UI hiển thị hoàn toàn đúng. Sửa bằng DTO ở data layer, không phải bằng cách "nhớ chọn field" ở từng component.
+
+### Payload phình to
+
+Một trang danh sách truyền 2.000 sản phẩm xuống một Client Component để lọc và sắp xếp phía client. Dữ liệu đó xuất hiện **hai lần** trong response đầu tiên: một lần trong HTML đã SSR, một lần trong RSC payload nhúng ở các thẻ script để hydrate. Trang chậm, TTFB tăng, và trên điện thoại yếu thì hydrate mất rất lâu.
+
+Cách sửa tuỳ trường hợp: phân trang và lọc ở server qua `searchParams`; chỉ gửi những field cần cho danh sách; hoặc nếu thật sự cần tương tác phía client trên tập dữ liệu lớn, fetch theo trang từ client với một cache phía client. Kiểm tra nhanh bằng cách xem kích thước document trong tab Network và tìm `self.__next_f` trong source.
+
+### Dùng useEffect để fetch thứ server đã có
+
+```tsx
+"use client";
+// ❌ Trang render rỗng, rồi mới fetch, rồi mới hiện dữ liệu
+useEffect(() => {
+  fetch(`/api/orders`).then((r) => r.json()).then(setOrders);
+}, []);
+```
+
+Đây là thói quen từ thời SPA. Nếu dữ liệu đọc được lúc request, hãy để Server Component đọc rồi truyền xuống (hoặc truyền Promise). Bạn bỏ được một round trip, một loading state, và một route handler.
+
+### Server Function không kiểm tra quyền
+
+Đã nói ở trên nhưng đáng nhắc lại vì hậu quả lớn: kiểm tra quyền ở UI (ẩn nút "Xoá") không có nghĩa gì nếu Server Function `deletePost(id)` không tự kiểm tra session và quyền sở hữu. Nút bị ẩn, endpoint thì không.
+
+### Truyền Date, Map rồi ngạc nhiên ở chỗ khác
+
+RSC serialize được `Date` và `Map`, nhưng `JSON.stringify` trong route handler thì không. Một DTO dùng chung cho cả hai đường có thể chạy đúng ở RSC và hỏng ở API. Mình chọn kiểu dữ liệu cho DTO theo "mẫu số chung": chuỗi ISO cho thời gian, array cho tập hợp.
+
+<Callout type="tip" title="Một câu hỏi để review mọi PR có RSC">
+  Với mỗi file `"use client"` mới, hỏi: "Phần nào của file này *thực sự* cần state, effect hoặc event?". Nếu câu trả lời là "một nút bấm", tách nút bấm đó ra. Với mỗi prop đi qua ranh giới, hỏi: "Mình có ổn nếu giá trị này xuất hiện trong View source không?".
+</Callout>
+
+## Bảng quyết định: đặt component ở đâu
+
+Đây là bảng mình dán vào tài liệu onboarding của team:
+
+| Nhu cầu | Đặt ở | Lý do |
+| --- | --- | --- |
+| Đọc DB, secret, API nội bộ | Server Component + data layer `server-only` | Không có code truy vấn trong bundle, không round trip thêm |
+| Render nội dung tĩnh, markdown, syntax highlight | Server Component | Thư viện nặng ở lại server |
+| `onClick`, `onChange`, `useState`, `useEffect` | Client Component, là lá nhỏ nhất có thể | Giữ ranh giới thấp, bundle nhỏ |
+| `localStorage`, `IntersectionObserver`, `matchMedia` | Client Component, truy cập trong effect | Chỉ có ở trình duyệt |
+| Đọc Context (theme, i18n client) | Client Component | Server không có Context |
+| Cung cấp Context | Client wrapper nhận `children`, đặt sâu nhất có thể | Không biến cây con thành client |
+| Vỏ có tương tác, ruột là dữ liệu (tab, modal, accordion) | Client shell + Server Component qua `children` | Tương tác ở client, nội dung ở server |
+| Form ghi dữ liệu | Server Function + `form action` / `useActionState` | Progressive enhancement, có sẵn kiểm tra origin |
+| Dữ liệu chậm, không quyết định trang | Async Server Component trong `Suspense` | Stream sau, không chặn shell |
+| Component tương tác cần dữ liệu từ server | Promise từ server + `use()` trong client | Bắt đầu fetch sớm, không waterfall |
+| Dữ liệu thay đổi theo tương tác liên tục (polling, infinite scroll, optimistic) | Client + thư viện cache như TanStack Query | RSC không có cache phía client theo key |
+
+Dòng cuối là chỗ RSC dừng lại: nó rất giỏi render dữ liệu lúc request, nhưng không phải một client cache. Khi UI cần refetch theo focus, cập nhật lạc quan, cuộn vô hạn với hàng trăm trang, bạn cần một công cụ khác — và hai thứ đó sống chung rất tốt.
+
+## Ví dụ hoàn chỉnh: trang sản phẩm
+
+Ghép mọi thứ lại:
+
+```tsx
+// app/products/[id]/page.tsx
+import { Suspense } from "react";
+import { notFound } from "next/navigation";
+import { getProduct, getRelatedProducts } from "@/lib/data/products";
+import { preloadReviews } from "@/lib/data/reviews";
+import { Price } from "@/components/price";
+import { AddToCart } from "./add-to-cart";
+import { ReviewsDrawer } from "./reviews-drawer";
+import { Reviews } from "./reviews";
+import { RelatedCarousel } from "./related-carousel";
+
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+
+  // Khởi động các request phụ trước khi chờ request chính
+  preloadReviews(id);
+  const relatedPromise = getRelatedProducts(id);
+
+  const product = await getProduct(id);
+  if (!product) notFound();
+
+  return (
+    <main className="mx-auto max-w-5xl space-y-10 p-6">
+      <header className="space-y-2">
+        <h1 className="text-3xl font-bold">{product.name}</h1>
+        <Price amount={product.price} currency={product.currency} />
+        {/* Chỉ id và inStock đi qua ranh giới */}
+        <AddToCart productId={product.id} inStock={product.inStock} />
+      </header>
+
+      <ReviewsDrawer count={product.reviewCount}>
+        <Suspense fallback={<p>Đang tải đánh giá…</p>}>
+          <Reviews productId={product.id} />
+        </Suspense>
+      </ReviewsDrawer>
+
+      <Suspense fallback={<div className="h-48 animate-pulse rounded-xl bg-muted" />}>
+        <RelatedCarousel relatedPromise={relatedPromise} />
+      </Suspense>
+    </main>
+  );
+}
+```
+
+```tsx
+// app/products/[id]/add-to-cart.tsx
+"use client";
+
+import { useState, useTransition } from "react";
+import { addToCart } from "./actions";
+
+export function AddToCart({ productId, inStock }: { productId: string; inStock: boolean }) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  return (
+    <div>
+      <button
+        disabled={!inStock || pending}
+        onClick={() =>
+          startTransition(async () => {
+            const result = await addToCart({ productId, quantity: 1 });
+            setError(result.ok ? null : result.error);
+          })
+        }
+      >
+        {pending ? "Đang thêm…" : inStock ? "Thêm vào giỏ" : "Hết hàng"}
+      </button>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  );
+}
+```
+
+Nhìn lại trang này qua mô hình hai graph:
+
+- **Server graph**: `page.tsx`, `Price`, `Reviews`, data layer, `actions.ts`. Không dòng nào vào bundle, trừ reference tới Server Function.
+- **Client graph**: `AddToCart`, `ReviewsDrawer`, `RelatedCarousel` — ba entry, mỗi cái là một lá nhỏ.
+- **Đi qua ranh giới**: `productId`, `inStock`, `count`, `children` đã render, một Promise và một Server Function reference. Không có row DB nào, không có callback nào.
+- **Thứ tự dữ liệu**: review và related bắt đầu song song với product; trang trả về shell ngay khi product xong; hai phần phụ stream sau.
+
+Để ý `reviewCount` nằm sẵn trong `ProductDTO`: DTO là hợp đồng giữa data layer và UI, nên khi UI cần thêm gì thì bổ sung field ở đó, không truyền thêm row.
 
 ## Tóm tắt
 
 <Checklist>
 
-- Nghĩ theo hai đồ thị module: một file thuộc server hay client tuỳ vào ai import nó.
-- `"use client"` là điểm vào đồ thị client; mọi thứ nó import đều ship xuống trình duyệt.
-- Props qua ranh giới phải serialize được, và mọi thứ serialize được đều lộ ra client — trả DTO tối thiểu từ module `server-only`.
-- Truyền Server Component vào Client Component qua `children` thay vì import.
-- Server function là endpoint `POST` công khai: xác thực, phân quyền, validate và trả về tối thiểu trong từng hàm; vá React/Next.js ngay khi có advisory.
-- Đẩy ranh giới client xuống lá, bọc provider trong module client nhỏ đặt sâu nhất có thể.
-- Với Cache Components: dynamic mặc định, cache bằng `"use cache"` + `cacheLife` + `cacheTag`, đọc runtime API trong `Suspense`.
+- Nghĩ theo hai module graph: server graph bắt đầu từ route entry, client graph bắt đầu từ mỗi file `"use client"`; mọi thứ một entry client import đều vào bundle.
+- `"use client"` chỉ đặt ở entry — file mà Server Component import trực tiếp — và đẩy càng xuống lá càng tốt. Không bao giờ đặt ở layout hay page chỉ vì một hook.
+- `"use server"` đánh dấu Server Functions, không phải Server Component. Mỗi Server Function là một endpoint công khai: xác thực, validate, phân quyền bên trong nó.
+- Props đi qua ranh giới phải serialize được và là dữ liệu công khai. Trả về DTO từ data layer, không truyền entity của ORM.
+- Truyền Server Component vào Client Component qua `children` hoặc prop `ReactNode` — client shell, server content.
+- Fetch trong Server Component qua data layer có `server-only` và `cache`; không gọi API route của chính mình từ server.
+- Gỡ waterfall bằng `Promise.all`, preload, hoặc truyền Promise xuống `use()`; đặt `Suspense` quanh dữ liệu phụ, `await` ở trên cùng dữ liệu quyết định 404 hay redirect.
+- Provider là client wrapper nhận `children`, đặt sâu nhất có thể.
+- Kiểm tra kích thước RSC payload với trang danh sách lớn; lọc và phân trang ở server.
+- Khi UI cần cache phía client, refetch theo tương tác hay optimistic update, dùng thêm một thư viện server state thay vì bẻ RSC thành thứ nó không phải.
 
 </Checklist>

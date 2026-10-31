@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#9CA3AF"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#2F5BFF"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#7C3AED"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#D97706"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="62" fill="#111827" font-size="34" font-weight="800">Two module graphs, one boundary</text>
+  <text x="40" y="98" fill="#4B5563" font-size="18">"use client" marks where the client graph starts. Everything it imports follows it into the bundle.</text>
+
+  <!-- panels -->
+  <rect x="40" y="118" width="540" height="400" rx="26" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="2"/>
+  <rect x="620" y="118" width="540" height="400" rx="26" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="2"/>
+  <text x="64" y="152" fill="#2F5BFF" font-size="16" font-weight="800">SERVER MODULE GRAPH</text>
+  <text x="556" y="152" text-anchor="end" fill="#4B5563" font-size="16">never shipped to the browser</text>
+  <text x="644" y="152" fill="#16A34A" font-size="16" font-weight="800">CLIENT MODULE GRAPH</text>
+  <text x="1136" y="152" text-anchor="end" fill="#4B5563" font-size="16">bundled, also SSR'd to HTML</text>
+
+  <!-- boundary line -->
+  <path d="M600 112V524" stroke="#111827" stroke-width="2.5" stroke-dasharray="9 8" stroke-linecap="round"/>
+  <rect x="556" y="252" width="88" height="30" rx="15" fill="#111827"/>
+  <text x="600" y="273" text-anchor="middle" fill="white" font-size="16" font-weight="700">boundary</text>
+
+  <!-- server cards -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="172" width="226" height="70" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="330" y="172" width="226" height="70" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="64" y="292" width="226" height="70" rx="18" fill="white" stroke="#2F5BFF" stroke-width="2.5"/>
+    <rect x="330" y="292" width="226" height="70" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="330" y="412" width="226" height="70" rx="18" fill="white" stroke="#D97706" stroke-width="2.5"/>
+  </g>
+  <text x="177" y="202" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">app/page.tsx</text>
+  <text x="177" y="228" text-anchor="middle" fill="#4B5563" font-size="16">async, awaits data</text>
+  <text x="443" y="202" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">ProductInfo.tsx</text>
+  <text x="443" y="228" text-anchor="middle" fill="#4B5563" font-size="16">no directive: server</text>
+  <text x="177" y="322" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">lib/data.ts</text>
+  <text x="177" y="348" text-anchor="middle" fill="#2F5BFF" font-size="16">import "server-only"</text>
+  <text x="443" y="322" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">Reviews.tsx</text>
+  <text x="443" y="348" text-anchor="middle" fill="#4B5563" font-size="16">async, in Suspense</text>
+  <text x="443" y="442" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">actions.ts</text>
+  <text x="443" y="468" text-anchor="middle" fill="#D97706" font-size="16">"use server"</text>
+  <text x="64" y="440" fill="#4B5563" font-size="16">Secrets, DB clients and</text>
+  <text x="64" y="464" fill="#4B5563" font-size="16">heavy libs stay here</text>
+
+  <!-- client cards -->
+  <g filter="url(#shadow)">
+    <rect x="644" y="172" width="226" height="70" rx="18" fill="white" stroke="#16A34A" stroke-width="2.5"/>
+    <rect x="910" y="172" width="226" height="70" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+    <rect x="644" y="292" width="226" height="70" rx="18" fill="white" stroke="#16A34A" stroke-width="2.5"/>
+    <rect x="910" y="292" width="226" height="70" rx="18" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="757" y="202" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">AddToCart.tsx</text>
+  <text x="757" y="228" text-anchor="middle" fill="#16A34A" font-size="16">"use client": entry</text>
+  <text x="1023" y="202" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">useCart.ts</text>
+  <text x="1023" y="228" text-anchor="middle" fill="#4B5563" font-size="16">state, effects</text>
+  <text x="757" y="322" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">ReviewsDrawer.tsx</text>
+  <text x="757" y="348" text-anchor="middle" fill="#16A34A" font-size="16">"use client", gets children</text>
+  <text x="1023" y="322" text-anchor="middle" fill="#111827" font-size="20" font-weight="700">Button.tsx</text>
+  <text x="1023" y="348" text-anchor="middle" fill="#4B5563" font-size="16">no directive: client</text>
+  <text x="1136" y="440" text-anchor="end" fill="#4B5563" font-size="16">Hooks, state, events and</text>
+  <text x="1136" y="464" text-anchor="end" fill="#4B5563" font-size="16">browser APIs live here</text>
+
+  <!-- server edges -->
+  <path d="M292 207H324" stroke="#9CA3AF" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M177 244V286" stroke="#9CA3AF" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M443 244V286" stroke="#9CA3AF" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <!-- client edges -->
+  <path d="M872 207H904" stroke="#9CA3AF" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M830 244C870 270 990 256 1012 286" stroke="#9CA3AF" stroke-width="3.5" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <!-- crossing: props -->
+  <rect x="574" y="180" width="52" height="20" rx="6" fill="#F3F3FA"/>
+  <text x="600" y="196" text-anchor="middle" fill="#2F5BFF" font-size="16" font-weight="700">props</text>
+  <path d="M558 212H638" stroke="#2F5BFF" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
+
+  <!-- crossing: children -->
+  <path d="M558 327H638" stroke="#7C3AED" stroke-width="4" stroke-dasharray="8 6" stroke-linecap="round" marker-end="url(#arrowPurple)"/>
+  <rect x="566" y="334" width="68" height="22" rx="6" fill="#F3F3FA"/>
+  <text x="600" y="351" text-anchor="middle" fill="#7C3AED" font-size="16" font-weight="700">children</text>
+
+  <!-- crossing back: server function -->
+  <path d="M757 364C757 430 690 447 562 447" stroke="#D97706" stroke-width="4" stroke-dasharray="8 6" stroke-linecap="round" marker-end="url(#arrowAmber)"/>
+  <text x="772" y="414" fill="#D97706" font-size="16" font-weight="700">calls Server Function</text>
+  <text x="772" y="438" fill="#4B5563" font-size="16">= POST request</text>
+
+  <!-- what crosses -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="540" width="1120" height="108" rx="22" fill="white" stroke="#E5E7EF" stroke-width="2"/>
+  </g>
+  <text x="64" y="578" fill="#16A34A" font-size="17" font-weight="700">Crosses:</text>
+  <text x="150" y="578" fill="#111827" font-size="17">serializable props · JSX rendered on the server · Promises read with use() · Server Functions</text>
+  <text x="64" y="618" fill="#DC2626" font-size="17" font-weight="700">Blocked:</text>
+  <text x="150" y="618" fill="#111827" font-size="17">plain functions, class instances, closures. Not blocked: secrets you pass as props. Props are public.</text>
+</svg>

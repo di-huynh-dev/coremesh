@@ -84,3 +84,52 @@
   en:
     title: "The engineering craft"
     description: "Skills no framework teaches: taking notes, reviewing code, estimating honestly and what actually changes on the way from mid-level to senior."
+
+- id: frontend-deep-dive
+  posts:
+    - react-server-components-mental-model
+    - tanstack-query-server-state
+    - typescript-type-level-api-contracts
+    - accessible-aria-widget-patterns
+    - web-workers-off-main-thread
+    - frontend-observability-rum
+    - micro-frontends-module-federation
+  vi:
+    title: "Frontend chuyên sâu"
+    description: "Mô hình tư duy đúng cho React Server Components, server state với TanStack Query, TypeScript ở tầng type, widget ARIA chuẩn, Web Worker, quan sát người dùng thật và micro-frontend — những phần khó nằm dưới bề mặt framework."
+  en:
+    title: "Frontend in depth"
+    description: "A correct mental model for React Server Components, server state with TanStack Query, type-level TypeScript, proper ARIA widgets, Web Workers, real-user observability and micro-frontends — the hard parts under the framework surface."
+
+- id: business-analysis
+  posts:
+    - requirements-elicitation-for-engineers
+    - user-stories-acceptance-criteria
+    - bpmn-process-modeling
+    - event-storming-domain-modeling
+    - writing-prd-and-nfr
+    - product-metrics-sql-for-analysts
+  vi:
+    title: "Business analysis cho đội sản phẩm"
+    description: "Khai thác yêu cầu thật, viết user story và acceptance criteria kiểm thử được, mô hình hoá quy trình bằng BPMN, Event Storming, PRD với yêu cầu phi chức năng đo được và đo lường sản phẩm bằng SQL."
+  en:
+    title: "Business analysis for product teams"
+    description: "Eliciting the real requirements, writing testable user stories and acceptance criteria, modeling processes with BPMN, Event Storming, PRDs with measurable non-functional requirements and product metrics in SQL."
+
+- id: application-security
+  posts:
+    - threat-modeling-stride
+    - frontend-security-in-practice
+    - cors-and-cross-origin-isolation
+    - oauth2-oidc-pkce-bff
+    - jwt-pitfalls-and-key-rotation
+    - owasp-api-security-top-10-nestjs
+    - ssrf-and-file-upload-security
+    - secrets-management-ci-oidc
+    - npm-supply-chain-security
+  vi:
+    title: "Bảo mật ứng dụng web"
+    description: "Bắt đầu bằng threat modeling, rồi đi qua XSS và CSP, CORS và cross-origin isolation, OAuth/OIDC, JWT, OWASP API Top 10, SSRF và upload file, quản lý secret và chuỗi cung ứng npm — từng lớp phòng thủ cho một ứng dụng thật."
+  en:
+    title: "Web application security"
+    description: "Start with threat modeling, then work through XSS and CSP, CORS and cross-origin isolation, OAuth/OIDC, JWT, the OWASP API Top 10, SSRF and file uploads, secrets management and the npm supply chain — each layer of defense for a real app."

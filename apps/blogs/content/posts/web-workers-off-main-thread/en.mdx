@@ -1,228 +1,190 @@
 ---
-title: "Moving Work Off the Main Thread with Web Workers"
-excerpt: "What actually belongs in a worker, what structured clone costs compared to Transferables, a typed RPC layer (or Comlink), module workers with bundlers, SharedArrayBuffer and cross-origin isolation, OffscreenCanvas, worker pools, and a useWorker hook with cancellation."
+title: "Getting Work Off the Main Thread: Web Workers, Transferables, SharedArrayBuffer and Worker Pools"
+excerpt: "Web Workers aren't magic for every slow page. This post covers when moving work to a worker pays off, what structured clone really costs, transferables, SharedArrayBuffer and COOP/COEP, a hand-written Comlink-style RPC, bundler setup, worker pools, cancellation with AbortSignal, real examples and alternatives like scheduler.yield."
 ---
 
-<Lead>The first time I moved CSV parsing into a Web Worker, the import screen got *slower*. The tab no longer froze, but the table appeared later, because the worker sent back hundreds of thousands of objects and the main thread spent a long stretch deserializing them. Workers aren't a "make it fast" button. They're a different place to run code, with their own costs: messaging, copying, startup and memory. This post is how I decide what to move, how to move it, and how to prove it was worth it.</Lead>
+<Lead>The first time I moved a CSV parser into a Web Worker, I was confident: the main thread would be free and INP would look great. The page still froze for almost half a second — it just froze somewhere else, when the worker posted back two hundred thousand objects and the main thread had to deserialize every one of them. Workers don't make heavy work disappear; they move it to another thread and *charge a toll* at both ends of the pipe. This post is what I've learned from a few times getting it right and many times getting it wrong: when a worker is worth it, what structured clone costs, how transferables and SharedArrayBuffer help, what cross-origin isolation demands, how to write a Comlink-style RPC layer yourself, bundler setup for Next.js and Vite, worker pools, cancellation with AbortSignal, real examples from CSV to WASM — and when `scheduler.yield()` is all you need.</Lead>
 
-Why one long task freezes the UI is covered in [the event loop post](/blog/event-loop-and-rendering). Here I go straight to the parts that decide whether a worker pays off.
+## When moving work to a worker pays off
 
-## What belongs in a worker, and what doesn't
+The browser's main thread does almost everything: runs JavaScript, handles input, computes style, layout and paint. A task that runs longer than 50ms is a **long task** — while it runs, the user's tap has to wait in line, and that wait is the *input delay* part of INP. If you want a refresher on tasks, microtasks and frames, I covered them in depth in [The Event Loop, Microtasks and Rendering](/blog/event-loop-and-rendering).
 
-The real question is whether the computation is heavy *relative to the data that has to cross the boundary*. A worker wins when you send little and compute a lot, or when the data can *live* inside the worker.
+There are two ways to free the main thread: **split** the work so the browser can slot input and rendering in between, or **move** the work to another thread. Workers are the second option, and they fit best when the work:
 
-| Good fit | Why |
-| --- | --- |
-| Parsing large files (CSV, big JSON, markdown, log files) | Pass the `File` in, get back a summary or one page of rows |
-| Diffing text or data structures | Heavy computation, small output |
-| Search indexing and fuzzy search | The index lives in the worker; each query only sends a string |
-| Image processing, compression, hashing, WASM | Binary data can be transferred instead of copied |
+- **Is CPU-heavy and doesn't need the DOM.** Parsing, compression, encryption, search, geometry, image processing. Workers can't touch `document` or `window`.
+- **Has large input and small output** — or binary data that can move as a transferable. Send a `File` in, get a summary out.
+- **Takes tens of milliseconds or more, repeatedly.** The worker's startup cost and the data transfer have to be paid back by main-thread time saved.
+- **Has long-lived state worth keeping separate.** A search index, a WASM model — load once, query many times.
 
-| Poor fit | Why |
-| --- | --- |
-| Anything that reads or writes the DOM, measures layout | Workers have no DOM |
-| React rendering itself | The reconciler and the DOM both live on the main thread |
-| Tasks of a few milliseconds | Messaging overhead and the extra async step eat the win |
-| Work that needs a big chunk of main-thread state every call | Copying it each time costs as much as the work |
+And workers **don't** help when:
 
-The pattern I like best is the **stateful worker**: send the data once, keep it there, then exchange only small requests and results.
+- **The slow part is rendering.** React reconciling ten thousand rows, layout of a huge DOM — a worker can't touch the DOM. That calls for virtualization, `content-visibility`, fewer nodes.
+- **Data transfer outweighs the computation.** Filtering a 5,000-item array takes 3ms; cloning it into a worker and cloning the result back can cost more.
+- **The work is tiny** but called constantly. Each `postMessage` round trip has a fixed cost; for sub-millisecond work, chunking on the main thread is cheaper.
 
-## The real cost: structured clone vs Transferables
+**Measure before you move.** The Performance panel in DevTools shows you long tasks and who caused them; the Long Animation Frames API shows you the same thing on real users' machines. I only move code into a worker when a profile clearly shows it's what's hogging the main thread, and when what it returns is small enough.
 
-`postMessage` uses structured clone: serialization runs *synchronously on the sending thread*, deserialization on the receiving one. Cost depends on the shape of the object graph, not just bytes: 500,000 small objects cost far more than one `ArrayBuffer` of the same size, because every object, key and string gets walked.
+<Figure src="/blog/web-workers-off-main-thread-timeline.svg" alt="Timeline comparing the main thread and a worker: at the top, a 420ms long task on the main thread makes the user's tap wait until the task ends before anything is painted; at the bottom, the main thread spends only a moment on postMessage with an ArrayBuffer transferred without copying, the tap is handled and painted immediately, while the worker parses in chunks; at the end the worker serializes the result and the main thread pays the structured clone cost on receipt before rendering" caption="A worker doesn't remove cost, it relocates it. Transfers are nearly free, structured clone scales with data size and runs on both threads — so keep messages small." />
 
-Things that regularly surprise people:
+| Situation | What I choose | Why |
+| --- | --- | --- |
+| Parsing a CSV/JSON file of tens of MB | Worker, send the `File` in | Large input, small summary out |
+| Full-text search over tens of thousands of documents | Long-lived worker holding the index | Index loads once; each query sends a short string |
+| Compressing or resizing images before upload | Worker with `OffscreenCanvas` | Binary data, returns a `Blob` |
+| Filtering or sorting a few thousand table rows | Main thread, `useDeferredValue` or chunking | Transferring data costs more than computing |
+| Rendering a long list | Virtualization | The slow part is the DOM, which a worker can't touch |
+| Initializing many widgets on page load | `scheduler.yield()` between steps | Needs the DOM; it just needs to give way |
 
-- Functions, DOM nodes and symbols can't be cloned; `postMessage` throws `DataCloneError`.
-- Class instances arrive as plain objects, without methods or getters.
-- Sending a `File` or `Blob` doesn't copy its contents, so pass the `File` and read it *in the worker*.
-- `AbortSignal` isn't cloneable, so cancellation needs its own message.
+## Three kinds of worker, and when to use which
 
-For binary data, use **Transferables**: ownership of the memory moves to the other thread instead of being copied. `ArrayBuffer`, `MessagePort`, `ImageBitmap` and `OffscreenCanvas` are the ones I use most.
+| | Dedicated Worker | Shared Worker | Service Worker |
+| --- | --- | --- | --- |
+| **Owned by** | One page (one document) | Every same-origin tab that connects | The origin, per scope |
+| **Lifetime** | Until the page closes or `terminate()` | While at least one tab is connected | Started for events, stopped when idle |
+| **Communication** | `postMessage` directly | Through a `MessagePort` (`worker.port`) | `fetch`, `push`, `message` events |
+| **Use for** | Computation, parsing, WASM | Sharing one connection or cache across tabs | Network proxy, offline, push notifications |
+| **Gotchas** | Each worker has its own heap | Mobile support has historically been uneven; harder to debug | Can be stopped mid-flight; not a place for compute |
+
+In practice, 90% of "get it off the main thread" cases are a **Dedicated Worker**. I reach for a Shared Worker when several tabs need one expensive resource — a WebSocket connection, a SQLite WASM database — and accept that I need a fallback for browsers without support. Don't use a Service Worker for computation: the browser can stop it at any time when no event is pending, and everything it does sits on the path of your network requests.
+
+There are also **worklets** — `AudioWorklet`, `PaintWorklet` — very narrow environments for exactly one pipeline. If you're doing real-time audio processing, that's the right place, not a Dedicated Worker.
+
+## The cost of postMessage: structured clone
+
+Every value that goes through `postMessage` is **structured cloned**: serialized on the sending thread, deserialized on the receiving one. Two things people often miss:
+
+1. **Serialization runs synchronously on the sender.** Calling `worker.postMessage(bigArray)` from the main thread means the main thread walks and copies the whole array before that call returns. You've just created a long task in order to... avoid a long task.
+2. **The cost scales with the number and shape of objects**, not just bytes. Two hundred thousand small objects are far more expensive than one `ArrayBuffer` of the same size.
 
 ```ts
-const pixels = sourceContext.getImageData(0, 0, width, height);
-filterWorker.postMessage({ width, height, buffer: pixels.data.buffer }, [pixels.data.buffer]);
+// Measure the send cost right on the main thread
+const rows = await loadRows(); // e.g. 200,000 objects { id, name, price, tags }
+
+const t0 = performance.now();
+worker.postMessage({ type: "index", rows });
+console.log(`postMessage blocked the main thread for ${(performance.now() - t0).toFixed(1)}ms`);
 ```
 
-After that line, `pixels.data.byteLength` is `0`: the buffer is *detached*. Reading it doesn't throw, you silently get empty data, the classic bug after adding a transfer list. The worker transfers its result back the same way:
+Structured clone preserves more than JSON: `Map`, `Set`, `Date`, `RegExp`, `BigInt`, typed arrays, `Blob`, `File`, and even `Error`. But it **can't** clone functions, DOM nodes or `Symbol`s, and class instances lose their prototype — a `Money` instance arrives as a plain object without its methods. Send something uncloneable and `postMessage` throws a `DataCloneError` right on the sending thread.
+
+The rules I've ended up with:
+
+- **Send references, not contents.** `File` and `Blob` are cloned by reference and cost almost nothing. Send the `File` to the worker and read it there, instead of reading it into a string on the main thread and sending the string.
+- **Let the worker fetch.** If the data comes from the network, `fetch` and `JSON.parse` it inside the worker — the main thread never has to touch it.
+- **Keep data in the worker.** Send it once, then only pass small queries back and forth.
+- **Return summaries.** If the page shows 50 rows, don't return 200,000.
+
+## Transferables: move ownership instead of copying
+
+For binary data there's something better than cloning: **transfer**. Instead of copying, the browser hands ownership of the memory to the other thread, in near-constant time regardless of size. The sender loses access — the buffer becomes *detached*.
 
 ```ts
-self.postMessage({ width, height, buffer: output.buffer }, { transfer: [output.buffer] });
+// main.ts
+const samples = new Float32Array(8_000_000); // about 32 MB
+fillSamples(samples);
+
+worker.postMessage({ type: "analyze", samples }, [samples.buffer]);
+
+console.log(samples.byteLength); // 0 — the buffer belongs to the worker now
 ```
 
-The CSV fix was to return only the current page of rows plus a few aggregates. The parsed data stays in the worker; the UI asks for pages.
+The transferables you'll use most: `ArrayBuffer`, `MessagePort`, `ImageBitmap`, `OffscreenCanvas`, streams (`ReadableStream`, `WritableStream`, `TransformStream`), `VideoFrame` and `AudioData`. You can also use `structuredClone(value, { transfer })` to transfer within a single thread.
 
-## A typed RPC layer instead of raw onmessage
+<Callout type="warning" title="Transferring a subarray's buffer transfers the whole original buffer">
+  `subarray()` creates a new view over the **same** `ArrayBuffer`. If you send `chunk.buffer` from a subarray, you transfer the entire underlying buffer — every other view on the main thread instantly becomes empty, and the worker receives more data than you meant to send. When you only want to send part of it, `slice()` it (which makes a separate copy) and transfer the copy, passing `byteOffset`/`length` along if the worker needs to know where it came from.
+</Callout>
 
-Raw `onmessage` works for one request at a time. With two in flight, you need request ids, pending promises and error propagation. I write a small layer once: a shared protocol, a worker side and a main-thread side.
+### OffscreenCanvas: drawing in a worker
+
+One particularly useful transferable is `OffscreenCanvas`. You hand control of a `<canvas>` on the page to a worker, and the worker draws directly — the main thread takes no part in drawing. I used this for a real-time chart with tens of thousands of points: scrolling and zooming stayed smooth because both the computation and the drawing lived off the main thread.
 
 ```ts
-export type RpcRequest = { id: number; method: string; args: unknown[] };
+// components/live-chart.ts
+const canvas = document.querySelector<HTMLCanvasElement>("#chart")!;
+const offscreen = canvas.transferControlToOffscreen();
 
-export type RpcResponse =
-  | { id: number; ok: true; value: unknown }
-  | { id: number; ok: false; error: string };
+const worker = new Worker(new URL("./chart.worker.ts", import.meta.url), { type: "module" });
+worker.postMessage({ type: "init", canvas: offscreen, dpr: devicePixelRatio }, [offscreen]);
+
+// From here on, only small data and events cross the boundary
+new ResizeObserver(([entry]) => {
+  const { width, height } = entry.contentRect;
+  worker.postMessage({ type: "resize", width, height });
+}).observe(canvas);
 ```
 
-On the worker side, `exposeApi` takes an object of methods and answers each request by id:
-
 ```ts
-import type { RpcRequest, RpcResponse } from "./rpc-protocol";
+// components/chart.worker.ts
+let ctx: OffscreenCanvasRenderingContext2D | null = null;
+let canvas: OffscreenCanvas | null = null;
+let dpr = 1;
 
-type WorkerMethods = Record<string, (...args: never[]) => unknown>;
+self.onmessage = (event: MessageEvent) => {
+  const msg = event.data;
+  if (msg.type === "init") {
+    canvas = msg.canvas as OffscreenCanvas;
+    dpr = msg.dpr;
+    ctx = canvas.getContext("2d");
+  } else if (msg.type === "resize" && canvas) {
+    canvas.width = Math.round(msg.width * dpr);
+    canvas.height = Math.round(msg.height * dpr);
+    draw();
+  }
+};
 
-export function exposeApi(api: WorkerMethods) {
-  self.addEventListener("message", async (event: MessageEvent<RpcRequest>) => {
-    const { id, method, args } = event.data;
-    let response: RpcResponse;
-    try {
-      const handler = api[method];
-      if (!handler) throw new Error(`Unknown method: ${method}`);
-      response = { id, ok: true, value: await handler(...(args as never[])) };
-    } catch (error) {
-      response = { id, ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-    self.postMessage(response);
-  });
+function draw() {
+  if (!ctx || !canvas) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // ... draw the series
 }
 ```
 
-A search worker is then a plain object whose type is exported:
+Once you call `transferControlToOffscreen()`, you can no longer get a context for that canvas on the main thread. Its displayed size is still decided by CSS on the main thread; the worker only controls the pixel buffer.
 
-```ts
-import { exposeApi } from "./expose-api";
+## SharedArrayBuffer, Atomics and cross-origin isolation
 
-export type SearchDocument = { id: string; title: string; body: string };
-export type SearchHit = { id: string; title: string; score: number };
+A transfer moves ownership; only one thread holds the data at a time. **`SharedArrayBuffer`** is different: the same memory is visible to several threads at once. I've used it for three things:
 
-let entries: { document: SearchDocument; text: string }[] = [];
+- **Multithreaded WASM** — toolchains compile C/C++/Rust threads to Web Workers sharing one memory.
+- **Cancellation flags and progress** without waiting for the worker's event loop to be free (more on that in the cancellation section).
+- **Ring buffers** for high-frequency data, such as audio between an `AudioWorklet` and a worker.
 
-const searchApi = {
-  loadDocuments(documents: SearchDocument[]) {
-    entries = documents.map((document) => ({
-      document,
-      text: `${document.title} ${document.body}`.toLowerCase(),
-    }));
-    return entries.length;
-  },
-  search(query: string, limit: number): SearchHit[] {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (terms.length === 0) return [];
-    return entries
-      .map(({ document, text }) => ({
-        id: document.id,
-        title: document.title,
-        score: terms.filter((term) => text.includes(term)).length,
-      }))
-      .filter((hit) => hit.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-  },
-};
+### The requirement: cross-origin isolation
 
-export type SearchApi = typeof searchApi;
-exposeApi(searchApi);
-```
-
-On the main thread, a `Proxy` turns each property into a typed remote call:
-
-```ts
-import type { RpcRequest, RpcResponse } from "./rpc-protocol";
-
-export type RemoteApi<Api> = {
-  [Method in keyof Api]: Api[Method] extends (...args: infer Args) => infer Result
-    ? (...args: Args) => Promise<Awaited<Result>>
-    : never;
-};
-
-export type WorkerClient<Api> = { api: RemoteApi<Api>; dispose: () => void };
-
-type PendingCall = { resolve: (value: unknown) => void; reject: (reason: unknown) => void };
-
-export function wrapWorker<Api>(worker: Worker): WorkerClient<Api> {
-  const pending = new Map<number, PendingCall>();
-  let nextId = 0;
-
-  const rejectAll = (reason: Error) => {
-    for (const call of pending.values()) call.reject(reason);
-    pending.clear();
-  };
-
-  worker.addEventListener("message", (event: MessageEvent<RpcResponse>) => {
-    const response = event.data;
-    const call = pending.get(response.id);
-    if (!call) return;
-    pending.delete(response.id);
-    if (response.ok) call.resolve(response.value);
-    else call.reject(new Error(response.error));
-  });
-  worker.addEventListener("error", (event) => rejectAll(new Error(event.message)));
-
-  const api = new Proxy({} as RemoteApi<Api>, {
-    get(_target, method) {
-      if (typeof method !== "string" || method === "then") return undefined;
-      return (...args: unknown[]) =>
-        new Promise((resolve, reject) => {
-          const id = nextId++;
-          pending.set(id, { resolve, reject });
-          worker.postMessage({ id, method, args } satisfies RpcRequest);
-        });
-    },
-  });
-
-  return {
-    api,
-    dispose() {
-      worker.terminate();
-      rejectAll(new DOMException("Worker disposed", "AbortError"));
-    },
-  };
-}
-```
-
-Two details I learned the hard way. Without the `method === "then"` check, awaiting the proxy (or returning it from an async function) treats it as a thenable and calls a remote `then` that never answers. And `import type` is erased at compile time, so the main bundle gets the worker's types without its code.
-
-### Or just use Comlink
-
-[Comlink](https://github.com/GoogleChromeLabs/comlink) does the same more thoroughly: `Comlink.expose(api)` in the worker, `Comlink.wrap(worker)` typed with `SearchApi` on the main thread, `Comlink.transfer` for transferables, `Comlink.proxy` for callbacks like progress reporting. It's small and stable, though its last release was in late 2024. I write my own layer only when I need control over error serialization or cancellation. Callbacks wrapped with `Comlink.proxy` keep a `MessageChannel` open, so release them or you'll leak.
-
-## Module workers and bundlers
-
-webpack 5, Vite and Turbopack all understand this syntax:
-
-```ts
-const worker = new Worker(new URL("./search.worker.ts", import.meta.url), { type: "module" });
-```
-
-The bundler finds it by *static analysis*, so `new URL(...)` must be inline with a literal string. Put the path in a variable and the worker isn't bundled: you get a 404 at runtime. Module workers work in every current browser (Firefox was last, in version 114).
-
-- **Next.js:** the top level of a `"use client"` module still runs during SSR, so create workers lazily in an effect or event handler. Turbopack's worker handling has changed across Next.js 16 minor releases, so test the production build, not just dev.
-- **Vite:** `worker.format` defaults to `"iife"`; set `worker: { format: "es" }` if the worker uses dynamic `import()`. Plugins for worker bundles go in `worker.plugins`.
-- **Duplication:** a worker is a separate entry point, so a library imported on both sides is usually bundled twice.
-
-## SharedArrayBuffer and cross-origin isolation
-
-`SharedArrayBuffer` lets threads share memory without copying. Since Spectre, it requires the page to be **cross-origin isolated**:
+After Spectre-class vulnerabilities, browsers only allow `SharedArrayBuffer` when the page is **cross-origin isolated** — you check with `self.crossOriginIsolated`. To get there, the document must be served with two headers:
 
 ```http
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-The cost is real. `COOP: same-origin` severs cross-origin popups, so OAuth or payment flows relying on `window.opener` can break. `COEP: require-corp` blocks cross-origin resources without a `Cross-Origin-Resource-Policy` header or CORS: third-party images, iframes, some analytics scripts. `COEP: credentialless` is softer (no cookies on those requests) and works in Chrome and Firefox, but MDN's compatibility data still shows no Safari support as I write this. So I scope it to the route that needs it:
+- **COOP `same-origin`** severs the link between your page and any cross-origin windows that opened it or that it opens.
+- **COEP `require-corp`** requires every cross-origin resource the page loads to opt in, via CORS or a `Cross-Origin-Resource-Policy` header. The `credentialless` value is a softer option: cross-origin resources don't need CORP, but they're fetched without cookies.
+
+The cost is very real:
+
+| What breaks | Why | What to do |
+| --- | --- | --- |
+| OAuth sign-in popups, payment popups | COOP severs `window.opener`, so the popup can't report back | Enable it only on routes that need SAB; use redirects instead of popups |
+| Images, fonts, scripts from third-party CDNs | Without CORP or CORS they're blocked under `require-corp` | Use `credentialless`, add `crossorigin`, or self-host |
+| Embedded iframes (video, maps) | Iframes must opt in too | The iframe `credentialless` attribute where supported, or a separate page |
+| Ads, chat widgets | Usually don't send CORP | Don't enable isolation on those pages |
+
+The first time my team turned these headers on site-wide to run a multithreaded WASM library, the popup-based "Sign in with Google" button stopped working and every embedded video vanished. Lesson learned: **enable cross-origin isolation only on the routes that need it.**
 
 ```ts
+// next.config.ts
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        // Only the editor needs SharedArrayBuffer
         source: "/editor/:path*",
         headers: [
           { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
-          { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+          { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
         ],
       },
     ];
@@ -232,230 +194,740 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-<Callout>
-  Isolation is decided when a *document* loads. A client-side navigation from a non-isolated page to `/editor` doesn't load a new document, so `crossOriginIsolated` stays `false` even though the route has the right headers. Enter the isolated area with a full page load, and always check `crossOriginIsolated` at runtime with a `postMessage` fallback.
-</Callout>
+Note that a client-side navigation from a non-isolated page to `/editor` won't make the page isolated — the headers only take effect when the document loads. Links into the editor should be full navigations (a plain `a` element, not the router), and always check `crossOriginIsolated` before using `SharedArrayBuffer`, with a fallback for when it's `false`.
 
-My most practical use of it is **cooperative cancellation**. A worker in a long synchronous loop won't process a "cancel" message until the loop ends. A shared flag gets around that:
+### Atomics: safe reads and writes on shared memory
 
 ```ts
-const cancelSignal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
-diffWorker.postMessage({ before, after, cancelSignal });
-cancelButton.addEventListener("click", () => Atomics.store(cancelSignal, 0, 1));
+// main.ts — a shared cancel flag and progress counter
+const control = new Int32Array(new SharedArrayBuffer(8)); // [0] = cancel flag, [1] = progress (per mille)
+worker.postMessage({ type: "crunch", control, input });
+
+cancelButton.onclick = () => Atomics.store(control, 0, 1);
+
+function renderProgress() {
+  progressBar.value = Atomics.load(control, 1) / 1000;
+  if (!done) requestAnimationFrame(renderProgress);
+}
+requestAnimationFrame(renderProgress);
 ```
 
 ```ts
-function diffRows(before: string[], after: string[], cancelSignal: Int32Array) {
-  const changedRows: number[] = [];
-  for (let row = 0; row < Math.max(before.length, after.length); row++) {
-    if (Atomics.load(cancelSignal, 0) === 1) return null;
-    if (before[row] !== after[row]) changedRows.push(row);
+// crunch.worker.ts
+function crunch(control: Int32Array, input: Float64Array) {
+  for (let i = 0; i < input.length; i++) {
+    if ((i & 0xfff) === 0) {
+      if (Atomics.load(control, 0) === 1) throw new DOMException("Cancelled", "AbortError");
+      Atomics.store(control, 1, Math.floor((i / input.length) * 1000));
+    }
+    // ... heavy synchronous computation
   }
-  return changedRows;
 }
 ```
 
-Without isolation, split the work into chunks and yield with `setTimeout` between them so the cancel message gets processed.
+The nice part: a worker stuck in a synchronous loop still sees the cancel flag immediately, because it reads memory rather than waiting for a message. Note that `Atomics.wait()` isn't allowed on the browser's main thread (it would block the UI); on the main thread, use `Atomics.waitAsync()` where supported.
 
-## OffscreenCanvas: rendering and image processing in a worker
+## Writing a Comlink-style RPC layer yourself
 
-`OffscreenCanvas` has been Baseline since Safari 16.4 (WebGL since Safari 17). I use it two ways. The first is **handing a canvas to a worker** for a live chart, so main-thread jank can't stall the animation:
+Raw worker code usually starts as a `switch (event.data.type)` and ends as a pile of message types nobody remembers. [Comlink](https://github.com/GoogleChromeLabs/comlink) solves exactly this by turning a worker into an object whose methods return promises. I recommend Comlink for most projects — but writing a small version once teaches you exactly what goes through the pipe, and lets you add things Comlink doesn't give you out of the box: cancellation, progress, and cleanup when a worker dies.
+
+### The protocol
 
 ```ts
-const offscreen = chartCanvas.transferControlToOffscreen();
-chartWorker.postMessage({ canvas: offscreen, devicePixelRatio }, [offscreen]);
+// lib/rpc/protocol.ts
+export type Call = { kind: "call"; id: number; method: string; input: unknown };
+export type Cancel = { kind: "cancel"; id: number };
+export type Progress = { kind: "progress"; id: number; value: number };
+export type SerializedError = { name: string; message: string; stack?: string };
+export type Result =
+  | { kind: "result"; id: number; ok: true; value: unknown }
+  | { kind: "result"; id: number; ok: false; error: SerializedError };
+
+export type TaskContext = { signal: AbortSignal; progress(value: number): void };
+export type Api = Record<string, (input: any, ctx: TaskContext) => unknown>;
+
+// Mark values that should be transferred instead of cloned
+const marked = new WeakMap<object, Transferable[]>();
+
+export function transfer<T extends object>(value: T, list: Transferable[]): T {
+  marked.set(value, list);
+  return value;
+}
+
+export function takeTransfer(value: unknown): Transferable[] {
+  if (typeof value !== "object" || value === null) return [];
+  const list = marked.get(value) ?? [];
+  marked.delete(value);
+  return list;
+}
 ```
 
-`transferControlToOffscreen` works once per canvas; afterwards you send size changes to the worker yourself. Dedicated workers have `requestAnimationFrame`, so the draw loop lives there. The second is **image processing**, such as resizing a photo before upload. Note it receives a `File`, not bytes:
+Every API function takes exactly one `input` and a `TaskContext`. That constraint is deliberate: it keeps the types simple and leaves room for `signal` and `progress` without guessing what the last argument is.
+
+### The worker side: expose
 
 ```ts
-self.addEventListener("message", async (event: MessageEvent<{ file: File; maxWidth: number }>) => {
-  const { file, maxWidth } = event.data;
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, maxWidth / bitmap.width);
-  const canvas = new OffscreenCanvas(Math.round(bitmap.width * scale), Math.round(bitmap.height * scale));
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("2D context unavailable");
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  const resized = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
-  self.postMessage({ name: file.name, blob: resized });
+// lib/rpc/expose.ts
+/// <reference lib="webworker" />
+import { takeTransfer, type Api, type Call, type Cancel, type Result, type TaskContext } from "./protocol";
+
+declare const self: DedicatedWorkerGlobalScope;
+
+export function expose(api: Api) {
+  const running = new Map<number, AbortController>();
+
+  self.addEventListener("message", async (event: MessageEvent<Call | Cancel>) => {
+    const msg = event.data;
+    if (msg.kind === "cancel") {
+      running.get(msg.id)?.abort(new DOMException("Cancelled", "AbortError"));
+      return;
+    }
+
+    const controller = new AbortController();
+    running.set(msg.id, controller);
+    const ctx: TaskContext = {
+      signal: controller.signal,
+      progress: (value) => self.postMessage({ kind: "progress", id: msg.id, value }),
+    };
+
+    try {
+      const fn = api[msg.method];
+      if (!fn) throw new Error(`Unknown method "${msg.method}"`);
+      const value = await fn(msg.input, ctx);
+      self.postMessage({ kind: "result", id: msg.id, ok: true, value } satisfies Result, takeTransfer(value));
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      self.postMessage({
+        kind: "result",
+        id: msg.id,
+        ok: false,
+        error: { name: e.name, message: e.message, stack: e.stack },
+      } satisfies Result);
+    } finally {
+      running.delete(msg.id);
+    }
+  });
+}
+```
+
+### The main-thread side: wrap
+
+```ts
+// lib/rpc/wrap.ts
+import { takeTransfer, type Api, type Call, type Progress, type Result } from "./protocol";
+
+export type CallOptions = { signal?: AbortSignal; onProgress?: (value: number) => void };
+export type Remote<T extends Api> = {
+  [K in keyof T]: (input: Parameters<T[K]>[0], opts?: CallOptions) => Promise<Awaited<ReturnType<T[K]>>>;
+};
+
+type Pending = { resolve(v: unknown): void; reject(e: unknown): void; onProgress?: (v: number) => void };
+
+export function wrap<T extends Api>(worker: Worker) {
+  let nextId = 1;
+  const pending = new Map<number, Pending>();
+
+  worker.addEventListener("message", (event: MessageEvent<Result | Progress>) => {
+    const msg = event.data;
+    const p = pending.get(msg.id);
+    if (!p) return; // cancelled or already settled
+    if (msg.kind === "progress") return p.onProgress?.(msg.value);
+    pending.delete(msg.id);
+    if (msg.ok) p.resolve(msg.value);
+    else p.reject(Object.assign(new Error(msg.error.message), msg.error));
+  });
+
+  const failAll = (reason: unknown) => {
+    for (const p of pending.values()) p.reject(reason);
+    pending.clear();
+  };
+  worker.addEventListener("error", (e) => failAll(new Error(`Worker crashed: ${e.message}`)));
+  worker.addEventListener("messageerror", () => failAll(new Error("Could not deserialize worker message")));
+
+  const api = new Proxy({} as Remote<T>, {
+    get(_target, method) {
+      // Without this line, `await api` treats the proxy as a thenable and hangs forever
+      if (method === "then" || typeof method !== "string") return undefined;
+
+      return (input: unknown, { signal, onProgress }: CallOptions = {}) =>
+        new Promise((resolve, reject) => {
+          if (signal?.aborted) return reject(signal.reason);
+          const id = nextId++;
+          const onAbort = () => {
+            pending.delete(id);
+            worker.postMessage({ kind: "cancel", id });
+            reject(signal!.reason);
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
+          const cleanup = () => signal?.removeEventListener("abort", onAbort);
+
+          pending.set(id, {
+            resolve: (v) => (cleanup(), resolve(v)),
+            reject: (e) => (cleanup(), reject(e)),
+            onProgress,
+          });
+          worker.postMessage({ kind: "call", id, method, input } satisfies Call, takeTransfer(input));
+        });
+    },
+  });
+
+  const dispose = (reason: unknown = new DOMException("Worker disposed", "AbortError")) => {
+    worker.terminate();
+    failAll(reason);
+  };
+
+  return { api, dispose };
+}
+```
+
+Three details worth calling out:
+
+- **The Proxy `then` trap.** The proxy returns a function for every property name, including `then`. When someone `await`s the proxy (or returns it from an `async` function), JavaScript treats it as a thenable and calls `then` — an RPC call that never resolves. Comlink has to handle exactly the same thing.
+- **`error` and `messageerror`.** If a worker crashes (a syntax error, out of memory) and pending promises aren't rejected, your UI spins forever.
+- **`dispose` rejects every pending promise.** `terminate()` on its own doesn't — the promises simply hang.
+
+Using it is compact and fully typed:
+
+```ts
+// workers/math.worker.ts
+import { expose } from "@/lib/rpc/expose";
+import type { TaskContext } from "@/lib/rpc/protocol";
+
+const api = {
+  async primes(limit: number, { signal, progress }: TaskContext) {
+    const found: number[] = [];
+    for (let n = 2; n <= limit; n++) {
+      if (n % 50_000 === 0) {
+        progress(n / limit);
+        await new Promise((r) => setTimeout(r)); // yield so the cancel message can arrive
+        signal.throwIfAborted();
+      }
+      if (isPrime(n)) found.push(n);
+    }
+    return found.length;
+  },
+};
+
+export type MathApi = typeof api;
+expose(api);
+
+function isPrime(n: number) {
+  for (let d = 2; d * d <= n; d++) if (n % d === 0) return false;
+  return true;
+}
+```
+
+```ts
+// main.ts
+import { wrap } from "@/lib/rpc/wrap";
+import type { MathApi } from "@/workers/math.worker";
+
+const { api, dispose } = wrap<MathApi>(
+  new Worker(new URL("./workers/math.worker.ts", import.meta.url), { type: "module" }),
+);
+
+const controller = new AbortController();
+const count = await api.primes(5_000_000, {
+  signal: controller.signal,
+  onProgress: (p) => (bar.value = p),
 });
 ```
 
-## Worker pools: when one worker isn't enough
+`import type` pulls in only the types, not the worker's code — a small detail, but forget it and you bundle the worker twice.
 
-With many independent jobs (twenty photos to resize), a pool spreads them across cores. Each worker costs memory and startup time, so I cap the size and create the pool lazily:
+## Bundler setup: Next.js, Vite and TypeScript
+
+The standard pattern recognized by Vite, webpack 5 and Turbopack alike:
 
 ```ts
-type PoolResponse<Output> = { ok: true; value: Output } | { ok: false; error: string };
+const worker = new Worker(new URL("./search.worker.ts", import.meta.url), { type: "module" });
+```
 
-type PoolJob<Input, Output> = {
-  input: Input;
-  transfer: Transferable[];
-  resolve: (output: Output) => void;
-  reject: (reason: unknown) => void;
+The bundler sees `new URL(..., import.meta.url)` placed **directly** inside `new Worker(...)`, splits that file into its own entry, compiles the TypeScript and swaps in a hashed URL. The catch is that the expression must be written literally like that: put the path in a variable, build the string dynamically or wrap it in a helper function, and the bundler no longer recognizes it — you get a 404 in production.
+
+### Vite
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  worker: {
+    // The default is "iife"; "es" is required once a worker uses dynamic imports / code splitting
+    format: "es",
+  },
+});
+```
+
+Vite also has its own `import SearchWorker from "./search.worker?worker"` syntax. It's convenient but non-standard — I prefer the `new URL` pattern so the code works across bundlers.
+
+### Next.js: create workers on the client only
+
+Workers don't exist on the server. Creating one at the top level of a module in a Client Component still runs during server rendering and throws `Worker is not defined`. The right place is inside `useEffect`, or lazily in an event handler.
+
+```tsx
+// hooks/use-worker.ts
+"use client";
+
+import { useEffect, useRef } from "react";
+import { wrap, type Remote } from "@/lib/rpc/wrap";
+import type { Api } from "@/lib/rpc/protocol";
+
+export function useWorker<T extends Api>(create: () => Worker) {
+  const ref = useRef<Remote<T> | null>(null);
+
+  useEffect(() => {
+    const { api, dispose } = wrap<T>(create());
+    ref.current = api;
+    // StrictMode runs effects twice in dev — the cleanup guarantees we don't leak workers
+    return () => {
+      ref.current = null;
+      dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return ref;
+}
+
+// Usage: the new URL pattern must appear literally here for the bundler to see it
+// const search = useWorker<SearchApi>(() =>
+//   new Worker(new URL("../workers/search.worker.ts", import.meta.url), { type: "module", name: "search" }),
+// );
+```
+
+The `name` option shows the worker's name in DevTools — well worth adding once you have more than one worker.
+
+### TypeScript for worker files
+
+Worker files run in a `DedicatedWorkerGlobalScope`, not a `Window`. The quickest fix is `/// <reference lib="webworker" />` at the top of the file plus a `self` declaration, as in `expose.ts` above. On larger projects I add a separate `tsconfig.worker.json` with `"lib": ["ES2023", "WebWorker"]` for `*.worker.ts` files, so the IDE flags it immediately when someone reaches for `document` inside a worker.
+
+<Callout type="note" title="CSP applies to workers too">
+  If your site has a Content Security Policy, workers are governed by the `worker-src` directive (falling back to `script-src` and then `default-src` when it's missing). Workers created from `blob:` URLs — some libraries do this to inline a worker — need `blob:` in `worker-src`. A same-origin worker with its own URL, like the `new URL` pattern above, only needs `'self'`.
+</Callout>
+
+## Worker pools: controlled parallelism
+
+A worker runs one job at a time — resize ten images and nine of them wait in line. But spawning a new worker per job pays the startup cost every time: creating the thread, loading and parsing the script, initializing a heap. The answer is a **pool**: a bounded number of workers, created lazily, reused, and shut down after sitting idle.
+
+```ts
+// lib/rpc/pool.ts
+import { wrap, type Remote } from "./wrap";
+import type { Api } from "./protocol";
+
+type Slot<T extends Api> = {
+  api: Remote<T>;
+  dispose(reason?: unknown): void;
+  dead: boolean;
+  idleTimer?: ReturnType<typeof setTimeout>;
 };
 
-export class WorkerPool<Input, Output> {
-  private readonly idleWorkers: Worker[] = [];
-  private readonly allWorkers: Worker[] = [];
-  private readonly queue: PoolJob<Input, Output>[] = [];
+type Job<T extends Api> = {
+  method: keyof T & string;
+  input: unknown;
+  signal?: AbortSignal;
+  resolve(value: unknown): void;
+  reject(reason: unknown): void;
+};
 
-  constructor(createWorker: () => Worker, size = defaultPoolSize()) {
-    for (let index = 0; index < size; index++) {
-      const worker = createWorker();
-      this.allWorkers.push(worker);
-      this.idleWorkers.push(worker);
-    }
-  }
+const defaultSize = () => Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
 
-  run(input: Input, transfer: Transferable[] = []): Promise<Output> {
+export class WorkerPool<T extends Api> {
+  private idle: Slot<T>[] = [];
+  private queue: Job<T>[] = [];
+  private live = 0;
+
+  constructor(
+    private spawn: () => Worker,
+    private max = defaultSize(),
+    private idleMs = 30_000,
+  ) {}
+
+  run<K extends keyof T & string>(
+    method: K,
+    input: Parameters<T[K]>[0],
+    { signal }: { signal?: AbortSignal } = {},
+  ): Promise<Awaited<ReturnType<T[K]>>> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ input, transfer, resolve, reject });
-      this.dispatch();
+      if (signal?.aborted) return reject(signal.reason);
+      const job: Job<T> = { method, input, signal, resolve: resolve as Job<T>["resolve"], reject };
+      // Still queued: just pull it out
+      signal?.addEventListener(
+        "abort",
+        () => {
+          const i = this.queue.indexOf(job);
+          if (i !== -1) {
+            this.queue.splice(i, 1);
+            reject(signal.reason);
+          }
+        },
+        { once: true },
+      );
+      this.queue.push(job);
+      this.pump();
     });
   }
 
-  destroy() {
-    this.allWorkers.forEach((worker) => worker.terminate());
-    this.queue.splice(0).forEach((job) => job.reject(new DOMException("Pool destroyed", "AbortError")));
+  private pump() {
+    while (this.queue.length) {
+      const slot = this.idle.pop() ?? (this.live < this.max ? this.create() : undefined);
+      if (!slot) return;
+      clearTimeout(slot.idleTimer);
+      void this.execute(slot, this.queue.shift()!);
+    }
   }
 
-  private dispatch() {
-    while (this.idleWorkers.length > 0 && this.queue.length > 0) {
-      const worker = this.idleWorkers.pop()!;
-      const job = this.queue.shift()!;
-      worker.onmessage = (event: MessageEvent<PoolResponse<Output>>) => {
-        if (event.data.ok) job.resolve(event.data.value);
-        else job.reject(new Error(event.data.error));
-        this.idleWorkers.push(worker);
-        this.dispatch();
-      };
-      worker.postMessage(job.input, job.transfer);
+  private create(): Slot<T> {
+    this.live++;
+    const { api, dispose } = wrap<T>(this.spawn());
+    return { api, dispose, dead: false };
+  }
+
+  private async execute(slot: Slot<T>, job: Job<T>) {
+    // Already running: the only guaranteed cancellation is killing the worker
+    const onAbort = () => {
+      slot.dead = true;
+      slot.dispose(job.signal!.reason);
+    };
+    job.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      job.resolve(await slot.api[job.method](job.input as never));
+    } catch (err) {
+      job.reject(err);
+    } finally {
+      job.signal?.removeEventListener("abort", onAbort);
+      if (slot.dead) this.live--;
+      else this.release(slot);
+      this.pump();
+    }
+  }
+
+  private release(slot: Slot<T>) {
+    slot.idleTimer = setTimeout(() => {
+      this.idle = this.idle.filter((s) => s !== slot);
+      this.live--;
+      slot.dispose();
+    }, this.idleMs);
+    this.idle.push(slot);
+  }
+
+  destroy() {
+    for (const slot of this.idle) slot.dispose();
+    this.idle = [];
+    for (const job of this.queue.splice(0)) job.reject(new DOMException("Pool destroyed", "AbortError"));
+  }
+}
+```
+
+Pool size is where it's easy to overdo things:
+
+- **`navigator.hardwareConcurrency` isn't the number of cores you get.** Browsers may round or cap it for privacy, and the main thread, compositor and GPU need CPU too. I subtract one and set a low ceiling, especially on mobile.
+- **Every worker is a separate JavaScript heap.** Four workers loading the same 2 MB library means four copies in memory. On a low-end phone, that's a fast track to the OS killing the tab.
+- **Don't pool stateful workers.** A search index lives in one worker; a pool of four means four copies of the index, or queries landing on a worker that doesn't have it. Long-lived stateful workers should be their own dedicated worker.
+
+## Cancellation with AbortSignal
+
+Cancellation is what most worker examples online skip, yet in a real UI it happens constantly: the user types another character, changes a filter, leaves the page.
+
+`AbortSignal` can't be cloned through `postMessage`, so you can't send the signal to the worker. Instead, the main thread listens to the signal and sends a `cancel` message — exactly what `wrap` does above. But there's a trap that cost me an afternoon to understand:
+
+<Callout type="danger" title="Workers have an event loop too — and it can be blocked">
+  If a function in the worker runs a five-second synchronous loop, the `cancel` message sits in the worker's queue for those five seconds and is never handled until the loop ends. Message-based cancellation only works if the worker code **yields from time to time** (an `await` that genuinely goes through the event loop, such as reading a stream or a `setTimeout`) and then checks `signal.aborted`.
+</Callout>
+
+So there are three ways to cancel, in the order I usually reach for them:
+
+1. **Yield and check the signal** inside the worker — like the `primes` function above, or naturally when you read data as a stream. Cheap; the worker stays alive with its state intact.
+2. **A flag in a `SharedArrayBuffer`** read with `Atomics.load` — instant even inside a synchronous loop, but requires cross-origin isolation.
+3. **`terminate()` and spawn a new worker** — always works, no matter what the code inside is doing. In exchange, you lose state and pay startup again. The pool above uses this for running jobs.
+
+The typeahead pattern I use most — each keystroke cancels the previous query:
+
+```ts
+// hooks/use-search.ts
+let current: AbortController | null = null;
+
+export async function search(q: string) {
+  current?.abort(new DOMException("Superseded", "AbortError"));
+  const controller = (current = new AbortController());
+  try {
+    return await searchApi.query({ q, limit: 20 }, { signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return null; // superseded, not an error
+    throw err;
+  }
+}
+```
+
+## Real examples
+
+### Parsing a large CSV file
+
+The classic mistake: `await file.text()` on the main thread, then sending a 200 MB string to the worker. Instead, send the `File` itself — it's cloned by reference — and stream it inside the worker. Streaming has a bonus: every `await reader.read()` is a yield point, so cancel messages get handled mid-way.
+
+```ts
+// workers/csv.worker.ts
+import { expose } from "@/lib/rpc/expose";
+import { transfer, type TaskContext } from "@/lib/rpc/protocol";
+
+type Summary = { rows: number; revenueByCountry: Map<string, number>; amounts: Float64Array };
+
+const api = {
+  async summarize(file: File, { signal, progress }: TaskContext): Promise<Summary> {
+    const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
+    const revenueByCountry = new Map<string, number>();
+    let amounts = new Float64Array(1 << 16);
+    let rows = 0;
+    let carry = "";
+    let header: string[] | null = null;
+    let readChars = 0;
+    let lastReported = 0;
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      signal.throwIfAborted();
+      if (done) break;
+
+      readChars += value.length;
+      const lines = (carry + value).split("\n");
+      carry = lines.pop() ?? "";
+
+      for (const line of lines) {
+        // Simplified: doesn't handle commas inside quotes.
+        // Real data deserves a proper CSV parser — still running inside the worker.
+        const cols = line.split(",");
+        if (!header) {
+          header = cols;
+          continue;
+        }
+        const amount = Number(cols[3]);
+        if (rows === amounts.length) {
+          const bigger = new Float64Array(amounts.length * 2);
+          bigger.set(amounts);
+          amounts = bigger;
+        }
+        amounts[rows++] = amount;
+        revenueByCountry.set(cols[2], (revenueByCountry.get(cols[2]) ?? 0) + amount);
+      }
+
+      const ratio = readChars / file.size; // approximate: characters vs bytes
+      if (ratio - lastReported > 0.01) {
+        progress(Math.min(ratio, 1));
+        lastReported = ratio;
+      }
+    }
+
+    const result = { rows, revenueByCountry, amounts: amounts.slice(0, rows) };
+    return transfer(result, [result.amounts.buffer]);
+  },
+};
+
+export type CsvApi = typeof api;
+expose(api);
+```
+
+What comes back is a small `Map` and a **transferred** `Float64Array` — not an array of two hundred thousand objects. The main thread receives it almost instantly and draws the chart from columnar data. That's exactly the lesson from the mistake at the start of this post.
+
+### A search index that lives in a worker
+
+```ts
+// workers/search.worker.ts
+import MiniSearch from "minisearch";
+import { expose } from "@/lib/rpc/expose";
+
+type Doc = { id: string; title: string; body: string; url: string };
+let index: MiniSearch<Doc> | null = null;
+const titles = new Map<string, { title: string; url: string }>();
+
+const api = {
+  async load(url: string) {
+    // fetch and JSON.parse inside the worker: the main thread never touches tens of MB of JSON
+    const docs: Doc[] = await (await fetch(url)).json();
+    index = new MiniSearch<Doc>({ fields: ["title", "body"], storeFields: [] });
+    index.addAll(docs);
+    for (const d of docs) titles.set(d.id, { title: d.title, url: d.url });
+    return docs.length;
+  },
+
+  query({ q, limit }: { q: string; limit: number }) {
+    if (!index) throw new Error("Index not loaded");
+    return index
+      .search(q, { prefix: true, fuzzy: 0.2 })
+      .slice(0, limit)
+      .map((hit) => ({ id: hit.id as string, score: hit.score, ...titles.get(hit.id as string)! }));
+  },
+};
+
+export type SearchApi = typeof api;
+expose(api);
+```
+
+This is the textbook "data stays in the worker" case: documents enter the worker once over the network, and each query sends a short string and gets 20 results back. It's also why this worker is a dedicated one rather than part of a pool.
+
+### Processing images before upload
+
+```ts
+// workers/image.worker.ts
+import { expose } from "@/lib/rpc/expose";
+
+const api = {
+  async thumbnail({ file, maxSize }: { file: Blob; maxSize: number }) {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+    const canvas = new OffscreenCanvas(Math.round(bitmap.width * scale), Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext("2d")!;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    return canvas.convertToBlob({ type: "image/webp", quality: 0.85 });
+  },
+};
+
+export type ImageApi = typeof api;
+expose(api);
+```
+
+```ts
+// upload.ts
+const pool = new WorkerPool<ImageApi>(
+  () => new Worker(new URL("./workers/image.worker.ts", import.meta.url), { type: "module" }),
+);
+
+const thumbs = await Promise.all(files.map((file) => pool.run("thumbnail", { file, maxSize: 1600 })));
+```
+
+Both input and output are `Blob`s, passing through the pipe by reference. Decoding, resizing and encoding — the expensive parts — happen entirely off the main thread. It's stateless work, so a pool is the natural fit.
+
+### WebAssembly in a worker
+
+WASM and workers are a natural pair: WASM modules usually do CPU-heavy work, and compiling the module takes time too. Putting both in a worker keeps the main thread completely clean.
+
+```ts
+// workers/wasm.worker.ts
+import { expose } from "@/lib/rpc/expose";
+import { transfer } from "@/lib/rpc/protocol";
+
+type Exports = {
+  memory: WebAssembly.Memory;
+  alloc(len: number): number;
+  free(ptr: number, len: number): void;
+  blur(ptr: number, width: number, height: number, radius: number): void;
+};
+
+// Compile once when the worker starts; the server must send Content-Type: application/wasm
+const ready = WebAssembly.instantiateStreaming(fetch(new URL("./image_ops.wasm", import.meta.url))).then(
+  ({ instance }) => instance.exports as unknown as Exports,
+);
+
+const api = {
+  async blur({ pixels, width, height, radius }: { pixels: Uint8ClampedArray; width: number; height: number; radius: number }) {
+    const wasm = await ready;
+    const len = pixels.byteLength;
+    const ptr = wasm.alloc(len);
+    // Read memory.buffer AFTER alloc: memory may have grown and detached the old buffer
+    new Uint8ClampedArray(wasm.memory.buffer, ptr, len).set(pixels);
+    wasm.blur(ptr, width, height, radius);
+    const out = new Uint8ClampedArray(wasm.memory.buffer.slice(ptr, ptr + len));
+    wasm.free(ptr, len);
+    return transfer(out, [out.buffer]);
+  },
+};
+
+export type WasmApi = typeof api;
+expose(api);
+```
+
+In practice, toolchains like wasm-bindgen or Emscripten generate this glue for you; the example is just to show where the data goes. Note the `memory.buffer` detail: when WASM memory grows, every view created before that points at a detached buffer — a baffling bug if you haven't seen it before. And multithreaded WASM requires `SharedArrayBuffer`, so everything in the cross-origin isolation section applies.
+
+## When you don't need a worker yet: scheduler.yield, postTask and chunking
+
+Most long tasks I run into don't need a worker. They're DOM-bound work — initializing widgets, rendering, measuring layout — or moderate work that just needs to **give way** so the browser can handle input. [The Event Loop, Microtasks and Rendering](/blog/event-loop-and-rendering) goes deep on the mechanics; here's the toolkit I actually use.
+
+```ts
+// lib/yield.ts
+type SchedulerLike = {
+  yield?: () => Promise<void>;
+  postTask?: <T>(cb: () => T, opts?: { priority?: string; signal?: AbortSignal; delay?: number }) => Promise<T>;
+};
+const scheduler = (globalThis as { scheduler?: SchedulerLike }).scheduler;
+
+export function yieldToMain(): Promise<void> {
+  // scheduler.yield() gives way, but the continuation runs ahead of other queued tasks
+  if (scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+export async function processInChunks<T>(items: T[], fn: (item: T) => void, budgetMs = 8) {
+  let deadline = performance.now() + budgetMs;
+  for (const item of items) {
+    fn(item);
+    if (performance.now() > deadline) {
+      await yieldToMain();
+      deadline = performance.now() + budgetMs;
     }
   }
 }
-
-function defaultPoolSize() {
-  return Math.max(1, Math.min(4, navigator.hardwareConcurrency - 1));
-}
 ```
 
-A production version also handles each worker's `error` event and replaces dead workers. And don't pool stateful workers: queries routed to a worker that doesn't hold the index return nothing.
-
-## React integration: a useWorker hook with cancellation
-
-The hook creates the worker lazily (never during SSR), terminates it on unmount, and offers `reset` for hard cancellation.
-
-```tsx
-import { useCallback, useEffect, useRef } from "react";
-import { wrapWorker, type RemoteApi, type WorkerClient } from "./worker-client";
-
-export function useWorker<Api>(createWorker: () => Worker) {
-  const clientRef = useRef<WorkerClient<Api> | null>(null);
-  const createWorkerRef = useRef(createWorker);
-
-  const reset = useCallback(() => {
-    clientRef.current?.dispose();
-    clientRef.current = null;
-  }, []);
-
-  useEffect(() => reset, [reset]);
-
-  const getApi = useCallback((): RemoteApi<Api> => {
-    clientRef.current ??= wrapWorker<Api>(createWorkerRef.current());
-    return clientRef.current.api;
-  }, []);
-
-  return { getApi, reset };
-}
-```
-
-Search-as-you-type on top: each new query marks the previous one stale, and `isPending` is derived rather than stored:
-
-```tsx
-import { useEffect, useState } from "react";
-import { useWorker } from "./use-worker";
-import type { SearchApi, SearchDocument, SearchHit } from "./search.worker";
-
-type SearchResult = { query: string; hits: SearchHit[] };
-
-function ignoreAbort(error: unknown) {
-  if (error instanceof DOMException && error.name === "AbortError") return;
-  throw error;
-}
-
-export function useWorkerSearch(documents: SearchDocument[], query: string) {
-  const { getApi } = useWorker<SearchApi>(
-    () => new Worker(new URL("./search.worker.ts", import.meta.url), { type: "module" }),
-  );
-  const [result, setResult] = useState<SearchResult | null>(null);
-
-  useEffect(() => {
-    getApi().loadDocuments(documents).catch(ignoreAbort);
-  }, [documents, getApi]);
-
-  useEffect(() => {
-    let stale = false;
-    getApi()
-      .search(query, 20)
-      .then((hits) => {
-        if (!stale) setResult({ query, hits });
-      })
-      .catch(ignoreAbort);
-    return () => {
-      stale = true;
-    };
-  }, [query, getApi]);
-
-  return { hits: result?.hits ?? [], isPending: result?.query !== query };
-}
-```
-
-Worker messages are processed in order, so `loadDocuments` runs before the first `search`. In Strict Mode the first worker is disposed, its pending promise rejects with `AbortError` (ignored), and the second mount creates a fresh worker and reloads the data.
-
-<Callout>
-  Ignoring a stale result isn't stopping the work: the worker still finishes the old query. For cheap queries that's fine. For jobs that take seconds, you need real cancellation: `reset()` to terminate (losing the worker's state), or a shared cancel flag as shown above.
-</Callout>
-
-## Measuring the win
-
-A worker optimizes *responsiveness*, not necessarily *total time*, so I measure both:
-
-- **Responsiveness:** INP from field data, plus long animation frames (the `long-animation-frame` entry is Chromium-only, enough for before/after).
-- **End-to-end time:** from action to result on screen, including startup and clone cost both ways.
-- **Startup:** the first call fetches and parses the worker bundle; warm it up on mount if the first interaction matters.
+`scheduler.postTask()` lets you set a priority — `user-blocking`, `user-visible`, `background` — and cancel with a signal. I use it to push non-urgent work (prefetching data, building a secondary index) to later:
 
 ```ts
-export async function timed<Result>(label: string, task: () => Promise<Result>) {
-  const start = performance.now();
-  try {
-    return await task();
-  } finally {
-    performance.measure(label, { start, end: performance.now() });
-  }
+if (scheduler?.postTask) {
+  const controller = new AbortController();
+  scheduler.postTask(() => warmUpCaches(), { priority: "background", signal: controller.signal });
+  // leaving the page or no longer needed: controller.abort()
+} else {
+  globalThis.requestIdleCallback?.(() => warmUpCaches());
 }
-
-const observer = new PerformanceObserver((list) => {
-  for (const entry of list.getEntries()) reportMetric("long-animation-frame", entry.duration);
-});
-observer.observe({ type: "long-animation-frame", buffered: true });
 ```
 
-Measures appear in the Timings track of the DevTools Performance panel, and each worker gets its own thread track, so you can see where the work went and whether the main thread is still busy deserializing results.
+Support for `scheduler.yield()` and `scheduler.postTask()` varies between browsers, so always feature-detect as above. In React, `useTransition` and `useDeferredValue` give you the same idea at the render level: expensive updates are marked as interruptible so input gets handled first.
 
-## Key takeaways
+| Approach | Where the work runs | Total time | Use when |
+| --- | --- | --- | --- |
+| Chunking + `scheduler.yield()` | Main thread | Same or slightly longer | DOM-bound or moderate work |
+| `scheduler.postTask` background / `requestIdleCallback` | Main thread, when idle | Same, but later | Non-urgent work |
+| `useTransition` / `useDeferredValue` | Main thread, interruptible by React | Same | Expensive re-renders driven by input |
+| Web Worker | Separate thread | Plus data transfer cost | CPU-heavy, no DOM, small output |
+| Worker + WASM | Separate thread, native code | Often shorter for numeric work | Heavy algorithms with an existing C/C++/Rust implementation |
+
+## Mistakes I keep seeing
+
+**Returning huge raw data.** The worker finishes parsing and then `postMessage`s two hundred thousand objects — the main thread pays to deserialize them, and the long task is back at the other end of the pipe.
+
+**Reading the file into a string on the main thread before sending it.** Send the `File` or `Blob` and read it in the worker.
+
+**Spawning a new worker per call.** You pay startup every time; use a long-lived worker or a pool.
+
+**Forgetting `terminate()` in effect cleanup.** StrictMode runs effects twice in dev, orphaning a worker each time; in production, every remount adds another worker.
+
+**Moving DOM-bound work into a worker.** If the slow part is rendering, a worker can't help; you need virtualization or a smaller DOM.
+
+**Using a buffer after transferring it.** It's detached, with a length of zero. And transferring a subarray's `.buffer` transfers the whole original buffer.
+
+**Not handling `error` and `messageerror`.** The worker crashes and the UI spins forever.
+
+**Cancelling by message while the worker runs a synchronous loop.** The message never gets read in time; yield, use a SAB flag, or `terminate()`.
+
+**Turning on COOP/COEP site-wide.** Sign-in popups, embedded videos and CDN images break one after another. Enable it only on the routes that need it.
+
+**Creating a worker at module top level in Next.js.** `Worker is not defined` during server rendering.
+
+**Putting the worker path in a variable.** The bundler doesn't recognize the pattern, the worker file isn't built, and you get a 404 in production.
+
+## Summary
 
 <Checklist>
 
-- Use a worker when computation is heavy relative to the data crossing the boundary; DOM work and tiny tasks stay put.
-- Prefer stateful workers: send data once, exchange small requests after.
-- Clone cost follows object graph shape; transfer binary data and pass a `File` instead of its bytes.
-- Use a typed RPC layer or Comlink, and mind the `then` trap with a `Proxy`.
-- Keep `new URL(...)` inline in `new Worker` so the bundler finds it; test the production build.
-- Scope cross-origin isolation to the routes that need `SharedArrayBuffer`, with a fallback.
-- In React: create lazily, terminate on unmount, ignore stale results, cancel for real when jobs are long.
-- Measure responsiveness and end-to-end time separately.
+- Measure first: only move work to a worker when a profile shows CPU-heavy, DOM-free work with small enough output.
+- Send references (`File`, `Blob`), let the worker fetch and parse, keep data in the worker, return summaries.
+- Use transferables for binary data and `OffscreenCanvas`; remember buffers become detached, and watch out for subarrays.
+- Only use `SharedArrayBuffer` when you truly need it; enable COOP/COEP on specific routes, check `crossOriginIsolated`, and have a fallback.
+- Wrap workers in a typed RPC (Comlink or your own): handle the Proxy `then` trap, `error`, `messageerror`, and reject every pending promise on dispose.
+- Write `new Worker(new URL("./x.worker.ts", import.meta.url), { type: "module" })` literally; create workers in `useEffect` and `terminate()` them in cleanup.
+- Pool stateless work with a small, capped size; stateful workers (indexes, models) are dedicated and long-lived.
+- Cancel by yielding and checking the signal in the worker, with a SAB flag when you have isolation, and with `terminate()` when you need a guarantee.
+- For DOM-bound or moderate work: chunk with `scheduler.yield()`, use `postTask` for background work and `useTransition` for rendering.
+- Verify with real INP on low-end devices, not with a feeling that "the main thread is free now".
 
 </Checklist>

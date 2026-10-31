@@ -1,0 +1,696 @@
+---
+title: "Event Storming in Practice: From a Wall of Sticky Notes to Bounded Contexts, Aggregates and NestJS Code"
+excerpt: "Event Storming is the bridge between business analysis and software design. This post covers the three workshop levels, the sticky-note grammar, facilitation, a real clinic booking example, finding bounded contexts, context mapping, and turning the result into aggregates, commands and events in NestJS."
+---
+
+<Lead>The worst project I've worked on didn't fail because of bad code. It failed because, three months after go-live, we discovered that the word "appointment" as the receptionists used it, as the doctors used it, and as the `appointments` table used it were three different things. A 60-page requirements document didn't save us: it was written by one person, read by another, and nobody ever stood together in a room long enough to see where the two understandings collided. Event Storming is the technique I've used ever since to avoid repeating that: put the people who know the business and the people who write the code in front of the same wall, tell the system's story as a series of events, then use that same wall to find bounded contexts, aggregates and even class names. This post is what I actually do — from facilitating the workshop to commands and events running in NestJS.</Lead>
+
+## Why analysts and developers speak different languages
+
+The "traditional" process I still see on many teams goes like this: an analyst interviews the business, writes a document, hands it to developers; developers read it, ask a few questions in chat, and fill in the gaps with their own assumptions. Every handoff loses information, and what gets lost is usually what matters most: **the edge cases that domain experts consider "obvious", so nobody mentions them**.
+
+Take the clinic booking project from the intro:
+
+- **Receptionists** said an "appointment" was a line in the book: patient, time, doctor. Cancelling meant crossing it out.
+- **Doctors** said an "appointment" was a consultation: a record, orders, a prescription. One appointment could turn into two consultations if the patient needed an X-ray and came back.
+- **Accounting** said an "appointment" was something that generates money: deposits, late-cancellation fees, refunds.
+- **The `appointments` table** tried to be all three, with 40 nullable columns and a `status` column with 14 values.
+
+Nobody was wrong. Each person described their part of the world accurately. The problem is that the software had one model, and that model broke exactly where those worlds touched. Event Storming isn't magic, but it forces these collisions into the open **in one afternoon** instead of three months later during an incident.
+
+<Callout type="note" title="Where Event Storming comes from">
+
+The technique was created by Alberto Brandolini and is described in detail in his book *Introducing EventStorming*. This post uses the community's common concepts and color conventions; plenty of teams adapt the colors or names, and that's fine as long as everyone in the room shares the same legend.
+
+</Callout>
+
+## Three levels: big picture, process level, design level
+
+A common mistake is treating Event Storming as "a meeting". There are really three kinds of workshop, with different goals, participants and outputs. Picking the wrong level is the number one reason a session turns into a long, useless meeting.
+
+| | Big picture | Process level | Design level |
+| --- | --- | --- | --- |
+| **Core question** | How does the whole business work? Where does it hurt? | How does one specific process work, under which rules? | How should the software be cut into pieces? |
+| **Scope** | The whole organization or product | One flow: booking, payment, refunds | One bounded context |
+| **Participants** | Domain experts from several departments, analysts, PO, tech lead | People who run the process, analyst, developers, QA | Developers, tech lead, analyst, one domain expert to ask |
+| **Duration** | Half a day to a full day | Two to four hours per process | Two to three hours, often repeated |
+| **Sticky notes used** | Mostly events, hotspots, actors, external systems | Adds commands, policies, read models | Adds aggregates/constraints, invariant details |
+| **Output** | Business map, hotspot list, candidate bounded contexts | A process with explicit rules, concrete questions for the business | Aggregates, commands, events, module boundaries |
+
+The order I usually follow: one big-picture session at the start of a project (or when inheriting a legacy system), then process-level sessions for the two or three processes with the most hotspots, then design level for the bounded context about to be built. Not every project needs all three. A small feature inside a stable context only needs a process-level session.
+
+### Big picture: don't skip it, even if you only own one module
+
+Developers tend to jump straight to design level because it feels "closer to code". I did that once and regretted it: we designed a beautiful Scheduling context, then found out the clinic had a "corporate health check" process where companies booked appointments in bulk and paid deposits by contract, not through a payment gateway. A two-hour big-picture session would have put that on the wall immediately.
+
+## The sticky-note grammar
+
+Event Storming's power comes from a "grammar" simple enough for non-technical people to use after a five-minute explanation, yet strict enough that the result maps directly to software design.
+
+| Type | Conventional color | How to write it | Example |
+| --- | --- | --- | --- |
+| Domain event | Orange | Past tense: something that happened and the business cares about | "Appointment booked" |
+| Command | Blue | Imperative: someone's intent | "Book appointment" |
+| Actor | Yellow (small) | A role, not a person's name | "Patient", "Receptionist" |
+| Policy | Lilac | "Whenever X, then Y" | "Whenever a deposit is paid, confirm the appointment" |
+| Read model | Green | Information a user needs to see to make a decision | "List of open slots" |
+| External system | Pink (wide) | Something outside your control | "VNPay", "Zalo ZNS", "Social insurance system" |
+| Hotspot | Red/magenta, stuck on at an angle | A question, conflict, risk or pain point | "What if the deposit arrives after the hold expired?" |
+| Aggregate / constraint | Pale yellow (large) | The thing holding the rules that accept or reject a command | "Appointment", "Doctor's schedule" |
+
+Put together, they form a sentence you can read left to right:
+
+```text
+Actor looks at a Read model → issues a Command → the Aggregate checks its rules → emits a Domain event
+Domain event → triggers a Policy → issues a new Command (or calls an External system) → ...
+```
+
+That's the core loop. Whenever a part of the wall can't be read as a sentence like this — an event with no idea who or what caused it, say — that's exactly where you need to ask more questions.
+
+### Domain events: past tense, in business language
+
+Events are the backbone of the wall, and where newcomers go wrong most often. The rules I state up front:
+
+- **Past tense.** "Appointment confirmed", not "Confirm appointment" (that's a command). Past tense forces people to think about *facts that happened*, which can't be argued with.
+- **Something the business cares about.** "Book button clicked" is a UI event; "Form validated" is a technical detail. Ask: "If this happened, would anyone at the clinic want to know?"
+- **Not CRUD.** "Appointment updated" means almost nothing. Updated *how*, and *why*? "Appointment rescheduled" and "Attending doctor replaced" are two events with very different consequences.
+
+| Weak | Better | Why |
+| --- | --- | --- |
+| "Appointment updated" | "Appointment rescheduled", "Doctor replaced" | Each reason for change has its own policies |
+| "Pay button clicked" | "Deposit paid" | A business fact, not a UI action |
+| "Payment error" | "Deposit payment failed" | Still an event, not an exception |
+| "Send SMS" | "Reminder sent" | That's a command or outcome; write the fact |
+
+### Commands, actors and read models
+
+A command is an **intent**, and it can be rejected. "Book appointment" can fail because someone already took the slot. That's the key difference from an event: an event is never rejected, because it already happened.
+
+Every command should answer: *who* issues it (an actor), or *what* does (a policy, a timer), and what that person *sees* to make the decision (a read model). Read models are easy to forget, but they produce a lot of UI and query requirements: "Patients need to see a doctor's open slots for the next 14 days, with the consultation fee" is a concrete requirement developers can estimate.
+
+### Policies: the organization's automatic reactions
+
+A policy is "whenever X, then Y" — a reactive rule, carried out either by a person (the receptionist calls when a patient hasn't confirmed) or by a machine (the system releases a hold after 15 minutes). Policies hide more business logic than anything else, because experts perform them on reflex. The questions I use to dig them out:
+
+- "After this happens, what does somebody do *right after*?"
+- "Does this ever happen with *nobody* doing anything next? Is that OK?"
+- "Does that always happen, or only in some cases?"
+
+The last one usually opens a branch: "We usually confirm right away, *unless* the patient has a no-show history, in which case reception calls to double-check."
+
+### External systems and hotspots
+
+External systems are things you don't control: payment gateways, Zalo, the health insurance system, the hospital's existing HIS software. Put them on the wall early, because they're the source of latency, failures and format constraints.
+
+Hotspots are the most valuable sticky notes on the wall. Whenever there's an argument, a question nobody can answer, or someone says "this part always goes wrong" — stick a hotspot on it right away, **and move on**. Hotspots aren't for solving during the workshop; they're the to-do list afterwards.
+
+### Aggregates, or "constraints"
+
+At design level you group commands and events around the "thing" that decides whether a command is accepted — what DDD calls an aggregate. Many facilitators avoid the word "aggregate" with business people in the room and say "constraint" or "the thing that decides", because technical vocabulary makes domain experts step back. I usually ask: "To decide whether this booking is allowed, what information do you need to look at?" The answer is the aggregate's boundary.
+
+## Facilitating the workshop
+
+The technique is simple; facilitation is the hard part. A good Event Storming session looks like controlled chaos.
+
+### Preparation
+
+- **Participants: 6–12 people.** Fewer and you miss perspectives; more and half the room stands and watches. You must have people who *actually do* the work (head receptionist, nurses, accountants), not just their managers.
+- **Space:** a wall at least 6–8 meters long, a large paper roll, plenty of sticky notes in every color, thick markers (not ballpoint pens — they're unreadable from a distance). Remove tables and chairs from the middle of the room: people who sit down stop participating.
+- **Legend:** stick a color legend in a corner of the wall. People will look at it all session.
+- **A clear opening line**, for example: "Today we'll retell the whole journey from a patient looking for a doctor to the bill being paid, as a series of things that happened."
+
+### Phase 1: chaotic exploration
+
+Hand everyone orange notes and ask each person to write the domain events they know and stick them on the wall, **roughly in time order**, with no discussion and no permission, for 15–20 minutes.
+
+This phase is deliberately chaotic. The goal is to get knowledge out of people's heads *before* the loudest person steers the group. Duplicates are good: two notes saying "Appointment confirmed" and "Appointment locked in" next to each other are the first sign of a language problem.
+
+### Phase 2: enforcing the timeline
+
+Now the group reorganizes: a single timeline from left to right, duplicates merged, parallel branches split into swimlanes. This is when arguments happen, and that's what you want.
+
+- "Deposit first, or confirmation first?" → hotspot if there's no agreement.
+- Two notes that look identical but whose authors explain them differently → keep both, add a language hotspot.
+- A stretch of empty timeline where everyone knows "something happens there" → ask the people who actually do it.
+
+### Phase 3: pivotal events and swimlanes
+
+Find a few **pivotal events** — events that mark a major transition, after which the world looks different. In the clinic example: "Appointment confirmed", "Patient checked in", "Consultation finished", "Invoice issued". Run a strip of colored tape vertically down the wall at each one. They split the timeline into chapters, and the boundaries between chapters often come close to bounded context boundaries.
+
+### Phase 4: people, systems and problems
+
+Add actors and external systems. Then have everyone walk along the wall, sticking red hotspots wherever there's a problem and green notes for opportunities. At the end, each person gets two or three dot votes for the most important hotspots. That's direct input for the backlog and for the next process-level session.
+
+<Callout type="tip" title="Facilitation tips I learned by getting them wrong">
+
+- **Stand at the end of the timeline, not the start.** People tend to begin wherever the facilitator stands; standing at the end makes the group think about outcomes first.
+- **Start with an event in the middle**, like "Patient checked in", then ask "what happened before, what happens after". Start at the beginning and the group gets stuck on account registration.
+- **Don't edit other people's notes.** Write a new one, stick it next to it, add a hotspot.
+- **Keep time publicly.** A big visible timer on the wall means the facilitator doesn't have to be the one "cutting people off".
+
+</Callout>
+
+## A worked example: booking at a clinic chain
+
+Context: a chain of general clinics wants patients to book online, pay a deposit up front to reduce no-shows, get reminders via Zalo, and stay in sync with the existing clinic management software. Here's the big picture after enforcing the timeline, rewritten as text for readability:
+
+```text
+[Doctor schedule published]
+  → [Appointment booked] → [Deposit requested] → [Deposit paid] | [Deposit payment failed]
+  → [Appointment confirmed]              ‖ pivotal
+  → [Reminder sent (24h)] → [Reminder sent (2h)]
+  → [Patient checked in]                 ‖ pivotal
+  → [Consultation started] → [Tests ordered] → [Prescription issued]
+  → [Consultation finished]              ‖ pivotal
+  → [Invoice issued] → [Deposit applied]
+
+Side branches:
+  [Hold expired] → [Slot released]
+  [Appointment cancelled by patient] → [Deposit forfeited] | [Deposit refunded]
+  [Patient did not show up] → [Deposit forfeited]
+  [Doctor called in sick]   → [Reschedule proposed] → ...
+
+Hotspots:
+  ⚠ How long is a hold? Reception says 10 minutes, the manager says 15.
+  ⚠ Deposit arrives AFTER the hold expired and the slot went to someone else?
+  ⚠ How many hours before counts as a late cancellation? Does it apply to corporate packages?
+  ⚠ Doctor off sick at short notice: who calls 20 patients? Today it's done in Excel.
+  ⚠ Is reception's "confirmation" (a phone call) the same as the system's "confirmed" (deposit paid)?
+```
+
+The second hotspot is a textbook example of what Event Storming finds and requirements documents miss. A patient opens the VNPay page, goes to make coffee, comes back and pays 20 minutes later. The hold expired after 15 minutes and someone else booked the slot. A successful payment callback arrives — what does the system do? Nobody in the room had an answer, and the original design (confirm the appointment whenever a successful callback arrives) would have produced double bookings. The answer the business eventually chose: refund automatically and offer the nearest open slot — an entirely new policy.
+
+The last hotspot is a language problem: reception used "confirm" for calling the patient to check they're coming, while the system used it for "deposit paid". These two concepts need two different names.
+
+### Zooming into process level: booking with a deposit
+
+In the process-level session for booking, the group added commands, policies and read models:
+
+<Figure src="/blog/event-storming-domain-modeling-board.svg" alt="A slice of an Event Storming board for clinic booking. Inside the Scheduling frame: the Patient actor looks at the Available slots read model, issues the Book appointment command, and the Appointment aggregate checks its rules and emits Appointment booked. A policy 'whenever booked, request deposit' leads into the Payments frame, where the VNPay/MoMo payment gateway reports Deposit paid or Deposit failed via IPN. Deposit paid flows back into the Scheduling frame as a published event, triggering the policy 'whenever deposit paid, confirm', the Confirm appointment command and the Appointment confirmed event. A hotspot asks whether the hold expires after 10 or 15 minutes. A color legend at the bottom: orange events, blue commands, yellow actors, lilac policies, green read models, pink external systems, red hotspots, pale yellow aggregates." caption="A slice of the booking board. Orange events follow time, lilac policies connect the steps, and the dashed frames are the bounded contexts the wall revealed: Deposit paid crosses the boundary as a published event, not a shared table." />
+
+Read it back as a sentence: *The patient looks at the open slots and books an appointment; the Appointment checks its rules and records "Appointment booked". Whenever an appointment is booked, Payments creates a deposit request and sends the patient to the gateway. When the deposit is paid, Scheduling confirms the appointment.* If a stretch can't be read like that, go back and ask.
+
+## Finding bounded contexts and the ubiquitous language
+
+After the big picture and a few process-level sessions, the wall holds enough information to draw boundaries. A bounded context is the scope within which one model — and its vocabulary — is consistent. There's no algorithm, but there are heuristics:
+
+- **Pivotal events are natural borders.** Before "Patient checked in" is the world of booking; after it is the world of care. The language, the people and the rules all change.
+- **Same word, different meaning** — the surest sign. In Scheduling an "appointment" is a slot held for a patient; in Clinical it's a consultation with a record; in Billing it's something that might produce charges.
+- **Different actors, different departments.** A cluster of notes that only accounting wrote usually belongs to its own context.
+- **Different rates of change.** Deposit rules change every quarter; clinical procedures change with Ministry of Health regulations. Bundle them together and every change to one means retesting the other.
+- **Separate swimlanes** — a branch that runs in parallel without needing to know much about the main flow.
+
+The result for the clinic:
+
+| Bounded context | Responsibility | Key terms | Doesn't care about |
+| --- | --- | --- | --- |
+| Scheduling | Doctor schedules, slots, appointments, holds, rescheduling, cancellation | Slot, hold, appointment, confirmation | Diagnoses, prescriptions |
+| Payments | Deposit requests, transactions, refunds, reconciliation | Payment request, transaction, refund | Which doctor, what treatment |
+| Clinical | Consultations, orders, prescriptions | Encounter, order, conclusion | Deposits, holds |
+| Billing | Invoices, deposit application, insurance | Invoice, line item, applied deposit | Doctor schedules |
+| Notifications | Zalo/SMS delivery, templates, fallback channels | Message, channel, template | Business rules |
+
+### Ubiquitous language: write it down, then use it in code
+
+The ubiquitous language isn't a glossary that lives in Confluence. It's the language that *both the business and the code* use, within a specific bounded context. I keep a short table per context and update it after every session:
+
+| Term | Context | Meaning | Name in code |
+| --- | --- | --- | --- |
+| Hold | Scheduling | A slot temporarily locked for a patient while waiting for the deposit | `hold`, `holdExpiresAt` |
+| Confirmed appointment | Scheduling | An appointment with a valid deposit | `AppointmentConfirmed` |
+| Attendance call | Scheduling | Reception phones the patient to check they're coming | `AttendanceCallLogged` |
+| Late cancellation | Scheduling | A patient cancels within 24 hours of the appointment | `isLateCancellation()` |
+| Encounter | Clinical | One time a doctor sees a patient, with a record | `Encounter` |
+| Applied deposit | Billing | Using the deposit to pay part of the invoice | `DepositApplied` |
+
+Note the third row: the "confirm vs. confirm" hotspot was resolved by *giving reception's concept a new name*. A small decision that saves dozens of confused conversations later.
+
+<Callout type="warning" title="Don't translate the ubiquitous language back and forth">
+
+Our team writes code in English while the business speaks Vietnamese. How I handle it: the glossary has a "name in code" column, and **there is exactly one accepted translation** per concept. If developers translate "giữ chỗ" as `reservation` in one place, `lock` in another and `hold` in a third, you've just created three concepts in code for one concept in the user's head.
+
+</Callout>
+
+## Context mapping: how contexts talk to each other
+
+Bounded contexts don't live alone. A context map describes the relationships between them — technically and organizationally (which team depends on which). The patterns I use most:
+
+| Pattern | Meaning | In the example | Risk |
+| --- | --- | --- | --- |
+| Customer / Supplier | The downstream (customer) has a say in the upstream (supplier) backlog | Scheduling is a customer of Payments: it needs a deposit-request API and result events | The supplier prioritizes other work and blocks the customer |
+| Conformist | The downstream adopts the upstream model as-is, no translation | Notifications uses Zalo ZNS template formats directly | The external model leaks into your code |
+| Anticorruption Layer (ACL) | The downstream builds a translation layer to protect its model | Payments wraps VNPay/MoMo behind a port; Scheduling wraps the legacy HIS | Effort to write and maintain the translation |
+| Shared Kernel | Two contexts share a small piece of model; changes need both sides to agree | `Money` and `PatientId` value objects | It grows into a "common module" holding everything |
+| Open Host Service / Published Language | The upstream publishes a stable, versioned API or event format | Payments publishes `DepositPaid` v1 for every context | Backward compatibility becomes a commitment |
+| Separate Ways | No integration; duplication is accepted | Marketing reports pull straight from the data warehouse | Data drifts apart |
+
+### An anticorruption layer for the payment gateway
+
+This is the pattern I've found most worth its cost. A payment gateway has its own vocabulary (`vnp_ResponseCode`, `vnp_TxnRef`, amounts multiplied by 100), and none of it should travel further than one adapter file. The Payments model only knows "the transaction succeeded" or "it failed":
+
+```ts
+// payments/infrastructure/vnpay.adapter.ts
+import { Injectable } from "@nestjs/common";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { GatewayCallback, PaymentGatewayPort } from "../domain/payment-gateway.port";
+import { PaymentsConfig } from "../payments.config";
+
+@Injectable()
+export class VnpayAdapter implements PaymentGatewayPort {
+  constructor(private readonly config: PaymentsConfig) {}
+
+  /** Translates a VNPay IPN callback into the Payments context's language. */
+  parseCallback(query: Record<string, string>): GatewayCallback {
+    const { vnp_SecureHash: signature, vnp_SecureHashType: _type, ...fields } = query;
+    if (!signature || !this.verify(fields, signature)) {
+      return { kind: "invalid_signature" };
+    }
+
+    const transactionId = fields.vnp_TxnRef;
+    const amountVnd = Number(fields.vnp_Amount) / 100; // VNPay sends the amount multiplied by 100
+    const succeeded = fields.vnp_ResponseCode === "00" && fields.vnp_TransactionStatus === "00";
+
+    return succeeded
+      ? { kind: "succeeded", transactionId, amountVnd, gatewayRef: fields.vnp_TransactionNo }
+      : { kind: "failed", transactionId, reason: `vnpay:${fields.vnp_ResponseCode}` };
+  }
+
+  private verify(fields: Record<string, string>, signature: string): boolean {
+    // Simplified: field order and encoding must follow VNPay's integration docs exactly.
+    const data = Object.keys(fields)
+      .sort()
+      .map((k) => `${k}=${encodeURIComponent(fields[k]).replace(/%20/g, "+")}`)
+      .join("&");
+    const expected = createHmac("sha512", this.config.vnpayHashSecret).update(data).digest("hex");
+    return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  }
+}
+```
+
+When MoMo comes along, you write a `MomoAdapter` returning the same `GatewayCallback`. Not a single line of the Payments domain — let alone Scheduling — needs to know MoMo exists.
+
+<Callout type="danger" title="Shared Kernel is a slippery slope">
+
+I've seen a "shared kernel" start with `Money` and `PatientId`, and six months later contain `AppointmentStatus`, `UserEntity` and a `formatInvoice` function. At that point it isn't a kernel anymore; it's a sixth context nobody owns, and every change needs five teams to agree. My rule: the shared kernel contains only immutable value objects, no business logic, and every PR touching it needs a review from every team that uses it.
+
+</Callout>
+
+## From design level to aggregates with invariants
+
+Design level is where the wall turns into a design. The central question: **which rules must always hold, immediately, after every command?** Those are invariants, and an aggregate is the consistency boundary that protects them.
+
+From the hotspots and policies of the process-level session, the group listed Scheduling's rules:
+
+1. A doctor's slot has at most one active appointment.
+2. An appointment awaiting a deposit expires after 15 minutes (the hotspot the business resolved).
+3. Only an appointment awaiting a deposit, and not yet expired, can be confirmed.
+4. No bookings within 2 hours of the appointment time.
+5. If a patient cancels within 24 hours of the appointment, the deposit is forfeited.
+6. A deposit that arrives after the hold expired → refund, don't confirm.
+
+Rules 3, 4, 5 and 6 only need data from *one* appointment — they belong to the `Appointment` aggregate. Rule 1 is different: it's about the *relationship between many* appointments.
+
+### Invariants that span aggregates: choose the boundary on purpose
+
+There are two ways to model rule 1, and it's a real trade-off:
+
+| | Large aggregate: `DoctorDaySchedule` | Small aggregate: `Appointment` + unique constraint |
+| --- | --- | --- |
+| **Invariant lives in** | Domain code, inside one aggregate | The database (partial unique index) |
+| **Write contention** | Every booking for the same doctor and day competes for one version | Contention only on the exact same slot |
+| **Loading** | Load the whole day to book one appointment | Load one appointment |
+| **Expressing complex rules** | Easy: "at most 3 procedures per session" | Hard; needs extra queries or constraints |
+| **Fits when** | The rule genuinely needs to see the whole day | The rule is just "no overlapping slot" |
+
+With the current rules I chose the small aggregate and let the database protect rule 1 — but I *wrote that decision down* in an ADR, because if the business later adds something like "at most 3 procedures per session", the boundary has to be revisited.
+
+```sql
+-- One slot has at most one active appointment
+CREATE UNIQUE INDEX appointments_active_slot_uq
+  ON appointments (doctor_id, slot_start)
+  WHERE status IN ('pending_deposit', 'confirmed', 'checked_in');
+```
+
+### The Appointment aggregate in TypeScript
+
+The domain model doesn't depend on NestJS or an ORM. It receives time from the outside (so it's testable), records the events it produces, and speaks the ubiquitous language:
+
+```ts
+// scheduling/domain/appointment.ts
+import { DomainError } from "./domain-error";
+import type { AppointmentEvent } from "./appointment.events";
+
+export type AppointmentStatus =
+  | "pending_deposit"
+  | "confirmed"
+  | "expired"
+  | "cancelled"
+  | "checked_in"
+  | "no_show";
+
+const HOLD_MS = 15 * 60_000;
+const MIN_LEAD_MS = 2 * 60 * 60_000;
+const LATE_CANCEL_MS = 24 * 60 * 60_000;
+
+export interface Slot {
+  doctorId: string;
+  startsAt: Date;
+}
+
+export class Appointment {
+  private pending: AppointmentEvent[] = [];
+
+  private constructor(
+    readonly id: string,
+    readonly patientId: string,
+    readonly slot: Slot,
+    private status: AppointmentStatus,
+    private holdExpiresAt: Date,
+    readonly version: number,
+  ) {}
+
+  static book(input: { id: string; patientId: string; slot: Slot }, now: Date): Appointment {
+    if (input.slot.startsAt.getTime() - now.getTime() < MIN_LEAD_MS) {
+      throw new DomainError("booking_too_late", "Cannot book within 2 hours of the appointment");
+    }
+    const holdExpiresAt = new Date(now.getTime() + HOLD_MS);
+    const appt = new Appointment(input.id, input.patientId, input.slot, "pending_deposit", holdExpiresAt, 0);
+    appt.record({
+      type: "AppointmentBooked",
+      appointmentId: appt.id,
+      patientId: appt.patientId,
+      doctorId: appt.slot.doctorId,
+      slotStart: appt.slot.startsAt.toISOString(),
+      holdExpiresAt: holdExpiresAt.toISOString(),
+    });
+    return appt;
+  }
+
+  /** Policy "whenever a deposit is paid, confirm". Idempotent for the same paymentId. */
+  confirm(paymentId: string, now: Date): void {
+    if (this.status === "confirmed") return;
+    if (this.status !== "pending_deposit") {
+      throw new DomainError("not_awaiting_deposit", `Appointment is ${this.status}`);
+    }
+    if (now > this.holdExpiresAt) {
+      // Rule 6: a late deposit is not confirmed; a policy outside the aggregate refunds it.
+      throw new DomainError("hold_expired", "The hold expired before the deposit arrived");
+    }
+    this.status = "confirmed";
+    this.record({ type: "AppointmentConfirmed", appointmentId: this.id, paymentId });
+  }
+
+  expireHold(now: Date): void {
+    if (this.status !== "pending_deposit") return; // already confirmed or cancelled: nothing to do
+    if (now < this.holdExpiresAt) {
+      throw new DomainError("hold_still_active", "The hold has not expired yet");
+    }
+    this.status = "expired";
+    this.record({ type: "HoldExpired", appointmentId: this.id });
+  }
+
+  cancel(by: "patient" | "clinic", now: Date): void {
+    if (this.status !== "pending_deposit" && this.status !== "confirmed") {
+      throw new DomainError("not_cancellable", `Cannot cancel an appointment that is ${this.status}`);
+    }
+    const wasConfirmed = this.status === "confirmed";
+    const late = by === "patient" && this.slot.startsAt.getTime() - now.getTime() < LATE_CANCEL_MS;
+    this.status = "cancelled";
+    this.record({
+      type: "AppointmentCancelled",
+      appointmentId: this.id,
+      cancelledBy: by,
+      depositForfeited: wasConfirmed && late,
+    });
+  }
+
+  pullEvents(): AppointmentEvent[] {
+    const events = this.pending;
+    this.pending = [];
+    return events;
+  }
+
+  private record(event: AppointmentEvent): void {
+    this.pending.push(event);
+  }
+}
+```
+
+A few things worth noticing:
+
+- **Method names are commands, event names are facts** — reading the code feels like reading the wall. `book`, `confirm`, `expireHold` and `cancel` map directly to the blue notes.
+- **`confirm` is idempotent.** Payment gateways send the same IPN more than once all the time; the aggregate shouldn't emit `AppointmentConfirmed` twice.
+- **`expireHold` doesn't throw when already confirmed.** The timer and the payment callback race each other; the loser simply does nothing.
+- **"Refund when the deposit is late" isn't in the aggregate.** The aggregate only rejects; a policy at the application layer catches `hold_expired` and asks Payments for a refund. Those are two different contexts.
+
+### Test the aggregate with the story from the wall
+
+Aggregate tests read as given–when–then with events, and end up close to the sticky notes themselves:
+
+```ts
+// scheduling/domain/appointment.spec.ts
+import { describe, expect, it } from "vitest";
+import { Appointment } from "./appointment";
+
+const slot = { doctorId: "dr-1", startsAt: new Date("2026-10-10T09:00:00+07:00") };
+const bookedAt = new Date("2026-10-08T08:00:00+07:00");
+
+describe("Appointment", () => {
+  it("does not confirm when the deposit arrives after the hold expired", () => {
+    const appt = Appointment.book({ id: "a-1", patientId: "p-1", slot }, bookedAt);
+    appt.pullEvents();
+
+    const twentyMinutesLater = new Date(bookedAt.getTime() + 20 * 60_000);
+    expect(() => appt.confirm("pay-1", twentyMinutesLater)).toThrowError(/expired/);
+    expect(appt.pullEvents()).toEqual([]);
+  });
+
+  it("forfeits the deposit when the patient cancels within 24 hours", () => {
+    const appt = Appointment.book({ id: "a-2", patientId: "p-1", slot }, bookedAt);
+    appt.confirm("pay-2", new Date(bookedAt.getTime() + 60_000));
+    appt.pullEvents();
+
+    appt.cancel("patient", new Date("2026-10-09T20:00:00+07:00"));
+    expect(appt.pullEvents()).toContainEqual(expect.objectContaining({ type: "AppointmentCancelled", depositForfeited: true }));
+  });
+});
+```
+
+The test names are the resolved hotspots. When the business asks "how does the system handle a late deposit?", you point them at that exact test.
+
+## Commands and events in NestJS
+
+Now let's wire the domain into NestJS. Each bounded context is a module (or group of modules) with explicit boundaries; I covered module structure, the error model and request context in detail in [NestJS in production: request lifecycle, DI and module boundaries](/blog/nestjs-request-lifecycle-architecture). Here I'll focus on commands and events.
+
+```text
+src/
+  scheduling/
+    domain/            appointment.ts, appointment.events.ts, domain-error.ts
+    application/       book-appointment.handler.ts, confirm-appointment.handler.ts, policies/
+    infrastructure/    appointment.repository.ts, outbox.ts
+    http/              appointments.controller.ts
+    scheduling.module.ts
+  payments/
+    domain/  application/  infrastructure/  payments.module.ts
+  contracts/           deposit-paid.v1.ts, appointment-booked.v1.ts   ← published language
+```
+
+The `contracts` folder is the published language: events other contexts are allowed to listen to. The aggregate's internal events (`AppointmentEvent`) are never imported from another context.
+
+### Command handlers
+
+I use `@nestjs/cqrs` for an in-process command bus and event bus — it's lightweight and maps well onto the language of the wall. You can absolutely just call services directly; what matters is the *names* and the *boundaries*, not the library.
+
+```ts
+// scheduling/application/book-appointment.handler.ts
+import { CommandHandler, type ICommandHandler } from "@nestjs/cqrs";
+import { randomUUID } from "node:crypto";
+import { Appointment } from "../domain/appointment";
+import { DomainError } from "../domain/domain-error";
+import { AppointmentRepository } from "../infrastructure/appointment.repository";
+import { DoctorScheduleReader } from "../infrastructure/doctor-schedule.reader";
+import { Clock } from "../../shared/clock";
+
+export class BookAppointmentCommand {
+  constructor(
+    readonly patientId: string,
+    readonly doctorId: string,
+    readonly slotStart: Date,
+  ) {}
+}
+
+@CommandHandler(BookAppointmentCommand)
+export class BookAppointmentHandler implements ICommandHandler<BookAppointmentCommand, string> {
+  constructor(
+    private readonly appointments: AppointmentRepository,
+    private readonly schedule: DoctorScheduleReader,
+    private readonly clock: Clock,
+  ) {}
+
+  async execute(cmd: BookAppointmentCommand): Promise<string> {
+    const slot = await this.schedule.findPublishedSlot(cmd.doctorId, cmd.slotStart);
+    if (!slot) throw new DomainError("slot_not_published", "The doctor is not working at this time");
+
+    const appointment = Appointment.book({ id: randomUUID(), patientId: cmd.patientId, slot }, this.clock.now());
+    await this.appointments.save(appointment); // the unique index protects "no overlapping slot"
+    return appointment.id;
+  }
+}
+```
+
+### The repository: save the aggregate and its events in one transaction
+
+The events an aggregate produces must be stored in the same transaction as its state — otherwise you'll have booked appointments that Payments never hears about to create a deposit request. That's the transactional outbox, which I covered in depth in the post on [background jobs with BullMQ](/blog/nestjs-background-jobs-bullmq).
+
+```ts
+// scheduling/infrastructure/appointment.repository.ts
+import { Injectable } from "@nestjs/common";
+import { Database } from "../../shared/database";
+import { Appointment } from "../domain/appointment";
+import { DomainError } from "../domain/domain-error";
+
+@Injectable()
+export class AppointmentRepository {
+  constructor(private readonly db: Database) {}
+
+  async save(appt: Appointment): Promise<void> {
+    const events = appt.pullEvents();
+    try {
+      await this.db.transaction(async (tx) => {
+        const row = toRow(appt);
+        const result = await tx.query(
+          `INSERT INTO appointments (id, patient_id, doctor_id, slot_start, status, hold_expires_at, version)
+           VALUES ($1, $2, $3, $4, $5, $6, 1)
+           ON CONFLICT (id) DO UPDATE
+             SET status = EXCLUDED.status, version = appointments.version + 1
+             WHERE appointments.version = $7`,
+          [row.id, row.patientId, row.doctorId, row.slotStart, row.status, row.holdExpiresAt, appt.version],
+        );
+        if (result.rowCount === 0) throw new DomainError("concurrent_update", "The appointment just changed; retry");
+
+        for (const event of events) {
+          await tx.query(`INSERT INTO outbox_events (id, type, payload) VALUES (gen_random_uuid(), $1, $2)`, [
+            event.type,
+            JSON.stringify(event),
+          ]);
+        }
+      });
+    } catch (err) {
+      if (isUniqueViolation(err, "appointments_active_slot_uq")) {
+        throw new DomainError("slot_taken", "Someone just booked this slot");
+      }
+      throw err;
+    }
+  }
+}
+```
+
+`toRow` and `isUniqueViolation` (which checks for Postgres error code `23505` and the constraint name) are small helpers I've left out. The point: optimistic concurrency via the `version` column, and a unique-index violation translated into a named domain error the business understands.
+
+### Policies are event handlers
+
+A policy on the wall becomes an event handler: it takes an event and issues a command. I keep the class name identical to the sentence on the sticky note:
+
+```ts
+// scheduling/application/policies/confirm-on-deposit-paid.policy.ts
+import { CommandBus, EventsHandler, type IEventHandler } from "@nestjs/cqrs";
+import { DepositPaidV1 } from "../../../contracts/deposit-paid.v1";
+import { ConfirmAppointmentCommand } from "../confirm-appointment.handler";
+import { RequestRefundCommand } from "../../../payments/application/request-refund.handler";
+import { DomainError } from "../../domain/domain-error";
+
+/** Whenever a deposit is paid, confirm the appointment. If the hold expired, request a refund. */
+@EventsHandler(DepositPaidV1)
+export class ConfirmOnDepositPaidPolicy implements IEventHandler<DepositPaidV1> {
+  constructor(private readonly commands: CommandBus) {}
+
+  async handle(event: DepositPaidV1): Promise<void> {
+    try {
+      await this.commands.execute(new ConfirmAppointmentCommand(event.appointmentId, event.paymentId));
+    } catch (err) {
+      if (err instanceof DomainError && err.code === "hold_expired") {
+        await this.commands.execute(new RequestRefundCommand(event.paymentId, "hold_expired"));
+        return;
+      }
+      throw err;
+    }
+  }
+}
+```
+
+<Callout type="warning" title="The in-process EventBus is not durable">
+
+The `EventBus` in `@nestjs/cqrs` lives in memory: if the process dies halfway, the event is gone. For policies *inside* one context that can be re-run, I accept that. For *cross-context* policies like the one above — with a patient's money at stake — the event must go through the outbox and a durable queue, and the handler must be idempotent. In the real code, `ConfirmOnDepositPaidPolicy` runs in a BullMQ worker reading from the Payments outbox, not from the in-memory `EventBus`.
+
+</Callout>
+
+And that `RequestRefundCommand` import from the `payments` module above? I left it in on purpose to make a point: in a real codebase, Scheduling shouldn't import a Payments handler. The policy should call a port (`PaymentsPort.requestRefund`) that the Payments module exports, or publish a `RefundRequested` event for Payments to handle itself. The context map decides which: Scheduling is a customer of Payments, so an API published by Payments makes sense.
+
+### Controllers only translate HTTP into commands
+
+A controller holds no business rules: it validates the DTO, takes `patientId` from the session, builds a `BookAppointmentCommand` and calls `commandBus.execute`. A `DomainError` is translated by an exception filter into a consistent error response (problem details) — the same approach I describe in the request lifecycle post. Error codes like `slot_taken` and `hold_expired` are part of the ubiquitous language too: the frontend shows messages based on them, and QA writes tests against them.
+
+## Remote facilitation with Miro or FigJam
+
+Since 2020, most workshops I run are remote or hybrid. It works, but you lose half the energy of a real wall if you just "move it online" as-is. What I've adjusted:
+
+### Preparing the board
+
+- **A ready-made template:** a long board with a timeline area, a fixed color legend in the corner, and "stacks" of correctly colored notes people can duplicate. Both Miro and FigJam have community-made Event Storming templates; I usually build my own so the colors stay consistent.
+- **Lock the legend and frames** so nobody drags them out of place by accident.
+- **Give everyone a "landing zone"** during chaotic exploration: a personal area to write in, so you don't get ten cursors stacking notes on top of each other, then drag them into the shared timeline afterwards.
+- **Send the link a day early** with a 3-minute video on the basic interactions. The first ten minutes of a workshop shouldn't be spent teaching people how to create a sticky note.
+
+### During the session
+
+- **Shorter slots:** two 2-hour sessions beat one 4-hour session. Video fatigue sets in far faster than standing at a wall.
+- **One facilitator, one scribe.** The facilitator keeps the pace and asks questions; the scribe merges duplicates and drops hotspots on questions that got glossed over.
+- **Cameras on for discussion phases** (enforcing the timeline, voting on hotspots); optional during individual writing.
+- **Use the tool's built-in voting and timer** — it's more transparent than the facilitator counting.
+- **Breakout rooms per swimlane** for large groups: each room works on one branch, then everyone comes back to stitch them together.
+
+### After the session
+
+The biggest advantage of remote: the wall never gets taken down. I keep the board as a living document, link it from tickets and ADRs, and update it after process-level sessions. But remember the board is the *medium*, not the product — the real outputs are a list of hotspots with owners, the ubiquitous-language table, and the context map.
+
+## Mistakes I keep seeing
+
+**Only developers in the room.** Event Storming without domain experts is developers guessing the business at each other with colorful sticky notes. If the business can't come, postpone.
+
+**Jumping straight to design level.** Drawing aggregates before understanding the process gives you a beautiful model of the wrong business. Do at least one process-level session first.
+
+**Events that are UI actions or CRUD.** "Button clicked", "Record updated". Whenever you see one, ask: "What happened in the real world?"
+
+**The facilitator writing notes or arguing for the group.** Facilitators ask; they don't answer. When you're both tech lead and facilitator, it's very easy to unconsciously steer the group toward the design you already had in mind.
+
+**Trying to resolve every hotspot during the session.** Hotspots are for marking and moving on. Fifteen minutes debating the refund policy is fifteen minutes not exploring the rest of the process.
+
+**One aggregate per noun.** `Patient`, `Doctor`, `Slot`, `Appointment`, `Payment` — one aggregate per table is CRUD design wearing a DDD costume. Aggregates are defined by invariants, not nouns.
+
+**One context sharing a database with another.** Payments reading the `appointments` table directly "because it's faster" erases every boundary you just drew. Go through an API or events, never through tables.
+
+**The wall gets photographed and forgotten.** If nobody owns turning hotspots into questions with answer deadlines, the workshop was just an expensive team-building exercise.
+
+## Further reading
+
+- [Introducing EventStorming](https://leanpub.com/introducing_eventstorming) — Alberto Brandolini, the origin of the technique.
+- Eric Evans' *Domain-Driven Design* and Vaughn Vernon's *Implementing Domain-Driven Design* — bounded contexts, aggregates, context maps.
+- [DDD Crew: Context Mapping](https://github.com/ddd-crew/context-mapping) and the [Bounded Context Canvas](https://github.com/ddd-crew/bounded-context-canvas) — free, practical templates.
+- [NestJS: CQRS](https://docs.nestjs.com/recipes/cqrs) — `CommandBus`, `EventBus`, `@CommandHandler`, `@EventsHandler`.
+
+## Summary
+
+<Checklist>
+
+- Pick the right level: big picture to understand the landscape and find hotspots, process level per process, design level to cut aggregates and modules.
+- Invite the people who actually do the work, 6–12 of them, in front of a long wall with a clear color legend.
+- Write events in the past tense, in business language — not UI actions or CRUD.
+- Explore chaotically first, enforce the timeline second, mark pivotal events and swimlanes, stick hotspots and move on.
+- Every stretch of wall should read as a sentence: an actor looks at a read model, issues a command, an aggregate emits an event, a policy reacts.
+- Find bounded contexts from pivotal events, same-word-different-meaning, actors and rates of change; record the ubiquitous language with names in code.
+- Draw the context map: customer/supplier, ACLs for external systems, a published language for cross-context events, a tiny shared kernel.
+- Aggregates are defined by invariants; for invariants spanning aggregates, choose the boundary deliberately and write an ADR.
+- In NestJS: aggregate methods are commands, events are facts, policies are event handlers; cross-context events go through an outbox and a durable queue.
+- Remote: a ready template, short sessions, one facilitator plus one scribe, and turn every hotspot into work with an owner.
+
+</Checklist>

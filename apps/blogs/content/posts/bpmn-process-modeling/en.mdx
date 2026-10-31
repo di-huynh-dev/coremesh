@@ -1,0 +1,474 @@
+---
+title: "Business Process Modeling with BPMN 2.0: From As-Is Diagrams to Running Software"
+excerpt: "BPMN isn't for decorating project documents; it's for finding where a process wastes time: handoffs, rework loops, waiting. This post covers the notation subset you actually need, common modeling mistakes, a measured as-is/to-be purchase approval example, and the path from model to state machine, workflow engine and user stories."
+---
+
+<Lead>A few years ago, the leadership of a roughly 300-person company complained that buying a printer took two weeks. Everyone had the answer ready: "the director travels a lot and signs late". The initial plan was an app so the director could approve on his phone. Before writing any code, a BA and I sat down and redrew the real process — not the one in the ISO handbook, but the one people actually followed, with timestamps pulled from email. The result: the director accounted for less than a tenth of the total waiting time. The bigger waits were in places nobody looked: a rework loop between accounting and the requester, a habit of checking budgets in batches twice a week, and forwarded emails that people forgot to send. The mobile approval app would have solved the wrong problem. This post is how I use BPMN 2.0 to see things like that: the notation subset that covers most of the work, the modeling mistakes I see most, a measured as-is and to-be example, and how to get from a to-be model to a state machine, a workflow engine and a backlog.</Lead>
+
+## Why model processes at all
+
+In code, a business process usually shrinks to a `status` column and a few `if` statements. You can see states, but not **the time between states**, not who is holding the work, and certainly not the steps that happen outside the system — email, chat, Excel files, wet signatures. Those are exactly the places where time disappears.
+
+A good process model exposes three kinds of waste I find in almost every organisation:
+
+- **Handoffs:** every time work changes hands it enters a new queue. The receiver is busy with something else and may not even know there's new work. Five handoffs are five queues.
+- **Rework loops:** an incomplete file gets sent back and has to go through everything again — including steps that were fine. On a diagram it's an arrow pointing backwards, and it always deserves the question "why wasn't this caught earlier?".
+- **Waiting and batching:** "accounting checks on Tuesdays and Thursdays", "the director signs at the end of the day". Each convention sounds reasonable alone, but together they add up to days of waiting for work that takes ten minutes.
+
+There's one more reason that's rarely said out loud: **the model is a shared language**. A BPMN diagram on the wall can be read by the head of procurement, the chief accountant and the developers, who can all point at it and say "this bit is wrong". No written specification does that.
+
+<Callout type="tip" title="Model to answer a question">
+Don't model a process "for completeness". Before opening a tool, write down the question the model has to answer: "Why does purchasing take two weeks?", "Which steps should the new system automate?", "Who is accountable when a request gets stuck?". The question sets the level of detail and tells you when to stop drawing.
+</Callout>
+
+## The BPMN 2.0 subset that covers 90% of the work
+
+The OMG's BPMN 2.0 specification (also standardised as ISO/IEC 19510) has well over a hundred elements. You don't need most of them. I use almost nothing beyond what follows, and when a model needs more, that's usually a sign it's too detailed.
+
+### Pools and lanes
+
+A **pool** is an independent participant — usually an organisation or an external system whose internal flow you don't control. In the purchasing example, the company is one pool and the supplier is another. External pools are usually drawn **collapsed** (an empty band) because you don't know, and don't need to know, what happens inside.
+
+**Lanes** divide a pool by **role or responsibility**: requester, approvers, finance, procurement. A lane answers "who does this?". It isn't a box on the org chart, and it definitely isn't a software system — the mistakes section comes back to this.
+
+### Tasks and sub-processes
+
+A **task** is a unit of work, named **verb + noun**: "Approve request", "Check budget". The two types I distinguish most often:
+
+- **User task:** a person does it, usually through a screen. Every user task is a candidate user story.
+- **Service task:** the system does it — calls an API, computes something, writes data.
+
+There are also **send/receive tasks** (sending and receiving messages), **business rule tasks** (applying a decision table) and **manual tasks** (work outside any system, like signing paper). A **sub-process** groups a cluster of tasks into a collapsible block, keeping high-level models tidy while still letting you drill in.
+
+### Events
+
+Events are things that **happen**, drawn as circles:
+
+- **Start event** (thin border): where the process begins. It can be untyped (someone starts it), message (an email or webhook arrives) or timer (the first of every month).
+- **End event** (thick border): one **outcome** of the process. A serious process almost always has more than one: "PO sent", "Rejected", "Cancelled".
+- **Intermediate event** (double border): something mid-process — waiting for a message, waiting until a time, or emitting a message.
+- **Timer:** "after 48 hours", "Mondays at 9am". Clock icon.
+- **Message:** receiving or sending a message to another party. Envelope icon.
+- **Error:** a named business error, usually attached to the border of a task or sub-process.
+
+An event attached to a task's border is a **boundary event**, and it comes in two flavours newcomers tend to miss: **interrupting** (solid border — when it fires, the task is cancelled and flow continues down the new path) and **non-interrupting** (dashed border — the new path runs in parallel and the task carries on). "Remind the approver after 48 hours" is non-interrupting; "reassign to a deputy after 5 days" is interrupting.
+
+### Gateways
+
+Gateways are diamonds that control **splitting and merging**. This is where models go wrong most often, so the semantics are worth memorising:
+
+| Gateway | Marker | When splitting | When merging | Use it for |
+| --- | --- | --- | --- | --- |
+| Exclusive (XOR) | Diamond with an X (or empty) | Exactly one path, chosen by condition | Continues as soon as one path arrives | Yes/no decisions, amount thresholds |
+| Parallel (AND) | Diamond with a + | All paths run concurrently | Waits for **all** paths | Independent work that can happen at once |
+| Inclusive (OR) | Diamond with a circle | One or more paths whose conditions are true | Waits for every path **that was activated** | Optional combinations: needs legal and/or IT review |
+| Event-based | Diamond with a pentagon in a circle | Whichever event happens first wins | Not used for merging | Wait for supplier confirmation **or** 3 days |
+
+The event-based gateway deserves a special mention because it handles a very common situation XOR can't: the decision isn't based on data you already have, but on **what happens first**. After sending a PO, the process waits: if the supplier confirms, carry on; if three days pass in silence, procurement picks up the phone.
+
+### Sequence flows and message flows
+
+- **Sequence flow** (solid arrow): the order of steps **inside one pool**.
+- **Message flow** (dashed arrow, small open circle at the source, open arrowhead): messages **between pools**.
+
+The rule has no exceptions: sequence flows never cross a pool boundary, and message flows never connect two elements in the same pool. If you want a message flow between two lanes, either those lanes are really two pools (two independent parties), or you just need a sequence flow.
+
+## Worked example: purchase approval in a 300-person company
+
+Back to the story from the opening. An equipment distributor with about 300 staff, a few dozen internal purchase requests a month, from stationery to expensive machinery. The numbers below are rounded and simplified, but the shape of the problem is real.
+
+### Gathering the as-is: don't trust the process on paper
+
+The company had a purchasing procedure in its ISO documentation. It was neat, five steps, and almost nobody followed it. I gather the as-is from three sources, in increasing order of trust:
+
+1. **Interview each role separately.** Ask "the last time you did this, what happened?" rather than "what's the process?". The first question gets you the truth; the second gets you the ISO document.
+2. **Walk a real request** from start to finish, and see where it sits and who it waits for.
+3. **Timestamps from systems and email:** when the request email was sent, when the approval reply came back, when the PO was created in the ERP. This is the only source of real waiting times, as opposed to the waiting times people *remember*.
+
+### The as-is model
+
+As text, the as-is process looks like this:
+
+| # | Lane | Step | Tool | Notes |
+| --- | --- | --- | --- | --- |
+| 1 | Requester | Fill in the purchase request | Excel template, sent by email | Budget code typed by hand |
+| 2 | Line manager | Approve the request | Reply "OK" to the email | No reminders |
+| 3 | Requester | Forward the approved email to finance | Email | Often forgotten |
+| 4 | Finance | Check budget | Budget spreadsheet | Done in batches on Tuesdays and Thursdays |
+| 5 | Finance | XOR: request valid? | — | If not, back to step 1 |
+| 6 | Director | Approve if over 50 million VND | Printout, wet signature | Waits while travelling |
+| 7 | Procurement | Get quotes, choose a supplier | Email, phone | Three quotes for every order |
+| 8 | Procurement | Create the PO and send it to the supplier | ERP, email | — |
+| 9 | Finance | Re-enter the order to reserve budget | ERP | Duplicates step 8's data entry |
+
+Once it's drawn in BPMN, the most valuable detail jumps out: the arrow from step 5 goes **back to step 1**, not step 4. A request with a wrong budget code gets returned, the requester fixes it, and because it's a new form the line manager has to approve it again from scratch. One typo costs several extra days.
+
+### Measuring: cycle time, touch time, wait time
+
+Four numbers I always measure for a process:
+
+- **Cycle time (lead time):** start to finish, by the wall clock. This is what users feel.
+- **Touch time (process time):** the total time someone was actually working on the request.
+- **Wait time:** everything else — the request sitting in an inbox, on a desk, in a queue.
+- **Rework rate:** the share of requests that go around a backwards loop at least once.
+
+| Step | Touch time | Wait before the step (median) |
+| --- | --- | --- |
+| Line manager approval | ~5 min | ~1.5 days |
+| Forward to finance | ~2 min | ~0.5 days |
+| Finance check | ~10 min | ~1.5 days (waiting for the next batch) |
+| Rework loop (about 1 in 4 requests) | ~20 min | ~3 days per loop |
+| Director approval (orders over 50M) | ~2 min | ~2 days |
+| Quotes and PO | ~1 hour | ~2 days (waiting for quotes) |
+
+Median cycle time was about 9 working days; touch time about an hour and a half. The ratio of touch time to cycle time — sometimes called **process cycle efficiency** — was around 2%. That's not unusual for an administrative process; what matters is what it tells you: **making people work faster won't help**, you have to cut the waiting.
+
+## Finding waste and bottlenecks
+
+With measurements in hand, the next question is: where is the waiting, and why?
+
+### The real bottleneck is rarely the one people name
+
+The slow-signing director is the one everyone sees, because it's tied to a specific person and a feeling of helplessness. But only about a third of the requests need his approval, and for those he accounts for about two days. Averaged over every request, his share is about two thirds of a day. Meanwhile finance's batching, the rework loop and the forwarding step add up to nearly three days — four times as much — and nobody mentions them, because there's no "person" to blame, just a convention and a spreadsheet.
+
+If the data exists as a log (a history table, an email export, the ERP's audit log), you can compute this directly instead of estimating:
+
+```sql
+-- Median wait and touch time per step, from an event log
+WITH steps AS (
+  SELECT
+    request_id,
+    step,
+    started_at,
+    completed_at,
+    LAG(completed_at) OVER (PARTITION BY request_id ORDER BY started_at) AS prev_completed_at
+  FROM request_events
+)
+SELECT
+  step,
+  COUNT(*) AS occurrences,
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY started_at - prev_completed_at) AS median_wait,
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY completed_at - started_at)      AS median_touch
+FROM steps
+WHERE prev_completed_at IS NOT NULL
+GROUP BY step
+ORDER BY median_wait DESC;
+```
+
+An honest caveat: for steps that happen over email you usually only have "received" and "replied", not when the approver *started reading*. Wait and touch are then blended, and I estimate touch time from interviews and subtract it. Not perfect, but far better than gut feeling.
+
+For the rework rate, count requests that pass through the same step more than once:
+
+```sql
+SELECT
+  COUNT(*) FILTER (WHERE checks > 1)::numeric / COUNT(*) AS rework_rate
+FROM (
+  SELECT request_id, COUNT(*) AS checks
+  FROM request_events
+  WHERE step = 'finance_check'
+  GROUP BY request_id
+) t;
+```
+
+### Little's Law explains the always-full inbox
+
+Little's Law says that, in a steady state, **work in progress = arrival rate × average cycle time**. Three new requests per working day with a 9-day cycle time means about 27 requests are floating around the company at any moment. When finance complains that "there are always twenty-something purchasing emails in the inbox", it isn't because they're slow — it's the arithmetic of a long cycle time. Cut the cycle time and the queue shrinks by itself, no extra headcount needed.
+
+### Questions I ask at every wait
+
+- **Why doesn't this step start immediately?** The receiver doesn't know there's work (no notification), is batching, or is waiting for information?
+- **Why do requests get sent back?** Could a check happen *at entry* rather than three steps later?
+- **Do these two steps really have to be sequential?** Does reserving budget depend on creating the PO?
+- **Who is allowed to decide?** Does a 3-million order for printer paper need the same approval level as a 300-million machine?
+
+## Designing the to-be process
+
+### Principles
+
+I don't start a to-be with technology. I start with five principles that came out of the analysis:
+
+1. **Validate early:** anything that can be validated at entry is validated at entry — budget codes picked from a list, required fields, items from the catalogue.
+2. **Automate rules, not judgement:** a budget check compares numbers, so let the machine do it. Whether something is worth buying is judgement, so leave it to people.
+3. **Parallelise independent work:** reserving budget and creating the PO don't depend on each other.
+4. **Every human wait gets a timer:** a wait without a deadline is a wait forever.
+5. **Every outcome has a name:** rejected, PO sent, cancelled — no request just "disappears".
+
+### The to-be model
+
+<Figure src="/blog/bpmn-process-modeling-to-be.svg" alt="BPMN diagram of the to-be purchasing process. One pool with four lanes: requester, approvers, finance, procurement. The requester submits a request; finance checks the budget automatically; an exclusive gateway asks whether the budget is OK and, if not, ends at a Rejected end event. If it is, approvers approve the request; a non-interrupting 48-hour timer boundary event on the approval task leads to a send reminder task and then an end event. A second exclusive gateway asks whether it was approved and, if not, goes to the Rejected end event. If approved, a parallel gateway splits into two branches: finance reserves budget automatically and procurement creates the PO; a parallel gateway joins them and the flow ends with a PO sent message end event, with a dashed message flow to the collapsed supplier pool at the bottom." caption="To-be: the budget is checked before anyone has to approve, a non-interrupting timer reminds approvers after 48 hours, and budget reservation and PO creation run in parallel. Every path ends in a named end event." />
+
+Reading the model as text, element by element:
+
+| Element | BPMN type | Lane | Notes |
+| --- | --- | --- | --- |
+| Need goods | Start event | Requester | — |
+| Submit request | User task | Requester | Form backed by the catalogue, budget code picked from a list |
+| Check budget | Service task | Finance | Automated, but finance owns the rule and the data |
+| Budget OK? | Exclusive gateway | Finance | No: ends at "Rejected" with a reason |
+| Approve request | User task | Approvers | Approvers chosen by a decision table based on amount |
+| 48h | Non-interrupting timer boundary | Approvers | Triggers "Send reminder"; the approval task stays open |
+| Approved? | Exclusive gateway | Approvers | No: ends at "Rejected" |
+| Parallel split | Parallel gateway | Finance | Two independent branches |
+| Reserve budget | Service task | Finance | Replaces re-entering the order in the ERP by hand |
+| Create PO | User task | Procurement | Catalogue items with a framework agreement skip the three quotes |
+| Parallel join | Parallel gateway | Procurement | Waits for both branches |
+| PO sent | Message end event | Procurement | Sends the PO to the supplier pool |
+
+A few modeling decisions worth calling out:
+
+- **"Check budget" sits in the finance lane even though it's a service task.** Lanes are about accountability: when the budget rule is wrong, finance has to fix it, not "the system".
+- **One "Rejected" end event with two incoming flows.** BPMN allows it, and it matches the business: whether rejected for lack of budget or by an approver, the outcome for the requester is the same (the different reasons live in the data).
+- **No loop back to the start.** If rejected, the requester creates a new request, prefilled from the old one. It sounds strict, but it keeps the model simple and gives every request a clean history.
+
+### Pull the approval rule into a decision table
+
+The first draft of the to-be had a chain of gateways: up to 20 million goes to the line manager, up to 100 million adds the division head, above that the director, IT equipment adds the IT lead. The diagram turned into a spider's web. A better approach: keep one "Approve request" task on the diagram and move the approver logic into a **decision table** (DMN is the OMG standard for this, but a simple table works too):
+
+| Amount (million VND) | Category | Approvers |
+| --- | --- | --- |
+| Up to 20 | Any | Line manager |
+| Over 20, up to 100 | Any | Line manager, then division head |
+| Over 100 | Any | Line manager, division head, then director |
+| Any | IT equipment | Append the IT lead to the chain |
+
+The diagram says **that** there's an approval step and that it's timed; the table says **who** approves. When the company changes its thresholds — and it will — you edit a row in the table instead of redrawing the process.
+
+### After the PO is sent: the event-based gateway
+
+The to-be diagram ends at "PO sent", but in the review session the head of procurement immediately asked: "and what if the supplier never confirms?". That's a sub-process of its own, and a textbook case for an event-based gateway. As text:
+
+| # | Element | BPMN type | Notes |
+| --- | --- | --- | --- |
+| 1 | PO sent | Intermediate message throw event | Replaces the end event in the full version |
+| 2 | Await response | Event-based gateway | Whichever branch happens first wins |
+| 3a | Supplier confirms | Intermediate message catch event | Continues to "Track delivery" |
+| 3b | Supplier declines | Intermediate message catch event | Back to "Choose another supplier" |
+| 3c | 3 working days | Intermediate timer catch event | Goes to the user task "Call the supplier" |
+| 4 | Call the supplier | User task | Then back to the waiting gateway, at most twice |
+
+Two details matter here. First, you can't draw this with an XOR gateway, because at the moment of branching there's no data to compare — the decision is about *what happens first*. Second, the "call, then wait again" loop needs a limit, or the diagram describes an infinite loop. That limit ("at most twice, then escalate to the head of procurement") is a business rule, and it becomes an acceptance criterion once it reaches the backlog.
+
+In code, an event-based gateway is almost always a race between a few event sources and a timer: in Temporal, a `condition` with a timeout; in a hand-rolled state machine, an `awaiting_supplier` state plus a job that finds overdue orders, where whichever handler arrives first moves the state — and the late one has to notice the state already changed and do nothing.
+
+### Expectations, and how to re-measure
+
+A to-be is a hypothesis, not a promise. I write down concrete expectations so that three months later I can re-measure with the same SQL as above: the rework loop mostly disappears thanks to validation at entry; the finance wait drops from over a day to seconds; small orders no longer wait for the director; median cycle time for orders under 20 million is expected to drop to around two or three days. If the numbers haven't moved after three months, the to-be is wrong somewhere — and that's valuable information too.
+
+<Callout type="warning" title="Don't digitise a bad process as-is">
+The biggest temptation in a software project is to take the as-is and turn each step into a screen. You end up with a beautiful system that lets requests go round the rework loop slightly faster. Change the process first, then write software for the new one — and if you can, run the to-be by hand (a simple form, new conventions) before investing in code.
+</Callout>
+
+## Running a process-modeling workshop
+
+The prettiest diagram I ever drew alone in a room was also the most wrong. An as-is model has to be drawn **with** the people who do the work, and how you run that session decides how good it is.
+
+### Who needs to be there
+
+At least one person who actually does the work in each lane — not a department head speaking on their behalf. The head of accounting describes the process as it *should* run; the accountant tells you she phones people three times a week to ask about budget codes. Invite both if you can, but if you have to choose, choose the person who does the work. Add one decision-maker (so the to-be doesn't die at sign-off) and one developer (to know what can be automated).
+
+### The sequence I use
+
+1. **First five minutes: the question and the scope.** Where does the process start, where does it end, what are we looking for.
+2. **Follow one real request.** "Take last month's projector order. Who did what first?" Go step by step on a board with sticky notes — no proper BPMN notation yet, just boxes, arrows and lanes.
+3. **Ask about exceptions at every step.** "When does this step not go smoothly?" That's where rework loops and missing end states appear.
+4. **Mark the waits.** Every time work changes hands, ask "how long until the next person usually starts?". Write it down even if it's a guess; verify it later with timestamps.
+5. **Finish with open questions**, each with an owner — just like the red cards in Example Mapping.
+
+Only after the workshop do I move the sticky notes into proper BPMN in a tool like bpmn.io or Camunda Modeler, and send it back to the participants for corrections. The second round always finds a few more things.
+
+<Callout type="note" title="No blame in the room">
+An as-is session that turns into a hunt for whoever is at fault will, by minute ten, have everyone describing the process on paper. I always say up front: "we're looking for where the process makes people's lives hard, not for who did something wrong". The rework loop in accounting isn't accounting's fault — it's the fault of a form that lets people type budget codes by hand.
+</Callout>
+
+## Modeling mistakes I keep seeing
+
+### Misusing gateways
+
+- **Split with AND, merge with XOR.** Two parallel branches arrive at an XOR merge, and everything after it runs **twice** — in a real system, that's two POs sent to the supplier. The reverse, splitting with XOR and joining with AND, deadlocks the process because the AND waits for a branch that will never arrive.
+- **Overlapping or missing conditions.** "Under 20 million" and "over 20 million" — what about exactly 20 million? Every XOR split needs mutually exclusive, exhaustive conditions, or a **default flow**.
+- **Gateways that make decisions.** A gateway does no work; it only routes based on the result of the task before it. A diamond named "Check documents" is wrong — you need a task "Check documents" followed by a gateway "Documents valid?". Name gateways as questions and outgoing flows as answers.
+- **Inclusive gateways when unsure.** OR gateways are hard to understand and hard to execute correctly, especially the merge. If you're reaching for one because you're not sure which type to use, clarify the business rule first.
+
+### Missing end states
+
+A model with a single "Done" end event is a model of the happy path only. Ask at every point: what if the approver rejects? What if the requester cancels? What if the supplier doesn't respond? Each answer is an outcome that needs a name, and each outcome becomes a final state in the software. A request without a clear outcome sits in "in progress" forever in every report.
+
+### Lanes as systems
+
+An "ERP" lane, an "Email" lane, a "Payments microservice" lane turn a process diagram into an architecture diagram — and lose the answer to "who is accountable?". Lanes are roles. Systems show up as service tasks in the lane of whoever owns the outcome, or as a separate pool if they're external and communicate by messages. Some teams keep a single "System" lane for fully automated steps, and I can live with that; what I push back on is one lane per service.
+
+### Too much detail
+
+"Open email", "Click Approve", "Type budget code into the third field". A model like that runs to three pages and nobody reads it. My rule: a task is **one unit of work done by one role in one sitting**, with an outcome that means something to the business. Interaction details belong in user stories and UI design, not in BPMN. If a diagram has more than about 15–20 elements, consider folding some into a sub-process.
+
+### Mixing up sequence and message flows
+
+Drawing a sequence flow from the procurement lane into the supplier pool, or a message flow between two lanes in the same company. It sounds like a notation nitpick, but it hides a real question: is the other side an independent party, with its own process, that might not answer? If so, you need a separate pool, a message flow, and a timer or event-based gateway to handle their silence.
+
+## From BPMN to software
+
+A to-be model isn't just wall art. It's a behavioural specification for the software, and I use it in three ways.
+
+### The process is a state machine
+
+Each purchase request is a long-lived entity that moves through named states with only certain transitions allowed. That's a state machine — the same idea as in [state machines for UI](/blog/state-machines-for-ui), just at the business level and living for days rather than seconds. BPMN end events become final states; waiting points (user tasks, timers, messages) become intermediate states.
+
+```ts
+// src/purchasing/purchase-request.state.ts
+export type RejectReason = "NO_BUDGET" | "DECLINED";
+
+export type PurchaseRequestState =
+  | { status: "awaiting_approval"; approverIds: string[]; step: number; remindedAt?: string }
+  | { status: "ordering"; budgetReserved: boolean; poDraftId?: string }
+  | { status: "ordered"; poNumber: string; sentAt: string }
+  | { status: "rejected"; reason: RejectReason; by?: string; at: string }
+  | { status: "cancelled"; by: string; at: string };
+
+export type PurchaseRequestEvent =
+  | { type: "BUDGET_CHECKED"; ok: boolean; approverIds: string[] }
+  | { type: "APPROVED"; by: string }
+  | { type: "DECLINED"; by: string }
+  | { type: "BUDGET_RESERVED" }
+  | { type: "PO_DRAFTED"; poDraftId: string }
+  | { type: "PO_SENT"; poNumber: string }
+  | { type: "CANCELLED"; by: string };
+```
+
+The transition table comes straight from the diagram. Each row corresponds to a sequence flow or gateway in the BPMN, so when someone asks "why can't I cancel a request after the PO was sent?", the answer lives in both places and they agree:
+
+| From state | Event | To state | From BPMN element |
+| --- | --- | --- | --- |
+| (new) | `BUDGET_CHECKED` ok = false | `rejected` (NO_BUDGET) | "Budget OK?" gateway, No branch |
+| (new) | `BUDGET_CHECKED` ok = true | `awaiting_approval` | "Budget OK?" gateway, Yes branch |
+| `awaiting_approval` | `APPROVED`, more approvers left | `awaiting_approval` (step + 1) | Approver chain from the decision table |
+| `awaiting_approval` | `APPROVED`, last approver | `ordering` | "Approved?" gateway, Yes branch, parallel split |
+| `awaiting_approval` | `DECLINED` | `rejected` (DECLINED) | "Approved?" gateway, No branch |
+| `ordering` | `BUDGET_RESERVED` or `PO_DRAFTED` | `ordering` | The two parallel branches |
+| `ordering` (both done) | `PO_SENT` | `ordered` | Parallel join, message end event |
+| `awaiting_approval` | `CANCELLED` | `cancelled` | "Cancelled" outcome |
+
+Look at the `ordering` rows: the BPMN parallel gateway becomes **two independent flags** in the state (`budgetReserved`, `poDraftId`), and moving to `ordered` is only valid once both are set. That's an AND join written in code.
+
+### Build it yourself or use a workflow engine
+
+For a process like this, there are three common ways to implement it:
+
+| | Hand-rolled state machine + jobs | Camunda 8 (BPMN engine) | Temporal (durable execution) |
+| --- | --- | --- | --- |
+| Where the model lives | Code + transition table | The BPMN file executes directly | Workflow code (TypeScript, Go, Java...) |
+| Timers, multi-day waits | DIY with cron or delayed jobs | Built in (timer events) | Built in (`sleep`, `condition` with a timeout) |
+| Readable by business people | Via separate docs | They read the running diagram | Via separate docs |
+| Seeing where each request is | Build it yourself | Operations tooling (Operate) | Web UI with each workflow's history |
+| Operational cost | Lowest | A dedicated engine cluster; check the license terms | A server cluster or a cloud service |
+| A good fit when | A few simple, stable processes | Many processes, and the business wants to own the models | Long-running processes, heavy integration, a code-strong team |
+
+My advice: for one or two approval-style processes, a hand-rolled state machine plus a job queue is plenty — a `purchase_requests` table with a `status` column, a transition history table, and a job that finds overdue approvals. When the organisation has dozens of processes that change often, and business people want to read or edit the models themselves, a BPMN engine like Camunda starts paying for itself. Temporal sits in a different spot: it doesn't run BPMN, but it makes "a function that runs for weeks, waits for people and timers, and survives every deploy" feel ordinary.
+
+### Sketching the to-be with Temporal
+
+To show how naturally the model maps to code, here's a sketch of the to-be workflow with the Temporal TypeScript SDK. Every BPMN element has a corresponding line:
+
+```ts
+// src/workflows/purchase-request.workflow.ts
+import { condition, defineSignal, proxyActivities, setHandler } from "@temporalio/workflow";
+import type * as acts from "../activities";
+
+const { checkBudget, resolveApprovers, notify, reserveBudget, sendPurchaseOrder } = proxyActivities<typeof acts>({
+  startToCloseTimeout: "1 minute",
+  retry: { maximumAttempts: 5 },
+});
+
+export const decide = defineSignal<[{ approverId: string; approved: boolean }]>("decide");
+export const poReady = defineSignal<[{ poDraftId: string }]>("poReady");
+
+export async function purchaseRequest(req: acts.PurchaseRequest): Promise<acts.Outcome> {
+  let decision: { approverId: string; approved: boolean } | undefined;
+  let poDraftId: string | undefined;
+  setHandler(decide, (d) => void (decision = d));
+  setHandler(poReady, (p) => void (poDraftId = p.poDraftId));
+
+  // Service task + exclusive gateway "Budget OK?"
+  if (!(await checkBudget(req))) return { status: "rejected", reason: "NO_BUDGET" };
+
+  // User task "Approve request", approvers from the decision table
+  for (const approverId of await resolveApprovers(req)) {
+    decision = undefined;
+    await notify(approverId, "approval_requested", req.id);
+    // Non-interrupting timer boundary: remind every 48h without a decision, task stays open
+    while (!(await condition(() => decision?.approverId === approverId, "48h"))) {
+      await notify(approverId, "approval_reminder", req.id);
+    }
+    // Exclusive gateway "Approved?"
+    if (!decision!.approved) return { status: "rejected", reason: "DECLINED" };
+  }
+
+  // Parallel gateway: reserve budget (service) and create PO (user task, reported via signal)
+  await Promise.all([reserveBudget(req), condition(() => poDraftId !== undefined)]);
+
+  // Message end event: send the PO to the supplier
+  const poNumber = await sendPurchaseOrder(poDraftId!);
+  return { status: "ordered", poNumber };
+}
+```
+
+A few things to notice: user tasks in Temporal are **signals** sent in from your UI (you still need the approval screen and the PO screen); the `decision?.approverId === approverId` check ignores decisions from someone whose turn it isn't; and this workflow can wait two weeks without holding a thread, because Temporal persists the event history and replays it when needed. In exchange, workflow code must be deterministic — all I/O goes through activities — and changing logic while workflows are in flight needs careful versioning.
+
+### Deriving user stories and requirements from the to-be model
+
+This is where I find BPMN most valuable for developers: the to-be model is **the source of the backlog**. Each kind of element produces a kind of backlog item:
+
+| BPMN element | Becomes in the backlog |
+| --- | --- |
+| User task | A user story for the lane's role: screen, form, permissions |
+| Service task | A system requirement: API, job, integration; with ACs for errors and retries |
+| Gateway, decision table | Rules with examples — that is, acceptance criteria |
+| Timer event | A scheduled job or SLA; ACs with concrete times |
+| Message event, message flow | An integration contract: payload, channel, acknowledgement, idempotency |
+| End event | A final state, notifications to the people involved, a line in a report |
+| Lane | Roles and permissions |
+| Error boundary, "No" branches | Unhappy-path stories |
+
+Applied to the to-be model, the first backlog looks like this:
+
+```text
+US-1  Requester submits a purchase request from the catalogue, picking a budget code from a list
+      Rule: can't submit with missing required fields or a budget code outside the department
+SR-2  Check budget automatically when a request is submitted
+      Rule: amount > remaining budget (minus current reservations) → reject, reason NO_BUDGET
+SR-3  Pick the approver chain from the decision table
+      Examples: 20M → line manager; 20.1M → line manager + division head; IT equipment → append IT lead
+US-4  Approver sees requests waiting on them and approves/rejects, with a reason when rejecting
+SR-5  Remind the approver every 48 hours while a request is undecided
+      AC: never remind someone who has decided; working hours or wall clock? (open question for the PO)
+SR-6  Reserve budget once the request is fully approved
+US-7  Procurement creates a PO from an approved request; framework-agreement items skip the three quotes
+SR-8  Send the PO to the supplier by email; resending never creates a duplicate PO
+US-9  Requester is notified of a rejection with the reason, and can create a new request from the old data
+```
+
+Notice SR-5 has already surfaced a question the diagram doesn't answer: are the 48 hours wall-clock or working hours? Does a request submitted on Friday afternoon trigger a reminder on Sunday? This is exactly the point where you move from BPMN to clarifying each story with rules and examples — which I cover in detail in [user stories and acceptance criteria](/blog/user-stories-acceptance-criteria).
+
+## Further reading
+
+- [BPMN 2.0.2](https://www.omg.org/spec/BPMN/2.0.2/) and [DMN](https://www.omg.org/spec/DMN/) — the OMG specifications; long, but the gateway semantics are worth reading.
+- [bpmn.io](https://bpmn.io/) — an open-source BPMN and DMN modeling toolkit that runs in the browser, also the basis of Camunda Modeler.
+- [Camunda 8 docs](https://docs.camunda.io/) — the BPMN reference explains each element along with its execution behaviour.
+- [Temporal docs](https://docs.temporal.io/) — workflows, activities, signals, timers and versioning.
+- [State machines for UI](/blog/state-machines-for-ui) and [user stories and acceptance criteria](/blog/user-stories-acceptance-criteria) on this blog.
+
+## Summary
+
+<Checklist>
+
+- Model to answer a specific question; the question sets the level of detail and tells you when to stop drawing.
+- Gather the as-is from interviews with each role, walking real requests and system timestamps — not from the procedure on paper.
+- Use the BPMN subset: pools/lanes, user and service tasks, start/end/timer/message/error events, XOR/AND/OR/event-based gateways, sequence flows inside a pool and message flows between pools.
+- Know interrupting from non-interrupting boundary events; merge with the same gateway type you split with; give every XOR mutually exclusive, exhaustive conditions or a default flow.
+- Measure cycle time, touch time, wait time and rework rate; look for handoffs, rework loops and batching before blaming a person.
+- Design the to-be on principles: validate early, automate rules, parallelise independent work, put a timer on every human wait, name every outcome.
+- Move complex routing logic (who approves) into a decision table rather than a chain of gateways.
+- Lanes are roles, not systems; a task is a unit of work with business meaning, not a click.
+- Implement the process as a state machine whose final states match the end events; consider Camunda when there are many processes the business wants to own, Temporal when processes are long-running and integration-heavy.
+- Derive the backlog from the to-be model: user tasks become user stories, service tasks become system requirements, gateways become rules and ACs, timers become jobs with SLAs, messages become integration contracts.
+
+</Checklist>

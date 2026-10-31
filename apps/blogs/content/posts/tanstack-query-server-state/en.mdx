@@ -1,0 +1,719 @@
+---
+title: "Server State Is a Cache, Not State: TanStack Query v5 in Depth"
+excerpt: "Data from the server isn't yours — you only hold a copy with an expiry date. This post goes deep on TanStack Query v5 through the lens of caching: query key design, staleTime and gcTime, invalidation, optimistic updates with rollback, Suspense, hydration with the Next.js App Router, infinite queries, and when not to use it."
+---
+
+<Lead>Many React codebases I've inherited share the same symptom: Redux or Zustand holding the order list, the user profile, the cart — all fetched in `useEffect`, copied into a store, and then the team spends weeks keeping them in sync after every write. The problem isn't the state library. The problem is treating server data as client state. That data isn't yours: the server owns it, and what you have is a copy plus the moment it was taken. In other words, a **cache**. Once you accept that, the question changes from "where do I store this?" to "can I still trust this copy, who's using it, and when do I throw it away?". TanStack Query v5 is built to answer exactly those questions — and this post is how I use it in production, including with the Next.js App Router.</Lead>
+
+## Server state is a cache, not state
+
+### Two kinds of data, two sets of rules
+
+| | Client state | Server state |
+| --- | --- | --- |
+| Owner | The browser, your components | The server, the database |
+| Examples | Open modal, selected tab, text being typed | Product lists, profiles, orders |
+| Can it go stale? | No — it *is* the truth | Yes — someone else may have changed it |
+| Synchronous reads? | Yes | No, you wait on the network |
+| Questions to answer | What's the current value? | Is it fresh, who uses it, when to refetch, when to drop it |
+| Fitting tools | `useState`, `useReducer`, Zustand, the URL | A cache: TanStack Query, SWR, RSC |
+
+Put server state in a client store and you have to rebuild everything a cache needs: request dedup, race conditions when users switch filters quickly, loading and error states, refetch on tab return, dropping data nobody uses, optimistic updates and rollback. Most teams manage three of those seven, and those three have bugs.
+
+### Why useEffect + useState isn't enough
+
+This snippet lives in nearly every older React codebase:
+
+```tsx
+function ProductList({ category }: { category: string }) {
+  const [data, setData] = useState<Product[]>([]);
+  useEffect(() => {
+    fetch(`/api/products?category=${category}`).then((r) => r.json()).then(setData);
+  }, [category]);
+  // ...
+}
+```
+
+Count the bugs: switch `category` quickly and an old response can land after the new one and overwrite it (race condition). No error handling, no `res.ok` check. Two components needing the list make two requests. Come back to the page and you get a spinner again, even though you saw this data five seconds ago. And nothing elsewhere — a mutation, say — has a way to announce "this list is out of date".
+
+With TanStack Query:
+
+```tsx
+function ProductList({ category }: { category: string }) {
+  const { data, isPending, error } = useQuery(productQueries.list({ category }));
+  // ...
+}
+```
+
+One line, and every problem above is handled — not by magic, but because the library is designed around an explicit cache model. The rest of this post is about that model.
+
+## Query keys are cache addresses: design them as a factory
+
+Every cache entry is identified by a **query key** — an array that's hashed deterministically. Key order inside objects doesn't matter (`{ a: 1, b: 2 }` and `{ b: 2, a: 1 }` hash the same), but element order in the array does. The key does three jobs at once:
+
+1. **Identity**: two components using the same key share one entry and one request.
+2. **The queryFn's dependency array**: when the key changes, a new query is fetched. Every variable the `queryFn` uses must be in the key.
+3. **Invalidation scope**: `invalidateQueries` matches by prefix, so your key structure decides how easily you can refresh "a group" of data.
+
+### General to specific
+
+I always order keys from general to specific and keep them all in one factory — never hand-written keys scattered through components:
+
+```ts
+// lib/queries/products.ts
+import { queryOptions, infiniteQueryOptions } from "@tanstack/react-query";
+import { api } from "@/lib/api";
+
+export type ProductFilters = {
+  category?: string;
+  sort?: "price" | "newest";
+  q?: string;
+};
+
+export const productKeys = {
+  all: ["products"] as const,
+  lists: () => [...productKeys.all, "list"] as const,
+  list: (filters: ProductFilters) => [...productKeys.lists(), filters] as const,
+  feeds: () => [...productKeys.all, "feed"] as const,
+  feed: (filters: ProductFilters) => [...productKeys.feeds(), filters] as const,
+  details: () => [...productKeys.all, "detail"] as const,
+  detail: (id: string) => [...productKeys.details(), id] as const,
+};
+
+export const productQueries = {
+  list: (filters: ProductFilters) =>
+    queryOptions({
+      queryKey: productKeys.list(filters),
+      queryFn: ({ signal }) => api.products.list(filters, { signal }),
+      staleTime: 30_000,
+    }),
+
+  detail: (id: string) =>
+    queryOptions({
+      queryKey: productKeys.detail(id),
+      queryFn: ({ signal }) => api.products.get(id, { signal }),
+      staleTime: 5 * 60_000,
+    }),
+
+  feed: (filters: ProductFilters) =>
+    infiniteQueryOptions({
+      queryKey: productKeys.feed(filters),
+      queryFn: ({ pageParam, signal }) =>
+        api.products.page({ ...filters, cursor: pageParam }, { signal }),
+      initialPageParam: null as string | null,
+      getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+      getPreviousPageParam: (firstPage) => firstPage.prevCursor ?? undefined,
+      maxPages: 10,
+    }),
+};
+```
+
+That structure lets you invalidate at any granularity:
+
+```ts
+queryClient.invalidateQueries({ queryKey: productKeys.all });          // everything about products
+queryClient.invalidateQueries({ queryKey: productKeys.lists() });      // every list, every filter
+queryClient.invalidateQueries({ queryKey: productKeys.detail("p_42") }); // one product
+```
+
+### queryOptions: one source of truth for key, function and type
+
+v5's `queryOptions` looks like an identity function, but it does two valuable things. First, the same object works everywhere: `useQuery`, `useSuspenseQuery`, `prefetchQuery`, `ensureQueryData`. Second, it "tags" the key with its data type, so `getQueryData` and `setQueryData` know the type automatically:
+
+```ts
+const product = queryClient.getQueryData(productQueries.detail(id).queryKey);
+//    ^? Product | undefined — no manual generic needed
+```
+
+Note that `feed` uses its own key branch (`"feed"`) rather than sharing one with `list`. Infinite queries store data as `{ pages, pageParams }`, a completely different shape from regular queries; sharing a key between `useQuery` and `useInfiniteQuery` is the fastest way to a baffling runtime error.
+
+<Callout type="tip" title="Let a machine check your keys">
+  The `@tanstack/eslint-plugin-query` plugin has an `exhaustive-deps` rule that flags a `queryFn` using a variable missing from its `queryKey`. That's the most common wrong-data cache bug I see — the filter changes but the key doesn't, so users see results for the old filter — and a lint rule catches it before review.
+</Callout>
+
+### Your API client must throw
+
+An often-missed detail: TanStack Query treats a query as failed **if and only if the queryFn throws or returns a rejected Promise**. `fetch` doesn't reject on a 404 or 500. Skip the `res.ok` check and the server's error page gets cached as successful data.
+
+```ts
+// lib/api/http.ts
+export class HttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+export async function http<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init); // init carries the signal from queryFn
+  if (!res.ok) throw new HttpError(res.status, `${res.status} for ${url}`);
+  return (await res.json()) as T;
+}
+```
+
+## staleTime and gcTime: two different clocks
+
+This is what I end up re-explaining most, because the old name (`cacheTime` before v5) made people think they're the same thing. They measure two completely independent axes:
+
+- **`staleTime`** answers: *how long can I trust this copy?* During that window the query is **fresh**: served from cache with no refetch, even if a component remounts or the window regains focus. After `staleTime`, the query becomes **stale**: still served instantly from cache, but refetched in the background on the next trigger. The default is `0` — data is stale the moment it arrives.
+- **`gcTime`** answers: *once nobody uses it, how long do I keep the copy?* When the last observer (a component using the query) unmounts, the query becomes **inactive**. If nobody picks it up again within `gcTime` (5 minutes by default), the entry is removed from the cache.
+
+<Figure src="/blog/tanstack-query-server-state-lifecycle.svg" alt="Diagram of a query's lifecycle in TanStack Query v5. The middle row has four states: fresh (served, no refetch), stale (served, then refetched), inactive (no observers but still cached) and removed (garbage collected). The arrow from fresh to stale is labelled staleTime, default 0; stale to inactive happens when the last observer unmounts; inactive to removed after gcTime, default 5 minutes. From stale, a trigger moves the query into fetching, where the queryFn receives a signal, is deduplicated by key and retried three times with backoff; success returns it to fresh with a new dataUpdatedAt. A box on the right lists refetch triggers: a new observer mounting, window refocus or network reconnect, refetchInterval, and invalidateQueries. A dashed arrow from inactive back to stale shows that remounting before gcTime shows cached data instantly and refetches if stale. Notes at the bottom: fresh/stale and active/inactive are independent axes; invalidateQueries marks queries stale immediately, active ones refetch right away and inactive ones on next mount; setQueryData writes the cache directly and is the basis of optimistic updates." caption="Two independent clocks: staleTime decides when to refetch, gcTime decides how long an entry lives once nobody uses it. A fresh query can go inactive too." />
+
+### What a default staleTime of 0 means
+
+With `staleTime: 0`, every time a component using the query mounts, every time the user alt-tabs back, every time the network reconnects — a background request goes out. It's the library's safe choice (never show old data for long), but for most apps it's too aggressive. I always set a global default and tune per data type:
+
+| Data type | Suggested `staleTime` | Notes |
+| --- | --- | --- |
+| Config, catalogs, feature flags | 10 minutes to `Infinity` | Invalidate when you know it changed |
+| Current user profile | 5 minutes | Invalidate after the user edits it |
+| Filtered lists, admin pages | 30 seconds to 1 minute | Add `placeholderData: keepPreviousData` when filters change |
+| Prices, stock, notifications | 0 to 10 seconds | Add `refetchInterval` if you need near real-time |
+| Data only the current user changes | `Infinity` | Every change goes through your own mutations; invalidate there |
+
+I rarely touch `gcTime`. Two exceptions: raise it for data users come back to (product details during a long shopping session), and lower it for memory-heavy queries (large search results, blobs).
+
+### Reading the status flags correctly
+
+v5 cleanly separates two axes: `status` describes *whether we have data*, `fetchStatus` describes *whether a request is in flight*.
+
+| Flag | Meaning | Use it for |
+| --- | --- | --- |
+| `isPending` | No data yet (`status === "pending"`) | First-load skeletons |
+| `isFetching` | A request is running, including background refetches | A small corner spinner, not a skeleton |
+| `isLoading` | `isPending && isFetching` — the first load is in progress | Telling "loading" apart from "query disabled" |
+| `isError` | The queryFn threw after exhausting retries | Showing the error; note old `data` may still be there |
+| `isPlaceholderData` | Showing placeholder data, e.g. the previous page | Dimming the list while paging |
+| `fetchStatus === "paused"` | Wants to fetch but is offline | "Waiting for network" |
+
+A common mistake: driving a full-page skeleton from `isFetching`. The result is the whole page flashing every time the window regains focus — exactly what the cache exists to prevent.
+
+## Invalidation: telling the cache it's out of date
+
+A cache is only worth something if you refresh it at the right moments. TanStack Query gives you a few tools, each for a different situation:
+
+| API | What it does | When to use it |
+| --- | --- | --- |
+| `invalidateQueries` | Marks stale; active queries refetch now, inactive ones on next mount | The default after a mutation |
+| `setQueryData` | Writes straight to the cache, no request | The server returned the updated entity; optimistic updates |
+| `refetchQueries` | Refetches now, stale or not | A manual "Refresh" button |
+| `resetQueries` | Resets to the initial state (or `initialData`) and refetches active ones | Sign-out, switching workspace |
+| `removeQueries` | Drops from the cache, no refetch | Data that's no longer valid, e.g. a deleted entity |
+| `cancelQueries` | Cancels in-flight requests | Before an optimistic update, so a stale response doesn't overwrite it |
+
+### Combining setQueryData and invalidate
+
+The pattern I use most after an update mutation: write the entity the server returned straight into the detail cache (users see it immediately, no extra request), and invalidate the lists (order, filters and counts may have changed — recomputing those on the client is very easy to get wrong).
+
+```ts
+export function useUpdateProduct() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: { id: string; patch: ProductPatch }) =>
+      api.products.update(input.id, input.patch),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(productQueries.detail(updated.id).queryKey, updated);
+      return queryClient.invalidateQueries({ queryKey: productKeys.lists() });
+    },
+  });
+}
+```
+
+Returning the `invalidateQueries` Promise from `onSuccess` keeps the mutation in `isPending` until the lists have refetched. The "Save" button doesn't go back to normal before the UI has actually updated.
+
+### Don't invalidate the whole world
+
+`queryClient.invalidateQueries()` with no arguments refreshes every query. It's "correct" in the sense that you never show stale data, but on a dashboard with twenty widgets, every click on "Save" is twenty requests. A hierarchical key factory exists precisely so you can invalidate the right scope.
+
+## Dependent and parallel queries
+
+### Dependent queries: enabled or skipToken
+
+When query B needs the result of query A, the classic tool is `enabled`:
+
+```ts
+const { data: me } = useQuery(userQueries.me());
+
+const { data: projects } = useQuery({
+  ...projectQueries.byOrg(me?.orgId ?? ""),
+  enabled: Boolean(me?.orgId),
+});
+```
+
+It works, but that `?? ""` is a smell: the key holds a fake value, and TypeScript doesn't know `orgId` is guaranteed inside `queryFn`. v5 has `skipToken` for this, which is type-safer:
+
+```ts
+import { skipToken, useQuery } from "@tanstack/react-query";
+
+const orgId = me?.orgId;
+
+const { data: projects } = useQuery({
+  queryKey: projectKeys.byOrg(orgId),
+  queryFn: orgId ? ({ signal }) => api.projects.byOrg(orgId, { signal }) : skipToken,
+});
+```
+
+One caveat: a dependent query **is** a waterfall by definition. If you own the API, consider one endpoint that returns both, or put `orgId` in the session so you know it up front.
+
+### Many queries in parallel: useQueries and combine
+
+Several `useQuery` calls side by side in a component already run in parallel. When the count is dynamic — details for N products in a cart — use `useQueries`, with `combine` to shape the result into exactly what the UI needs:
+
+```ts
+const cart = useQueries({
+  queries: productIds.map((id) => productQueries.detail(id)),
+  combine: (results) => ({
+    products: results.flatMap((r) => (r.data ? [r.data] : [])),
+    isPending: results.some((r) => r.isPending),
+    hasError: results.some((r) => r.isError),
+  }),
+});
+```
+
+Each product is still its own cache entry, so the product detail page can reuse it right away.
+
+## Mutations and optimistic updates with rollback
+
+There are two ways to do optimistic updates in v5, and I pick one by asking: **does the optimistic data need to show up in one place or many?**
+
+### The simple way: render from variables
+
+If only one component needs to see the optimistic change — say, adding a comment to the list right under the input — don't touch the cache. Render a temporary item from the mutation's `variables`:
+
+```tsx
+function Comments({ postId }: { postId: string }) {
+  const queryClient = useQueryClient();
+  const { data: comments = [] } = useQuery(commentQueries.list(postId));
+
+  const addComment = useMutation({
+    mutationFn: (body: string) => api.comments.create(postId, body),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: commentKeys.list(postId) }),
+  });
+
+  return (
+    <ul>
+      {comments.map((c) => (
+        <li key={c.id}>{c.body}</li>
+      ))}
+      {addComment.isPending && <li className="opacity-50">{addComment.variables}</li>}
+      {addComment.isError && (
+        <li className="text-red-600">
+          Couldn't post.{" "}
+          <button onClick={() => addComment.mutate(addComment.variables)}>Retry</button>
+        </li>
+      )}
+    </ul>
+  );
+}
+```
+
+There's no rollback because there's nothing to roll back: on error the temporary item disappears (or shows a retry button). I like this approach because it can't corrupt the cache.
+
+### The full way: write to the cache, snapshot, roll back
+
+When the change must show up in several places — completing a task that appears in the list, in a sidebar counter, on the detail page — write to the cache directly:
+
+```ts
+// features/todos/use-toggle-todo.ts
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
+import { todoKeys, todoQueries } from "./queries";
+
+const TOGGLE_KEY = ["todos", "toggle"] as const;
+
+export function useToggleTodo(listId: string) {
+  const queryClient = useQueryClient();
+  const listKey = todoQueries.list(listId).queryKey;
+
+  return useMutation({
+    mutationKey: TOGGLE_KEY,
+    mutationFn: (input: { id: string; done: boolean }) =>
+      api.todos.update(input.id, { done: input.done }),
+
+    onMutate: async (input) => {
+      // 1. Cancel in-flight refetches so an old response can't overwrite us
+      await queryClient.cancelQueries({ queryKey: listKey });
+      // 2. Snapshot for rollback
+      const previous = queryClient.getQueryData(listKey);
+      // 3. Write the optimistic version
+      queryClient.setQueryData(listKey, (old) =>
+        old?.map((t) => (t.id === input.id ? { ...t, done: input.done } : t)),
+      );
+      return { previous };
+    },
+
+    onError: (_error, _input, snapshot) => {
+      // 4. On failure, restore exactly what was there
+      if (snapshot?.previous) queryClient.setQueryData(listKey, snapshot.previous);
+      toast.error("Couldn't update, changes reverted.");
+    },
+
+    onSettled: () => {
+      // 5. Only resync when this is the last mutation still running
+      if (queryClient.isMutating({ mutationKey: TOGGLE_KEY }) === 1) {
+        return queryClient.invalidateQueries({ queryKey: todoKeys.all });
+      }
+    },
+  });
+}
+```
+
+Step 5 is worth explaining because it comes from a real bug. A user ticks five tasks in a row. The first mutation finishes, `onSettled` invalidates, the refetch comes back — but at that point the server has only processed the first mutation, so the refetched list shows the other four as *not* done. The UI flickers: ticked, unticked, then ticked again as the later mutations land. Checking `isMutating` (which counts the current mutation too, so 1 means only this one is left) refetches once, after everything has settled.
+
+<Callout type="warning" title="An optimistic update is a promise to the user">
+  Only go optimistic for actions that almost always succeed and are easy to reverse: ticks, likes, renames, reordering. Payments, permanent deletes, actions with complex server-side business rules — show an honest in-progress state. A "Paid" badge that appears and then vanishes is far worse than a two-second spinner.
+</Callout>
+
+### mutate or mutateAsync, and where callbacks go
+
+- Callbacks declared in `useMutation` (`onMutate`, `onSuccess`...) **always run**, even if the component has unmounted. Cache logic goes here.
+- Callbacks passed to `mutate(vars, { onSuccess })` **don't run** if the component unmounts before the mutation finishes. UI logic goes here: closing a modal, navigating, toasts.
+- `mutateAsync` returns a Promise and throws on failure — you own the `try/catch`. I only use it when chaining several mutations; otherwise `mutate`.
+
+## Request dedup, retries and cancellation
+
+### Dedup for free
+
+Ten components calling `useQuery(productQueries.detail("p_42"))` in the same render produce **one** request: if a query already has a request in flight, later observers attach to that Promise. That's why I'm happy to let each component fetch what it needs instead of threading props through many levels — the same mindset as React's `cache` on the server.
+
+### Smarter retries
+
+By default on the client, a failing query is retried 3 times with exponential backoff (roughly 1s, 2s, 4s, capped at 30s). That makes sense for network errors and none for a 404 or 403 — retry as often as you like, it's still a 404, and the user waits extra seconds before seeing an error.
+
+```ts
+// lib/query-defaults.ts
+import type { DefaultOptions } from "@tanstack/react-query";
+import { HttpError } from "@/lib/api/http";
+
+const NO_RETRY = new Set([400, 401, 403, 404, 409, 422]);
+
+export const queryDefaults = {
+  queries: {
+    staleTime: 60_000,
+    retry: (failureCount: number, error: Error) => {
+      if (error instanceof HttpError && NO_RETRY.has(error.status)) return false;
+      return failureCount < 3;
+    },
+    // Add jitter so thousands of clients don't retry in lockstep after an incident
+    retryDelay: (attempt: number) =>
+      Math.min(1000 * 2 ** attempt, 30_000) * (0.5 + Math.random() / 2),
+  },
+  mutations: {
+    retry: false, // don't auto-retry non-idempotent mutations
+  },
+} satisfies DefaultOptions;
+```
+
+Mutations don't retry by default, and I keep it that way unless the endpoint takes an idempotency key. Resending "create order" because of a timeout is the quickest way to get two orders.
+
+### Cancelling requests with AbortSignal
+
+The `queryFn` receives a `signal`. Pass it to `fetch` and TanStack Query cancels the request when nobody needs the result anymore — the component unmounted, or the key changed before the response arrived. For a fast-typing search box, that noticeably cuts the number of half-finished requests in flight. Without the `signal`, the request still runs to completion; its result just gets cached under the old key.
+
+## Suspense: useSuspenseQuery
+
+`useSuspenseQuery` changes a component's contract: instead of handling `isPending` and `isError` itself, the component **assumes data is there**, and lets `Suspense` handle waiting and an Error Boundary handle failure.
+
+```tsx
+function ProductHeader({ id }: { id: string }) {
+  const { data: product } = useSuspenseQuery(productQueries.detail(id));
+  // data is always defined — no undefined checks
+  return <h1>{product.name}</h1>;
+}
+
+export function ProductPanel({ id }: { id: string }) {
+  return (
+    <QueryErrorResetBoundary>
+      {({ reset }) => (
+        <ErrorBoundary
+          onReset={reset}
+          fallbackRender={({ resetErrorBoundary }) => (
+            <button onClick={resetErrorBoundary}>Try again</button>
+          )}
+        >
+          <Suspense fallback={<HeaderSkeleton />}>
+            <ProductHeader id={id} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+    </QueryErrorResetBoundary>
+  );
+}
+```
+
+Three things to know:
+
+- `useSuspenseQuery` has no `enabled` or `placeholderData`. For a conditional query, render the component itself conditionally.
+- `QueryErrorResetBoundary` is what makes "Try again" reset the failed query and refetch, instead of immediately rethrowing the old error.
+- **Waterfalls**: two `useSuspenseQuery` calls in a row in one component run **sequentially** — the first suspends, so the second isn't even called yet. Use `useSuspenseQueries`, split them into sibling components, or prefetch both ahead of time.
+
+## Prefetching and hydration with the Next.js App Router
+
+This is where the two worlds meet, and where it's easiest to get wrong. The goal: a Server Component prefetches data into a QueryClient, serializes that cache down to the client, and a client component using `useQuery` gets the data immediately — no spinner, no duplicate request — after which TanStack Query takes over: refetching, invalidation, optimistic updates.
+
+### QueryClient: new per request on the server, a singleton in the browser
+
+```ts
+// lib/query-client.ts
+import { QueryClient, defaultShouldDehydrateQuery, isServer } from "@tanstack/react-query";
+import { queryDefaults } from "./query-defaults";
+
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      ...queryDefaults,
+      dehydrate: {
+        // Also send pending queries so data can stream to the client
+        shouldDehydrateQuery: (query) =>
+          defaultShouldDehydrateQuery(query) || query.state.status === "pending",
+      },
+    },
+  });
+}
+
+let browserQueryClient: QueryClient | undefined;
+
+export function getQueryClient() {
+  // Server: always new — never share a cache between users
+  if (isServer) return makeQueryClient();
+  // Browser: one instance that survives every navigation
+  browserQueryClient ??= makeQueryClient();
+  return browserQueryClient;
+}
+```
+
+```tsx
+// app/query-provider.tsx
+"use client";
+
+import { QueryClientProvider } from "@tanstack/react-query";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+import type { ReactNode } from "react";
+import { getQueryClient } from "@/lib/query-client";
+
+export function QueryProvider({ children }: { children: ReactNode }) {
+  const queryClient = getQueryClient();
+  return (
+    <QueryClientProvider client={queryClient}>
+      {children}
+      <ReactQueryDevtools />
+    </QueryClientProvider>
+  );
+}
+```
+
+Two details, each worth an incident:
+
+- **Never keep a module-scope QueryClient on the server.** A Node.js server serves many users from the same process; a shared client means user A's data sits in the cache while rendering user B's page. I've seen exactly this on a project: occasionally a user saw someone else's name in the header, only under load, impossible to reproduce locally.
+- **`staleTime` must be greater than 0.** At 0, freshly hydrated data is already stale and the client refetches on mount — you pay for the prefetch and still get an extra request.
+
+### Prefetching in a Server Component
+
+```tsx
+// app/products/page.tsx
+import { HydrationBoundary, dehydrate } from "@tanstack/react-query";
+import { getQueryClient } from "@/lib/query-client";
+import { productQueries, type ProductFilters } from "@/lib/queries/products";
+import { listProducts } from "@/lib/data/products"; // server-only data layer
+import { ProductList } from "./product-list";
+
+export default async function ProductsPage({
+  searchParams,
+}: {
+  searchParams: Promise<ProductFilters>;
+}) {
+  const filters = await searchParams;
+  const queryClient = getQueryClient();
+
+  await queryClient.prefetchQuery({
+    ...productQueries.list(filters),
+    // On the server, call the data layer directly instead of HTTP to ourselves
+    queryFn: () => listProducts(filters),
+  });
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <ProductList filters={filters} />
+    </HydrationBoundary>
+  );
+}
+```
+
+```tsx
+// app/products/product-list.tsx
+"use client";
+
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { productQueries, type ProductFilters } from "@/lib/queries/products";
+
+export function ProductList({ filters }: { filters: ProductFilters }) {
+  const { data, isPlaceholderData } = useQuery({
+    ...productQueries.list(filters),
+    placeholderData: keepPreviousData,
+  });
+
+  return (
+    <ul className={isPlaceholderData ? "opacity-60" : undefined}>
+      {data?.items.map((p) => (
+        <li key={p.id}>{p.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Overriding `queryFn` on the server is something I learned after seeing "Failed to parse URL" in build logs: `api.products.list` calls the relative URL `/api/products`, which works in the browser and means nothing on the server. The only requirement is that both functions return **the same data shape** — I give them one shared type and test both.
+
+`prefetchQuery` never throws; failed queries aren't dehydrated by default, and the client will simply fetch again. If that failure should become a 404 page, use `fetchQuery` (which does throw) and call `notFound()`.
+
+### Stream instead of waiting
+
+Since `shouldDehydrateQuery` now allows pending queries, you can **skip awaiting** the prefetch. The server starts the request, sends the shell right away, the Promise streams down, and a client component using `useSuspenseQuery` gets the result when it arrives:
+
+```tsx
+// app/products/[id]/page.tsx
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const queryClient = getQueryClient();
+
+  void queryClient.prefetchQuery(productQueries.detail(id)); // not awaited
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <Suspense fallback={<ProductSkeleton />}>
+        <ProductDetail id={id} />
+      </Suspense>
+    </HydrationBoundary>
+  );
+}
+```
+
+### One piece of data, one owner
+
+The most important rule when mixing RSC and TanStack Query: **each piece of data has exactly one owner**. If a Server Component prefetches a list into the cache for a client component to render, don't *also* render that product count directly in the Server Component. When the client refetches or applies an optimistic update, the client part changes and the server part stays frozen — two numbers on the same page that disagree. Data that goes into the query cache should only be rendered by client components reading from the cache.
+
+## Infinite queries
+
+An infinite query stores a sequence of pages under one key. With the `infiniteQueryOptions` in the factory above, the component stays simple:
+
+```tsx
+"use client";
+
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { productQueries, type ProductFilters } from "@/lib/queries/products";
+
+export function ProductFeed({ filters }: { filters: ProductFilters }) {
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, status } = useInfiniteQuery(
+    productQueries.feed(filters),
+  );
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasNextPage) return;
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && !isFetchingNextPage) fetchNextPage();
+      },
+      { rootMargin: "600px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  if (status === "pending") return <FeedSkeleton />;
+  const items = data?.pages.flatMap((page) => page.items) ?? [];
+
+  return (
+    <>
+      <ul>
+        {items.map((p) => (
+          <li key={p.id}>{p.name}</li>
+        ))}
+      </ul>
+      <div ref={sentinelRef} aria-hidden />
+      {isFetchingNextPage && <p>Loading more…</p>}
+    </>
+  );
+}
+```
+
+Things I paid to learn:
+
+- **`initialPageParam` is required in v5**, and `getNextPageParam` returning `undefined` or `null` means there are no more pages.
+- **Use cursors, not offsets.** With offsets, a new product inserted at the top of the list makes the next page repeat the last item of the previous one.
+- **Refetching an infinite query refetches every loaded page sequentially**, starting from the first — because each page's cursor depends on the one before. A user who has scrolled through 30 pages turns one window refocus into 30 back-to-back requests. `maxPages` caps how many pages stay in the cache (you then need `getPreviousPageParam` to scroll back), and a sensible `staleTime` reduces how often it refetches.
+- **Long lists need virtualization**: an infinite query solves the data problem, not the problem of ten thousand DOM nodes.
+
+## When NOT to use TanStack Query
+
+I use TanStack Query on a lot of projects, but with the App Router its scope shrinks considerably. Server Components reading data at request time already cover most of what I used to need a client cache for.
+
+| Situation | Use | Why |
+| --- | --- | --- |
+| Pages that read data at request time with little interaction (blog, product page, account page) | Fetching in Server Components | No extra bundle, no cache hydration, data already in the HTML |
+| Forms that write data and then re-render the page | Server Function + revalidation | The router fetches a fresh RSC payload |
+| Simple filtering and pagination | `searchParams` + Server Components | The URL is the state: shareable, correct back/forward |
+| Self-refreshing dashboards, polling | TanStack Query | `refetchInterval`, refetch on focus |
+| Optimistic updates visible in many places | TanStack Query | Keyed cache, snapshots, rollback |
+| Infinite scroll, heavily interactive large lists | TanStack Query | `useInfiniteQuery`, keeps loaded pages when you come back |
+| Client-heavy apps (editors, SPA-style internal tools) | TanStack Query | Most data lives and changes on the client |
+| Pure UI state (modals, tabs, inputs) | `useState`, the URL, Zustand | That's not server state |
+
+A sign you're overusing it: every `useQuery` in the app has `staleTime: Infinity`, there are no mutations, and data is always prefetched on the server. Then you're using a client cache to do a Server Component's job, paying in bundle size and hydration complexity for nothing in return.
+
+Conversely, don't bend RSC into a client cache: calling `router.refresh()` every 5 seconds to fake polling, or keeping a list in `useState` and patching it by hand after every Server Function. Each tool has its territory.
+
+## The mistakes I see most
+
+### Copying query data into useState
+
+```tsx
+const { data } = useQuery(userQueries.me());
+const [user, setUser] = useState(data);
+useEffect(() => setUser(data), [data]); // ❌
+```
+
+You've just recreated the exact problem TanStack Query solves: two copies, one of which never gets refetches at the right time. The only legitimate exception is a form's initial values — and then render the form once data is there, pass `defaultValues` once, and use a `key` to reset the form when the entity changes.
+
+### Creating a QueryClient in the component body
+
+Writing `const queryClient = new QueryClient()` directly in a component body means every time that component re-renders, the entire cache disappears. Use `getQueryClient()` as above, or `useState(() => new QueryClient())` in apps without SSR.
+
+### Keys missing variables
+
+The `queryFn` uses `page` but the key is just `["orders"]`: change pages, the key stays the same, and the cache serves page 1. Turn on the `exhaustive-deps` rule and this bug disappears.
+
+### Treating isFetching as loading
+
+A full-page skeleton driven by `isFetching` makes the UI flash on every background refetch. Skeletons follow `isPending`; small indicators follow `isFetching`.
+
+### No signal, no res.ok check
+
+Two tiny lines in your API client — but without them the cache stores error pages as successful data, and wasted requests keep running after the user has left the page.
+
+<Callout type="note" title="Devtools are the best teacher">
+  Keep `ReactQueryDevtools` open for your first few days on a codebase. Watch queries move from fresh to stale, see which ones refetch when you alt-tab, which ones sit inactive waiting to be collected — you'll understand the cache model faster than from any article, this one included.
+</Callout>
+
+## Summary
+
+<Checklist>
+
+- Server state is an expiring copy of data someone else owns — manage it as a cache; don't copy it into a client store.
+- Keep query keys and `queryOptions` in a factory ordered general to specific; every variable the `queryFn` uses belongs in the key; enable the ESLint plugin's `exhaustive-deps`.
+- Your API client must throw when `res.ok` is false and pass `signal` through to `fetch`.
+- `staleTime` decides when to refetch; `gcTime` decides how long an entry lives once unused. Set a global `staleTime` above 0 and tune per data type.
+- After a mutation: `setQueryData` with the entity the server returned, `invalidateQueries` for lists at the right key scope, and return the Promise to keep `isPending`.
+- Optimistic updates: use `variables` when only one place needs to see it; use `cancelQueries` + snapshot + rollback when many places do; invalidate only when the last mutation settles.
+- Retry selectively: no retries on 4xx, add jitter, never auto-retry non-idempotent mutations.
+- `useSuspenseQuery` needs `Suspense`, an Error Boundary and `QueryErrorResetBoundary`; avoid two sequential suspense queries in one component.
+- With Next.js: a new QueryClient per request on the server, a singleton in the browser; `staleTime` above 0; prefetch + `HydrationBoundary`; one owner per piece of data.
+- Infinite queries: use cursors, set `maxPages`, and pair long lists with virtualization.
+- If a page only reads data at request time and has little interaction, Server Components are enough — don't add a client cache out of habit.
+
+</Checklist>

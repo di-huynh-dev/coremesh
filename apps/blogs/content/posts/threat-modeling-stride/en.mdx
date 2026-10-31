@@ -1,0 +1,644 @@
+---
+title: "Threat Modeling for Product Teams: STRIDE, Data Flow Diagrams and Trust Boundaries, from a 60-Minute Session to Tickets"
+excerpt: "How I run practical threat modeling with a product team: the four questions, a data flow diagram with trust boundaries, STRIDE per element on a real system with an SPA, API, Postgres, S3 uploads, a payment webhook and an admin panel, simple risk rating, threats turned into tickets, and a threat model that lives in the repo."
+---
+
+<Lead>The file attachment feature of a B2B product I worked on had been in production for three months when someone reported this: upload an `.html` file, send a colleague the link to view it, and the colleague's browser runs JavaScript right on the app's domain — enough to read their data. No line of code was "wrong" in the usual sense. The bug was in the design: user-uploaded files were served from the same origin as the application. A 30-minute conversation at design time, asking "which boundaries does this file cross, and who trusts it?", would have caught it before it existed. That's threat modeling: not a security-team ritual, not a 40-page document, but a design review wearing an attacker's hat. This post is how I run it with product teams — four questions, a data flow diagram with trust boundaries, STRIDE on a real system, risk rating simple enough to actually use, threats turned into tickets, and a threat model that lives next to the code.</Lead>
+
+## What threat modeling is, and what it isn't
+
+The frame I use is Adam Shostack's four questions, which are also the backbone of the Threat Modeling Manifesto:
+
+1. **What are we building?** — a model of the system, usually a data flow diagram.
+2. **What can go wrong?** — a list of threats, found methodically (STRIDE) rather than by inspiration alone.
+3. **What are we going to do about it?** — mitigate, accept, transfer or eliminate, and write the decision down.
+4. **Did we do a good job?** — check that mitigations actually happened and the model still matches the system.
+
+What threat modeling is **not**:
+
+- **Not a pentest.** A pentest finds holes in what you built; threat modeling finds holes in what you're *about to* build, while fixing is cheap — moving an arrow on a whiteboard instead of migrating data.
+- **Not an exhaustive list of every risk.** The goal is to find the threats that matter most and do something about them, not 100% coverage.
+- **Not the security team's job alone.** The people who understand the data flows best are the ones designing them. Security is there to support and ask hard questions, not to do it for you.
+
+| Activity | When | What it finds | Cost of fixing what it finds |
+| --- | --- | --- | --- |
+| Threat modeling | Design time, before and during coding | Design flaws: wrong trust boundaries, an unauthenticated flow, data going to the wrong place | Low — fix the diagram |
+| Security-minded code review | Every PR | Implementation bugs: missing authorization checks, injection | Medium |
+| SAST / dependency scanning | In CI | Known dangerous patterns, libraries with CVEs | Low to medium |
+| DAST / pentest | Once it runs | Real, exploitable vulnerabilities | High — sometimes a redesign |
+| Bug bounty / incidents | Production | Whatever everything else missed | Highest |
+
+They complement each other. But only threat modeling catches the class of bug where "every line of code is correct but the design is wrong" — like the HTML file story above.
+
+## Question 1: what are we building?
+
+The running example: an invoicing SaaS for small businesses. Each customer is a **tenant**.
+
+- A **React SPA** running in the customer's browser.
+- A **NestJS API** — session-cookie authentication, serves the SPA.
+- **Postgres** — tenants, users, invoices, payments.
+- An **S3 bucket** for attachments (contracts, receipts). The browser uploads **directly** to S3 with a presigned POST, not through the API.
+- A **worker** that receives "object created" events, scans for malware, generates thumbnails and previews, and writes results to Postgres.
+- A third-party **payment service provider (PSP)**: the API creates checkout sessions, and the PSP calls back with a **webhook** when a payment succeeds.
+- An **admin panel** for support staff: look up tenants, issue refunds, view as a customer to debug.
+
+### Drawing the data flow diagram
+
+A Data Flow Diagram (DFD) has only five kinds of element, and that simplicity is what makes it useful:
+
+| Element | Usual notation | In the example |
+| --- | --- | --- |
+| External entity — something you don't control | Rectangle | Customer browser, support staff, PSP |
+| Process — your code running | Circle or rounded rectangle | API, worker, admin panel |
+| Data store — data at rest | Two parallel lines | Postgres, S3 bucket |
+| Data flow — data in motion | Arrow | HTTPS request, webhook, SQL query, S3 event |
+| Trust boundary — where trust level changes | Dashed line | Internet / cloud, staff / admin zone, PSP / API |
+
+A few rules I apply when drawing:
+
+- **Every arrow is one specific data flow** with a label ("webhook payment.succeeded", not "communicates"). If you can't name an arrow, you don't understand that flow yet.
+- **No arrow connects two data stores directly**, and no data store talks directly to an external entity. There's always a process in between — if not, the diagram is hiding one (for example, "S3 sends an event" is really a notification configuration plus a consumer).
+- **The right level of detail** is the level at which every trust boundary is visible. No need to draw every microservice if they all sit behind the same boundary.
+
+I keep the diagram as code in the repo, so it gets reviewed and diffed like everything else:
+
+```text
+%% docs/design/attachments/dfd.mmd (Mermaid)
+flowchart LR
+  subgraph internet[Internet - untrusted]
+    browser[Customer browser / React SPA]
+  end
+  subgraph staff[Staff devices]
+    support[Support staff]
+  end
+  subgraph cloud[Our cloud account]
+    api((API - NestJS))
+    worker((Worker))
+    s3[(S3 uploads)]
+    pg[(Postgres)]
+    subgraph adminzone[Admin zone]
+      admin((Admin panel))
+    end
+  end
+  subgraph psp[Payment provider]
+    pay[PSP]
+  end
+  browser -- HTTPS + session cookie --> api
+  browser -- presigned POST upload --> s3
+  s3 -- object created --> worker
+  worker -- scan result, thumbnails --> pg
+  api -- SQL --> pg
+  api -- create checkout session --> pay
+  pay -- webhook payment.succeeded --> api
+  support -- SSO --> admin
+  admin -- SQL --> pg
+```
+
+### Trust boundaries: where to look hardest
+
+A trust boundary is where data or commands move from a less trusted zone into a more trusted one — or the reverse. Most real threats live there, so that's where you spend most of your time. The example has five boundaries, and three of them are easy to overlook:
+
+- **Browser → S3.** A direct upload means the API is **not in the middle**. Every check you're used to doing in the API (size, file type, permissions) has to be encoded in the presigned policy or re-checked after upload.
+- **S3 → worker.** The worker runs inside your VPC, but the content it processes is **bytes chosen by a stranger**. Trust boundaries don't follow the network; they follow where the data came from.
+- **Staff → admin panel.** Same company doesn't mean same trust level. The admin panel has power over **every** tenant, which makes staff accounts the most valuable target in the system.
+
+<Figure src="/blog/threat-modeling-stride-dfd.svg" alt="Data flow diagram of the invoicing SaaS with red dashed trust boundaries: an Internet zone containing the customer browser running a React SPA; a staff devices zone containing support staff; our cloud account zone containing the NestJS API, S3 uploads, Postgres, a worker that scans files and makes thumbnails, and a nested admin zone containing the admin panel; a payment provider zone containing the PSP. Arrows: browser to and from the API, tagged S I E; browser uploads directly to S3 with a presigned POST, tagged T I D; S3 triggers the worker, which writes results to Postgres, tagged E D; the API writes to Postgres; the API creates a checkout session at the PSP; the PSP sends a payment.succeeded webhook to the API, tagged S T R D; support staff act through the admin panel, tagged S R E; the admin panel writes to Postgres. A legend on the right spells out the six STRIDE letters" caption="Every flow that crosses a dashed line is where you ask the STRIDE questions. Red tags are the main threat categories I found at each crossing — note the direct upload to S3 and the file-processing worker, the two places the API isn't in the middle." />
+
+## Question 2: what can go wrong? STRIDE
+
+STRIDE, introduced at Microsoft, is six threat categories, each violating one security property:
+
+| Threat | Violates | Question to ask | Typical mitigation |
+| --- | --- | --- | --- |
+| **S**poofing | Authentication | Can someone pretend to be another user, service or system? | Strong authentication, signatures, mTLS, passkeys |
+| **T**ampering | Integrity | Can data be modified in transit, at rest, or by the client itself? | Signatures, MACs, server-side validation, minimal write access |
+| **R**epudiation | Non-repudiation | Can someone do something, deny it, and we can't prove otherwise? | Append-only audit logs with identity and time |
+| **I**nformation disclosure | Confidentiality | Can data reach someone who shouldn't see it? | Authorization, encryption, returning less data, log redaction |
+| **D**enial of service | Availability | Can someone make the system slow or dead cheaply? | Rate limits, quotas, timeouts, resource limits |
+| **E**levation of privilege | Authorization | Can someone do things beyond their permissions? | Server-side authorization, least privilege, sandboxing |
+
+### STRIDE per element type
+
+Not every category applies to every element. The classic "STRIDE-per-element" chart keeps you from asking meaningless questions:
+
+| Element type | S | T | R | I | D | E |
+| --- | --- | --- | --- | --- | --- | --- |
+| External entity | ✓ | | ✓ | | | |
+| Process | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Data store | | ✓ | ✓ (if it's a log) | ✓ | ✓ | |
+| Data flow | | ✓ | | ✓ | ✓ | |
+
+I use this chart as a **prompt**, not a rule. The point of STRIDE is to force you to look at each element from six angles instead of just the familiar one — backend engineers think about injection and forget repudiation; frontend engineers think about XSS and forget DoS.
+
+## Walking STRIDE through the example
+
+Rather than filling in all 6 × 9 cells, I go **boundary crossing by boundary crossing**, starting with the most dangerous.
+
+### The payment webhook: S, T, R, D
+
+A webhook endpoint is a public URL that **anyone on the internet can call**. If the API trusts any request that says "payment.succeeded", an attacker activates a paid plan without paying.
+
+- **S** — spoofing the PSP: verify an HMAC signature over the **raw body**.
+- **T** — modifying the content: the signature covers the whole body, so changing one byte breaks it.
+- **R / replay** — resending an old valid event: check the signed timestamp and store `event.id` under a unique constraint.
+- **D** — flooding the endpoint: verify the signature before any heavy work, rate limit at the edge, process asynchronously.
+
+```ts
+// src/billing/payment-webhook.controller.ts
+import {
+  Controller, Headers, HttpCode, Post, Req, UnauthorizedException, type RawBodyRequest,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import type { Request } from "express";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { BillingService } from "./billing.service";
+
+const TOLERANCE_SECONDS = 300;
+
+function parseSignature(header: string): { t?: string; v1?: string } {
+  return Object.fromEntries(header.split(",").map((part) => part.trim().split("=", 2)));
+}
+
+@Controller("webhooks/payments")
+export class PaymentWebhookController {
+  constructor(
+    private readonly billing: BillingService,
+    private readonly config: ConfigService,
+  ) {}
+
+  @Post()
+  @HttpCode(200)
+  async handle(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers("x-signature") signature?: string,
+  ) {
+    const raw = req.rawBody; // requires NestFactory.create(AppModule, { rawBody: true })
+    if (!raw || !signature) throw new UnauthorizedException();
+
+    const { t, v1 } = parseSignature(signature);
+    const ts = Number(t);
+    if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > TOLERANCE_SECONDS) {
+      throw new UnauthorizedException("stale or missing timestamp");
+    }
+
+    const expected = createHmac("sha256", this.config.getOrThrow<string>("PAYMENT_WEBHOOK_SECRET"))
+      .update(`${t}.`)
+      .update(raw)
+      .digest();
+    const given = Buffer.from(v1 ?? "", "hex");
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+      throw new UnauthorizedException("bad signature");
+    }
+
+    const event = JSON.parse(raw.toString("utf8")) as { id: string; type: string };
+    // Idempotent: INSERT ... ON CONFLICT (provider_event_id) DO NOTHING, then enqueue.
+    await this.billing.recordWebhook(event.id, event.type);
+  }
+}
+```
+
+The header format mimics the `t=...,v1=...` style many PSPs use. If your PSP ships an SDK with an official verify function (such as `stripe.webhooks.constructEvent`), use that instead of rolling your own. Three details people regularly get wrong:
+
+- **Sign over the raw body.** Parsing the JSON and re-`JSON.stringify`-ing it changes key order and whitespace — the signature never matches, and someone "fixes" it by turning the check off.
+- **Compare with `timingSafeEqual`**, not `===`.
+- **Don't trust the amount in the payload.** The worker that handles the event calls the PSP's API by id to fetch the real state before activating the plan. The signature proves origin; the lookup proves current state. I covered idempotency and the outbox for this kind of worker in detail in the [BullMQ background jobs post](/blog/nestjs-background-jobs-bullmq).
+
+### Direct upload to S3: T, I, D
+
+A presigned URL is a **permission slip** the API hands to the browser. Anything not written on the slip is up to the browser.
+
+- **T** — a 2 GB upload, an `.html` file declared as `image/png`, overwriting someone else's key.
+- **I** — a public bucket or objects, guessable keys, view links that live too long.
+- **D** — mass uploads of large files inflating storage costs and clogging the worker.
+
+```ts
+// src/attachments/attachments.service.ts
+import { S3Client } from "@aws-sdk/client-s3";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import { BadRequestException, Injectable } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
+
+const ALLOWED = new Map([
+  ["application/pdf", "pdf"],
+  ["image/png", "png"],
+  ["image/jpeg", "jpg"],
+]);
+const MAX_BYTES = 10 * 1024 * 1024;
+
+@Injectable()
+export class AttachmentsService {
+  constructor(
+    private readonly s3: S3Client,
+    private readonly repo: AttachmentsRepository,
+  ) {}
+
+  async createUpload(ctx: { tenantId: string; userId: string }, contentType: string) {
+    const ext = ALLOWED.get(contentType);
+    if (!ext) throw new BadRequestException("unsupported file type");
+
+    // The server picks the key: namespaced by tenant, random, inside a quarantine prefix
+    const key = `quarantine/${ctx.tenantId}/${randomUUID()}.${ext}`;
+
+    const { url, fields } = await createPresignedPost(this.s3, {
+      Bucket: process.env.UPLOADS_BUCKET!,
+      Key: key,
+      Conditions: [
+        ["content-length-range", 1, MAX_BYTES],
+        ["eq", "$Content-Type", contentType],
+      ],
+      Fields: { "Content-Type": contentType },
+      Expires: 300, // seconds
+    });
+
+    await this.repo.insert({ key, tenantId: ctx.tenantId, uploadedBy: ctx.userId, status: "pending_scan" });
+    return { url, fields, attachmentKey: key };
+  }
+}
+```
+
+I use a presigned POST rather than a PUT because the POST policy supports a `content-length-range` condition. But remember that `Content-Type` is still **whatever the client declares** — the policy only ensures it matches a value you allow, not that the bytes are actually a PDF. The worker has to check magic bytes, and a file only moves from `quarantine/` to its permanent location after passing.
+
+Then the **serving** side — the actual bug from the intro:
+
+```ts
+import { GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+const url = await getSignedUrl(
+  s3,
+  new GetObjectCommand({
+    Bucket: process.env.UPLOADS_BUCKET!,
+    Key: attachment.key,
+    ResponseContentDisposition: `attachment; filename="${attachment.safeFileName}"`,
+    ResponseContentType: "application/octet-stream",
+  }),
+  { expiresIn: 60 },
+);
+```
+
+User uploads are served from a **separate domain** (S3's own domain or a dedicated user-content domain, never a subdomain of the app), with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`. In-app previews are images the worker **re-renders** from the original, never the original itself. I went deep on browser-side XSS and CSP in [Practical Frontend Security](/blog/frontend-security-in-practice).
+
+### The file-processing worker: E, D
+
+Image, PDF and office document libraries have a long history of code-execution bugs triggered by malicious files. Your worker is running those libraries on bytes a stranger picked.
+
+- **E** — a file exploits a parser bug to run code inside the worker, then uses the worker's credentials to read the whole bucket or database.
+- **D** — "decompression bombs": a few-KB image that decodes into billions of pixels, a thousand-page PDF, nested zips.
+
+The mitigation isn't "use a library without bugs" — there isn't one. It's **limiting the blast radius**: the worker runs in its own container with no write access beyond its prefix, no internet egress, an IAM role that can only read `quarantine/` and write `previews/`, and a Postgres user that can only write the `attachment_scans` table. Add limits on pixels, pages, memory and time per job. If it's exploited, the attacker gets a container that can't do much.
+
+### API and Postgres: I, E — IDOR and mass assignment
+
+This is the bug I see most in multi-tenant SaaS: `GET /invoices/:id` checks that the user is **logged in** but not that the invoice **belongs to their tenant**. Change the id, read another company's invoice.
+
+```ts
+// src/invoices/invoices.repository.ts
+async findForTenant(ctx: RequestContext, id: string) {
+  const invoice = await this.prisma.invoice.findFirst({
+    where: { id, tenantId: ctx.tenantId }, // the tenant condition lives in the query itself
+  });
+  // 404, not 403: don't confirm to a prober that the id exists
+  if (!invoice) throw new NotFoundException();
+  return invoice;
+}
+```
+
+A second layer, for when someone forgets the tenant condition in a new query — Postgres Row-Level Security:
+
+```sql
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON invoices
+  USING (tenant_id = current_setting('app.tenant_id')::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id')::uuid);
+
+-- Inside each request's transaction:
+-- SET LOCAL app.tenant_id = '<tenant id from the session>';
+```
+
+Two practical notes: table owners **bypass** RLS by default (unless you use `FORCE ROW LEVEL SECURITY`), so the application must connect with a non-owner role; and with a connection pool, `SET LOCAL` has to be inside a transaction so it doesn't leak into another request.
+
+**Mass assignment** is IDOR's sibling: a profile update endpoint takes the whole body and passes it straight to the ORM, and the attacker adds `"role": "owner"` or `"tenantId": "..."`. In NestJS, `ValidationPipe` with `whitelist: true` and `forbidNonWhitelisted: true` plus explicit DTOs stops most of it — and never read `tenantId` from the body, only from the session.
+
+### The admin panel: S, R, E
+
+- **S** — phishing a support account. Mitigation: SSO with phishing-resistant MFA (passkeys or security keys), short sessions, the admin panel on its own origin. I wrote about passkeys in [NestJS auth with passkeys and sessions](/blog/nestjs-auth-passkeys-sessions).
+- **R** — staff view customer data or issue a refund and nobody can trace who did it or why.
+- **E** — the "view as customer" feature becomes a back door to change a tenant's billing details.
+
+```sql
+CREATE TABLE admin_audit_log (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  actor_id    uuid        NOT NULL,
+  action      text        NOT NULL,        -- 'tenant.viewed', 'refund.issued', 'impersonation.started'
+  tenant_id   uuid,
+  target      text,
+  reason      text        NOT NULL,        -- required: support ticket or justification
+  request_id  text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- The admin panel's role can append and read, never rewrite history
+GRANT INSERT, SELECT ON admin_audit_log TO admin_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON admin_audit_log FROM admin_app;
+```
+
+An audit log in a database admins can touch can still be wiped by someone with higher privileges — so I also ship a copy to a separate log store the application team can't delete from. As for impersonation: read-only by default, time-boxed, requires a reason, and **visible to the customer** in their own activity history. That last one is the cheapest, most effective repudiation mitigation I know.
+
+### The SPA and its users: S, I
+
+On the browser side, the main threats are session takeover (credential stuffing, XSS stealing or riding the session) and data leaking through things like tokens in URLs or analytics payloads. The detailed mitigations — `HttpOnly` cookies with `SameSite`, nonce-based CSP, Trusted Types — are in the [frontend security post](/blog/frontend-security-in-practice). If the product gets an AI feature that reads customers' invoices or emails, add an LLM element to the DFD and continue with [LLM application security and prompt injection](/blog/llm-app-security-prompt-injection) — that model has threats STRIDE doesn't describe well.
+
+### The threat table
+
+This is the real output of a threat modeling session — a table, not an essay:
+
+| ID | Element | STRIDE | Threat | Mitigation | L × I | Ticket |
+| --- | --- | --- | --- | --- | --- | --- |
+| T01 | Webhook | S | Forged `payment.succeeded` activates a paid plan | HMAC over raw body, re-fetch state from the PSP | 3 × 3 = 9 | SEC-101 |
+| T02 | Webhook | T, R | Replay of an old valid event | 5-minute timestamp tolerance, unique `provider_event_id` | 2 × 2 = 4 | SEC-102 |
+| T03 | Webhook | D | Flooding the public endpoint | Verify signature first, edge rate limit, async processing | 2 × 2 = 4 | SEC-103 |
+| T04 | Browser → S3 | T, D | File too large or not the declared type | `content-length-range`, `eq Content-Type`, worker checks magic bytes | 3 × 2 = 6 | SEC-104 |
+| T05 | S3 bucket | I | Public objects or guessable keys | Block Public Access, random keys, 60-second presigned GET | 2 × 3 = 6 | SEC-105 |
+| T06 | File serving | E, I | Uploaded HTML/SVG runs script on the app origin | Separate domain, `attachment`, `nosniff`, re-rendered previews | 3 × 3 = 9 | SEC-106 |
+| T07 | Worker | E | Malicious file exploits a parser bug | Sandboxed container, no egress, minimal IAM, patched libraries | 2 × 3 = 6 | SEC-107 |
+| T08 | Worker | D | Decompression bomb, thousand-page PDF | Pixel, page, memory and time limits | 2 × 2 = 4 | SEC-108 |
+| T09 | API | I, E | IDOR: read another tenant's invoice by changing the id | Tenant condition in queries, RLS, automated tests | 3 × 3 = 9 | SEC-109 |
+| T10 | API | T, E | Mass assignment of `role`, `tenantId` | DTO whitelist, `forbidNonWhitelisted`, tenant from session | 2 × 3 = 6 | SEC-110 |
+| T11 | API | S | Credential stuffing on login | Passkeys, per-IP and per-account rate limits, breached-password check | 3 × 2 = 6 | SEC-111 |
+| T12 | Admin panel | S | Phished support account | SSO + passkeys, short sessions, separate origin | 2 × 3 = 6 | SEC-112 |
+| T13 | Admin panel | R | Staff actions can't be traced | Append-only audit log with reasons, off-system copy | 2 × 2 = 4 | SEC-113 |
+| T14 | Admin panel | E | Impersonation used to change billing details | Read-only, time-boxed, customer-visible impersonation | 2 × 3 = 6 | SEC-114 |
+| T15 | Postgres | I | Leaked backups or credentials | Encrypted backups, a role per service, secrets manager | 1 × 3 = 3 | Accepted, review Q1 |
+| T16 | Logs | I | Tokens, emails, account numbers in logs | Redaction in the logger, no request bodies | 2 × 2 = 4 | SEC-116 |
+
+## Question 3: what will we do? Rating risk and deciding
+
+### Likelihood × impact, kept deliberately simple
+
+I use a 1–3 scale on both axes, with concrete definitions so two people land on the same number:
+
+| | Low (1) | Medium (2) | High (3) |
+| --- | --- | --- | --- |
+| **Likelihood** | Needs an insider, or a chain of rare conditions | Needs a valid account and some skill | Anyone on the internet, off-the-shelf tools |
+| **Impact** | One user, recoverable | One tenant's data, or hours of downtime | Many tenants' data, lost money, lost admin control |
+
+Score = likelihood × impact. **6–9: fix before launch. 3–4: owner and a deadline this quarter. 1–2: backlog or accept.** That's it. The number exists to **rank**, not to measure precisely. If the team argues for 15 minutes about whether something is a 4 or a 6, take the higher number and move on.
+
+<Callout type="warning" title="Why I don't use DREAD">
+  DREAD (Damage, Reproducibility, Exploitability, Affected users, Discoverability) looks more scientific with five axes and a 10-point scale, but in practice the scores are highly subjective — two people rating the same threat often land far apart. The Discoverability axis even rewards "nobody will find it" thinking, which is security through obscurity. Microsoft, where DREAD came from, stopped using it long ago. More axes don't make the score more accurate; they just make the argument longer. CVSS, meanwhile, is for specific known vulnerabilities, not design-level threats.
+</Callout>
+
+### Four options for each threat
+
+- **Mitigate:** most cases — add a control.
+- **Eliminate:** change the design so the threat no longer exists. Don't store card numbers and you can't leak card numbers — which is why you use the PSP's hosted checkout.
+- **Transfer:** let someone else carry it, e.g. the PSP carries the PCI DSS scope. Not "hand it off and forget" — you still verify they do it well.
+- **Accept:** legitimate, **provided** someone with authority signs it, there's a reason, and there's an **expiry date** for review. An accepted risk with no expiry is a forgotten risk.
+
+## From threats to tickets
+
+A threat model nobody acts on is worthless. Every threat scoring 3 or more becomes a ticket with **verifiable acceptance criteria** — ideally a test:
+
+```text
+SEC-109  Prevent IDOR on tenant-scoped resources
+Threat:     T09 — a tenant B user reads tenant A's invoice by changing the id (I, E). Score 9.
+Scope:      /invoices/:id, /invoices/:id/pdf, /attachments/:id, /payments/:id
+Mitigation:
+  - Every by-id query includes a tenant_id taken from the session
+  - RLS enabled on invoices, attachments, payments; the app connects with a non-owner role
+Acceptance criteria:
+  - E2E test: a tenant B user calling each endpoint with a tenant A id gets 404
+  - Test: a query without SET app.tenant_id returns 0 rows
+  - Lint/review rule: new repositories must take a RequestContext
+Links:      docs/design/attachments/threats.yaml (T09)
+```
+
+The matching test:
+
+```ts
+// test/invoices.idor.e2e-spec.ts
+describe("tenant isolation", () => {
+  it.each(["/invoices/%s", "/invoices/%s/pdf", "/attachments/%s"])(
+    "tenant B cannot read tenant A's %s",
+    async (path) => {
+      const { invoiceId } = await seedInvoice({ tenantId: tenantA.id });
+
+      await request(app.getHttpServer())
+        .get(path.replace("%s", invoiceId))
+        .set("Cookie", await sessionCookieFor(userOfTenantB))
+        .expect(404);
+    },
+  );
+});
+```
+
+The test doesn't just prove the mitigation was done — it **keeps** it from being removed by accident in a refactor six months later. For threats you can't test (staff phishing, say), the acceptance criterion is a verifiable configuration: "SSO requires a phishing-resistant method for the support group".
+
+## Attack trees, briefly
+
+STRIDE is good for sweeping wide. When there's one goal an attacker really wants, an **attack tree** (popularized by Bruce Schneier in the late 1990s) helps you dig deep: the root is the goal, branches are ways to reach it, with OR nodes (any one way) and AND nodes (all required).
+
+```text
+Goal: use a paid plan without paying
+├── OR  Forge a payment.succeeded webhook
+│   ├── AND Know the webhook URL (easy — it's in the docs)
+│   │   └── Have the webhook signing secret
+│   │       ├── OR  Secret leaked in the repo / logs / CI environment
+│   │       └── OR  Endpoint doesn't verify signatures          ← T01
+│   └── Replay another tenant's valid payment event            ← T02
+├── OR  Tamper with the price in the create-checkout request (price from the client)
+├── OR  Refund abuse: pay, get the plan, charge back, plan never revoked
+└── OR  Social-engineer support into "activating it manually"  ← T12, T14
+```
+
+This tree surfaces two threats the initial STRIDE pass missed: **price taken from the client** (always compute the price server-side from the plan id) and **chargebacks that don't revoke the plan** (a business logic hole, not a technical bug). I only draw attack trees for the two or three most valuable goals — drawing them for everything is a lot of effort.
+
+## LINDDUN: when the question is privacy
+
+STRIDE asks "what can an attacker do". But many personal data risks happen while **the system works exactly as designed**. LINDDUN is a privacy threat modeling framework that uses the same DFD:
+
+| Category | Question | In the example |
+| --- | --- | --- |
+| **L**inking | Can separate pieces of data be tied to the same person? | Analytics joining in-app behavior with marketing email |
+| **I**dentifying | Can someone be identified from "anonymous" data? | An "anonymized" export that still has company tax IDs |
+| **N**on-repudiation | Are users bound to actions they need to be able to deny? | Rare for invoices; crucial for whistleblowing or internal surveys |
+| **D**etecting | Can the existence of a person or relationship be inferred? | A "forgot password" form revealing which emails are registered |
+| **D**ata disclosure | Is more collected, stored or shared than needed? | Sending full invoices to a third-party support tool |
+| **U**nawareness & unintervenability | Do users know, and can they intervene? | No way to view, export or delete one's own data |
+| **N**on-compliance | Does it violate laws or policies? | Retention periods, personal data processing under local law |
+
+I don't run full LINDDUN every time. But for features that touch personal data — analytics, exports, third-party integrations, AI — I add 15 minutes walking this table.
+
+## Running a 60-minute threat modeling session
+
+### Preparation (the designer, about 30 minutes)
+
+- A draft DFD and a short feature description sent **a day ahead**. Nobody should see the diagram for the first time in the meeting.
+- Trust boundaries and open questions marked in advance.
+- Invite 4–6 people: the designer, an engineer who'll build it, someone who knows operations/infrastructure, someone from security if you have them, and **a skeptic** — usually someone not working on this feature directly.
+
+### Agenda
+
+| Minutes | Activity | Output |
+| --- | --- | --- |
+| 0–10 | The designer walks through the DFD. Everyone corrects it: "this arrow is missing", "this actually goes through a queue" | An agreed DFD |
+| 10–40 | Walk each trust boundary asking STRIDE. Record every threat, **don't** debate mitigations yet | A raw threat list |
+| 40–50 | Merge duplicates, score L × I, pick decisions for high scorers | A scored threat table |
+| 50–60 | Assign owners, create tickets, record accepted risks and review dates | Tickets, owners, review dates |
+
+### Facilitation tips
+
+- **Separate finding threats from fixing them.** When someone starts designing a mitigation at minute 15, write it down and move on. Otherwise all 40 minutes go to the first threat.
+- **Ask "and then what?"** The attacker gets into the worker — then what? Which credentials do they have, what can they reach? That question turns vague threats into ones with a clear impact.
+- **There are no silly questions.** Newcomers often ask "what if you call this endpoint directly, without the UI?" — and it's often the best question of the session.
+- **Don't let it become a trial.** The goal is to find holes in the design, not in the designer.
+
+<Callout type="tip" title="Start small">
+  For your first session, pick one feature being designed — not the whole system. "Threat model the entire platform" is a project that never ends. One feature, one hour, five tickets is a success you can repeat.
+</Callout>
+
+## Making it continuous
+
+A threat model written once and parked in a wiki is wrong within three sprints. The only approach I've seen work is keeping it **next to the code and the design doc**, changing along with them.
+
+### The threat model in the repo
+
+```text
+docs/design/attachments/
+├── design.md            # design doc: context, options, decisions
+├── dfd.mmd              # Mermaid diagram, reviewed like code
+└── threats.yaml         # structured threat table
+```
+
+```yaml
+# docs/design/attachments/threats.yaml
+feature: attachments
+last_reviewed: 2026-10-11
+reviewers: [di.huynh, an.tran, security-guild]
+threats:
+  - id: T06
+    element: file-serving
+    stride: [E, I]
+    title: Uploaded HTML/SVG runs script on the app origin
+    likelihood: 3
+    impact: 3
+    decision: mitigate
+    ticket: SEC-106
+    status: done
+    verified_by: test/attachments.serving.e2e-spec.ts
+  - id: T15
+    element: postgres
+    stride: [I]
+    title: Leaked backups or credentials
+    likelihood: 1
+    impact: 3
+    decision: accept
+    accepted_by: cto
+    reason: Backups encrypted by the managed service; per-service roles planned for Q1
+    review_by: 2027-01-31
+```
+
+A structured format lets CI do the boring checks: threats scoring 6 or more must have a ticket, `accept` threats must have `accepted_by` and `review_by`, and a past `review_by` fails the build.
+
+```ts
+// scripts/check-threats.ts
+import { globSync, readFileSync } from "node:fs";
+import { parse } from "yaml";
+
+type Threat = {
+  id: string; likelihood: number; impact: number; decision: string;
+  ticket?: string; accepted_by?: string; review_by?: string;
+};
+
+let problems = 0;
+for (const file of globSync("docs/design/**/threats.yaml")) {
+  const { threats } = parse(readFileSync(file, "utf8")) as { threats: Threat[] };
+  for (const t of threats) {
+    const score = t.likelihood * t.impact;
+    if (score >= 6 && t.decision !== "accept" && !t.ticket) {
+      problems++; console.error(`${file} ${t.id}: score ${score} but no ticket`);
+    }
+    if (t.decision === "accept" && (!t.accepted_by || !t.review_by)) {
+      problems++; console.error(`${file} ${t.id}: accepted risk missing signer or review date`);
+    }
+    if (t.review_by && new Date(t.review_by) < new Date()) {
+      problems++; console.error(`${file} ${t.id}: review overdue (${t.review_by})`);
+    }
+  }
+}
+process.exit(problems ? 1 : 0);
+```
+
+`fs.globSync` is available in Node 22 and later, so the script needs no dependency beyond a YAML parser.
+
+### When to revisit
+
+The threat model doesn't need updating on every PR. It needs updating when **the diagram changes**:
+
+- A new external entity: a third party, a new kind of user, an integration.
+- A boundary added or moved: splitting a service, switching to direct uploads, opening an API to partners.
+- A change in authentication or authorization.
+- Starting to store a new kind of sensitive data.
+- After every security incident — was this threat in the model? If not, why was it missed?
+
+One line in the PR template is enough of a nudge:
+
+```text
+## Security
+- [ ] Does this PR add/change an external entity, trust boundary, auth method or sensitive data type?
+      If so: update docs/design/<feature>/dfd.mmd and threats.yaml, and tag the security guild.
+```
+
+### Question 4: did we do a good job?
+
+I review quarterly, briefly:
+
+- How many tickets from the threat model are closed, and how many are stuck? Is any score-9 threat still open?
+- Are mitigations verified by a test or configuration, or only "done" on a ticket?
+- Of this quarter's incidents and vulnerability reports — which were already in the threat model? Which were missed, and was it because the diagram was wrong or because nobody asked the right question?
+- Which accepted risks are due for review?
+
+The third question is the real quality measure. A good threat model isn't the longest one; it's the one where, when an incident happens, you find it was predicted — or you understand exactly why it wasn't.
+
+On tooling: a whiteboard and a Mermaid file are enough to start. When you need more, OWASP Threat Dragon and the Microsoft Threat Modeling Tool let you draw DFDs and suggest STRIDE threats; pytm and Threagile let you describe the system as code and generate threats automatically. Tools help with coverage, but the most important threat usually comes from someone in the room asking "wait, which domain is this file served from?".
+
+## Mistakes I keep seeing
+
+**The threat model as a compliance document.** Forty pages, written once for an audit, never read again. A threat table in the repo with tickets attached is worth far more.
+
+**Doing it after the code is written.** By then every finding is expensive and launch pressure means everything gets "accepted". Threat modeling belongs in the design doc phase.
+
+**Diagrams without trust boundaries.** A beautiful architecture diagram with boxes and arrows and not a single dashed line. Without boundaries you don't know where to ask STRIDE.
+
+**Treating the internal network as trusted.** "The worker is in the VPC, so it's safe" — while it processes strangers' files. Trust follows where data came from, not IP addresses.
+
+**Ignoring insiders.** Admin panels, support tools and ops scripts hold the broadest permissions in the system and are often the least protected.
+
+**Trusting third-party data because it comes from a "partner".** Webhooks without signature checks, partner API data without validation. Partners get breached too, and anyone can call your URL.
+
+**Scoring instead of deciding.** Twenty minutes arguing 4 versus 6, zero minutes on "so who fixes it, and by when". The numbers exist to rank.
+
+**Accepting risk with no expiry.** "Accepted" without a signer and a review date is a polite way of saying "forget it".
+
+**One session for the whole system.** The scope is too big, the meeting rambles, the results are shallow. One session per feature, and the overall model assembled piece by piece.
+
+## Summary
+
+<Checklist>
+
+- Use the four questions: what are we building, what can go wrong, what will we do, did we do a good job — and answer each with a concrete output.
+- Draw a DFD with external entities, processes, data stores, named data flows and explicit trust boundaries; keep it as code in the repo.
+- Spend most of your time at boundary crossings, especially where the API isn't in the middle: direct uploads, workers processing strangers' data, public webhooks, admin panels.
+- Walk STRIDE per element, using the STRIDE-per-element chart as a prompt, not a rule.
+- Webhooks: HMAC over the raw body, `timingSafeEqual`, timestamp tolerance, idempotency by event id, re-fetch state from the third party.
+- File uploads: server-chosen keys, presigned POST with `content-length-range`, magic-byte checks, a quarantine prefix, serving from a separate domain with `attachment` and `nosniff`; a sandboxed worker with no egress.
+- Multi-tenancy: a tenant condition in every query, RLS as a second layer, DTO whitelists, automated IDOR tests.
+- Admin: SSO with phishing-resistant MFA, an append-only audit log with reasons, read-only impersonation visible to customers.
+- Rate risk with likelihood × impact on a 1–3 scale with concrete definitions; avoid DREAD; the numbers rank, they aren't for arguing.
+- Every significant threat becomes a ticket with verifiable acceptance criteria, ideally a test; accepted risks have a signer and a review date.
+- Use attack trees for the few most valuable goals, LINDDUN for features touching personal data.
+- Run 60-minute sessions with the DFD sent ahead, separate finding from fixing, and finish with owners and tickets.
+- Revisit when the diagram changes, enforce with CI, and each quarter compare real incidents with what the model predicted.
+
+</Checklist>

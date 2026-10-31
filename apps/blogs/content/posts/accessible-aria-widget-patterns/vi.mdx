@@ -1,0 +1,782 @@
+---
+title: "Widget tuỳ biến dễ tiếp cận trong React: những pattern ARIA thực sự chạy được"
+excerpt: "Khi phần tử native không còn đủ, ARIA là một bản hợp đồng bạn phải giữ. Accessibility tree và cách tính accessible name, roving tabindex hay aria-activedescendant, dựng combobox và tabs từng bước, live region thực sự lên tiếng, focus khi đổi route và cách kiểm thử tất cả."
+---
+
+<Lead>Design system nào mình từng làm cũng đến lúc mọc ra một combobox tự viết, một dải tab và một dropdown "thông minh" — và gần như cái nào cũng được ship với trải nghiệm screen reader mà chưa ai trong team từng nghe qua. Không phải vì mọi người không quan tâm, mà vì ARIA trông như vài attribute rắc thêm vào, còn thực tế nó là một bản hợp đồng: mỗi role bạn khai báo kéo theo hành vi bàn phím, state và quy tắc focus mà trình duyệt sẽ *không* làm hộ. Bài này là cách mình dựng widget tuỳ biến trong React theo WAI-ARIA Authoring Practices: khi nào đừng dựng, accessibility tree và accessible name thực sự hoạt động ra sao, hai mô hình focus, dựng combobox và tabs từng bước, live region thực sự phát tiếng, focus khi đổi route, và cách mình kiểm thử tất cả — kể cả cần nghe gì trong NVDA và VoiceOver.</Lead>
+
+## Quy tắc đầu tiên của ARIA là một ngân sách, không phải khẩu hiệu
+
+Hướng dẫn dùng ARIA của W3C mở đầu bằng một quy tắc ai cũng trích dẫn nhưng ít team áp dụng: nếu đã có phần tử hoặc attribute HTML native mang đúng ngữ nghĩa và hành vi bạn cần, hãy dùng nó thay vì lấy một phần tử khác rồi gắn ARIA. Authoring Practices Guide (APG) còn nói thẳng hơn trong phần "read me first": không có ARIA còn tốt hơn ARIA sai.
+
+Lý do là cơ học chứ không phải triết lý. ARIA thay đổi đúng một thứ: **phần tử báo cáo gì cho công nghệ hỗ trợ**. Nó không làm phần tử focus được, không thêm xử lý bàn phím, không khiến một `div` submit được form. Viết `role="button"` lên một `div` là bạn vừa hứa với người dùng screen reader — "đây là nút, Enter và Space sẽ kích hoạt nó" — một lời hứa mà code của bạn giờ phải tự giữ, bằng tay, mãi mãi.
+
+Nên mình coi mỗi role ARIA là một khoản chi phí phải ký nhận, và luôn kiểm tra danh sách native trước:
+
+| Nhu cầu | Native trước | Được gì miễn phí | Khi nào đáng tự dựng |
+| --- | --- | --- | --- |
+| Hành động | `<button>` | Focus, Enter và Space, `disabled`, submit form | Gần như không bao giờ |
+| Ẩn/hiện một khu vực | `<details>` / `<summary>` | State mở/đóng, bàn phím, tìm trong trang | Hiếm; `name` còn cho cả accordion loại trừ |
+| Chọn một trong danh sách ngắn | `<select>` | Bàn phím, typeahead, picker trên mobile | Option có nội dung phức tạp, tìm kiếm async |
+| Ô nhập có gợi ý | `<input list>` + `<datalist>` | Giao diện gợi ý | Cần kiểm soát lọc, kết quả async, style |
+| Modal | `<dialog>` + `showModal()` | Top layer, nền inert, Esc | Hầu như không — xem [Modal dialog dễ tiếp cận](/blog/accessible-modal-dialogs) |
+| Panel nổi | Attribute `popover` | Top layer, light dismiss | *Role* bên trong vẫn là việc của bạn |
+| Tabs | không có | — | Tự dựng |
+| Combobox có lọc | không có bản nào style được và async | — | Tự dựng |
+
+Hai ghi chú về bảng này. Thứ nhất, `<select>` đang style được nhiều hơn hẳn: Chromium đã có customizable select (`appearance: base-select`), cho phép đặt nội dung phong phú vào option mà vẫn giữ hành vi native. Hãy kiểm tra mức hỗ trợ với người dùng của bạn trước khi dựa vào nó, nhưng rất đáng xem lại mọi "select" tự viết bạn đang giữ. Thứ hai, hai dòng cuối là nơi phần lớn team thực sự cần ARIA, và là những gì phần còn lại của bài sẽ dựng.
+
+<Callout type="note" title="Phạm vi">
+Dialog đã có bài riêng: [Modal dialog dễ tiếp cận](/blog/accessible-modal-dialogs) nói về `showModal()`, top layer, focus ban đầu, trả focus và `inert`. Mình sẽ không lặp lại ở đây — bài này nói về widget nằm *trong* trang: combobox, tabs, toolbar và các thông báo xung quanh chúng.
+</Callout>
+
+## Accessibility tree và cách tính tên
+
+Screen reader không đọc DOM của bạn. Trình duyệt dựng một cấu trúc song song — **accessibility tree** — và đưa nó ra qua API của nền tảng (UI Automation và IAccessible2 trên Windows, NSAccessibility trên macOS, AT-SPI trên Linux). Mỗi node đại khái có:
+
+- một **role** (button, combobox, option, tab, heading…),
+- một **accessible name** ("Xoá hoá đơn INV-2041"),
+- một **description** tuỳ chọn,
+- **state và property** (expanded, selected, checked, disabled, level, vị trí trong tập),
+- và các quan hệ (controls, active descendant, labelled by).
+
+Rất nhiều DOM không bao giờ vào cây: `display: none`, `hidden`, cây con có `aria-hidden="true"`, và các `div`, `span` chung chung chỉ góp phần text. Bạn có thể — và nên — nhìn thẳng vào cây. Chrome và Edge có pane Accessibility trong tab Elements với chế độ xem toàn cây; Firefox có hẳn Accessibility Inspector. Khi một widget "không chạy với screen reader", việc đầu tiên mình làm là xem role, name và state trong pane đó có đúng như mình nghĩ không. Một nửa số lần, bug nằm ngay đó.
+
+### Cách tính accessible name, những phần quan trọng
+
+Thuật toán được đặc tả trong *Accessible Name and Description Computation* (accname). Nó có rất nhiều trường hợp biên, nhưng thứ tự ưu tiên bạn cần hằng ngày là:
+
+1. **`aria-labelledby`** — thắng mọi thứ. Có thể trỏ tới nhiều ID (nối theo thứ tự) và trỏ được cả tới phần tử đang ẩn.
+2. **`aria-label`** — chuỗi đặt thẳng trên phần tử.
+3. **Nhãn native** — `<label for>`, `alt` của ảnh, `<caption>` của bảng, `<legend>` của fieldset, `<title>` trong SVG.
+4. **Tên từ nội dung** — chỉ với những role cho phép: button, link, option, tab, heading, cell và vài role khác. Một `div` có `role="dialog"` *không* lấy tên từ nội dung bên trong.
+5. **Phương án cuối** — `title`, và với input là `placeholder`. Coi đây là dấu hiệu "có gì đó sai", không phải cách đặt nhãn.
+
+Những hệ quả thực tế hay gặp khi review code:
+
+```tsx
+// ❌ aria-label trên phần tử không có role: div chung chung không đặt tên được,
+// nên phần lớn screen reader bỏ qua nhãn này hoàn toàn.
+<div aria-label="Biểu đồ doanh thu">{chart}</div>
+
+// ✅ Cho nó một role hỗ trợ tên, hoặc dùng phần tử thật.
+<figure aria-labelledby="revenue-title">
+  <h2 id="revenue-title">Doanh thu 12 tháng gần nhất</h2>
+  {chart}
+</figure>
+
+// ✅ Nút chỉ có icon: tên lấy từ aria-label, icon chỉ để trang trí.
+<button type="button" aria-label="Xoá hoá đơn INV-2041" onClick={onDelete}>
+  <TrashIcon aria-hidden="true" />
+</button>
+
+// ❌ Chữ hiển thị là "Gửi" nhưng accessible name là "Submit form":
+// người dùng điều khiển bằng giọng nói nói "bấm Gửi" và không có gì xảy ra.
+<button aria-label="Submit form">Gửi</button>
+```
+
+Trường hợp cuối là lỗi WCAG thật (2.5.3 *Label in Name*): khi control có chữ hiển thị, accessible name phải chứa chữ đó. `aria-label` *thay thế* nội dung, nên quy tắc ngón tay cái là: nếu đã có chữ hiển thị thì đừng ghi đè — thêm ngữ cảnh bằng `aria-describedby`.
+
+### Role, name, state: hợp đồng tối thiểu
+
+Với mỗi widget tuỳ biến, mình ghi ra ba thứ trước khi viết code: mỗi phần có **role** gì, **tên** của mỗi phần lấy từ đâu, và **state** nào thay đổi khi chạy. Nếu không điền được bảng này từ pattern của APG, mình chưa sẵn sàng để dựng.
+
+| Phần | Role | Tên lấy từ | State thay đổi |
+| --- | --- | --- | --- |
+| Ô nhập | `combobox` | `<label for>` | `aria-expanded`, `aria-activedescendant` |
+| Popup | `listbox` | `aria-label` hoặc `aria-labelledby` | hiển thị (`hidden`) |
+| Từng mục | `option` | nội dung | `aria-selected` |
+| Số kết quả | `status` | — | nội dung text |
+
+## Hai mô hình focus: roving tabindex và aria-activedescendant
+
+Widget tổ hợp — tab list, toolbar, listbox, grid, tree — tuân theo một quy tắc của APG: **cả widget là một điểm dừng Tab, phím mũi tên di chuyển bên trong**. Tab đi giữa các widget; mũi tên đi giữa các mục. Có hai cách hiện thực "di chuyển bên trong".
+
+### Roving tabindex
+
+Đúng một mục có `tabIndex={0}`; tất cả còn lại `tabIndex={-1}`. Phím mũi tên di chuyển focus DOM thật bằng `element.focus()` và chuyển số `0` theo. Vì focus thực sự di chuyển, trình duyệt tự cuộn mục vào tầm nhìn, style `:focus-visible` được áp dụng, và screen reader tự thông báo phần tử vừa nhận focus.
+
+```tsx
+// hooks/use-roving-focus.ts
+import { useRef, useState, type KeyboardEvent } from "react";
+
+type Orientation = "horizontal" | "vertical";
+
+export function useRovingFocus(count: number, orientation: Orientation = "horizontal") {
+  const [current, setCurrent] = useState(0);
+  const refs = useRef<(HTMLElement | null)[]>([]);
+
+  const move = (index: number) => {
+    const next = (index + count) % count; // quay vòng
+    setCurrent(next);
+    refs.current[next]?.focus();
+  };
+
+  const prevKey = orientation === "horizontal" ? "ArrowLeft" : "ArrowUp";
+  const nextKey = orientation === "horizontal" ? "ArrowRight" : "ArrowDown";
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    const handlers: Record<string, () => void> = {
+      [prevKey]: () => move(current - 1),
+      [nextKey]: () => move(current + 1),
+      Home: () => move(0),
+      End: () => move(count - 1),
+    };
+    const handler = handlers[event.key];
+    if (!handler) return;
+    event.preventDefault(); // không cho trang cuộn
+    handler();
+  };
+
+  const itemProps = (index: number) => ({
+    ref: (el: HTMLElement | null) => {
+      refs.current[index] = el;
+    },
+    tabIndex: index === current ? 0 : -1,
+    onFocus: () => setCurrent(index), // giữ state khớp khi người dùng bấm chuột
+  });
+
+  return { onKeyDown, itemProps };
+}
+```
+
+```tsx
+// components/editor-toolbar.tsx
+export function EditorToolbar() {
+  const { onKeyDown, itemProps } = useRovingFocus(3);
+  return (
+    <div role="toolbar" aria-label="Định dạng văn bản" onKeyDown={onKeyDown}>
+      <button type="button" aria-pressed={bold} {...itemProps(0)} onClick={toggleBold}>Đậm</button>
+      <button type="button" aria-pressed={italic} {...itemProps(1)} onClick={toggleItalic}>Nghiêng</button>
+      <button type="button" {...itemProps(2)} onClick={insertLink}>Liên kết</button>
+    </div>
+  );
+}
+```
+
+### aria-activedescendant
+
+Focus DOM nằm yên trên **một phần tử chứa** (thường là ô input) suốt cả tương tác. Mục "hiện tại" được chỉ ra bằng cách đặt `aria-activedescendant` trên phần tử đang focus thành `id` của mục đó. Không có gì khác di chuyển. Trình duyệt báo cho công nghệ hỗ trợ "về mặt logic, focus đang ở option kia", screen reader đọc nó, còn CSS của bạn phải tự vẽ phần highlight — `:focus-visible` không áp dụng cho option vì nó không thực sự được focus.
+
+Đây là mô hình hợp lý duy nhất cho combobox cho phép gõ: người dùng phải gõ tiếp được trong lúc lướt qua các gợi ý, nên focus *không thể* rời ô input.
+
+### Chọn cái nào
+
+| | Roving tabindex | `aria-activedescendant` |
+| --- | --- | --- |
+| Focus DOM nằm ở đâu | Trên từng mục | Trên phần tử chứa / input |
+| Cuộn vào tầm nhìn | Tự động | Bạn tự gọi `scrollIntoView` |
+| Style focus | `:focus-visible` dùng được | Class riêng hoặc style theo `[aria-selected]` |
+| Mục phải focus được | Có (`tabIndex`) | Không, nhưng phải có trong DOM với `id` |
+| Gõ trong lúc di chuyển | Không | Có |
+| Danh sách ảo hoá | Khó (node đang focus có thể bị unmount) | Được nếu mục active luôn được render |
+| Độ nhất quán giữa các screen reader | Rất tốt ở mọi nơi | Tốt, nhưng hãy test riêng VoiceOver |
+| Widget điển hình | Tabs, toolbar, radio group, menu, tree | Combobox, listbox có lọc, grid có sửa |
+
+Mặc định của mình là roving tabindex, vì focus thật là tín hiệu chắc chắn nhất. Mình chỉ chuyển sang `aria-activedescendant` khi focus thực sự phải đứng yên — mà trên thực tế nghĩa là combobox.
+
+## Dựng tabs từng bước
+
+Tabs là widget tuỳ biến tốt nhất để bắt đầu: nhỏ, được đặc tả rõ, và đụng tới đủ roving tabindex, nối ID và panel `hidden`.
+
+### Cấu trúc
+
+Pattern của APG là:
+
+- Một phần tử chứa có `role="tablist"` và có tên (`aria-label` hoặc `aria-labelledby`).
+- Mỗi tab là một `button` với `role="tab"`, `aria-selected`, và `aria-controls` trỏ tới panel của nó.
+- Mỗi panel có `role="tabpanel"` và `aria-labelledby` trỏ ngược về tab.
+- Chỉ tab đang chọn nằm trong thứ tự Tab (`tabIndex={0}`); các tab khác là `-1`.
+- Trái/Phải đi giữa các tab (Lên/Xuống nếu danh sách dọc, kèm `aria-orientation="vertical"`); Home/End nhảy về hai đầu.
+
+### Kích hoạt tự động và thủ công
+
+APG mô tả hai kiểu. Với **kích hoạt tự động**, chuyển focus tới tab nào là chọn luôn tab đó và hiện panel. Với **kích hoạt thủ công**, mũi tên chỉ di chuyển focus; Enter hoặc Space mới chọn. Tự động dễ chịu hơn khi panel hiện tức thì. Nếu hiện panel kéo theo một request mạng hoặc render nặng, hãy dùng thủ công — nếu không, người dùng bàn phím lướt từ tab 1 sang tab 5 sẽ bắn ra bốn request họ chẳng hề muốn.
+
+### Component
+
+```tsx
+// components/tabs.tsx
+"use client";
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+
+type TabItem = { id: string; label: string; content: ReactNode };
+
+type TabsProps = {
+  label: string;
+  tabs: TabItem[];
+  activation?: "automatic" | "manual";
+};
+
+export function Tabs({ label, tabs, activation = "automatic" }: TabsProps) {
+  const baseId = useId();
+  const [selected, setSelected] = useState(0);
+  const [focused, setFocused] = useState(0);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const tabId = (t: TabItem) => `${baseId}-tab-${t.id}`;
+  const panelId = (t: TabItem) => `${baseId}-panel-${t.id}`;
+
+  function focusTab(index: number) {
+    const next = (index + tabs.length) % tabs.length;
+    setFocused(next);
+    tabRefs.current[next]?.focus();
+    if (activation === "automatic") setSelected(next);
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const actions: Record<string, () => void> = {
+      ArrowRight: () => focusTab(focused + 1),
+      ArrowLeft: () => focusTab(focused - 1),
+      Home: () => focusTab(0),
+      End: () => focusTab(tabs.length - 1),
+    };
+    const action = actions[event.key];
+    if (!action) return;
+    event.preventDefault();
+    action();
+  }
+
+  return (
+    <div className="tabs">
+      <div role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+        {tabs.map((tab, i) => (
+          <button
+            key={tab.id}
+            ref={(el) => {
+              tabRefs.current[i] = el;
+            }}
+            type="button"
+            role="tab"
+            id={tabId(tab)}
+            aria-selected={i === selected}
+            aria-controls={panelId(tab)}
+            // Tab *đang chọn* là điểm dừng Tab, nên Shift+Tab quay lại danh sách
+            // sẽ rơi vào tab đang hiển thị, không phải chỗ bạn lướt tới lần cuối.
+            tabIndex={i === selected ? 0 : -1}
+            onFocus={() => setFocused(i)}
+            // Enter/Space trên <button> tự bắn click: chế độ thủ công miễn phí.
+            onClick={() => setSelected(i)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {tabs.map((tab, i) => (
+        <div
+          key={tab.id}
+          role="tabpanel"
+          id={panelId(tab)}
+          aria-labelledby={tabId(tab)}
+          hidden={i !== selected}
+          // Cho người dùng bàn phím tới được panel không có nội dung focus được.
+          tabIndex={0}
+        >
+          {tab.content}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+Những chi tiết quan trọng hơn vẻ ngoài của chúng:
+
+- **`button` bên dưới `role="tab"`.** Bạn có Enter và Space, khả năng focus và hành vi disabled đúng mà không phải viết một dòng xử lý phím nào cho chúng.
+- **`useId` cho mọi ID.** Hai instance trên cùng một trang không bao giờ được trùng ID; `aria-controls` và `aria-labelledby` trỏ nhầm phần tử còn tệ hơn là không có.
+- **Render mọi panel, ẩn bằng `hidden`.** `aria-controls` phải trỏ tới phần tử có tồn tại. Nếu panel nặng, render lười ở lần chọn đầu nhưng vẫn giữ phần tử.
+- **`tabIndex={0}` trên panel** có trong APG cho panel mà nội dung đầu tiên không focus được. Nếu panel nào cũng bắt đầu bằng một ô form, bạn có thể bỏ nó.
+
+<Callout type="tip" title="Tabs không phải điều hướng">
+Nếu bấm vào một "tab" làm đổi URL và tải trang khác, đó là điều hướng, không phải widget tab. Dùng `nav` với link và đánh dấu link hiện tại bằng `aria-current="page"`. Người dùng screen reader nhận được ngữ nghĩa link, bấm chuột giữa vẫn chạy, và không ai trông đợi phím mũi tên làm gì cả.
+</Callout>
+
+## Dựng combobox từng bước
+
+Đây là widget các team làm sai nhiều nhất, một phần vì pattern ARIA từng thay đổi: ARIA 1.0 và 1.1 có cấu trúc khác nhau (1.1 đặt `role="combobox"` lên phần tử bọc ngoài và dùng `aria-owns`), và rất nhiều bài blog lẫn thư viện vẫn chép theo. Pattern hiện tại, từ ARIA 1.2 và APG, đặt role lên chính ô input.
+
+### Cấu trúc
+
+- **`input`** có `role="combobox"`, một `<label>` thật, `aria-expanded`, `aria-controls` trỏ tới popup, và `aria-autocomplete="list"` (gợi ý được lọc theo những gì bạn gõ).
+- **Popup** là một `ul` với `role="listbox"` và có tên riêng.
+- Mỗi **mục** là một `li` với `role="option"`, một `id` duy nhất, và `aria-selected="true"` trên mục đang được highlight.
+- Khi có option đang highlight, **`aria-activedescendant`** của input giữ `id` của option đó. Khi không có gì được highlight, bỏ attribute này đi.
+
+<Figure src="/blog/accessible-aria-widget-patterns-combobox.svg" alt="Sơ đồ trạng thái của một combobox cho phép gõ. Ba trạng thái: Collapsed với aria-expanded false và không có active descendant; Open với aria-expanded true và không có active descendant; Option active với aria-expanded true và aria-activedescendant trỏ tới một option. Gõ phím hoặc Alt+Mũi tên xuống chuyển từ Collapsed sang Open; Mũi tên xuống hoặc lên từ Collapsed mở thẳng vào option đầu hoặc cuối; Mũi tên xuống và lên chuyển từ Open sang Option active; gõ tiếp sẽ lọc lại và quay về Open; Escape, Tab hoặc blur thu gọn; Enter chốt option đang active, điền vào input rồi thu gọn. Ghi chú bên dưới: focus DOM luôn ở input, bấm chuột vào option thì preventDefault ở mousedown, và một vùng status lịch sự thông báo số kết quả." caption="Cả combobox chỉ là ba trạng thái và vài phím. Focus không bao giờ rời ô input; option đang active là một con trỏ ảo, thể hiện qua aria-activedescendant." />
+
+### Bản đồ phím
+
+Đây là bản đồ phím của APG cho combobox cho phép gõ với autocomplete dạng list, rút gọn còn những gì mình thực sự hiện thực:
+
+| Phím | Đang thu gọn | Đang mở |
+| --- | --- | --- |
+| Gõ chữ | Lọc và mở danh sách, không option nào active | Lọc, bỏ option đang active |
+| ↓ | Mở, active option đầu tiên | Option kế tiếp (quay vòng là tuỳ chọn) |
+| ↑ | Mở, active option cuối cùng | Option trước đó |
+| Alt + ↓ | Mở mà không active gì | — |
+| Enter | Không làm gì (hoặc submit form bao ngoài) | Chốt option đang active, thu gọn |
+| Escape | Xoá ô nhập (tuỳ chọn) | Thu gọn, giữ text đã gõ |
+| Tab | Di chuyển focus bình thường | Thu gọn, di chuyển focus bình thường |
+| Home / End | Di chuyển con trỏ trong ô nhập | Di chuyển con trỏ trong ô nhập |
+
+Để ý dòng cuối. Trong combobox cho phép gõ, Home và End thuộc về ô text — chiếm chúng để nhảy tới option đầu là phá việc sửa text, và mình đã thấy "cải tiến" đó xuất hiện trong code review không chỉ một lần.
+
+### Component
+
+```tsx
+// components/combobox.tsx
+"use client";
+import { useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+
+export type ComboOption = { id: string; label: string };
+
+type ComboboxProps = {
+  label: string;
+  options: ComboOption[];
+  onSelect: (option: ComboOption) => void;
+};
+
+export function Combobox({ label, options, onSelect }: ComboboxProps) {
+  const baseId = useId();
+  const inputId = `${baseId}-input`;
+  const listboxId = `${baseId}-listbox`;
+  const optionDomId = (option: ComboOption) => `${baseId}-opt-${option.id}`;
+
+  const [value, setValue] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+
+  const filtered = useMemo(() => {
+    const q = value.trim().toLowerCase();
+    return q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options;
+  }, [options, value]);
+
+  const expanded = open && filtered.length > 0;
+  const active = expanded && activeIndex >= 0 ? filtered[activeIndex] : undefined;
+
+  function openAt(index: number) {
+    setOpen(true);
+    setActiveIndex(index);
+  }
+
+  function close() {
+    setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  function commit(option: ComboOption) {
+    setValue(option.label);
+    close();
+    onSelect(option);
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    const last = filtered.length - 1;
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault(); // nếu không, con trỏ nhảy về cuối ô
+        if (!expanded) return openAt(event.altKey ? -1 : 0);
+        return setActiveIndex((i) => (i >= last ? 0 : i + 1));
+      case "ArrowUp":
+        event.preventDefault();
+        if (!expanded) return openAt(last);
+        return setActiveIndex((i) => (i <= 0 ? last : i - 1));
+      case "Enter":
+        if (active) {
+          event.preventDefault(); // không submit form khi chốt option
+          commit(active);
+        }
+        return;
+      case "Escape":
+        if (expanded) {
+          event.preventDefault();
+          event.stopPropagation(); // Esc đầu tiên đóng danh sách, không đóng dialog bên ngoài
+          close();
+        } else if (value) {
+          setValue("");
+        }
+        return;
+      case "Tab":
+        close();
+        return;
+    }
+  }
+
+  // aria-activedescendant không cuộn gì cả: ta phải tự làm.
+  useEffect(() => {
+    if (!active) return;
+    document.getElementById(optionDomId(active))?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  return (
+    <div className="combobox">
+      <label htmlFor={inputId}>{label}</label>
+      <input
+        id={inputId}
+        type="text"
+        role="combobox"
+        aria-expanded={expanded}
+        aria-controls={listboxId}
+        aria-autocomplete="list"
+        aria-activedescendant={active ? optionDomId(active) : undefined}
+        autoComplete="off"
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          openAt(-1); // gõ phím không bao giờ tự active option nào
+        }}
+        onKeyDown={onKeyDown}
+        onBlur={close}
+      />
+      <ul id={listboxId} role="listbox" aria-label={label} hidden={!expanded}>
+        {filtered.map((option) => (
+          <li
+            key={option.id}
+            id={optionDomId(option)}
+            role="option"
+            aria-selected={option === active}
+            // Giữ focus DOM trong input; nếu không, blur đóng danh sách
+            // trước khi click kịp tới, và screen reader mất vị trí.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => commit(option)}
+          >
+            {option.label}
+          </li>
+        ))}
+      </ul>
+      <ResultCount open={open} count={filtered.length} />
+    </div>
+  );
+}
+
+function ResultCount({ open, count }: { open: boolean; count: number }) {
+  const message = !open ? "" : count === 0 ? "Không có kết quả." : `Có ${count} kết quả.`;
+  // Đừng thông báo theo từng phím gõ; đợi người dùng dừng tay.
+  const debounced = useDebouncedValue(message, 500);
+  return (
+    <div role="status" className="sr-only">
+      {debounced}
+    </div>
+  );
+}
+```
+
+```ts
+// hooks/use-debounced-value.ts
+import { useEffect, useState } from "react";
+
+export function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(t);
+  }, [value, delayMs]);
+  return debounced;
+}
+```
+
+### Những gì đoạn code này lặng lẽ làm đúng
+
+- **Gõ phím reset option active về không có.** Tự highlight kết quả khớp đầu tiên nghe có vẻ tiện, nhưng rồi Enter chốt một thứ người dùng chưa hề chọn, và screen reader bắt đầu đọc option trong lúc họ còn đang gõ. Nếu bạn muốn hoàn thành ngay trong ô, đó là `aria-autocomplete="both"` với phần text được bôi chọn trong input — một pattern khác và khó hơn.
+- **`aria-selected` đi theo highlight.** Trong listbox của combobox, option được `aria-activedescendant` tham chiếu là option được đánh dấu selected. Hãy style highlight từ `[aria-selected="true"]` để trạng thái nhìn thấy và trạng thái ngữ nghĩa không thể lệch nhau.
+- **`hidden` khi thu gọn**, để option đã thu gọn không nằm trong accessibility tree và `aria-controls` vẫn trỏ tới một phần tử thật.
+- **`onMouseDown` với `preventDefault`** là dòng quan trọng nhất cho người dùng chuột. Thiếu nó, nhấn chuột vào option làm input mất focus, `onBlur` đóng danh sách, và cú click rơi vào khoảng không.
+- **Live region luôn được mount** và chỉ có text thay đổi. Lý do ở phần sau.
+- **Escape kèm `stopPropagation`** chỉ khi phím thực sự được xử lý. Nếu combobox nằm trong dialog, Escape đầu tiên nên đóng danh sách; lần thứ hai mới đóng dialog.
+
+### Option async và ảo hoá
+
+Hai rắc rối khi lên production:
+
+**Kết quả async.** Giữ nguyên cấu trúc; trong lúc tải, vẫn mở listbox với những gì đang có và chỉ đặt text status thành "Đang tải…" nếu request lâu thấy rõ. Bỏ qua response cũ (mỗi truy vấn một `AbortController` là cách gọn nhất), nếu không kết quả cho "vi" có thể về sau kết quả cho "viet" và ghi đè lên.
+
+**Danh sách ảo hoá.** `aria-activedescendant` phải trỏ tới phần tử **có tồn tại trong DOM**. Nếu thư viện virtualize unmount option đang active khi nó cuộn khỏi màn hình, tham chiếu bị treo và screen reader im lặng. Đảm bảo index active luôn nằm trong cửa sổ đang render (cuộn virtualizer tới đó trước), và thêm `aria-setsize`, `aria-posinset` cho từng option để "4 trên 230" được đọc đúng dù DOM chỉ có hai mươi option.
+
+<Callout type="warning" title="Bug chính mình từng ship">
+Một combobox thời đầu của mình chuyển focus thật vào danh sách khi bấm ↓ — roving tabindex trên các option. Người dùng bàn phím nhìn thấy màn hình thì không sao. Người dùng NVDA nghe được option, rồi bấm một chữ cái để thu hẹp tìm kiếm… và chữ đó đi vào listbox, không phải input. Truy vấn của họ mất trắng. Pattern combobox cho phép gõ tồn tại chính vì focus phải ở lại ô text. Nếu combobox của bạn chuyển focus sang option, nó không phải combobox cho phép gõ; nó là một listbox trong popup, và cần một hợp đồng bàn phím khác.
+</Callout>
+
+## Live region cho đúng
+
+Live region là phần tử mà khi nội dung đổi sẽ được đọc lên mà không cần chuyển focus tới đó. Đây là cách người dùng screen reader biết "có 3 kết quả", "Đã lưu", hay "Thanh toán thất bại".
+
+### polite, assertive, status và alert
+
+| Markup | Hành vi | Dùng cho |
+| --- | --- | --- |
+| `role="status"` | Polite, mặc định atomic | Số kết quả, "Đã lưu", mốc tiến độ |
+| `aria-live="polite"` | Đợi người dùng rảnh | Cập nhật không gấp |
+| `role="alert"` | Assertive, atomic | Lỗi chặn tác vụ của người dùng |
+| `aria-live="assertive"` | Ngắt lời đang đọc | Rất hiếm — chỉ chuyện khẩn cấp thật |
+| `role="log"` | Polite, chỉ phần thêm vào | Tin nhắn chat, feed hoạt động |
+
+Assertive ngắt bất cứ thứ gì screen reader đang đọc — kể cả nhãn của ô người dùng vừa Tab tới. Mình chỉ dùng nó cho một việc: lỗi có nghĩa là hành động người dùng vừa làm đã không xảy ra. Mọi thứ khác là polite.
+
+### Những cái bẫy làm live region câm lặng
+
+1. **Region phải tồn tại trước khi nội dung thay đổi.** Screen reader theo dõi những region nó đã biết. Nếu bạn render `{saved && <div role="status">Saved</div>}`, region và text xuất hiện cùng lúc và phần lớn tổ hợp không đọc gì cả. Mount region rỗng cùng trang; chỉ đổi text bên trong.
+2. **Text giống hệt không phải là thay đổi.** "Đã lưu" rồi lại "Đã lưu" không tạo mutation nào, nên lần thứ hai không được đọc. Xoá region trước, rồi đặt thông điệp ở tick kế tiếp.
+3. **Quá nhiều, quá dày.** Một live region bao cả khung kết quả sẽ đọc từng thẻ một. Hãy thông báo tóm tắt ("12 kết quả"), không phải nội dung.
+4. **Region `display: none` không nằm trong cây.** Ẩn live region bằng class `sr-only` (clip, kích thước 1px), không bao giờ dùng `display: none` hay `hidden`.
+5. **Toast cũng là live region.** Nếu toast biến mất sau ba giây và chứa nút "Hoàn tác", người dùng bàn phím và screen reader gần như không kịp tới. Thông báo nội dung; đặt hành động ở một chỗ cố định.
+
+### Một announcer nhỏ
+
+Với thông báo toàn app, mình giữ một cặp region ở gốc và expose một hook:
+
+```tsx
+// components/announcer.tsx
+"use client";
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+
+type Politeness = "polite" | "assertive";
+type Announce = (message: string, politeness?: Politeness) => void;
+
+const AnnounceContext = createContext<Announce>(() => {});
+
+export function Announcer({ children }: { children: ReactNode }) {
+  const [messages, setMessages] = useState<Record<Politeness, string>>({ polite: "", assertive: "" });
+  const timers = useRef<Partial<Record<Politeness, ReturnType<typeof setTimeout>>>>({});
+
+  const announce = useCallback<Announce>((message, politeness = "polite") => {
+    // Xoá trước để lặp lại cùng một thông điệp vẫn là một thay đổi.
+    setMessages((m) => ({ ...m, [politeness]: "" }));
+    clearTimeout(timers.current[politeness]);
+    timers.current[politeness] = setTimeout(() => {
+      setMessages((m) => ({ ...m, [politeness]: message }));
+    }, 100);
+  }, []);
+
+  return (
+    <AnnounceContext value={announce}>
+      {children}
+      <div role="status" className="sr-only">
+        {messages.polite}
+      </div>
+      <div aria-live="assertive" aria-atomic="true" className="sr-only">
+        {messages.assertive}
+      </div>
+    </AnnounceContext>
+  );
+}
+
+export const useAnnounce = () => useContext(AnnounceContext);
+```
+
+```tsx
+// Dùng trong một form action
+const announce = useAnnounce();
+
+async function onSave(formData: FormData) {
+  const result = await saveProfile(formData);
+  if (result.ok) announce("Đã lưu hồ sơ.");
+  else announce(`Không lưu được: ${result.message}`, "assertive");
+}
+```
+
+Giữ announcer cho thông báo *toàn cục*. Region riêng của widget, như số kết quả của combobox, nên nằm cạnh widget để mount và unmount cùng nó.
+
+<Callout type="note" title="ariaNotify">
+Có một đề xuất đang được phát triển cho phương thức `ariaNotify()`, cho phép bảo screen reader đọc một chuỗi mà không cần region trong DOM. Rất hứa hẹn, nhưng tại thời điểm viết mức hỗ trợ còn hạn chế — hãy feature-detect và giữ region làm phương án dự phòng.
+</Callout>
+
+## Quản lý focus khi đổi route
+
+Ở site nhiều trang kiểu cổ điển, mỗi lần điều hướng là tải một document mới: focus về đầu trang, và screen reader đọc tiêu đề trang mới. Với router phía client, mặc định không có gì như vậy. URL đổi, nội dung thay, còn focus vẫn nằm trên cái link bạn vừa bấm — link đó thậm chí có thể không còn tồn tại, và khi ấy focus lặng lẽ rơi về `body`.
+
+Có hai vấn đề tách biệt: **thông báo** rằng trang đã đổi, và **đặt focus** vào chỗ hợp lý.
+
+### Thông báo
+
+App Router của Next.js có sẵn route announcer: sau mỗi lần điều hướng phía client, nó đọc tiêu đề trang mới (nếu không có thì lấy `h1` đầu tiên hoặc đường dẫn). Phần "tôi đang ở đâu" coi như xong — miễn là route nào cũng đặt `title` có nghĩa và không trùng. Một site mà trang nào cũng tên "Dashboard" thì sẽ đọc "Dashboard" mãi mãi.
+
+### Đặt focus
+
+Hành vi focus sau điều hướng khác nhau giữa các router và các phiên bản, nên mình không đoán — mình kiểm chứng bằng cách dùng bàn phím bấm một link rồi nhấn Tab một lần: mình rơi vào đâu? Nếu câu trả lời là "link thứ hai trên header" hay "đầu trang", mình thêm một handler tường minh. Đích mặc định của mình là `h1` của trang mới:
+
+```tsx
+// app/route-focus.tsx
+"use client";
+import { usePathname } from "next/navigation";
+import { useEffect, useRef } from "react";
+
+export function RouteFocus() {
+  const pathname = usePathname();
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    // Không bao giờ giành focus ở lần tải trang đầu tiên.
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    const target =
+      document.querySelector<HTMLElement>("main h1") ?? document.querySelector<HTMLElement>("main");
+    if (!target) return;
+    // -1: script focus được, nhưng không thêm vào thứ tự Tab.
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+  }, [pathname]);
+
+  return null;
+}
+```
+
+Những trade-off cần nói thật:
+
+- **Chỉ khi pathname đổi.** Đổi một bộ lọc làm cập nhật `?sort=price` thì *không* được kéo focus lên heading; người dùng đang giữa chừng một tác vụ.
+- **Streaming và Suspense.** Nếu `h1` đến muộn trong một segment được stream, effect có thể chạy trước khi nó tồn tại. Khi đó, focus từ bên trong component của trang sau khi heading đã render, hoặc rơi về `main`.
+- **Heading, `main` hay skip link.** Focus vào `h1` cho người dùng screen reader biết ngay "bạn đang ở đây" và cho người dùng bàn phím điểm xuất phát ngay tại nội dung. Có team thích focus vào link "Bỏ qua tới nội dung" ẩn ở đầu trang; cả hai đều có lý — để focus nằm trên một link cũ thì không.
+- **Đừng vẽ viền focus khổng lồ quanh heading.** Dùng `:focus-visible` và một style nhẹ cho `[tabindex="-1"]:focus`; focus bằng code vào heading không cần được viền như một cái nút.
+
+### Mất focus ngay trong trang
+
+Bug tương tự xuất hiện ở quy mô nhỏ hơn mỗi khi bạn xoá phần tử đang có focus: xoá một dòng, đóng trình sửa inline, tắt toast bằng nút đóng của chính nó. Focus rơi về `body` và người dùng bàn phím bắt đầu lại từ đầu trang. Hãy quyết định focus đi đâu *trước khi* xoá phần tử — dòng kế tiếp, dòng trước đó, hoặc heading của danh sách khi danh sách trống.
+
+## Kiểm thử: tự động hoá bắt được gì và không bắt được gì
+
+Mình dùng ba lớp, và mỗi lớp bắt được những thứ lớp khác không bắt được.
+
+### Truy vấn theo role trong Testing Library
+
+`getByRole` của Testing Library truy vấn cùng role và accessible name mà screen reader nhìn thấy — được tính bằng bản hiện thực thuật toán accname của riêng nó chứ không phải trình duyệt thật, nhưng đủ gần để bắt lỗi nối dây. Nếu test tìm được `getByRole("combobox", { name: "Quốc gia" })`, nhãn của bạn chạy. Nếu không tìm được, người dùng screen reader cũng không.
+
+```tsx
+// components/combobox.test.tsx
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, test, vi } from "vitest";
+import { Combobox } from "./combobox";
+
+const COUNTRIES = [
+  { id: "vn", label: "Vietnam" },
+  { id: "th", label: "Thailand" },
+  { id: "jp", label: "Japan" },
+];
+
+test("luồng bàn phím tuân theo hợp đồng combobox", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  render(<Combobox label="Quốc gia" options={COUNTRIES} onSelect={onSelect} />);
+
+  const input = screen.getByRole("combobox", { name: "Quốc gia" });
+  expect(input).toHaveAttribute("aria-expanded", "false");
+  // Listbox đang hidden không nằm trong accessibility tree.
+  expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+  await user.type(input, "an");
+  expect(input).toHaveAttribute("aria-expanded", "true");
+  const listbox = screen.getByRole("listbox", { name: "Quốc gia" });
+  expect(within(listbox).getAllByRole("option")).toHaveLength(2); // Thailand, Japan
+  expect(input).not.toHaveAttribute("aria-activedescendant");
+
+  await user.keyboard("{ArrowDown}");
+  const first = screen.getByRole("option", { name: "Thailand" });
+  expect(input).toHaveAttribute("aria-activedescendant", first.id);
+  expect(first).toHaveAttribute("aria-selected", "true");
+  expect(input).toHaveFocus(); // focus không hề di chuyển
+
+  await user.keyboard("{Enter}");
+  expect(onSelect).toHaveBeenCalledWith(COUNTRIES[1]);
+  expect(input).toHaveValue("Thailand");
+  expect(input).toHaveAttribute("aria-expanded", "false");
+});
+```
+
+Hãy test hợp đồng bàn phím, không test chi tiết hiện thực: phần tử nào đang có focus, `aria-expanded` và `aria-activedescendant` nói gì, callback nào được gọi. Những assertion đó sống sót qua refactor và chỉ fail đúng lúc người dùng sẽ nhận ra.
+
+### axe cho những gì kiểm tra tĩnh được
+
+axe-core bắt nhóm lỗi cơ học: thiếu tên, attribute ARIA không hợp lệ, ID mà `aria-controls` trỏ tới nhưng không tồn tại, role đặt ở chỗ không được phép, độ tương phản. Mình chạy nó ở hai nơi:
+
+```tsx
+// Trong component test (vitest-axe hoặc jest-axe có cùng API)
+import { axe } from "vitest-axe";
+
+test("combobox đang mở không có vi phạm axe", async () => {
+  const user = userEvent.setup();
+  const { container } = render(<Combobox label="Quốc gia" options={COUNTRIES} onSelect={() => {}} />);
+  await user.type(screen.getByRole("combobox"), "a");
+  expect(await axe(container)).toHaveNoViolations();
+});
+```
+
+```ts
+// e2e/a11y.spec.ts — Playwright trên trang thật và trình duyệt thật
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test } from "@playwright/test";
+
+test("trang checkout", async ({ page }) => {
+  await page.goto("/checkout");
+  await page.getByRole("combobox", { name: "Quốc gia" }).fill("vi");
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag22aa"]).analyze();
+  expect(results.violations).toEqual([]);
+});
+```
+
+Quét cả trạng thái **đang mở**, không chỉ lần render đầu — phần lớn bug của combobox chỉ tồn tại khi listbox đang hiện. Và nhớ những gì axe không thể biết: nó không biết phím mũi tên có chạy không, focus có đi tới chỗ hợp lý không, hay câu "có 3 kết quả" có từng được đọc lên không. axe xanh là mức sàn, không phải phán quyết.
+
+ARIA snapshot của Playwright (`toMatchAriaSnapshot`) là một lớp giữa hữu ích: nó assert trên accessibility tree mà trình duyệt thật tính ra, nên một thay đổi role hay name vô tình sẽ hiện thành diff khi review.
+
+### Kiểm thử thủ công với screen reader
+
+Không gì thay được việc thực sự lắng nghe. Ma trận tối thiểu của mình là **NVDA với Firefox hoặc Chrome** trên Windows và **VoiceOver với Safari** trên macOS; thêm VoiceOver trên iOS cho những gì nặng về mobile. Học vài lệnh — chế độ browse và focus của NVDA (NVDA+Space để chuyển), phím VO và rotor của VoiceOver — rồi chạy cùng một kịch bản mỗi lần:
+
+| Bước | Bạn nên nghe thấy (đại khái) | Dấu hiệu đỏ |
+| --- | --- | --- |
+| Tab vào combobox | Nhãn, "combo box", collapsed, editable | Không có nhãn, hoặc chỉ "edit text" |
+| Gõ hai chữ | Chữ được đọc lại; dừng một chút thì "có N kết quả" | Im lặng, hoặc đọc hết mọi option |
+| Bấm ↓ | Tên option, lý tưởng là kèm "1 of N" | Không gì cả, hoặc đọc lại text trong ô |
+| Bấm ↓ lần nữa | Option kế tiếp | Vẫn option cũ (`aria-activedescendant` bị cũ) |
+| Bấm Enter | Giá trị vừa chốt, "collapsed" | Form bị submit, hoặc không gì cả |
+| Tab tới tab list | Tên tab, "tab", "selected", "1 of 4" | "button" thay vì "tab" |
+| Mũi tên sang tab kế | Tab kế, selected (chế độ tự động) | Focus nhảy ra khỏi danh sách |
+| Điều hướng sang trang khác | Tiêu đề trang mới, rồi đến `h1` | Không gì cả |
+
+Hai mẹo thực tế. Bật speech viewer (NVDA) hoặc caption panel (VoiceOver) để đọc lại những gì đã được nói thay vì cố nhớ. Và test bằng cả cách điều hướng *riêng* của screen reader — đi theo heading, danh sách ô form, rotor — chứ không chỉ bằng Tab. Đó là cách người dùng thật di chuyển, và là nơi thiếu tên hay sai role lộ ra rõ nhất.
+
+## Những lỗi mình hay gặp khi review code
+
+**`role="button"` trên `div`, chỉ có `onClick`.** Không có điểm dừng Tab, không Enter, không Space. Dùng `<button>`. Nếu component của design system buộc phải render `div`, nó nợ bạn `tabIndex={0}` và xử lý cả hai phím — và bạn vẫn sẽ thiếu ngữ nghĩa form.
+
+**`role="menu"` cho điều hướng của site.** Role menu hứa hẹn một menu kiểu ứng dụng với phím mũi tên và typeahead, và screen reader chuyển sang chế độ tương tác khác. Một dropdown chứa link chỉ là nút disclosure cộng một danh sách link.
+
+**`aria-hidden="true"` trên thứ focus được.** Người dùng Tab tới được một phần tử mà, với screen reader của họ, không tồn tại. Dùng `inert` để gỡ một cây con khỏi cả focus lẫn accessibility tree.
+
+**`tabIndex` dương.** `tabIndex={3}` xáo lại thứ tự Tab của cả trang. Trong code ứng dụng chỉ nên có `0` và `-1`.
+
+**Nhầm các attribute state.** `aria-selected` cho option và tab, `aria-checked` cho checkbox và radio, `aria-pressed` cho nút bật/tắt, `aria-current` cho "mục hiện tại trong một tập" như link điều hướng đang active. Chúng không thay thế cho nhau được và screen reader đọc chúng khác nhau.
+
+**Placeholder làm nhãn.** Nó biến mất khi gõ, thường không đủ tương phản, và chỉ là phương án cuối trong cách tính tên.
+
+**Live region render có điều kiện.** Chúng xuất hiện cùng nội dung có sẵn và không đọc gì cả.
+
+**`aria-activedescendant` trỏ vào hư không.** ID dựa trên index bị cũ sau khi lọc, hoặc option bị virtualization gỡ khỏi DOM.
+
+**"axe xanh rồi nên mình accessible."** axe chứng minh không có một nhóm lỗi cơ học. Nó không nói gì về hành vi bàn phím hay những gì đã được đọc lên.
+
+## Đọc thêm
+
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/) — đặc biệt các pattern Combobox, Tabs, Listbox, Toolbar, và phần "Developing a Keyboard Interface".
+- [Accessible Name and Description Computation](https://www.w3.org/TR/accname-1.2/).
+- [Using ARIA](https://www.w3.org/TR/using-aria/) — các quy tắc dùng ARIA.
+- [Testing Library: ByRole](https://testing-library.com/docs/queries/byrole/) và [axe-core](https://github.com/dequelabs/axe-core).
+- [Modal dialog dễ tiếp cận](/blog/accessible-modal-dialogs) — bài đi kèm về dialog.
+
+## Tóm tắt
+
+<Checklist>
+
+- Kiểm tra danh sách phần tử native trước: `button`, `details`, `select`, `datalist`, `dialog`, `popover`. Mỗi role ARIA là một hợp đồng bàn phím và state bạn phải gánh.
+- Trước khi dựng, ghi ra role, nguồn tên và state thay đổi của từng phần trong widget; kiểm chứng chúng trong accessibility tree của trình duyệt.
+- Tên lấy từ `aria-labelledby`, rồi `aria-label`, rồi nhãn native, rồi nội dung với role cho phép. Không đặt tên cho `div` chung chung; không để `aria-label` mâu thuẫn với chữ hiển thị.
+- Widget tổ hợp là một điểm dừng Tab; mũi tên di chuyển bên trong. Mặc định dùng roving tabindex; dùng `aria-activedescendant` khi focus phải ở lại trong input.
+- Tabs: `button` với `role="tab"`, `aria-selected`, `aria-controls`, ID từ `useId`, tab đang chọn là điểm dừng Tab, kích hoạt thủ công khi panel nặng.
+- Combobox: `role="combobox"` trên input, `aria-expanded`, `aria-controls`, `aria-autocomplete="list"`, `aria-activedescendant` chỉ khi có option active, Home/End để lại cho ô text, `preventDefault` ở mousedown của option.
+- Live region: mount trước khi đổi nội dung, xoá trước khi lặp lại, mặc định polite, assertive chỉ cho lỗi chặn tác vụ, thông báo tóm tắt thay vì nội dung.
+- Khi đổi route: tiêu đề trang không trùng để announcer đọc, chuyển focus tới `h1` (hoặc `main`) chỉ khi pathname đổi; quyết định focus đi đâu trước khi xoá phần tử đang có focus.
+- Test hợp đồng bằng `getByRole` và `user-event`, quét trạng thái đang mở bằng axe, snapshot cây bằng Playwright, và nghe bằng NVDA cùng VoiceOver trước khi ship.
+
+</Checklist>

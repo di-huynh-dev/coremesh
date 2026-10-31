@@ -1,0 +1,654 @@
+---
+title: "JWT in Depth: Verification Pitfalls, the Classic Attacks, and Key Rotation with JWKS"
+excerpt: "How JWS differs from JWE, the claims you must check, alg: none, RS256/HS256 confusion, kid injection, jku abuse — and how to pin algorithms with jose, rotate JWKS keys without logging anyone out, revoke tokens, and test your verifier with the malicious tokens attackers will actually send."
+---
+
+<Lead>I once reviewed an API whose entire "authentication" was one line: `const user = jwt.decode(token)`. No signature check. It ran in production for almost a year, because the frontend always sent valid tokens and nobody ever tried sending a different one. JWT has a bad reputation among security people, not because the format is bad, but because it **looks** simple: three base64 strings joined by dots, decode them and there's your JSON. That simplicity makes people forget that everything in the token — including the header saying "verify me with this algorithm, using this key" — is controlled by the sender. This post covers the structure of a JWT, the claims you must check, the classic attacks with real buggy code, how to verify properly with the `jose` library in Node, rotating keys through JWKS without logging anyone out, revocation strategies, and how to test your verifier with the very tokens an attacker would send.</Lead>
+
+## What a JWT is, and what it isn't
+
+A JWT (RFC 7519) is just a **set of claims as JSON**. It doesn't define how that set is protected; two other formats do:
+
+- **JWS** (JSON Web Signature, RFC 7515): the claims are **signed**. Anyone can read them; nobody can change them without breaking the signature.
+- **JWE** (JSON Web Encryption, RFC 7516): the claims are **encrypted**. Only the key holder can read them.
+
+When people say "JWT", 99% of the time they mean a JWS in compact form. The first thing to burn into memory: **a JWS payload is not encrypted**. Base64url is an encoding, not encryption. Whatever you put in the token, the user (and every proxy, every log) can read.
+
+### The three parts of a JWS
+
+```text
+eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYtMTAtYSIsInR5cCI6ImF0K2p3dCJ9
+.eyJpc3MiOiJodHRwczovL2lkLmV4YW1wbGUuY29tIiwic3ViIjoidXNyXzQyIn0
+.MEUCIQDx3...  (signature)
+```
+
+Decoding the first part gives the protected header:
+
+```json
+{ "alg": "ES256", "kid": "2026-10-a", "typ": "at+jwt" }
+```
+
+The second part is the payload, the claims set:
+
+```json
+{
+  "iss": "https://id.example.com",
+  "sub": "usr_42",
+  "aud": "https://api.example.com",
+  "exp": 1792000600,
+  "iat": 1792000000,
+  "jti": "5f0c1a7e-8f3b-4c49-9d0e-2d1f3c7a9b11",
+  "scope": "orders:read orders:write"
+}
+```
+
+The signature covers `BASE64URL(header) + "." + BASE64URL(payload)` — so the header is signed too. But notice the order of operations: to know **which algorithm and which key to verify with**, the verifier has to read the header *before* verifying. That is the root of nearly every attack in the next sections.
+
+### JWE: when you actually need it
+
+A JWE has five parts: header, encrypted key, IV, ciphertext, authentication tag. I only find it justified when a token must pass through a party that's not allowed to read it — say, an ID token carrying PII through an intermediary system. If you do use it:
+
+- To both sign and encrypt, use a **nested JWT**: sign first (JWS), then encrypt the whole JWS string (a JWE with `cty: "JWT"`).
+- Avoid `RSA1_5` for key management (Bleichenbacher-style padding oracles); use `RSA-OAEP-256`, `ECDH-ES`, or `dir` with `A256GCM`.
+- Most of the time the better answer than JWE is **don't put sensitive data in the token** — use an opaque token and let the server look things up.
+
+### Choosing an algorithm
+
+| `alg` | Kind | Key | Signature | When to use |
+| --- | --- | --- | --- | --- |
+| `HS256` | HMAC-SHA256 | One shared secret | 32 bytes | One service that both issues and verifies; never share the secret with a third party |
+| `RS256` | RSA PKCS#1 v1.5 | RSA 2048+ bits | 256 bytes (at 2048 bits) | Widest compatibility; the default at many IdPs |
+| `PS256` | RSA-PSS | RSA 2048+ bits | 256 bytes | Like RS256 with more modern padding |
+| `ES256` | ECDSA P-256 | EC P-256 | 64 bytes | My default for new systems |
+| `EdDSA` | Ed25519 | OKP Ed25519 | 64 bytes | Good, but check every verifier you have supports it |
+
+My rule: **asymmetric** (ES256/RS256) whenever the verifier isn't the issuer. With HS256, every service that can verify a token can also *mint* one — compromise one service and you've compromised the whole system.
+
+<Callout type="note" title="ES256 signatures aren't DER">
+  JWS uses raw `R || S` ECDSA signatures (64 bytes for P-256), while Node's `crypto.sign` and services like AWS KMS return DER by default. If you sign yourself (for example through KMS so the private key never leaves the HSM), you have to convert — in Node that's the `dsaEncoding: "ieee-p1363"` option. Forget it and your "valid" tokens get rejected by every standard library, or worse, someone adds "fix-up" code on the verifying side.
+</Callout>
+
+## A valid signature is only step one: validating claims
+
+A valid signature proves one thing: "the key holder issued this token and nobody changed it". It doesn't tell you whether the token is meant for you, still valid, or even the kind of token you expect. This is what I check on every access token:
+
+| Check | Meaning | Mistake I've seen |
+| --- | --- | --- |
+| `alg` is in a pinned list | Only accept exactly the algorithm you issue | Letting the library pick based on the header |
+| `typ` (header) | The right kind of token, e.g. `at+jwt` (RFC 9068) | An ID token used as an access token |
+| `iss` | **Exact** match against a trusted issuer | Comparing with `startsWith` or `includes` |
+| `aud` | Contains **this API's** identifier | Not checked, so other apps' tokens work too |
+| `exp` | Not expired, with a small clock tolerance (30–60 seconds) | A one-day tolerance "to be safe" |
+| `nbf` | The token's validity has started | Ignored entirely |
+| `iat` | Not in the future; token age within a maximum | No age limit when `exp` is far away |
+| `sub` | Present, correctly typed, a stable identifier | Using `email` as the identifier |
+| Business claims | `scope`, `tenant`, `azp`... | Checking `scope` with `includes("admin")` on a string |
+
+The last two rows sound silly but I've seen both: `scope.includes("admin")` returns `true` for `"not-admin"`; split on spaces and compare elements. And `aud` can be a string **or** an array — code that only handles strings either crashes or silently skips the check.
+
+### Explicit typing and token confusion
+
+A system usually has several kinds of JWT signed with **the same key**: ID tokens, access tokens, logout tokens, email verification tokens, workspace invitation tokens. If the API's verifier only checks signature, `iss` and `exp`, an attacker can take a *valid* token of another kind (say, a seven-day "join workspace" token sent by email) and use it as an access token.
+
+RFC 8725 (JWT Best Current Practices) recommends **explicit typing**: each kind of token gets its own `typ` header, and verifiers reject any other `typ`. RFC 9068 defines `at+jwt` for access tokens. Pair it with a distinct `aud` per token kind, and ideally **separate signing keys** for tokens with different lifecycles.
+
+## The classic attacks
+
+### Decoding instead of verifying
+
+Not a clever attack, but the most common bug I find, so it goes first:
+
+```ts
+// ❌ Verifies nothing — anyone can craft this token
+const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+const userId = payload.sub;
+```
+
+A common variant: the API gateway verifies, and the services behind it "trust" the `Authorization` header and only decode. One day a path into one of those services appears that skips the gateway (an internal port, a job, a Lambda function URL), and it accepts anything. I prefer every service to verify for itself — the cost is a few microseconds and a cached JWKS.
+
+### alg: none
+
+JWS allows `"alg": "none"` — an unsigned token with an empty third part. It exists for contexts where integrity is guaranteed some other way. A naive library reads `alg` from the header, sees `none`, and... has nothing to verify:
+
+```text
+eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.
+```
+
+Header `{"alg":"none","typ":"JWT"}`, payload `{"sub":"admin"}`, empty signature. Variants like `"None"`, `"NONE"` and `"nOnE"` used to slip past libraries that only compared against the lowercase string. Modern libraries block this by default; hand-rolled verifiers don't.
+
+### RS256 → HS256 key confusion
+
+This is the elegant one. The server issues tokens with RS256 and verifies with something like:
+
+```ts
+// ❌ Algorithm taken from the header, the same "key" variable for every kind
+const payload = verify(token, PUBLIC_KEY_PEM);
+```
+
+The public key is public — it's in the JWKS, it's in the docs. The attacker creates a token with `"alg": "HS256"` and computes an HMAC using **the public key's PEM string** as the secret. The library reads the header, sees HS256, uses the "key" it was given (the PEM string) as the HMAC secret, recomputes — and the signature matches. The attacker has just minted a valid token without the private key.
+
+This has really happened in popular JWT libraries across several languages, including old versions of Node's `jsonwebtoken`. Two defenses, use both:
+
+1. **Pin the algorithm** in the verifier: a fixed list decided by the server, not by the header.
+2. **Bind key type to algorithm**: an RSA public key must never be usable as an HMAC secret. `jose` does this by design — passing an RSA `KeyObject` or `CryptoKey` for HS256 is rejected.
+
+### kid injection
+
+`kid` (key ID) is a hint that helps the verifier pick among several keys. The sender controls it too. I've seen both of these:
+
+```ts
+// ❌ kid flows into a file path
+const secret = fs.readFileSync(path.join("/etc/jwt-keys", header.kid));
+// kid = "../../../../dev/null" → empty secret → the attacker HMACs with an empty string
+
+// ❌ kid flows into SQL
+const { rows } = await db.query(`SELECT secret FROM jwt_keys WHERE kid = '${header.kid}'`);
+// kid = "x' UNION SELECT 'attacker-chosen-secret' --" → a secret the attacker picked
+```
+
+There are also command-injection (kid into a shell) and cache-poisoning variants. The fix: `kid` is only ever **a lookup key into a fixed, preloaded set of keys** — a `Map` or a JWKS — and not found means rejected. Never let `kid` touch the filesystem, SQL or a URL.
+
+### jku, x5u, jwk: the token tells you where to find the key
+
+JWS defines a few headers that let the token carry key information itself:
+
+- **`jku`**: a URL of a JWKS containing the verification key.
+- **`x5u`**: a URL of an X.509 certificate.
+- **`jwk`**: the public key embedded right in the header.
+- **`x5c`**: an embedded certificate chain.
+
+If the verifier follows these, the attacker just hosts their own JWKS (or embeds their own public key), signs a token with their own private key, and the verifier dutifully uses the attacker's key to approve the attacker's token. Checking that "`jku` starts with our domain" isn't enough either — one open redirect or file upload on that domain is enough to bypass it.
+
+The rule: **the key source is configured on the server and never comes from the token**. `jose` ignores `jku`/`x5u`, and only uses an embedded `jwk` if you explicitly pass the `EmbeddedJWK` function — something I've never needed for access tokens.
+
+### Weak HMAC secrets and offline brute force
+
+With HS256, **one** valid token (taken from the attacker's own account) is enough to brute-force the secret offline — no rate limit, nothing in your logs:
+
+```bash
+# hashcat has a dedicated JWT mode; one token is enough
+hashcat -m 16500 -a 0 captured.jwt wordlist.txt
+```
+
+Secrets like `"secret"`, `"changeme"`, the company name, or the default value from an `.env.example` nobody changed fall in seconds. Once the attacker has the secret, they can mint tokens for anyone. If you must use HMAC, the secret has to be **at least 256 random bits** (RFC 7518 requires a key at least as large as the hash output):
+
+```bash
+openssl rand -base64 48
+```
+
+### Bugs in the crypto library itself
+
+Even when your code is right, the layer below can be wrong. In 2022, "psychic signatures" (CVE-2022-21449) made Java 15–18 accept ECDSA signatures with `r = s = 0` for **any** message — meaning every ES256 JWT was "valid". The lesson isn't "avoid ECDSA"; it's that **your verifier needs tests with malicious tokens**, in CI, on your production runtime. That test suite is at the end of this post.
+
+## Verifying properly with jose
+
+`jose` (by Filip Skokan, who also wrote `openid-client`) is what I use for everything JOSE in Node, Bun, Deno and edge runtimes. No dependencies, built on Web Crypto, and safe defaults: no `alg: none` in `jwtVerify`, key type bound to algorithm, and it doesn't follow `jku`.
+
+### A shared verifier
+
+```ts
+// src/auth/access-token-verifier.ts
+import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
+
+export type AccessTokenClaims = JWTPayload & {
+  sub: string;
+  jti: string;
+  scope?: string;
+  ver?: number;
+};
+
+export type VerifierConfig = {
+  issuer: string;
+  audience: string;
+  keys: JWTVerifyGetKey; // injected so tests can use a local JWKS
+};
+
+export class InvalidTokenError extends Error {}
+
+export function createAccessTokenVerifier({ issuer, audience, keys }: VerifierConfig) {
+  return async function verifyAccessToken(token: string): Promise<AccessTokenClaims> {
+    const { payload, protectedHeader } = await jwtVerify(token, keys, {
+      algorithms: ["ES256"], // pinned: exactly what we issue, nothing more
+      issuer, // exact match
+      audience, // string or array, jose handles both
+      typ: "at+jwt", // explicit typing — blocks ID tokens and other token kinds
+      clockTolerance: 30, // seconds
+      maxTokenAge: "15m", // caps age by iat, even when exp is set too far out
+      requiredClaims: ["sub", "jti", "iat", "exp"],
+    });
+
+    if (typeof payload.sub !== "string" || payload.sub === "") {
+      throw new InvalidTokenError("sub must be a non-empty string");
+    }
+    if (!protectedHeader.kid) throw new InvalidTokenError("kid is required");
+
+    return payload as AccessTokenClaims;
+  };
+}
+
+export function remoteKeys(jwksUri: string) {
+  return createRemoteJWKSet(new URL(jwksUri), {
+    timeoutDuration: 5_000, // a slow IdP must not take the API down with it
+    cooldownDuration: 30_000, // unknown kids don't trigger constant refetching
+    cacheMaxAge: 10 * 60_000, // the JWKS is considered stale after 10 minutes
+  });
+}
+
+export function hasScope(claims: AccessTokenClaims, required: string): boolean {
+  // Split on whitespace — includes() on the string would match "not-admin" for "admin"
+  return (claims.scope ?? "").split(" ").includes(required);
+}
+```
+
+`createRemoteJWKSet` fetches the JWKS the first time it's needed, caches it, and **refetches automatically when it sees an unknown `kid`** — that's what makes key rotation work without restarts. `cooldownDuration` stops an attacker spamming tokens with random `kid`s from turning your API into a DDoS cannon aimed at your IdP.
+
+### A NestJS guard
+
+```ts
+// src/auth/access-token.guard.ts
+import {
+  CanActivate,
+  ExecutionContext,
+  Inject,
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from "@nestjs/common";
+import type { Request, Response } from "express";
+import { errors } from "jose";
+import type { AccessTokenClaims } from "./access-token-verifier";
+
+export const ACCESS_TOKEN_VERIFIER = Symbol("ACCESS_TOKEN_VERIFIER");
+type Verify = (token: string) => Promise<AccessTokenClaims>;
+
+@Injectable()
+export class AccessTokenGuard implements CanActivate {
+  constructor(@Inject(ACCESS_TOKEN_VERIFIER) private readonly verify: Verify) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const http = ctx.switchToHttp();
+    const req = http.getRequest<Request & { auth?: AccessTokenClaims }>();
+    const res = http.getResponse<Response>();
+
+    const [scheme, token] = (req.headers.authorization ?? "").split(" ");
+    if (scheme?.toLowerCase() !== "bearer" || !token) {
+      res.setHeader("WWW-Authenticate", 'Bearer realm="api"');
+      throw new UnauthorizedException();
+    }
+
+    try {
+      req.auth = await this.verify(token);
+      return true;
+    } catch (err) {
+      // The IdP or JWKS is unreachable: that's our incident, not a bad token
+      if (err instanceof errors.JWKSTimeout || isNetworkError(err)) {
+        throw new ServiceUnavailableException();
+      }
+      res.setHeader("WWW-Authenticate", 'Bearer realm="api", error="invalid_token"');
+      throw new UnauthorizedException();
+    }
+  }
+}
+
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError && err.message.includes("fetch failed");
+}
+```
+
+`503` rather than `401` sounds like a detail, but I learned it from an incident: when the IdP flaps, the API returns `401` en masse, every client concludes its token is broken and starts a fresh sign-in — right when the IdP is weakest. A `503` makes clients retry with backoff instead of kicking users out. And never return detailed reasons ("signature invalid", "kid not found") to the client; log them on the server.
+
+### The issuing side
+
+```ts
+// src/auth/token-issuer.ts
+import { randomUUID } from "node:crypto";
+import { SignJWT } from "jose";
+import { getActiveSigningKey } from "./signing-keys";
+
+export async function issueAccessToken(user: { id: string; tokenVersion: number }, scopes: string[]) {
+  const key = await getActiveSigningKey(); // cached in-process for up to 60 seconds
+
+  return new SignJWT({ scope: scopes.join(" "), ver: user.tokenVersion })
+    .setProtectedHeader({ alg: "ES256", kid: key.kid, typ: "at+jwt" })
+    .setIssuer("https://id.example.com")
+    .setAudience("https://api.example.com")
+    .setSubject(user.id)
+    .setIssuedAt()
+    .setExpirationTime("10m")
+    .setJti(randomUUID())
+    .sign(key.privateKey);
+}
+```
+
+Ten-minute access tokens carrying only what the API needs to authorize. No email, no name, no list of 200 permissions.
+
+## JWKS and key rotation without logging anyone out
+
+Signing keys should rotate on a schedule: it limits the blast radius if a key leaks, and — just as important — it keeps the rotation procedure **regularly exercised**, so on the day a key really leaks you're not doing it for the first time in a panic.
+
+The hard part is two caches you don't control: **verifiers caching the JWKS** (minutes to hours, depending on the library and CDN), and **already-issued tokens that are still alive** (until their `exp`). Rotating correctly means always covering both windows.
+
+<Figure src="/blog/jwt-pitfalls-and-key-rotation-timeline.svg" alt="Key rotation timeline with three keys K1, K2 and K3. K2 is published in the JWKS before it signs anything, for at least the maximum JWKS cache time; then K2 starts signing and K1 moves to retiring, staying in the JWKS for at least the maximum token age plus clock skew before removal. K3 repeats the same cycle. The bottom row shows the JWKS contents in each phase: K1, then K1 and K2, then K2, then K2 and K3" caption="Each key goes through three phases: published (verify only), active (signing), retiring (verify only). The two overlap windows cover verifiers' JWKS caches and tokens that are still valid." />
+
+### The four steps of a rotation
+
+1. **Publish:** generate a new key K2 and add it to the JWKS, but **don't sign** with it yet. Wait at least the maximum JWKS cache time of every verifier (plus the CDN cache if the JWKS goes through one).
+2. **Activate:** switch signing to K2. K1 becomes `retiring` — still in the JWKS.
+3. **Drain:** wait at least the maximum token age + clock skew + how long signers cache the active key. After that, no valid K1 token remains.
+4. **Remove:** drop K1 from the JWKS and destroy the private key.
+
+Why is step 1 needed when `createRemoteJWKSet` refetches on an unknown `kid`? Because not every verifier does that (gateways, services in other languages, older libraries), and because of the cooldown: a verifier that refetched ten seconds ago waits another twenty — twenty seconds of `401`s for every new token. Publishing first removes that gap entirely.
+
+### The key table and the rotation job
+
+```sql
+CREATE TABLE signing_keys (
+  kid            text PRIMARY KEY,           -- JWK thumbprint (RFC 7638)
+  alg            text NOT NULL DEFAULT 'ES256',
+  public_jwk     jsonb NOT NULL,
+  private_key    bytea NOT NULL,             -- PKCS#8 encrypted with KMS (envelope encryption)
+  status         text NOT NULL CHECK (status IN ('pending', 'active', 'retiring')),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  activated_at   timestamptz,
+  retired_at     timestamptz
+);
+
+-- Never two active keys at once
+CREATE UNIQUE INDEX signing_keys_one_active ON signing_keys (status) WHERE status = 'active';
+```
+
+```ts
+// src/auth/rotate-signing-keys.ts
+import { calculateJwkThumbprint, exportJWK, exportPKCS8, generateKeyPair } from "jose";
+import { sql } from "../db";
+import { kmsEncrypt } from "../kms";
+
+const MINUTE = 60_000;
+const JWKS_MAX_CACHE = 30 * MINUTE; // max(verifier cacheMaxAge, Cache-Control, CDN) + margin
+const MAX_TOKEN_AGE = 15 * MINUTE; // >= longest exp + clock tolerance
+const SIGNER_CACHE = 1 * MINUTE; // how long signers cache the active key
+const ROTATE_EVERY = 30 * 24 * 60 * MINUTE;
+
+export async function rotateSigningKeys(now = Date.now()) {
+  await sql.begin(async (tx) => {
+    // 4. Remove: retiring keys old enough leave the JWKS
+    await tx`
+      DELETE FROM signing_keys
+      WHERE status = 'retiring'
+        AND retired_at < ${new Date(now - MAX_TOKEN_AGE - SIGNER_CACHE)}`;
+
+    // 2. Activate: a pending key published long enough becomes active, the old active retires
+    const [ready] = await tx`
+      SELECT kid FROM signing_keys
+      WHERE status = 'pending' AND created_at < ${new Date(now - JWKS_MAX_CACHE)}
+      ORDER BY created_at LIMIT 1`;
+    if (ready) {
+      await tx`UPDATE signing_keys SET status = 'retiring', retired_at = now() WHERE status = 'active'`;
+      await tx`UPDATE signing_keys SET status = 'active', activated_at = now() WHERE kid = ${ready.kid}`;
+    }
+
+    // 1. Publish: if the active key is old and nothing is pending, generate a new key
+    const [{ due }] = await tx`
+      SELECT
+        NOT EXISTS (SELECT 1 FROM signing_keys WHERE status = 'pending')
+        AND COALESCE((SELECT activated_at FROM signing_keys WHERE status = 'active')
+                     < ${new Date(now - ROTATE_EVERY)}, true) AS due`;
+    if (due) {
+      const { publicKey, privateKey } = await generateKeyPair("ES256", { extractable: true });
+      const jwk = await exportJWK(publicKey);
+      const kid = await calculateJwkThumbprint(jwk);
+      const sealed = await kmsEncrypt(Buffer.from(await exportPKCS8(privateKey)));
+      await tx`
+        INSERT INTO signing_keys (kid, public_jwk, private_key, status)
+        VALUES (${kid}, ${tx.json(jwk)}, ${sealed}, 'pending')`;
+    }
+  });
+}
+```
+
+The job runs every few minutes (cron, a BullMQ repeatable job, your platform's scheduler), it's idempotent, and every step is time-based — running it again is always safe. On first deployment with an empty table the job creates a `pending` key; you can activate that one by hand immediately since no verifier has cached an older JWKS yet. Using the JWK thumbprint as `kid` makes the `kid` deterministic per key, so nobody has to name anything.
+
+If you want the private key never to leave the HSM, sign directly through KMS (ECC P-256) instead of decrypting a PKCS#8 blob — and remember to convert the DER signature to `R || S` as mentioned above.
+
+### The JWKS endpoint and caching
+
+```ts
+// src/auth/jwks.controller.ts
+import { Controller, Get, Header } from "@nestjs/common";
+import { sql } from "../db";
+
+@Controller(".well-known")
+export class JwksController {
+  @Get("jwks.json")
+  @Header("Cache-Control", "public, max-age=300, stale-while-revalidate=60")
+  async jwks() {
+    const rows = await sql`
+      SELECT kid, alg, public_jwk FROM signing_keys
+      WHERE status IN ('pending', 'active', 'retiring')`;
+    return {
+      keys: rows.map((r) => ({ ...r.public_jwk, kid: r.kid, alg: r.alg, use: "sig" })),
+    };
+  }
+}
+```
+
+Two notes: a JWKS **contains public keys only** — I once saw an endpoint serialize the whole key object, `d` parameter (the private key) included. And `JWKS_MAX_CACHE` in the job must exceed the **sum** of every cache layer: the `max-age` here, the CDN, and the verifiers' `cacheMaxAge`.
+
+<Callout type="danger" title="Emergency rotation after a key leak">
+  The overlapping procedure above is for scheduled rotation. When a private key leaks, every token signed with it — including ones the attacker mints — is valid until the key leaves the JWKS. So you remove it immediately, accept that every user gets signed out, and actively force verifiers to refetch (a restart, or an internal cache-flush endpoint). Rehearse this on staging at least once, and measure how long it takes for the slowest verifier to stop accepting the old key.
+</Callout>
+
+## Revocation: JWTs can't "log out" — unless you accept some state
+
+JWT's strength is verification without a lookup. That's also its weakness: without a lookup there's nowhere to say "this token has been revoked". Every revocation strategy adds a bit of state back:
+
+| Strategy | Revocation delay | Per-request cost | Good for |
+| --- | --- | --- | --- |
+| Short TTL + refresh token | Up to the access token TTL | None | The default for every system |
+| Denylist by `jti` | Nearly immediate | One Redis lookup | Signing out one session, revoking a specific token |
+| Per-user token version | Immediate, or the cache TTL | One lookup (cacheable) | "Sign out everywhere", password change, account lock |
+| Session check (`sid`) | Immediate | One lookup | At this point you're using sessions |
+| Emergency key rotation | Immediate, for everyone | None | A leaked key |
+
+My choice: 5–10 minute access tokens, opaque rotating refresh tokens (details in [NestJS auth with passkeys and sessions](/blog/nestjs-auth-passkeys-sessions)), plus token versioning for security events. A `jti` denylist only when there's a real requirement to revoke individual tokens instantly.
+
+```ts
+// src/auth/revocation.ts
+import { redis } from "../redis";
+import type { AccessTokenClaims } from "./access-token-verifier";
+import { InvalidTokenError } from "./access-token-verifier";
+
+export async function assertNotRevoked(claims: AccessTokenClaims) {
+  // One round trip for both checks
+  const [denied, currentVersion] = await redis.mget(`deny:jti:${claims.jti}`, `tokver:${claims.sub}`);
+  if (denied) throw new InvalidTokenError("token revoked");
+  if (currentVersion !== null && (claims.ver ?? 0) < Number(currentVersion)) {
+    throw new InvalidTokenError("token version outdated");
+  }
+}
+
+export async function revokeToken(claims: AccessTokenClaims) {
+  // Only needs to live until the token expires on its own — the denylist never grows unbounded
+  await redis.set(`deny:jti:${claims.jti}`, "1", "EXAT", claims.exp!);
+}
+
+export async function revokeAllForUser(userId: string, newVersion: number) {
+  // Call after bumping users.token_version in the database
+  await redis.set(`tokver:${userId}`, String(newVersion));
+}
+```
+
+Note `EXAT`: a denylist entry disappears exactly when the token would have expired, so the denylist is bounded by the number of tokens revoked within one TTL — small. And once you've added `assertNotRevoked` to every request, be honest with yourself: you now have a lookup per request, just like sessions. Nothing wrong with that — just don't pick JWT because it's "stateless" and then quietly add the state back.
+
+## JWT, opaque token, or session?
+
+The table I use when someone asks "should we use JWT?":
+
+| Situation | Choice | Why |
+| --- | --- | --- |
+| Same-origin web app (monolith, Next.js, BFF) | Session cookie | Instant revocation, `HttpOnly` cookie, no JWT needed |
+| Many internal services verifying independently, latency-sensitive | Short-lived JWT access tokens | Local verification, no IdP round trip per request |
+| Public API for third parties, instant revocation needed | Opaque token + introspection (RFC 7662), cached | Third parties can't read the contents; the server fully controls revocation |
+| Mobile app calling your own API | Short JWT + opaque rotating refresh token | No natural same-origin cookie |
+| Service-to-service | JWT from client credentials, or mTLS | No user involved; a clear audience is needed |
+| Links in emails (verification, password reset) | Random token stored hashed in the DB | Single-use, revocable, no claims needed |
+
+The last row deserves emphasis: JWT password-reset tokens are a common bad choice. They can't be single-use without state, and if they're signed with the same key as access tokens they're perfect candidates for token confusion.
+
+## Storing JWTs in the browser
+
+I've written about this separately in [practical frontend security](/blog/frontend-security-in-practice), so just the summary: `localStorage` turns every XSS into a token leak the attacker can take elsewhere; JS memory is better, but XSS can still run a fresh sign-in flow itself; an `HttpOnly` cookie hides the token from JavaScript but brings CSRF back. My answer for web apps is **don't send JWTs to the browser at all** — use a Backend-for-Frontend, as I lay out in [OAuth 2.0 and OIDC with PKCE and a BFF](/blog/oauth2-oidc-pkce-bff).
+
+## Size and performance
+
+A token rides along with **every** request, so its size matters:
+
+- A compact header + payload (about ten claims) is already 300–400 characters after base64url.
+- An ES256 signature is 64 bytes, i.e. 86 characters; an RS256 signature at 2048 bits is 256 bytes, i.e. 342 characters.
+- Every claim you add grows by about 4/3 through base64url.
+
+The real trouble starts when people stuff permission lists, tenant lists, or a whole profile object into the token. A cookie is only guaranteed about 4 KB. Nginx limits each header line to 8 KB by default (`large_client_header_buffers 4 8k`), and Node caps total headers at 16 KB by default. Cross the line and you get a baffling `431` or `400`, often only for *some* users with lots of permissions — the kind of bug that eats a whole day.
+
+On CPU: RSA verification is very cheap (small public exponent) while RSA signing is expensive; ECDSA partly flips that — signing is much faster than RSA, verification a bit slower than RSA verification. In practice neither is a bottleneck next to a database query. If you want numbers for your own hardware, measure:
+
+```ts
+// bench/verify.ts — run with: bun bench/verify.ts
+import { SignJWT, generateKeyPair, jwtVerify } from "jose";
+
+for (const alg of ["ES256", "RS256", "EdDSA"] as const) {
+  const { publicKey, privateKey } = await generateKeyPair(alg);
+  const token = await new SignJWT({ sub: "u1" }).setProtectedHeader({ alg }).setExpirationTime("1h").sign(privateKey);
+
+  const N = 5_000;
+  const start = performance.now();
+  for (let i = 0; i < N; i++) await jwtVerify(token, publicKey, { algorithms: [alg] });
+  const perOp = (performance.now() - start) / N;
+  console.log(`${alg}: ${(perOp * 1000).toFixed(1)} µs/verify`);
+}
+```
+
+The real cost is usually elsewhere: fetching the JWKS on every request because the cache was forgotten (I've seen middleware `new` up a JWKS client per call), or re-importing a PEM key on every verification.
+
+## Testing your verifier with malicious tokens
+
+A verifier is security code; it needs tests with **the very tokens an attacker will send**, not just one valid token. Because the verifier takes `keys` as a parameter, the tests run entirely locally:
+
+```ts
+// src/auth/access-token-verifier.spec.ts
+import { beforeAll, describe, expect, it } from "vitest";
+import { base64url, createLocalJWKSet, exportJWK, exportSPKI, generateKeyPair, SignJWT } from "jose";
+import { createAccessTokenVerifier } from "./access-token-verifier";
+
+const ISS = "https://id.example.com";
+const AUD = "https://api.example.com";
+
+let signingKey: CryptoKey;
+let attackerKey: CryptoKey;
+let attackerJwk: Record<string, unknown>;
+let publicPem: string;
+let verify: (token: string) => Promise<unknown>;
+
+beforeAll(async () => {
+  const good = await generateKeyPair("ES256", { extractable: true });
+  const evil = await generateKeyPair("ES256", { extractable: true });
+  signingKey = good.privateKey;
+  attackerKey = evil.privateKey;
+  attackerJwk = await exportJWK(evil.publicKey);
+  publicPem = await exportSPKI(good.publicKey);
+
+  const jwk = { ...(await exportJWK(good.publicKey)), kid: "k1", alg: "ES256", use: "sig" };
+  verify = createAccessTokenVerifier({ issuer: ISS, audience: AUD, keys: createLocalJWKSet({ keys: [jwk] }) });
+});
+
+type Mint = { header?: Record<string, unknown>; claims?: Record<string, unknown>; key?: CryptoKey | Uint8Array };
+
+async function mint({ header = {}, claims = {}, key = signingKey }: Mint = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ iss: ISS, aud: AUD, sub: "usr_42", iat: now, exp: now + 300, jti: crypto.randomUUID(), ...claims })
+    .setProtectedHeader({ alg: "ES256", kid: "k1", typ: "at+jwt", ...header })
+    .sign(key);
+}
+
+const enc = (o: object) => base64url.encode(JSON.stringify(o));
+const now = () => Math.floor(Date.now() / 1000);
+
+describe("access token verifier", () => {
+  it("accepts a well-formed token", async () => {
+    await expect(verify(await mint())).resolves.toMatchObject({ sub: "usr_42" });
+  });
+
+  const attacks: Array<[string, () => Promise<string>]> = [
+    ["alg: none", async () => `${enc({ alg: "none", typ: "at+jwt", kid: "k1" })}.${enc({ iss: ISS, aud: AUD, sub: "admin", exp: now() + 300 })}.`],
+    ["HS256 signed with the public key PEM", () => mint({ header: { alg: "HS256" }, key: new TextEncoder().encode(publicPem) })],
+    ["signed by an attacker key, real kid", () => mint({ key: attackerKey })],
+    ["unknown kid", () => mint({ header: { kid: "k999" } })],
+    ["kid path traversal", () => mint({ header: { kid: "../../../../dev/null" } })],
+    ["jku pointing at attacker JWKS", () => mint({ header: { jku: "https://evil.example/jwks.json" }, key: attackerKey })],
+    ["embedded attacker jwk", () => mint({ header: { jwk: attackerJwk }, key: attackerKey })],
+    ["wrong issuer", () => mint({ claims: { iss: "https://id.example.com.evil.example" } })],
+    ["wrong audience", () => mint({ claims: { aud: "https://other-api.example.com" } })],
+    ["audience array without us", () => mint({ claims: { aud: ["https://a.example", "https://b.example"] } })],
+    ["expired", () => mint({ claims: { exp: now() - 120 } })],
+    ["not yet valid", () => mint({ claims: { nbf: now() + 600 } })],
+    ["issued in the future", () => mint({ claims: { iat: now() + 600 } })],
+    ["too old even though exp is far away", () => mint({ claims: { iat: now() - 7200, exp: now() + 86400 } })],
+    ["exp as a string", () => mint({ claims: { exp: String(now() + 300) } })],
+    ["ID token presented as access token", () => mint({ header: { typ: "JWT" } })],
+    ["missing jti", () => mint({ claims: { jti: undefined } })],
+  ];
+
+  it.each(attacks)("rejects: %s", async (_name, makeToken) => {
+    await expect(verify(await makeToken())).rejects.toThrow();
+  });
+
+  it("rejects a tampered payload with the original signature", async () => {
+    const [h, , s] = (await mint()).split(".");
+    const forged = `${h}.${enc({ iss: ISS, aud: AUD, sub: "admin", iat: now(), exp: now() + 300, jti: "x" })}.${s}`;
+    await expect(verify(forged)).rejects.toThrow();
+  });
+});
+```
+
+This suite has caught a real bug for me: a refactor dropped the `typ` option from the verifier config, and the "ID token presented as access token" test went red in CI straight away. A few ways to make it more useful:
+
+- **Assert the rejection reason**, not just "it threw". A "wrong audience" test can pass for the wrong reason (a broken signature, say), hiding the fact that `aud` isn't checked. With `jose`, assert on the error `code`, such as `ERR_JWT_CLAIM_VALIDATION_FAILED`, plus its `claim`.
+- **Run on your production runtime.** If production is Bun or an edge runtime, CI must run the tests there too — psychic signatures was a runtime bug, not a bug in anyone's code.
+- **Add one end-to-end test** that calls a real endpoint with a malicious token and asserts a `401` with a `WWW-Authenticate` header, so you know the guard is attached to every route, not just that the verifier is correct.
+
+## Mistakes I keep seeing
+
+- **`decode` instead of `verify`**, or verifying only at the gateway while the services behind it trust blindly.
+- **Not pinning algorithms**, letting the library read `alg` from the header.
+- **Skipping `aud` and `typ`**, so tokens for other apps or of other kinds are accepted.
+- **HS256 with a weak secret, or one shared across many services** — one service leaks, every service leaks.
+- **`kid`, `jku` or `x5u` touching the filesystem, SQL or the network.**
+- **Rotating keys by swapping the old one out immediately**, and the whole system gets `401`s until JWKS caches expire.
+- **Creating a new JWKS client per request**, refetching constantly and DDoSing your own IdP.
+- **Seven-day access tokens** because "refresh tokens are complicated" — then no way to revoke when it matters.
+- **Stuffing too much into the token**: PII (readable by anyone), or hundreds of permissions that blow past header limits.
+- **Returning `401` when the JWKS can't be fetched**, turning an IdP incident into a re-login storm.
+
+## Further reading
+
+- [RFC 8725 — JSON Web Token Best Current Practices](https://www.rfc-editor.org/rfc/rfc8725.html): short, readable in one afternoon.
+- [RFC 7519 — JWT](https://www.rfc-editor.org/rfc/rfc7519.html), [RFC 7515 — JWS](https://www.rfc-editor.org/rfc/rfc7515.html), [RFC 7516 — JWE](https://www.rfc-editor.org/rfc/rfc7516.html), [RFC 7517 — JWK](https://www.rfc-editor.org/rfc/rfc7517.html), [RFC 7518 — JWA](https://www.rfc-editor.org/rfc/rfc7518.html).
+- [RFC 9068 — JWT Profile for OAuth 2.0 Access Tokens](https://www.rfc-editor.org/rfc/rfc9068.html) and [RFC 7638 — JWK Thumbprint](https://www.rfc-editor.org/rfc/rfc7638.html).
+- [RFC 7662 — OAuth 2.0 Token Introspection](https://www.rfc-editor.org/rfc/rfc7662.html) for opaque tokens.
+- [jose](https://github.com/panva/jose) — the API docs for `jwtVerify`, `createRemoteJWKSet` and `SignJWT`.
+
+## Summary
+
+<Checklist>
+
+- Remember that anyone can read a JWS payload; keep PII and secrets out of tokens, and use JWE only when you truly need it.
+- Verify, don't decode; every service verifies for itself instead of trusting the gateway.
+- Pin `algorithms` in the verifier; use ES256 or RS256 when the verifier isn't the issuer; HS256 only with a random secret of at least 256 bits.
+- Check `iss` exactly, `aud` for this API, `exp`/`nbf` with a small tolerance, token age via `iat`, `typ` of `at+jwt`, and the required claims.
+- `kid` only looks up a preloaded key set; ignore `jku`, `x5u` and embedded `jwk`.
+- Use one `createRemoteJWKSet` per process with a timeout and cooldown; return `503`, not `401`, when the JWKS can't be fetched.
+- Rotate keys in four steps — publish, activate, drain, remove — with overlap windows longer than JWKS caching and the maximum token age; rehearse emergency rotation.
+- 5–10 minute access tokens, opaque rotating refresh tokens, a token version for "sign out everywhere", and a TTL-bound `jti` denylist when instant revocation is required.
+- For web apps, prefer sessions or a BFF over sending JWTs to the browser.
+- Keep tokens small, and test the verifier in CI with malicious tokens: `alg: none`, HS256 confusion, unknown `kid`, `jku`, wrong `iss`/`aud`/`typ`, expired, tampered payload.
+
+</Checklist>

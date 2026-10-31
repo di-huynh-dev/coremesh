@@ -1,0 +1,671 @@
+---
+title: "The OWASP API Security Top 10 in NestJS: vulnerable code, fixed code, and the tests that keep it fixed"
+excerpt: "All ten risks of the OWASP API Security Top 10 (2023) worked through in NestJS: ownership checks in scoped repositories, whitelisted DTOs, response shaping, CASL policies, cost-based rate limits, idempotent business flows, SSRF-safe fetch, and an authorization matrix in e2e tests."
+---
+
+<Lead>The first serious API vulnerability I ever reported wasn't clever. Change the number at the end of `/api/invoices/10432` to `10431` and you got someone else's invoice — name, address, line items, the lot. The endpoint was authenticated, the JWT was verified properly, the code was clean and tested. It just never asked "does this invoice belong to the person asking?". That shape of bug — not exotic crypto, not a zero-day, just a missing question — is what the OWASP API Security Top 10 is mostly about. This post walks through all ten risks of the 2023 edition the way I'd explain them to a team building a NestJS API: vulnerable code, the fixed version, where in the request lifecycle the control belongs, and the tests that stop it from quietly coming back.</Lead>
+
+## Why APIs get their own list
+
+The classic OWASP Top 10 grew up with server-rendered apps, where "which page can you even reach" implicitly made a lot of access decisions. APIs remove that filter. The client is a thin shell — or a script, or a competitor's scraper — and every object, field and function is directly addressable. Whatever the API accepts is the real attack surface.
+
+That's why three of the ten are about authorization at different granularities (object, property, function), and several are about abuse of things that work exactly as designed. Here's the 2023 list with where I put the main control in a NestJS app:
+
+| ID | Risk | In one line | Main control in NestJS |
+| --- | --- | --- | --- |
+| API1 | Broken Object Level Authorization | Change an ID, get someone else's object | Scoped repository, ownership in every query |
+| API2 | Broken Authentication | Weak login, token or reset flows | Global auth guard, strict token verification |
+| API3 | Broken Object Property Level Authorization | Mass assignment in, data exposure out | `ValidationPipe` whitelist, response DTOs |
+| API4 | Unrestricted Resource Consumption | No limits on rate, size, cost, spend | Throttler, cost limits, page and body caps |
+| API5 | Broken Function Level Authorization | Regular users call admin functions | Default-deny policies guard (CASL) |
+| API6 | Unrestricted Access to Sensitive Business Flows | Legit flows automated at scale | Business-level limits, idempotency, friction |
+| API7 | Server Side Request Forgery | The server fetches a URL the attacker chose | IP-checking fetch, egress control |
+| API8 | Security Misconfiguration | Defaults, leaky errors, open docs, bad CORS | Hardened bootstrap, error filter |
+| API9 | Improper Inventory Management | Forgotten versions, shadow and staging APIs | Versioning, OpenAPI diff, route inventory test |
+| API10 | Unsafe Consumption of APIs | Trusting what third parties send you | Schemas, timeouts, webhook signatures |
+
+The NestJS lifecycle gives each control a natural home. For the full mechanics of middleware, guards, interceptors, pipes and filters, see [the NestJS request lifecycle and architecture post](/blog/nestjs-request-lifecycle-architecture); here I only use what matters for security. Code targets NestJS 11 and later with Express, `class-validator`, Prisma and Postgres.
+
+<Figure src="/blog/owasp-api-security-top-10-nestjs-layers.svg" alt="A diagram of a request flowing top to bottom through NestJS layers. Edge or gateway: TLS, WAF, body size cap, only known routes, tagged API4, API8, API9. Middleware: helmet, CORS allowlist, trust proxy, tagged API8. Guards: authentication with default deny, rate and cost limits, CASL policy, tagged API2, API4, API5. Interceptors: Idempotency-Key replay and timeouts, tagged API4 and API6. Pipes: ValidationPipe whitelist and page caps, tagged API3 and API4. Service: flow limits, SSRF-safe fetch, schema-checked third-party data, tagged API6, API7, API10. Scoped repository: tenant and owner in every WHERE plus Postgres RLS, tagged API1. Response on the way out: response DTO and an error filter that hides internals, tagged API3 and API8." caption="Each risk has a natural layer. The ones that hurt most, API1 and API3, live closest to the data, not at the edge." />
+
+## API1 — BOLA: put ownership in the data layer
+
+BOLA is the most common serious API bug I find, and it's almost always this:
+
+```ts
+// orders.controller.ts — vulnerable
+@Get(":id")
+findOne(@Param("id") id: string) {
+  // Authenticated? Yes, a global guard checked the JWT.
+  // Allowed to see THIS order? Nobody asked.
+  return this.prisma.order.findUnique({ where: { id } });
+}
+```
+
+The usual fix is an `if` in the controller: load, compare `order.customerId` with `req.user.id`, throw. It works for that endpoint. Then someone adds `GET /orders/:id/invoice`, a cancel endpoint, a CSV export and a GraphQL resolver, and one of them forgets the `if`. The problem isn't the check — it's that the check is **optional**.
+
+### Scoped repositories: you can't forget what you can't skip
+
+What has worked for me is making the unscoped query hard to write. Services don't get the Prisma client for tenant data; they get a repository that requires an actor and puts the scope into every `where`:
+
+```ts
+// orders/orders.repository.ts
+@Injectable()
+export class OrdersRepository {
+  constructor(private readonly prisma: PrismaService) {}
+  forActor(actor: Actor) {
+    return new ScopedOrders(this.prisma, actor);
+  }
+}
+
+export class ScopedOrders {
+  constructor(private readonly prisma: PrismaService, private readonly actor: Actor) {}
+
+  // The one place that decides what "visible to this actor" means.
+  private scope(): Prisma.OrderWhereInput {
+    const tenant = { tenantId: this.actor.tenantId };
+    const tenantWide = this.actor.roles.some((r) => r === "support" || r === "admin");
+    return tenantWide ? tenant : { ...tenant, customerId: this.actor.id };
+  }
+
+  async findById(id: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { AND: [this.scope(), { id }] },
+      select: orderResponseSelect, // only the columns the response needs
+    });
+    if (!order) throw new NotFoundException();
+    return order;
+  }
+
+  async cancel(id: string) {
+    // Writes are scoped too: the scope lives in the WHERE, no load-check-update gap.
+    const { count } = await this.prisma.order.updateMany({
+      where: { AND: [this.scope(), { id, status: "pending" }] },
+      data: { status: "cancelled" },
+    });
+    if (count === 0) throw new NotFoundException();
+  }
+}
+```
+
+The controller becomes boring, which is the point: `return this.orders.forActor(actor).findById(id)`. A few deliberate choices:
+
+- **404, not 403, outside your scope.** A 403 confirms the object exists, which is itself a leak when IDs are guessable or existence is sensitive.
+- **Writes use `updateMany`/`deleteMany` with the scope in the WHERE.** "Load, check, update by ID" has a race window and two places to keep in sync.
+- **UUIDs are not authorization.** IDs leak through URLs, logs, emails and screenshots. Unguessable IDs are defense in depth, never the control.
+
+<Callout type="warning" title="The nested-resource trap">
+  `GET /orders/:orderId/items/:itemId` is where scoped code still breaks. Checking that the order is yours and then loading the item by `itemId` alone lets anyone read any item by pairing it with their own order. The item query must include `orderId`, and the order must be in scope. Same for batch endpoints taking arrays of IDs and GraphQL `node(id:)` lookups.
+</Callout>
+
+### A second net: row-level security
+
+For multi-tenant data I add Postgres row-level security for the tenant boundary:
+
+```sql
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON orders
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+```
+
+The app runs `SELECT set_config('app.tenant_id', $1, true)` at the start of each transaction — `true` makes it transaction-local, which matters with pooling. Without `FORCE`, the table owner bypasses the policy, and roles with `BYPASSRLS` always do, so the app must connect as a dedicated non-owner role. I keep per-user ownership in the repository; encoding every business rule as SQL policy gets painful fast.
+
+## API2 — Broken Authentication
+
+Authentication bugs in APIs are rarely "the password check is wrong". They're at the edges: a token verified but not for the right audience, a login endpoint without throttling, a reset token that never expires, a legacy endpoint that skips MFA. I covered sessions, JWT and passkeys in [NestJS auth done right](/blog/nestjs-auth-passkeys-sessions); here's what maps directly to this risk.
+
+The guard is global, and routes opt **out** with `@Public()` (a `SetMetadata(IS_PUBLIC, true)` decorator):
+
+```ts
+// auth/jwt-auth.guard.ts
+@Injectable()
+export class JwtAuthGuard implements CanActivate {
+  constructor(private jwt: JwtService, private reflector: Reflector, private config: AuthConfig) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()])) return true;
+
+    const req = ctx.switchToHttp().getRequest<Request & { user?: Actor }>();
+    const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+    if (!token) throw new UnauthorizedException();
+    try {
+      const claims = await this.jwt.verifyAsync<AccessClaims>(token, {
+        publicKey: this.config.publicKey,
+        algorithms: ["RS256"], // pinned: the token never chooses
+        issuer: this.config.issuer,
+        audience: this.config.audience, // a token for another service is not valid here
+      });
+      req.user = toActor(claims);
+      return true;
+    } catch {
+      throw new UnauthorizedException();
+    }
+  }
+}
+```
+
+What has bitten real systems: not pinning `algorithms`, not checking `audience` (a token minted for the internal reporting service works on the payments API), tokens accepted from query strings (they land in access logs), and long-lived access tokens with no revocation story. Around the login itself:
+
+- **Throttle login, reset and OTP verification per account *and* per IP.** Per-IP alone loses to credential stuffing from residential proxies; per-account alone lets attackers lock users out. For the account dimension I slow down rather than hard-lock.
+- **Generic responses:** same message, status and roughly the same latency whether the account exists or not.
+- **Reset and magic-link tokens:** single-use, short-lived, stored hashed. A password or email change revokes sessions and refresh tokens.
+- **No side doors.** If MFA is enforced on `/v2/auth/login`, check `/v1/auth/login` and the mobile-only endpoint too — an API9 gap that shows up as an API2 incident.
+
+## API3 — BOPLA: mass assignment in, data exposure out
+
+The 2023 edition merged mass assignment and excessive data exposure into one risk. It's the authorization question asked per field: *can this user write this property, and can they see it?*
+
+### Mass assignment
+
+```ts
+// users.controller.ts — vulnerable
+@Patch("me")
+updateMe(@CurrentActor() actor: Actor, @Body() body: any) {
+  // body = { "displayName": "Di", "role": "admin", "emailVerified": true }
+  return this.prisma.user.update({ where: { id: actor.id }, data: body });
+}
+```
+
+The fix is a DTO per use case and a global pipe that refuses anything you didn't declare:
+
+```ts
+// app.module.ts — APP_PIPE also applies in e2e tests, unlike useGlobalPipes in main.ts
+{
+  provide: APP_PIPE,
+  useValue: new ValidationPipe({
+    whitelist: true, // strip undeclared properties...
+    forbidNonWhitelisted: true, // ...or better, reject the request
+    transform: true,
+  }),
+}
+```
+
+I prefer rejecting to stripping: a 400 saying "property role should not exist" shows up in logs and tests, so you notice clients — or attackers — sending fields you don't expect. Three traps I keep seeing:
+
+- **Nested objects without `@ValidateNested()` and `@Type()`.** A property decorated only with `@IsObject()` passes through whole, with whatever keys are inside. Whitelisting only works on classes it can see into.
+- **One DTO for create, update and admin.** `PartialType(CreateUserDto)` quietly inherits `role` if create had it. Derive with `OmitType` / `PickType`, and give admin endpoints their own DTOs.
+- **Spreading the DTO into the ORM.** On sensitive models, map explicitly (`data: { displayName: dto.displayName }`). Three lines that survive future DTO edits.
+
+### Excessive data exposure
+
+The reverse direction: returning the whole entity and trusting the frontend to show only some fields. The JSON still carries `passwordHash`, `mfaSecret` or `internalNotes`, and dev tools read JSON just fine. My order of preference: **select only what the response needs** at the query (data you never load can't leak), **map to an explicit response type**, and keep `ClassSerializerInterceptor` as a default-deny safety net:
+
+```ts
+// users/dto/user.response.ts
+@Exclude()
+export class UserResponse {
+  @Expose() id!: string;
+  @Expose() displayName!: string;
+  @Expose({ groups: ["staff"] }) email!: string; // property-level authorization
+}
+
+// users.controller.ts
+@Get(":id")
+@SerializeOptions({ type: UserResponse, excludeExtraneousValues: true })
+findOne(@CurrentActor() actor: Actor, @Param("id", ParseUUIDPipe) id: string) {
+  return this.users.forActor(actor).findProfile(id);
+}
+```
+
+Class-level `@Exclude()` plus `excludeExtraneousValues` means a column added next year stays hidden until someone exposes it on purpose. The catch: the serializer only does this when it knows the target class. A plain object returned without `type` passes through untouched — which is how a "we have a serializer" codebase still leaks.
+
+## API4 — Unrestricted Resource Consumption
+
+Every API has limits; the question is whether you chose them or your database did at 3am. This risk covers rate, but also payload size, page size, expensive operations and — increasingly — money: SMS, email, LLM tokens, per-call third-party billing.
+
+### Rate limits with @nestjs/throttler
+
+```ts
+// app.module.ts
+ThrottlerModule.forRootAsync({
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    throttlers: [
+      { name: "burst", ttl: 1_000, limit: 20 }, // ttl is in milliseconds
+      { name: "sustained", ttl: 60_000, limit: 300 },
+    ],
+    // Shared storage (@nest-lab/throttler-storage-redis), or every replica counts alone
+    storage: new ThrottlerStorageRedisService(config.getOrThrow("REDIS_URL")),
+  }),
+}),
+// providers: JwtAuthGuard first so req.user exists, then the throttler, then policies
+```
+
+```ts
+// throttling/actor-throttler.guard.ts
+@Injectable()
+export class ActorThrottlerGuard extends ThrottlerGuard {
+  protected async getTracker(req: Record<string, any>): Promise<string> {
+    return req.user?.id ? `user:${req.user.id}` : `ip:${req.ip}`;
+  }
+}
+
+// auth.controller.ts — much stricter where it matters
+@Public()
+@Throttle({ burst: { limit: 3, ttl: 10_000 }, sustained: { limit: 10, ttl: 15 * 60_000 } })
+@Post("login")
+login(@Body() dto: LoginDto) { /* ... */ }
+```
+
+The production lesson: behind a load balancer, `req.ip` is the balancer unless Express's `trust proxy` is set to the exact hop count (`app.set("trust proxy", 1)`). Set it too permissively and attackers rotate `X-Forwarded-For` for a fresh bucket per request. Wrong in either direction, IP limits mean nothing.
+
+### Cost-based limits
+
+Request counting treats `GET /me` and `POST /reports/export` as equal. For APIs with a few expensive operations I add a token bucket where each route declares a cost:
+
+```ts
+export const Cost = Reflector.createDecorator<number>();
+
+@Injectable()
+export class CostLimitGuard implements CanActivate {
+  constructor(private reflector: Reflector, private buckets: TokenBuckets) {}
+
+  async canActivate(ctx: ExecutionContext) {
+    const cost = this.reflector.get(Cost, ctx.getHandler()) ?? 1;
+    const req = ctx.switchToHttp().getRequest();
+    // 1,000 units per tenant, refilled over an hour; atomic Lua script in Redis
+    const { allowed, remaining } = await this.buckets.take(`cost:${req.user.tenantId}`, cost);
+    ctx.switchToHttp().getResponse().setHeader("X-Cost-Remaining", String(remaining));
+    if (!allowed) throw new HttpException("Quota exceeded", HttpStatus.TOO_MANY_REQUESTS);
+    return true;
+  }
+}
+
+// reports.controller.ts
+@Cost(200)
+@Post("reports/export")
+export(@CurrentActor() actor: Actor, @Body() dto: ExportDto) { /* ... */ }
+```
+
+`TokenBuckets.take` is a short Lua script: read tokens and timestamp from a hash, refill based on elapsed time, subtract the cost if there's enough, write back, set an expiry. Two details matter: it's atomic, so concurrent requests can't both spend the last tokens, and it uses `redis.call('TIME')` rather than the app server's clock, so skewed servers don't disagree. Keying by tenant is a product decision: one customer's runaway integration shouldn't hurt everyone else.
+
+### Size and shape limits
+
+Cheaper to fix than rate, and more often missing:
+
+```ts
+// common/dto/page.query.ts
+export class PageQuery {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) // the cap that saves your DB
+  limit = 20;
+
+  @IsOptional() @IsString() @MaxLength(200)
+  cursor?: string;
+}
+```
+
+- **Body size:** Express's JSON parser defaults to 100kb. Don't raise it globally because one endpoint needs more; raise it for that route, or upload to object storage with presigned URLs.
+- **Arrays and strings in DTOs:** `@ArrayMaxSize()` and `@MaxLength()` on everything. A 100kb body can still be 20,000 IDs in an `IN` clause.
+- **Timeouts:** a timeout interceptor plus `statement_timeout` in Postgres bound how long one request can hold resources.
+- **Expensive primitives:** regexes on user input (ReDoS), password hashing on public endpoints, image and PDF processing. Each deserves an explicit limit or a queue.
+- **Downstream spend:** "send verification SMS" is an endpoint billed to you. Limit per phone number, account and IP, and alert on spend, not just requests.
+
+GraphQL makes this harder because one request can be arbitrarily expensive. At minimum: a depth limit (`graphql-depth-limit`) and a cost limit (`graphql-query-complexity`) as validation rules, a maximum on list arguments, and protection against aliases and batching — fifty aliased `login` mutations in one HTTP request sail past a per-request rate limiter. For first-party clients, persisted queries remove most of the problem.
+
+## API5 — BFLA: guards and policies, default deny
+
+BOLA's sibling: not "can you see *this* order" but "can you call *this function* at all". The classic form is an admin endpoint protected by the UI not showing the button: `@Delete(":id")` with no check because "only the admin panel calls it". Variants: `GET` checked but `DELETE` on the same path not; `/admin/...` routes assuming the gateway checks roles; an `isAdmin` check that forgets the tenant, so an admin of tenant A acts on tenant B.
+
+### Policies with CASL
+
+I like CASL because one set of rules answers both "can this role do this action?" and "on which records?":
+
+```ts
+// authz/ability.factory.ts
+type Action = "manage" | "read" | "update" | "delete" | "cancel" | "refund";
+type Subject = "Order" | "User" | "all";
+export type AppAbility = MongoAbility<[Action, Subject]>;
+
+@Injectable()
+export class AbilityFactory {
+  createFor(actor: Actor): AppAbility {
+    const { can, cannot, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+    const tenantId = actor.tenantId;
+
+    can("read", "Order", { tenantId, customerId: actor.id });
+    can("cancel", "Order", { tenantId, customerId: actor.id, status: "pending" });
+    can("update", "User", { id: actor.id });
+    if (actor.roles.includes("support")) {
+      can("read", "Order", { tenantId });
+      can("refund", "Order", { tenantId, totalCents: { $lte: 20_000 } });
+    }
+    if (actor.roles.includes("admin")) {
+      can("manage", "all", { tenantId }); // admin of THIS tenant, not of everything
+      cannot("delete", "User", { id: actor.id });
+    }
+    return build();
+  }
+}
+```
+
+```ts
+// authz/policies.guard.ts
+export type PolicyHandler = (ability: AppAbility) => boolean;
+export const CheckPolicies = (...handlers: PolicyHandler[]) => SetMetadata(CHECK_POLICIES, handlers);
+
+@Injectable()
+export class PoliciesGuard implements CanActivate {
+  constructor(private reflector: Reflector, private abilities: AbilityFactory) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()])) return true;
+    const handlers = this.reflector.get<PolicyHandler[] | undefined>(CHECK_POLICIES, ctx.getHandler());
+    // Default deny: a route without a declared policy is a bug, not an open door.
+    if (!handlers) throw new ForbiddenException("No policy declared for this route");
+
+    const req = ctx.switchToHttp().getRequest();
+    req.ability = this.abilities.createFor(req.user);
+    return handlers.every((check) => check(req.ability));
+  }
+}
+
+// orders.controller.ts
+@Post(":id/refund")
+@CheckPolicies((ability) => ability.can("refund", "Order"))
+refund(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: RefundDto) {
+  return this.orders.refund(req.ability, id, dto);
+}
+```
+
+The guard answers the type-level question ("can this actor refund *some* order?"). The service checks the instance, because conditions like `totalCents` depend on the record: `ForbiddenError.from(ability).throwUnlessCan("refund", subject("Order", order))`. On Prisma, `@casl/prisma` turns the same rules into a `where` clause (`accessibleBy(ability).Order`), so the scoped repository and the policy share one source of truth instead of drifting apart.
+
+### A test that every route declares a policy
+
+Default deny at runtime is good; failing CI is better:
+
+```ts
+// test/route-policies.spec.ts
+it("every route is public or declares a policy", async () => {
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule, DiscoveryModule] }).compile();
+  const reflector = moduleRef.get(Reflector);
+  const scanner = new MetadataScanner();
+  const offenders: string[] = [];
+
+  for (const { instance, metatype } of moduleRef.get(DiscoveryService).getControllers()) {
+    if (!instance || !metatype) continue;
+    const proto = Object.getPrototypeOf(instance);
+    for (const name of scanner.getAllMethodNames(proto)) {
+      const handler = proto[name];
+      if (Reflect.getMetadata(PATH_METADATA, handler) === undefined) continue; // not a route
+      const isPublic = reflector.getAllAndOverride(IS_PUBLIC, [handler, metatype]);
+      if (!isPublic && !reflector.get(CHECK_POLICIES, handler)) offenders.push(`${metatype.name}.${name}`);
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+```
+
+Twenty lines, and it has caught more BFLA bugs on my teams than any review checklist.
+
+## API6 — Sensitive business flows
+
+The risk people find hardest to place, because nothing is technically broken. "Buy" buys, "invite a friend" invites. The problem is a bot doing it ten thousand times faster than a human: buying out a limited drop to resell, farming referral credit with throwaway accounts, holding every seat without paying, mass-posting reviews.
+
+So the fix starts with a product conversation — *which flows hurt the business if automated?* — and then protects those flows in business terms:
+
+- **Limits enforced in the database,** not as HTTP rate limits: "max 2 units per customer per drop" as a primary key on `(drop_id, customer_id)` plus a `CHECK (quantity BETWEEN 1 AND 2)`. Races can't win against a constraint.
+- **Make automation unprofitable:** referral rewards after a verified payment, not after sign-up.
+- **Friction only where it matters:** a challenge (Turnstile, hCaptcha) or step-up check on the sensitive step, not the whole site.
+- **Holds that expire,** and a cap on concurrent holds per account.
+- **Business metrics as alerts:** checkouts per minute per SKU, sign-ups per device. Abuse shows up there before it shows up in error rates.
+
+### Idempotency keys for flows that move money
+
+A related problem is accidental repetition: a mobile client retries `POST /payments` after a timeout and the customer pays twice. The standard answer is an `Idempotency-Key` header (there's an IETF draft, and Stripe popularized the pattern). My interceptor, backed by a Postgres table keyed on `(actor_id, key)`:
+
+```ts
+// idempotency/idempotency.interceptor.ts
+@Injectable()
+export class IdempotencyInterceptor implements NestInterceptor {
+  constructor(private store: IdempotencyStore, private reflector: Reflector) {}
+
+  async intercept(ctx: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
+    const req = ctx.switchToHttp().getRequest<AuthedRequest>();
+    const key = req.header("idempotency-key");
+    if (!key || key.length > 255) throw new BadRequestException("Idempotency-Key header required");
+
+    const hash = sha256(`${req.method} ${req.originalUrl} ${stableStringify(req.body)}`);
+    const claim = await this.store.claim(req.user.id, key, hash); // INSERT ... ON CONFLICT DO NOTHING
+
+    if (claim.kind === "existing") {
+      const row = claim.row;
+      if (row.requestHash !== hash) throw new UnprocessableEntityException("Key reused with a different request");
+      if (row.state === "in_progress") throw new ConflictException("Request with this key still in progress");
+      if (row.status >= 400) throw new HttpException(row.body, row.status); // replay errors as errors
+      return of(row.body); // replay, don't re-execute
+    }
+
+    return next.handle().pipe(
+      mergeMap(async (body) => {
+        // Nest sets the status after interceptors run, so derive it the way Nest does
+        const status = this.reflector.get<number>(HTTP_CODE_METADATA, ctx.getHandler()) ?? 201;
+        await this.store.complete(req.user.id, key, status, body);
+        return body;
+      }),
+      catchError(async (err) => {
+        // Client errors are final; server errors release the key so a retry can run
+        if (err instanceof HttpException && err.getStatus() < 500) {
+          await this.store.complete(req.user.id, key, err.getStatus(), err.getResponse());
+        } else {
+          await this.store.release(req.user.id, key);
+        }
+        throw err;
+      }),
+    );
+  }
+}
+```
+
+Scope keys per actor (otherwise one user's key can replay another user's response), compare the request hash, expire rows after a day or so. Idempotency doesn't stop scalpers, but it removes a whole class of "the system did it twice" incidents from the flows that matter most.
+
+## API7 — SSRF: when your server fetches for the attacker
+
+Any feature where the server fetches a user-supplied URL is an SSRF candidate: webhooks, "import from URL", link previews, PDF renderers, "bring your own OIDC provider". The attacker wants your server to reach what they can't: cloud metadata at `169.254.169.254`, an internal admin service, Redis on localhost.
+
+```ts
+// vulnerable
+const res = await fetch(dto.url); // http://169.254.169.254/latest/meta-data/... says hello
+return { status: res.status, body: await res.text() }; // and you hand it back
+```
+
+Rejecting `localhost` and private IP literals in the string loses to DNS: `internal.attacker.example` resolves to `10.0.0.5`, or to a public IP during your check and a private one when you connect (DNS rebinding). The check must run **on the IP you actually connect to**. With undici you can hook the lookup for every connection:
+
+```ts
+// net/safe-fetch.ts
+import dns from "node:dns";
+import ipaddr from "ipaddr.js";
+import { Agent, fetch } from "undici";
+
+// process() unwraps IPv4-mapped IPv6 such as ::ffff:127.0.0.1
+const isPublic = (ip: string) => ipaddr.process(ip).range() === "unicast";
+
+const safeLookup = ((hostname: string, options: any, cb: any) => {
+  dns.lookup(hostname, { ...options, all: true }, (err, addrs: dns.LookupAddress[]) => {
+    if (err) return cb(err);
+    if (!addrs.length || !addrs.every((a) => isPublic(a.address))) {
+      return cb(Object.assign(new Error(`Blocked address for ${hostname}`), { code: "EBLOCKED" }));
+    }
+    options.all ? cb(null, addrs) : cb(null, addrs[0].address, addrs[0].family);
+  });
+}) as typeof dns.lookup;
+
+const agent = new Agent({ connect: { lookup: safeLookup, timeout: 5_000 } });
+
+export async function safeFetch(raw: string) {
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) {
+    throw new BadRequestException("URL not allowed");
+  }
+  const res = await fetch(url, { dispatcher: agent, redirect: "manual", signal: AbortSignal.timeout(10_000) });
+  if (res.status >= 300 && res.status < 400) throw new BadRequestException("Redirects are not followed");
+  return res; // the caller still caps the body size while reading
+}
+```
+
+Allowing only `unicast` rejects private, loopback, link-local (the metadata endpoint), carrier-grade NAT, unique-local IPv6 and the IPv6 tunnelling ranges in one line. Redirects are refused because a 302 to `http://10.0.0.5` is the oldest bypass there is. Still, this is one layer:
+
+- **Egress control is the real fix.** URL-fetching workers live in a network segment that reaches the internet only through an egress proxy, with no route to internal services. On AWS, enforce IMDSv2 so a plain GET can't read credentials.
+- **Don't return what you fetched.** A webhook test reports "delivered, 200", not the body. Blind SSRF is far less useful.
+
+## API8 — Security Misconfiguration
+
+The catch-all, and mostly about defaults nobody revisited. What I check on every NestJS API:
+
+| Misconfiguration | What I've seen | Fix |
+| --- | --- | --- |
+| Errors with internals | A custom filter returning `exception.message`, leaking Prisma table and column names | Map known errors; everything else is a generic 500 with a request ID |
+| Swagger in production | `/docs` listing every internal and admin route | Mount only outside prod, or behind auth |
+| CORS reflecting any origin | `origin: true, credentials: true` from a tutorial | An explicit allowlist |
+| Chatty health endpoints | `/health` returning versions and connection strings | Liveness says `ok`; details behind auth |
+| Missing headers | No `nosniff`, no HSTS | `helmet()` — cheap even for JSON APIs |
+| Echoing input in errors | Validation errors repeating secrets back | Field names and messages, not values |
+| `trust proxy` wrong | Limits and logs see the load balancer, or trust spoofed headers | The exact hop count |
+
+Nest's built-in exception filter is actually conservative: an unknown error becomes `{"statusCode":500,"message":"Internal server error"}`. The leaks I find come from custom filters written to "make errors more helpful". If you want a consistent format, RFC 9457 problem details work well — the lifecycle post has a complete filter. CORS has [its own post](/blog/cors-and-cross-origin-isolation), covering why reflecting origins is dangerous and how to write the allowlist.
+
+## API9 — Improper Inventory Management
+
+You can't protect endpoints you don't know you have. The incidents are depressingly consistent: `/v1` still deployed "for one old mobile client" without the checks `/v2` got; a `staging-api` host with a copy of production data; an internal endpoint exposed by a wildcard gateway route; a partner integration nobody remembers granting.
+
+```ts
+// main.ts
+app.enableVersioning({ type: VersioningType.URI, defaultVersion: "2" });
+
+// orders.v1.controller.ts — a thin adapter over the SAME services as v2
+@Controller({ path: "orders", version: "1" })
+@UseInterceptors(new DeprecationInterceptor({ deprecatedAt: "2026-09-01", sunset: "2027-03-31" }))
+export class OrdersV1Controller {}
+```
+
+- **Old versions call the same services and repositories,** so fixes land in both. Copy-pasted v1 services are where vulnerabilities go to live forever.
+- **Generate the OpenAPI document in CI and diff it.** A new route shows up as a contract diff a reviewer can't miss; the route-policy test above is part of the same inventory.
+- **Announce and measure retirement:** `Deprecation` (RFC 9745, a structured date like `@1788220800`) and `Sunset` (RFC 8594, an HTTP date) headers, plus metrics on version usage. When traffic hits zero, delete the code.
+- **Non-production with real data is production** for security purposes — or better, don't give it real data.
+- **Gateway in default-deny mode:** only routes in the published inventory are forwarded.
+
+## API10 — Unsafe Consumption of APIs
+
+Developers who would never trust a request body happily trust JSON from a payment provider, a shipping API or a partner. Those systems get compromised, misconfigured or simply change format — and their data flows into your database, your HTML and your SQL.
+
+```ts
+// shipping/shipping.client.ts
+const Quote = z.object({
+  carrier: z.string().max(50),
+  amountCents: z.number().int().nonnegative().max(1_000_000),
+  currency: z.string().length(3),
+  trackingUrl: z.url().refine((u) => u.startsWith("https://"), "https only"), // ends up in an href
+});
+
+const res = await fetch(`${this.baseUrl}/quotes`, {
+  method: "POST",
+  headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
+  body: JSON.stringify(input),
+  redirect: "error", // a redirect from your provider is a signal, not a convenience
+  signal: AbortSignal.timeout(5_000),
+});
+const parsed = Quote.safeParse(await res.json());
+if (!res.ok || !parsed.success) throw new ShippingUnavailableError(res.status);
+return parsed.data; // unknown keys stripped, types guaranteed
+```
+
+Webhooks deserve the same suspicion. Verify the signature over the **raw** bytes — that's why the bootstrap uses `NestFactory.create(AppModule, { rawBody: true })`; re-serialized JSON won't match:
+
+```ts
+// payments/webhooks.controller.ts
+@Public()
+@Post("webhooks/payments")
+@HttpCode(204)
+async handle(@Req() req: RawBodyRequest<Request>, @Headers("x-signature") sig = "", @Headers("x-timestamp") ts = "") {
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) throw new UnauthorizedException(); // also rejects NaN
+  const expected = createHmac("sha256", this.secret).update(`${ts}.${req.rawBody!.toString("utf8")}`).digest();
+  const given = Buffer.from(sig, "hex");
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new UnauthorizedException();
+
+  const event = PaymentEvent.parse(JSON.parse(req.rawBody!.toString("utf8")));
+  await this.inbox.recordOnce(event.id, event); // providers deliver at least once
+}
+```
+
+Constant-time comparison, a timestamp window against replays, dedupe by event ID. For high-value events I go further: treat the webhook as a hint and fetch the authoritative state from the provider's API before acting.
+
+## Testing: an authorization matrix in e2e tests
+
+Unit tests prove a guard works. They don't prove every route uses it correctly against real data. For that I keep an authorization matrix — actors on one axis, operations on the other — and run it end to end against a real database seeded with two tenants:
+
+| Operation | anon | alice (owner) | bob (same tenant) | support | admin | admin, other tenant |
+| --- | --- | --- | --- | --- | --- | --- |
+| `GET /orders/:aliceOrder` | 401 | 200 | 404 | 200 | 200 | 404 |
+| `POST /orders/:aliceOrder/cancel` | 401 | 204 | 404 | 403 | 204 | 404 |
+| `POST /orders/:aliceOrder/refund` | 401 | 403 | 403 | 201 | 201 | 404 |
+| `DELETE /users/:bob` | 401 | 403 | 403 | 403 | 204 | 404 |
+| `PATCH /users/me` with `role` | 401 | 400 | 400 | 400 | 400 | 400 |
+
+```ts
+// test/authz.e2e-spec.ts
+type ActorName = "anon" | "alice" | "bob" | "support" | "admin" | "otherAdmin";
+type Row = [string, "get" | "post" | "patch" | "delete", (f: Fixtures) => string, object | undefined, Record<ActorName, number>];
+
+const matrix: Row[] = [
+  ["read order", "get", (f) => `/v2/orders/${f.aliceOrder}`, undefined,
+    { anon: 401, alice: 200, bob: 404, support: 200, admin: 200, otherAdmin: 404 }],
+  ["refund order", "post", (f) => `/v2/orders/${f.aliceOrder}/refund`, { amountCents: 500 },
+    { anon: 401, alice: 403, bob: 403, support: 201, admin: 201, otherAdmin: 404 }],
+  ["mass-assign role", "patch", () => "/v2/users/me", { displayName: "x", role: "admin" },
+    { anon: 401, alice: 400, bob: 400, support: 400, admin: 400, otherAdmin: 400 }],
+];
+
+describe.each(matrix)("%s", (_name, method, path, body, expected) => {
+  it.each(Object.entries(expected))("as %s → %i", async (actor, status) => {
+    await fixtures.reset(); // refunds and cancels mutate state
+    let req = request(app.getHttpServer())[method](path(fixtures));
+    if (actor !== "anon") req = req.set("Authorization", `Bearer ${fixtures.tokens[actor as ActorName]}`);
+    await (body ? req.send(body) : req).expect(status);
+  });
+});
+```
+
+What makes the matrix pull its weight:
+
+- **The "other tenant" column is non-negotiable.** Most cross-tenant leaks come through admin and support paths, because those have the relaxed scopes.
+- **Snapshot the response keys** (not values) for read endpoints. A new `passwordHash` in the output is API3, caught by a test.
+- **New routes add rows in the same PR.** With the route-policy test, a route without a policy fails CI; a route without a matrix row gets flagged in review.
+- **Run the real stack.** Overriding the auth guard "to make tests easier" removes the thing you're testing.
+
+## Mistakes I see over and over
+
+**Authorization as an optional `if` in the controller.** Scope belongs in the data layer, policies in a global default-deny guard.
+
+**"The frontend doesn't show that button."** The API is the product. Anything it accepts, someone will send.
+
+**Trusting the gateway for authorization.** Gateways handle authentication, rate limits and routing. They don't know order 42 belongs to Alice.
+
+**`@Body() body: any`, or no `forbidNonWhitelisted`.** Mass assignment is one config line away from impossible.
+
+**Returning ORM entities.** Every future column becomes public by default.
+
+**IP-only rate limits with `trust proxy` misconfigured.** Everyone shares one bucket, or each request gets its own. Either way, no limit.
+
+**Fetching user URLs with plain `fetch`.** DNS rebinding makes string checks useless; check the connected IP and control egress.
+
+**Old versions with their own copy of the logic.** Fixed in v2, vulnerable in v1, forever.
+
+## Summary
+
+<Checklist>
+
+- Ownership lives in the data layer: a scoped repository puts tenant and owner into every `where`, including writes and nested resources; out-of-scope objects return 404.
+- Authentication is a global default-deny guard with pinned algorithms, issuer and audience; login, reset and OTP endpoints are throttled per account and per IP.
+- `ValidationPipe` with `whitelist` and `forbidNonWhitelisted`, one DTO per use case, `@ValidateNested()` + `@Type()` on nested objects.
+- Responses shaped explicitly: `select` at the query, a response type, a default-deny serializer as the net.
+- Limits on every axis: rate (shared Redis storage, correct `trust proxy`), cost per route, page size, body size, array length, timeouts, downstream spend.
+- Function-level authorization through a default-deny CASL policies guard, plus a CI test that every route is public or declares a policy.
+- Sensitive flows identified with product and limited in business terms in the database; money-moving POSTs require idempotency keys.
+- User-supplied URLs fetched only through a client that checks the connected IP and refuses redirects, behind an egress proxy.
+- Bootstrap hardened: helmet, CORS allowlist, no internals in errors, no public Swagger in production.
+- A real inventory: versions sharing services, OpenAPI diffed in CI, Deprecation/Sunset headers, old versions actually deleted.
+- Third-party responses validated with a schema; webhooks verified on the raw body with a timestamp window and dedupe.
+- An authorization matrix in e2e tests with an "other tenant" column, running against the real guards and pipes.
+
+</Checklist>

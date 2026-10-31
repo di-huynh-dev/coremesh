@@ -1,0 +1,879 @@
+---
+title: "Frontend observability thực chiến: RUM với web-vitals, source map riêng tư và trace từ trình duyệt tới backend"
+excerpt: "Cài Sentry mới là bước đầu. Bài này đi qua cách mình dựng frontend observability thật sự: lab và field data, thu RUM bằng web-vitals attribution, gửi beacon không mất, sampling, source map riêng tư, nhóm lỗi nhiễu, nối trace với backend qua traceparent, lọc PII, dashboard p75 và deploy marker."
+---
+
+<Lead>Ở gần như mọi dự án mình tham gia, câu trả lời cho "frontend có monitoring chưa?" đều là "có, cài Sentry rồi". Rồi một tuần sau release, khách trên Android tầm trung kêu trang danh sách sản phẩm bấm lọc bị khựng, Lighthouse trong CI vẫn xanh, Sentry thì có bốn mươi nghìn event mỗi ngày mà không ai đọc nổi. Cài một SDK không làm bạn *nhìn thấy* hệ thống. Bài này là cách mình dựng frontend observability để trả lời được những câu hỏi thật: người dùng thật có chậm không, chậm ở route nào, trên thiết bị nào, từ lần deploy nào, do tương tác nào và script nào — và cú click chậm đó có nối được tới trace bên backend không. Mình sẽ đi từ lab vs field data, thu RUM bằng web-vitals attribution, gửi beacon không mất dữ liệu, sampling, source map riêng tư, nhóm lỗi nhiễu, W3C traceparent và OpenTelemetry, lọc PII, tới dashboard p75 và quy trình deploy marker.</Lead>
+
+## "Cài Sentry rồi" chưa phải là observability
+
+Observability không phải là có công cụ, mà là **trả lời được câu hỏi mình chưa biết trước sẽ phải hỏi**. Với frontend, những câu hỏi mình thực sự gặp trong các buổi điều tra sự cố là:
+
+- Người dùng thật có đang chậm không, hay chỉ máy dev của mình nhanh?
+- Chậm ở route nào, trên loại thiết bị và mạng nào?
+- Bắt đầu từ khi nào — trùng với lần deploy nào?
+- INP tệ là do tương tác nào, handler nào, script của ai?
+- Lỗi này mới xuất hiện hay đã âm ỉ từ lâu? Ảnh hưởng bao nhiêu phiên?
+- Trang tải chậm vì frontend hay vì một API phía sau?
+
+Một SDK error tracking chỉ trả lời được một phần câu hỏi thứ năm. Để trả lời đủ, mình cần ba loại tín hiệu cộng một loại ngữ cảnh:
+
+| Tín hiệu | Nó là gì | Trả lời câu hỏi |
+| --- | --- | --- |
+| **Metric (RUM)** | LCP, INP, CLS, TTFB… đo trên trình duyệt người dùng thật, kèm attribution | Có chậm không, chậm ở đâu, vì sao |
+| **Error** | Exception, promise rejection, lỗi tải tài nguyên, có stack đã map ngược | Cái gì hỏng, hỏng cho ai, từ release nào |
+| **Trace** | Chuỗi span từ fetch trên trình duyệt xuyên qua các service backend | Thời gian đi đâu khi frontend chờ backend |
+| **Ngữ cảnh** | Release, deploy marker, feature flag, route template, device class | Thay đổi nào gây ra điều đó |
+
+Điểm mấu chốt là bốn thứ này phải **dùng chung một bộ khoá**: cùng `release`, cùng `route`, cùng `session_id`, cùng `trace_id`. Ba công cụ xịn nhưng không join được với nhau thì khi có sự cố, bạn vẫn ngồi so timestamp bằng mắt.
+
+<Figure src="/blog/frontend-observability-rum-pipeline.svg" alt="Sơ đồ pipeline frontend observability: trong trình duyệt, web-vitals attribution, error SDK và OpenTelemetry fetch instrumentation đẩy dữ liệu vào một hàng đợi, flush bằng sendBeacon hoặc fetch keepalive khi visibilitychange; collector kiểm tra schema, lọc PII, áp sample rate và gắn release, device class; dữ liệu đi vào ClickHouse cho vitals, kho error có source map riêng tư, và trace store; dashboard p75 theo route và device, alert so với baseline kèm deploy marker; request fetch mang header traceparent tới API gateway và các service backend, cùng trace_id được ghi vào trace store để nối hai phía" caption="Một pipeline, bốn loại dữ liệu, chung một bộ khoá: release, route, session_id và trace_id. traceparent đi theo request ra backend, Server-Timing mang trace của trang HTML ngược về trình duyệt." />
+
+## Lab data và field data: hai câu hỏi khác nhau
+
+Mình đã chứng kiến không ít cuộc tranh luận kiểu "Lighthouse báo LCP 1,2 giây mà Search Console bảo 3,8 giây, cái nào sai?". Không cái nào sai cả — chúng đo hai thứ khác nhau.
+
+| | Lab (Lighthouse, WebPageTest, CI) | CrUX (Chrome UX Report) | RUM của chính bạn |
+| --- | --- | --- | --- |
+| **Ai** | Một máy giả lập, cấu hình cố định | Người dùng Chrome đã bật chia sẻ dữ liệu | Mọi người dùng bạn cho phép thu thập |
+| **Độ trễ** | Ngay lập tức | Cửa sổ trượt 28 ngày | Vài phút |
+| **Độ chi tiết** | Từng request, từng long task | Theo origin hoặc URL, p75 | Bất kỳ chiều nào bạn gắn: route, release, device, flag |
+| **INP** | Không đo được thật (không có người tương tác) | Có | Có, kèm attribution |
+| **Dùng để** | Bắt thoái lui trước khi merge, debug có tái hiện | Biết Google đang thấy gì | Biết người dùng đang thấy gì và vì sao |
+
+Mình dùng cả ba, nhưng cho đúng việc:
+
+- **Lab trong CI** để chặn thoái lui có tái hiện được: bundle phình, một ảnh hero mất `priority`, một font chặn render. Nó ổn định, nên so sánh giữa hai commit có ý nghĩa.
+- **CrUX** là "điểm thi" — con số Google dùng. Nó chỉ có Chrome, chỉ có p75 tổng hợp, trễ 28 ngày, và không chia được theo release. Dùng để kiểm tra chéo, không dùng để debug.
+- **RUM của mình** là nơi debug field data. Đây là phần bài này tập trung.
+
+Đừng bao giờ so con số lab với con số field rồi kết luận "field bị sai". Máy lab không có extension, không có cache lạnh trên mạng 4G chập chờn, không chạy song song mười tab khác. Nếu bạn cần ôn lại định nghĩa và ngưỡng của từng metric, mình đã viết riêng ở bài [Core Web Vitals](/blog/core-web-vitals).
+
+<Callout type="note" title="Field data không chỉ là Chrome nữa — nhưng đừng trộn lẫn">
+  LCP và INP từng gần như chỉ có trên trình duyệt nhân Chromium. Các engine khác đã và đang bổ sung dần các API nền như Largest Contentful Paint và Event Timing, nhưng mức hỗ trợ và chi tiết cài đặt vẫn khác nhau theo phiên bản. Luôn ghi lại engine trình duyệt trong mỗi event và tách nó thành một chiều riêng trên dashboard — một con số p75 trộn Chrome với Safari thường nói ít hơn bạn tưởng.
+</Callout>
+
+## Thu thập RUM với web-vitals
+
+Thư viện [`web-vitals`](https://github.com/GoogleChrome/web-vitals) của Google xử lý giùm bạn hàng tá trường hợp biên: trang được mở ở background, khôi phục từ bfcache, prerender, CLS tính theo session window, INP lấy đúng tương tác gần tệ nhất. Tự viết lại bằng `PerformanceObserver` là cách nhanh nhất để có số sai một cách tự tin.
+
+### Cài đặt cơ bản và hình dạng event
+
+Mình luôn dùng bản **attribution** ngay từ đầu. Nó nặng hơn bản thường một chút, nhưng không có attribution thì bạn chỉ biết "INP tệ" mà không biết vì sao.
+
+```ts
+// lib/rum/vitals.ts
+import { onCLS, onFCP, onINP, onLCP, onTTFB, type MetricWithAttribution } from "web-vitals/attribution";
+import { enqueue } from "./transport";
+import { currentRoute, routeAt } from "./route";
+import { getSession } from "./session";
+
+export type VitalEvent = {
+  type: "vital";
+  name: MetricWithAttribution["name"];
+  value: number;
+  delta: number;
+  rating: "good" | "needs-improvement" | "poor";
+  metricId: string;
+  navigationType: string;
+  route: string;
+  attribution: Record<string, string | number | undefined>;
+};
+
+function report(metric: MetricWithAttribution) {
+  const session = getSession();
+  if (!session.sampled) return;
+
+  enqueue({
+    type: "vital",
+    name: metric.name,
+    value: metric.value,
+    delta: metric.delta,
+    rating: metric.rating,
+    metricId: metric.id,
+    navigationType: metric.navigationType,
+    route: metric.name === "INP" ? routeAt(metric.attribution.interactionTime) : currentRoute(),
+    attribution: summarizeAttribution(metric),
+  } satisfies VitalEvent);
+}
+
+export function startVitals() {
+  onTTFB(report);
+  onFCP(report);
+  onLCP(report);
+  onCLS(report);
+  onINP(report);
+}
+```
+
+Vài trường đáng hiểu cho đúng:
+
+- **`value` và `delta`**: CLS và INP có thể được báo nhiều lần trong một page load (nếu bật `reportAllChanges`, hoặc khi trang bị ẩn rồi hiện lại). `value` là giá trị hiện tại, `delta` là phần thay đổi kể từ lần báo trước. Ở backend, lấy bản ghi cuối cùng theo `metricId` thay vì cộng dồn mọi lần.
+- **`navigationType`**: `navigate`, `reload`, `back-forward`, `back-forward-cache`, `prerender`, `restore`. Trang khôi phục từ bfcache có LCP gần như bằng không — trộn chúng vào p75 làm số đẹp hơn thực tế. Mình luôn tách chiều này.
+- **Thời điểm báo**: LCP chốt khi người dùng tương tác lần đầu; CLS và INP chỉ chốt khi trang chuyển sang `hidden`. Nghĩa là nếu bạn không gửi dữ liệu đúng lúc trang bị ẩn, bạn mất chính hai metric khó nhất. Phần transport bên dưới giải quyết việc này.
+
+### INP attribution: tương tác nào, script nào
+
+Đây là phần mình thấy giá trị nhất. INP chia một tương tác thành ba khúc — *input delay*, *processing duration*, *presentation delay* — và bản attribution còn gắn kèm các entry **Long Animation Frames (LoAF)** chồng lên tương tác đó, tức là biết được *script nào* đã chạy.
+
+```ts
+// lib/rum/attribution.ts
+import type { MetricWithAttribution } from "web-vitals/attribution";
+
+const MAX = 120; // cắt chuỗi để không gửi selector dài vô tận
+
+export function summarizeAttribution(metric: MetricWithAttribution) {
+  switch (metric.name) {
+    case "INP": {
+      const a = metric.attribution;
+      const script = a.longestScript?.entry;
+      return {
+        target: a.interactionTarget?.slice(0, MAX),
+        interactionType: a.interactionType, // "pointer" | "keyboard"
+        loadState: a.loadState, // tương tác xảy ra lúc trang còn đang tải?
+        inputDelay: Math.round(a.inputDelay),
+        processing: Math.round(a.processingDuration),
+        presentation: Math.round(a.presentationDelay),
+        scriptUrl: script?.sourceURL ? stripQuery(script.sourceURL) : undefined,
+        scriptFn: script?.sourceFunctionName || undefined,
+        scriptInvoker: script?.invoker?.slice(0, MAX),
+        scriptSubpart: a.longestScript?.subpart,
+        totalScript: a.totalScriptDuration && Math.round(a.totalScriptDuration),
+        totalStyleLayout: a.totalStyleAndLayoutDuration && Math.round(a.totalStyleAndLayoutDuration),
+      };
+    }
+    case "LCP": {
+      const a = metric.attribution;
+      return {
+        url: a.url ? stripQuery(a.url) : undefined,
+        ttfb: Math.round(a.timeToFirstByte),
+        loadDelay: Math.round(a.resourceLoadDelay),
+        loadDuration: Math.round(a.resourceLoadDuration),
+        renderDelay: Math.round(a.elementRenderDelay),
+      };
+    }
+    case "CLS": {
+      const a = metric.attribution;
+      return {
+        target: a.largestShiftTarget?.slice(0, MAX),
+        shiftTime: a.largestShiftTime && Math.round(a.largestShiftTime),
+        loadState: a.loadState,
+      };
+    }
+    default:
+      return {};
+  }
+}
+
+function stripQuery(url: string) {
+  try {
+    const u = new URL(url, location.origin);
+    return u.origin + u.pathname;
+  } catch {
+    return undefined;
+  }
+}
+```
+
+Một vài trường như `longestScript` hay `totalScriptDuration` được thêm vào ở các bản gần đây của thư viện và chỉ có giá trị trên trình duyệt hỗ trợ LoAF, nên mình luôn dùng optional chaining và chấp nhận chúng trống ở một phần dữ liệu.
+
+Cách mình đọc ba khúc của INP:
+
+- **Input delay lớn** — có thứ khác đang chiếm main thread khi người dùng bấm: hydration, một tag bên thứ ba, một timer polling. `loadState` bằng `loading` hay `dom-content-loaded` thường chỉ thẳng vào hydration.
+- **Processing duration lớn** — chính event handler của bạn chậm: setState kéo theo re-render cả cây, tính toán đồng bộ, đọc layout ép reflow.
+- **Presentation delay lớn** — phần render sau handler nặng: DOM quá lớn, style recalculation phạm vi rộng, ảnh decode đồng bộ.
+
+Câu chuyện thật: trang danh sách sản phẩm của một dự án có INP p75 trên mobile tệ hẳn sau một sprint mà không ai đụng vào component lọc. Attribution gom theo `scriptUrl` cho thấy khúc nặng nhất nằm trong file của một công cụ A/B testing vừa được team marketing bật thêm thử nghiệm — nó gắn listener click toàn trang và chạy đồng bộ một vòng tính toán trên mọi cú bấm. Không có LoAF, mình sẽ mất vài ngày profile code của chính team.
+
+### Route template, không phải URL
+
+Hai điều mình học được khi gắn route cho metric:
+
+1. **Gom theo route template, không theo URL thật.** `/products/8812` và `/products/9031` là cùng một trang. Gom theo URL thì mỗi nhóm vài mẫu, p75 vô nghĩa — và URL thật còn dễ chứa dữ liệu cá nhân. Trong Next.js, mình map pathname về template bằng chính cấu trúc thư mục `app/` lúc build, hoặc đơn giản là một bảng regex nhỏ.
+2. **Với SPA, INP có thể thuộc về route khác với route lúc tải trang.** INP được chốt khi trang bị ẩn, mà lúc đó người dùng có thể đã soft navigation qua năm trang. Mình lưu lịch sử route kèm timestamp và tra theo `interactionTime` để gắn INP đúng chỗ.
+
+```ts
+// lib/rum/route.ts
+type Entry = { route: string; at: number };
+const history: Entry[] = [{ route: toTemplate(location.pathname), at: 0 }];
+
+export function onRouteChange(pathname: string) {
+  history.push({ route: toTemplate(pathname), at: performance.now() });
+  if (history.length > 50) history.shift();
+}
+
+export function currentRoute() {
+  return history[history.length - 1].route;
+}
+
+export function routeAt(time: number | undefined) {
+  if (time === undefined) return currentRoute();
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].at <= time) return history[i].route;
+  }
+  return history[0].route;
+}
+
+const PATTERNS: [RegExp, string][] = [
+  [/^\/products\/[^/]+$/, "/products/[id]"],
+  [/^\/orders\/[^/]+$/, "/orders/[id]"],
+  [/^\/u\/[^/]+(\/.*)?$/, "/u/[handle]"],
+];
+
+export function toTemplate(pathname: string) {
+  for (const [re, template] of PATTERNS) if (re.test(pathname)) return template;
+  return pathname.length > 64 ? "/(other)" : pathname;
+}
+```
+
+Chromium đang thử nghiệm Soft Navigations API để đo LCP và INP cho từng soft navigation, nhưng tới thời điểm này mình vẫn coi đó là dữ liệu thử nghiệm, không dùng làm số chính.
+
+## Gửi beacon đáng tin cậy
+
+Bạn có thể thu được metric đúng rồi đánh rơi nó ở bước cuối. Đây là lỗi phổ biến nhất mình gặp trong các hệ RUM tự viết.
+
+### Vì sao dữ liệu bị mất
+
+- **`unload` không đáng tin**, nhất là trên mobile: người dùng chuyển app, hệ điều hành đóng băng tab, sự kiện không bao giờ bắn. Tệ hơn, có handler `unload` còn làm trang không vào được bfcache.
+- **`fetch` thường bị huỷ** khi trang đóng.
+- **CLS và INP chỉ chốt khi trang bị ẩn** — đúng lúc khó gửi nhất.
+
+Quy tắc: **gom event vào hàng đợi, flush khi `visibilitychange` sang `hidden`**, dùng `pagehide` làm lưới an toàn, và gửi bằng `navigator.sendBeacon` hoặc `fetch` với `keepalive: true` — cả hai được trình duyệt tiếp tục gửi kể cả khi trang đã đóng.
+
+### Hàng đợi và flush
+
+```ts
+// lib/rum/transport.ts
+import { getSession } from "./session";
+
+const ENDPOINT = "/_r/e"; // first-party, tên trung tính
+const MAX_BYTES = 60_000; // dưới giới hạn khoảng 64 KiB của beacon/keepalive
+const queue: object[] = [];
+let timer: ReturnType<typeof setTimeout> | undefined;
+
+export function enqueue(event: object) {
+  queue.push(event);
+  if (queue.length >= 20) flush();
+  else timer ??= setTimeout(flush, 10_000);
+}
+
+export function flush() {
+  clearTimeout(timer);
+  timer = undefined;
+  while (queue.length) {
+    const batch = takeBatch();
+    const s = getSession();
+    const body = JSON.stringify({
+      v: 1,
+      sid: s.id,
+      release: s.release,
+      sampleRate: s.sampleRate,
+      events: batch,
+    });
+    // Gửi chuỗi => Content-Type là text/plain, không cần CORS preflight.
+    const queued = navigator.sendBeacon?.(ENDPOINT, body);
+    if (!queued) {
+      fetch(ENDPOINT, { method: "POST", body, keepalive: true }).catch(() => {});
+    }
+  }
+}
+
+function takeBatch() {
+  const batch: object[] = [];
+  let size = 200;
+  while (queue.length) {
+    const next = JSON.stringify(queue[0]).length;
+    if (batch.length && size + next > MAX_BYTES) break;
+    batch.push(queue.shift()!);
+    size += next;
+  }
+  return batch;
+}
+
+export function startTransport() {
+  addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flush();
+  });
+  // Lưới an toàn cho trình duyệt không bắn visibilitychange đúng lúc
+  addEventListener("pagehide", flush);
+}
+```
+
+Mấy chi tiết dễ sai:
+
+- **Gửi chuỗi, không gửi `Blob` JSON.** `sendBeacon` với chuỗi dùng `text/plain`, là "simple request" nên không có preflight. Gửi `Blob` với `application/json` tới origin khác sẽ kích hoạt CORS preflight — và beacon không chờ preflight tử tế được. Collector của mình đọc body dạng text rồi tự `JSON.parse`.
+- **Giới hạn kích thước.** `sendBeacon` và `fetch keepalive` cùng chịu hạn mức khoảng 64 KiB cho dữ liệu đang chờ gửi. Vượt quá, `sendBeacon` trả `false` — đó là lý do có nhánh fallback và hàm cắt batch.
+- **Không gửi gì trong `unload`/`beforeunload`.** Ngoài việc không đáng tin, nó làm hỏng bfcache.
+
+`fetchLater()` là API mới hơn cho phép "đặt lịch" một request để trình duyệt tự gửi khi trang bị đóng hoặc sau một khoảng thời gian. Mình đã thử trên Chromium và thấy nó gọn hơn hẳn cho đúng bài toán này, nhưng vẫn feature-detect và giữ đường `sendBeacon` cho các trình duyệt khác.
+
+### Collector: endpoint nhận dữ liệu
+
+Collector là một route nhỏ, nhưng nó là ranh giới tin cậy: mọi thứ đi vào từ internet, ai cũng gửi được.
+
+```ts
+// app/_r/e/route.ts
+import { NextResponse, type NextRequest } from "next/server";
+import { scrubEvent } from "@/lib/rum/scrub-server";
+import { classifyDevice } from "@/lib/rum/device";
+import { rumSink } from "@/lib/rum/sink";
+
+const MAX_BODY = 64 * 1024;
+const NAMES = new Set(["TTFB", "FCP", "LCP", "CLS", "INP"]);
+
+export async function POST(req: NextRequest) {
+  const text = await req.text();
+  if (text.length > MAX_BODY) return new NextResponse(null, { status: 413 });
+
+  let payload: any;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return new NextResponse(null, { status: 400 });
+  }
+  if (payload?.v !== 1 || !Array.isArray(payload.events)) {
+    return new NextResponse(null, { status: 400 });
+  }
+
+  const ua = req.headers.get("user-agent") ?? "";
+  const common = {
+    sessionId: String(payload.sid).slice(0, 36),
+    release: String(payload.release).slice(0, 40),
+    sampleRate: clamp(Number(payload.sampleRate), 0.001, 1),
+    device: classifyDevice(ua), // "mobile" | "tablet" | "desktop"
+    engine: engineOf(ua), // "chromium" | "webkit" | "gecko"
+    country: req.headers.get("x-vercel-ip-country") ?? "XX",
+    receivedAt: new Date().toISOString(),
+    // Cố ý KHÔNG lưu IP và UA thô.
+  };
+
+  const rows = payload.events
+    .slice(0, 50)
+    .filter((e: any) => e?.type === "vital" && NAMES.has(e.name) && Number.isFinite(e.value))
+    .map((e: any) => scrubEvent({ ...common, ...e }));
+
+  await rumSink.write(rows); // đẩy vào queue/Kafka, không ghi đồng bộ vào DB trong request
+  return new NextResponse(null, { status: 204 });
+}
+
+const clamp = (n: number, lo: number, hi: number) => (Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 1);
+const engineOf = (ua: string) =>
+  /Firefox\//.test(ua) ? "gecko" : /Chrome\/|Chromium\//.test(ua) ? "chromium" : /AppleWebKit\//.test(ua) ? "webkit" : "other";
+```
+
+Collector phải rẻ: validate, gắn ngữ cảnh, đẩy vào hàng đợi rồi trả `204`. Ghi đồng bộ vào database trong request là cách nhanh nhất để một đợt traffic cao điểm biến endpoint RUM thành sự cố thứ hai. Và nhớ rate limit nó — đây là URL công khai.
+
+<Callout type="warning" title="Trình chặn quảng cáo chặn RUM nhiều hơn bạn nghĩ">
+  Các filter list phổ biến chặn đường dẫn kiểu `/analytics`, `/collect`, `/rum`, `/beacon` và hầu hết domain của vendor bên thứ ba. Gửi về một đường dẫn first-party với tên trung tính giảm đáng kể phần dữ liệu bị mất. Nhưng đây là chuyện độ chính xác, không phải lách quyền riêng tư: nếu người dùng từ chối đồng ý thu thập, đừng gửi gì cả. Và luôn nhớ RUM của bạn có độ lệch — nhóm người dùng chặn tracking thường là nhóm dùng máy mạnh hơn.
+</Callout>
+
+## Sampling mà không làm méo số liệu
+
+Với traffic lớn, gửi mọi event là phí tiền lưu trữ mà không thêm thông tin. Nhưng sampling sai làm số liệu méo theo cách rất khó phát hiện.
+
+### Quyết định một lần cho mỗi phiên
+
+Nguyên tắc mình theo: **quyết định sampling một lần cho mỗi phiên**, không quyết định cho từng event. Nếu mỗi metric tự tung đồng xu, bạn sẽ có LCP của phiên này mà không có INP của chính phiên đó — không thể phân tích tương quan giữa các metric.
+
+```ts
+// lib/rum/session.ts
+type Session = { id: string; sampled: boolean; sampleRate: number; release: string };
+const KEY = "rum:s";
+
+const RATE = Number(process.env.NEXT_PUBLIC_RUM_SAMPLE_RATE ?? "0.2");
+let cached: Session | undefined;
+
+export function getSession(): Session {
+  if (cached) return cached;
+  try {
+    const raw = sessionStorage.getItem(KEY);
+    if (raw) return (cached = JSON.parse(raw));
+  } catch {}
+  const id = crypto.randomUUID();
+  cached = {
+    id,
+    sampleRate: RATE,
+    sampled: Math.random() < RATE,
+    release: process.env.NEXT_PUBLIC_RELEASE ?? "dev",
+  };
+  try {
+    sessionStorage.setItem(KEY, JSON.stringify(cached));
+  } catch {}
+  return cached;
+}
+```
+
+Gửi kèm `sampleRate` trong mỗi batch để lúc truy vấn có thể **cân trọng số** (weight bằng một chia cho sample rate). Điều này quan trọng khi bạn đổi tỷ lệ giữa chừng, hoặc dùng tỷ lệ khác nhau cho từng nhóm — ví dụ lấy 100% trên một route mới ra mắt, 10% cho phần còn lại.
+
+### Tỷ lệ khác nhau cho từng loại tín hiệu
+
+| Tín hiệu | Tỷ lệ mình hay dùng | Lý do |
+| --- | --- | --- |
+| Web vitals | 10–25% phiên, 100% khi traffic nhỏ | p75 hội tụ nhanh; cần đủ mẫu cho từng route × device |
+| Error | Gần 100%, nhưng có dedupe và rate limit phía client | Lỗi hiếm vẫn quan trọng; nhiễu xử lý bằng fingerprint chứ không bằng sampling |
+| Trace | 1–5%, head-based, cờ sampled đi theo `traceparent` | Trace đắt; quyết định phải nhất quán giữa frontend và backend |
+| Session replay | Rất thấp, và 100% cho phiên có lỗi nếu công cụ hỗ trợ | Đắt nhất, nhạy cảm nhất về quyền riêng tư |
+
+### Những kiểu sampling làm lệch dữ liệu
+
+- **Chỉ khởi động RUM sau khi hydrate xong, hoặc lazy-load nó quá muộn.** Người dùng rời trang trước khi hydrate — đúng nhóm có trải nghiệm tệ nhất — biến mất khỏi dữ liệu. Script RUM nhỏ nên nạp sớm; phần nặng (OpenTelemetry, replay) mới lazy.
+- **Sampling theo user id cố định mãi mãi.** Một nhóm người dùng nhất định sẽ không bao giờ có dữ liệu. Theo phiên an toàn hơn.
+- **Cho nhân viên nội bộ 100%.** Nhân viên dùng máy xịn, mạng văn phòng — trộn vào là kéo p75 đẹp lên. Gắn cờ `internal` và loại khỏi dashboard chính.
+
+## Error tracking: source map riêng tư và nhóm lỗi nhiễu
+
+Mình đã viết riêng về cách phân loại lỗi, error boundary và retry ở bài [Chiến lược xử lý lỗi frontend](/blog/frontend-error-handling-strategy). Ở đây mình tập trung vào phía observability: làm sao để stack trace đọc được, và làm sao để bốn mươi nghìn event một ngày co lại thành mười issue có ý nghĩa.
+
+### Source map: upload, đừng deploy
+
+Stack trace trên code đã minify là vô dụng. Nhưng deploy file `.map` công khai là tặng không cho bất kỳ ai toàn bộ source gốc: comment, tên endpoint nội bộ, tên feature flag chưa công bố. Source map không phải ranh giới bảo mật — code phía client vốn là công khai — nhưng không có lý do gì để làm việc đó dễ hơn.
+
+Quy trình đúng: **sinh source map lúc build, upload lên công cụ error tracking, rồi xoá khỏi artifact trước khi deploy.** Với Vite, `build.sourcemap: "hidden"` sinh file map nhưng không thêm comment `sourceMappingURL` vào bundle.
+
+```bash
+# .github/workflows/deploy.yml (trích bước build)
+export RELEASE="web@${GITHUB_SHA::12}"
+export VITE_RELEASE="$RELEASE"
+
+bun run build                        # vite build với sourcemap: "hidden"
+
+# Gắn Debug ID vào cả bundle lẫn map, để ghép đúng cặp kể cả khi tên file trùng
+bunx sentry-cli sourcemaps inject ./dist
+bunx sentry-cli sourcemaps upload --release="$RELEASE" ./dist
+
+# Không bao giờ deploy file .map
+find ./dist -name "*.map" -delete
+```
+
+Với Next.js, `withSentryConfig` của `@sentry/nextjs` lo phần sinh và upload; bạn chỉ cần bật xoá sau khi upload:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
+
+const nextConfig: NextConfig = {
+  productionBrowserSourceMaps: false, // không phục vụ map công khai
+  env: { NEXT_PUBLIC_RELEASE: process.env.RELEASE ?? "dev" },
+};
+
+export default withSentryConfig(nextConfig, {
+  org: "acme",
+  project: "web",
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  release: { name: process.env.RELEASE },
+  sourcemaps: { deleteSourcemapsAfterUpload: true },
+  silent: !process.env.CI,
+});
+```
+
+Điều quan trọng nhất ở đây không phải công cụ mà là **chuỗi `release` phải giống hệt nhau** ở ba nơi: lúc upload source map, trong SDK error tracking, và trong mọi beacon RUM. Mình dùng `web@` cộng 12 ký tự đầu của commit SHA. Khi ba nơi cùng một khoá, câu "INP xấu đi từ release nào và release đó có lỗi mới nào" chỉ là một câu join.
+
+### Nhóm lỗi: dọn nhiễu bằng fingerprint
+
+Nhiễu trong error tracking frontend có những gương mặt quen thuộc:
+
+| Lỗi | Nguồn gốc | Cách mình xử lý |
+| --- | --- | --- |
+| `ResizeObserver loop completed with undelivered notifications` | Callback ResizeObserver đổi layout trong cùng frame; trình duyệt báo nhưng gần như vô hại | Bỏ qua, trừ khi đang debug một layout cụ thể |
+| `Script error.` | Lỗi từ script cross-origin thiếu `crossorigin` và CORS — trình duyệt giấu chi tiết | Thêm `crossorigin="anonymous"` cho script của mình trên CDN; script bên thứ ba thì bỏ qua |
+| Frame từ `chrome-extension://`, `moz-extension://`, `safari-web-extension://` | Extension chèn code vào trang | `denyUrls` và lọc trong `beforeSend` |
+| `ChunkLoadError`, `Failed to fetch dynamically imported module`, `Importing a module script failed` | Tab cũ xin chunk của bản build đã bị xoá sau deploy | Gom về một fingerprint, sửa gốc (xem bên dưới) |
+| `TypeError: Failed to fetch`, `Load failed`, `NetworkError when attempting to fetch resource` | Mất mạng, người dùng huỷ, ad blocker | Gom theo endpoint, chỉ alert khi tỷ lệ tăng |
+| `AbortError` | Request bị huỷ có chủ đích | Bỏ qua hoàn toàn |
+| `Non-Error promise rejection captured` | Code `reject` một chuỗi hoặc object | Sửa code: luôn reject bằng `Error` |
+
+```ts
+// instrumentation-client.ts
+import * as Sentry from "@sentry/nextjs";
+
+const CHUNK_RE = /ChunkLoadError|Loading chunk [\w-]+ failed|Failed to fetch dynamically imported module|Importing a module script failed/i;
+const NETWORK_RE = /^(TypeError: )?(Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.?)$/;
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  release: process.env.NEXT_PUBLIC_RELEASE,
+  environment: process.env.NEXT_PUBLIC_ENV,
+  sendDefaultPii: false,
+  tracesSampleRate: 0.02,
+  ignoreErrors: [/ResizeObserver loop/, /^Script error\.?$/, "AbortError"],
+  denyUrls: [/^chrome-extension:\/\//, /^moz-extension:\/\//, /^safari-(web-)?extension:\/\//],
+  beforeSend(event, hint) {
+    const err = hint.originalException;
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err ?? "");
+
+    if (CHUNK_RE.test(message)) {
+      event.fingerprint = ["chunk-load-error"];
+      event.level = "warning";
+    } else if (NETWORK_RE.test(message)) {
+      // Gom mọi lỗi mạng theo route, thay vì một issue cho mỗi URL có query khác nhau
+      event.fingerprint = ["network-error", String(event.tags?.route ?? "unknown")];
+    }
+    return event;
+  },
+});
+```
+
+Hai nguyên tắc khi viết fingerprint:
+
+- **Gom theo nguyên nhân, không theo triệu chứng.** Một lỗi chunk là một nguyên nhân dù nó có trăm chunk id khác nhau. Ngược lại, hai lỗi `Cannot read properties of undefined` ở hai component khác nhau là hai nguyên nhân — đừng gom chúng chỉ vì message giống nhau.
+- **Đừng `ignoreErrors` thứ bạn chưa hiểu.** Mỗi dòng trong danh sách bỏ qua nên có một comment giải thích vì sao, và review lại vài tháng một lần.
+
+### ChunkLoadError: sửa gốc chứ đừng chỉ tắt tiếng
+
+Lỗi chunk sau deploy là nhiễu, nhưng nó cũng là một **lỗi thật với người dùng**: họ bấm vào một trang và không có gì xảy ra. Ba lớp xử lý mình dùng:
+
+1. **Giữ asset cũ một thời gian.** File có hash trong tên là immutable; không có lý do gì để xoá chúng ngay khi deploy bản mới. Giữ vài bản build gần nhất trên CDN giải quyết phần lớn trường hợp. Nhiều nền tảng có cơ chế chống version skew (Next.js có tuỳ chọn `deploymentId` để client và server nhận ra nhau); hãy dùng nếu hạ tầng của bạn hỗ trợ.
+2. **Reload một lần, có chốt chặn.** Khi bắt được lỗi chunk, reload trang để lấy bản mới — nhưng chỉ một lần, để không rơi vào vòng lặp reload nếu bản mới cũng hỏng.
+3. **Đo nó như một metric.** Số phiên gặp lỗi chunk sau mỗi deploy là một chỉ số sức khoẻ của quy trình release.
+
+```ts
+// lib/chunk-reload.ts
+const KEY = "chunk-reload-at";
+
+export function reloadOnceForStaleChunk() {
+  try {
+    const last = Number(sessionStorage.getItem(KEY) ?? 0);
+    if (Date.now() - last < 60_000) return false; // vừa reload xong mà vẫn lỗi: dừng lại
+    sessionStorage.setItem(KEY, String(Date.now()));
+  } catch {
+    return false;
+  }
+  location.reload();
+  return true;
+}
+
+// Vite bắn sự kiện này khi preload một dynamic import thất bại
+addEventListener("vite:preloadError", (event) => {
+  if (reloadOnceForStaleChunk()) event.preventDefault();
+});
+```
+
+## Nối frontend với backend trace
+
+Đây là phần biến "frontend chậm" từ một lời phàn nàn thành một trace có thể bấm vào. Chuẩn chung là [W3C Trace Context](https://www.w3.org/TR/trace-context/): header `traceparent` mang trace id và span id đi theo request.
+
+### Header traceparent
+
+```text
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             │  │                                │                │
+             │  trace-id (32 hex)                parent-id (16 hex) flags (01 = sampled)
+             version
+```
+
+Bạn không bắt buộc phải dùng SDK nặng để có cái này. Một wrapper `fetch` vài chục dòng đủ để mọi request ra API của mình mang trace id, và trace id đó được ghi vào event lỗi:
+
+```ts
+// lib/trace/fetch.ts
+const PROPAGATE_TO = [location.origin, "https://api.example.com"];
+
+function hex(bytes: number) {
+  const buf = crypto.getRandomValues(new Uint8Array(bytes));
+  return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function tracedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const url = new URL(input instanceof Request ? input.url : String(input), location.origin);
+  if (!PROPAGATE_TO.includes(url.origin)) return fetch(input, init);
+
+  const traceId = hex(16);
+  const spanId = hex(8);
+  const sampled = Math.random() < 0.02 ? "01" : "00";
+  const headers = new Headers(init.headers);
+  headers.set("traceparent", `00-${traceId}-${spanId}-${sampled}`);
+
+  const started = performance.now();
+  try {
+    const res = await fetch(input, { ...init, headers });
+    if (!res.ok) reportApiFailure({ traceId, url: url.pathname, status: res.status, ms: performance.now() - started });
+    return res;
+  } catch (err) {
+    reportApiFailure({ traceId, url: url.pathname, status: 0, ms: performance.now() - started });
+    throw err;
+  }
+}
+
+declare function reportApiFailure(info: { traceId: string; url: string; status: number; ms: number }): void;
+```
+
+Hai điều phải làm đúng:
+
+- **Chỉ gửi `traceparent` tới origin của mình.** Gắn nó vào request tới API bên thứ ba vừa làm lộ thông tin, vừa có thể làm hỏng request vì preflight.
+- **Backend phải cho phép header này qua CORS.** Với API khác origin, `traceparent` không phải header "simple", nên trình duyệt sẽ preflight. Server phải trả `Access-Control-Allow-Headers: traceparent, tracestate` — quên dòng này là mọi request của bạn gãy ngay sau khi bật tracing. Mình đã thấy đúng chuyện đó xảy ra trên staging, may là không phải production.
+
+### OpenTelemetry browser SDK
+
+Khi cần span thật cho frontend — document load, từng fetch, span tự định nghĩa quanh một luồng nghiệp vụ — mình dùng OpenTelemetry JS cho web. Nó nặng hơn wrapper tự viết khá nhiều, nên mình lazy-load sau khi trang đã idle và chỉ cho phiên được sample.
+
+```ts
+// lib/trace/otel.ts
+import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
+import { BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { ZoneContextManager } from "@opentelemetry/context-zone";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
+import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+
+export function startTracing(release: string) {
+  const provider = new WebTracerProvider({
+    resource: resourceFromAttributes({
+      [ATTR_SERVICE_NAME]: "web",
+      [ATTR_SERVICE_VERSION]: release,
+    }),
+    sampler: new TraceIdRatioBasedSampler(0.02),
+    spanProcessors: [
+      new BatchSpanProcessor(new OTLPTraceExporter({ url: "/_r/t" }), {
+        maxExportBatchSize: 50,
+        scheduledDelayMillis: 5_000,
+      }),
+    ],
+  });
+
+  provider.register({ contextManager: new ZoneContextManager() });
+
+  registerInstrumentations({
+    instrumentations: [
+      new DocumentLoadInstrumentation(),
+      new FetchInstrumentation({
+        // Chỉ gắn traceparent cho API của mình
+        propagateTraceHeaderCorsUrls: [/^https:\/\/api\.example\.com\//],
+        clearTimingResources: true,
+      }),
+    ],
+  });
+}
+```
+
+Exporter trỏ về một đường dẫn first-party (`/_r/t`) rồi collector chuyển tiếp sang OpenTelemetry Collector. Không để trình duyệt gửi thẳng tới backend tracing của vendor kèm API key — mọi thứ trong bundle đều đọc được.
+
+### Server-Timing: mang trace của trang HTML về trình duyệt
+
+Có một khoảng mù: request HTML đầu tiên do trình duyệt tự gửi, bạn không gắn `traceparent` vào được. Mà TTFB tệ — phần đầu của LCP — lại thường nằm ngay ở đó. Cách mình xử lý là đi ngược chiều: server tạo trace cho request HTML, rồi trả trace id về qua header `Server-Timing`.
+
+```http
+HTTP/2 200
+Content-Type: text/html; charset=utf-8
+Server-Timing: traceparent;desc="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", db;dur=412, render;dur=96
+```
+
+```ts
+// lib/rum/navigation-trace.ts
+export function navigationTraceId(): string | undefined {
+  const [nav] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+  const entry = nav?.serverTiming.find((t) => t.name === "traceparent");
+  return entry?.description.split("-")[1];
+}
+```
+
+Gắn `navigationTraceId()` vào event TTFB và LCP. Từ đó, trên dashboard, mỗi điểm LCP tệ đều có link tới đúng trace backend của request HTML đó. Với tài nguyên khác origin, `serverTiming` chỉ đọc được khi server trả kèm `Timing-Allow-Origin`.
+
+Câu chuyện thật: LCP p75 của trang chi tiết sản phẩm tệ ở một vài danh mục mà frontend không có gì khác biệt. Nhờ trace id trong event LCP, mình lọc các mẫu có TTFB cao và mở trace: service gợi ý sản phẩm gọi database theo kiểu N+1 cho những danh mục có nhiều biến thể. Không có cầu nối này, cuộc điều tra sẽ là hai team nhìn hai dashboard khác nhau và nói "bên mình bình thường".
+
+## PII: lọc trước khi dữ liệu rời trình duyệt
+
+Observability là nơi dữ liệu cá nhân rò rỉ lặng lẽ nhất. Không ai cố ý gửi email người dùng vào hệ thống monitoring — nó chỉ tình cờ nằm trong một URL, một message lỗi, một breadcrumb.
+
+Những chỗ PII hay lọt vào:
+
+- **URL và query string**: link đặt lại mật khẩu có token, link email có `?email=`, trang tìm kiếm với từ khoá người dùng gõ.
+- **Path**: `/u/nguyen.van.a`, `/orders/ORD-12345` — vì vậy route template ở trên không chỉ để gom nhóm.
+- **Message lỗi**: `User a@b.com not found`, lỗi validate chứa giá trị người dùng nhập.
+- **CSS selector của attribution**: selector có thể chứa id hoặc class sinh từ dữ liệu.
+- **Breadcrumb**: giá trị input, `console.log` của dev quên xoá, body của request.
+- **Session replay**: toàn bộ màn hình người dùng.
+
+```ts
+// lib/rum/scrub.ts
+const PATTERNS: [RegExp, string][] = [
+  [/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[email]"],
+  [/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[jwt]"],
+  [/\b(?:\d[ -]?){13,19}\b/g, "[card]"],
+  [/(\+?84|0)(\d[ .-]?){8,10}\b/g, "[phone]"],
+  [/\b[0-9a-f]{32,}\b/gi, "[hex]"],
+];
+
+const SENSITIVE_PARAMS = /^(token|code|email|password|session|auth|key|signature|q|search)$/i;
+
+export function scrubText(input: string): string {
+  let out = input;
+  for (const [re, replacement] of PATTERNS) out = out.replace(re, replacement);
+  return out.slice(0, 500);
+}
+
+export function scrubUrl(raw: string): string {
+  try {
+    const url = new URL(raw, location.origin);
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_PARAMS.test(key)) url.searchParams.set(key, "[redacted]");
+    }
+    url.hash = "";
+    return scrubText(url.toString());
+  } catch {
+    return "[invalid-url]";
+  }
+}
+```
+
+Áp dụng `scrubText` cho message lỗi và selector trong `beforeSend`, `scrubUrl` cho mọi URL trong breadcrumb (Sentry có `beforeBreadcrumb` cho việc này). Với session replay, bật chế độ che toàn bộ text và input theo mặc định rồi mở ra từng chỗ có chủ đích — làm ngược lại thì sớm muộn sẽ có một form thanh toán bị ghi hình.
+
+Rồi **lọc lần thứ hai ở collector**. Client có thể chạy bản cũ chưa có rule mới, hoặc một dev thêm field mới mà quên scrub. Lọc ở server là lớp phòng thủ có thể sửa ngay mà không chờ người dùng tải lại trang.
+
+<Callout type="danger" title="PII đã vào kho observability thì rất khó lấy ra">
+  Dữ liệu monitoring được sao lưu, export sang công cụ khác, gửi cho vendor, giữ trong nhiều tháng. Một yêu cầu xoá dữ liệu cá nhân lúc đó trở thành cuộc truy lùng qua năm hệ thống. Rẻ nhất là không bao giờ để nó đi vào: không lưu IP, không lưu UA thô, không lưu URL đầy đủ, thời hạn lưu trữ ngắn, và tôn trọng lựa chọn đồng ý của người dùng trước khi khởi động bất kỳ SDK nào.
+</Callout>
+
+## Lưu trữ và dashboard: p75 theo route và thiết bị
+
+Event RUM là dữ liệu dạng append-only, rất nhiều dòng, truy vấn theo khoảng thời gian và gom nhóm — đúng sở trường của cơ sở dữ liệu dạng cột. Mình hay dùng ClickHouse, nhưng BigQuery hay bất kỳ kho dạng cột nào cũng được.
+
+```sql
+-- schema/rum_vitals.sql
+CREATE TABLE rum_vitals
+(
+    received_at     DateTime64(3),
+    session_id      String,
+    metric_id       String,
+    release         LowCardinality(String),
+    route           LowCardinality(String),
+    name            LowCardinality(String),   -- LCP | INP | CLS | FCP | TTFB
+    value           Float64,
+    rating          LowCardinality(String),
+    navigation_type LowCardinality(String),
+    device          LowCardinality(String),   -- mobile | tablet | desktop
+    engine          LowCardinality(String),
+    country         LowCardinality(String),
+    sample_rate     Float32,
+    nav_trace_id    String,
+    attribution     Map(String, String)
+)
+ENGINE = ReplacingMergeTree(received_at)
+PARTITION BY toYYYYMMDD(received_at)
+ORDER BY (name, route, device, metric_id)
+TTL toDateTime(received_at) + INTERVAL 90 DAY;
+```
+
+`ReplacingMergeTree` theo `metric_id` giữ lại bản ghi cuối cùng của mỗi metric — đúng với cách CLS và INP được báo nhiều lần. Khi truy vấn, nhớ dùng `FINAL` hoặc gom theo `metric_id` lấy giá trị mới nhất nếu cần chính xác tuyệt đối.
+
+```sql
+-- p75 INP theo route và thiết bị trong 24 giờ qua, có cân trọng số theo sample rate
+SELECT
+    route,
+    device,
+    round(quantileTDigestWeighted(0.75)(value, toUInt32(round(1 / sample_rate)))) AS inp_p75,
+    count() AS samples,
+    round(countIf(rating = 'good') / count() * 100, 1) AS pct_good
+FROM rum_vitals FINAL
+WHERE name = 'INP'
+  AND received_at > now() - INTERVAL 1 DAY
+  AND navigation_type NOT IN ('back-forward-cache', 'prerender')
+GROUP BY route, device
+HAVING samples >= 200
+ORDER BY inp_p75 DESC
+LIMIT 30;
+```
+
+Vài nguyên tắc dashboard mình áp dụng:
+
+- **p75, không bao giờ trung bình.** Trung bình của dữ liệu đuôi dài bị vài giá trị cực lớn kéo lệch và che mất trải nghiệm của số đông. p75 khớp với cách Core Web Vitals được đánh giá; mình xem thêm p95 cho các route quan trọng.
+- **Luôn hiển thị số mẫu bên cạnh.** p75 của 30 mẫu dao động như xổ số. `HAVING samples >= 200` ở trên là cố ý.
+- **Tỷ lệ good / needs improvement / poor** dạng cột chồng thường dễ đọc cho người không làm kỹ thuật hơn là một con số mili giây.
+- **Chiều mặc định là route × device.** Desktop gần như luôn che giấu vấn đề của mobile.
+
+| Panel | Câu hỏi nó trả lời |
+| --- | --- |
+| p75 LCP, INP, CLS theo ngày, tách mobile/desktop, có deploy marker | Có đang tệ đi không, từ khi nào |
+| Bảng top route theo INP p75 (mobile) với số mẫu | Sửa ở đâu trước |
+| INP theo `scriptUrl` và theo `target` | Script nào, phần tử nào gây ra |
+| LCP chia bốn phase theo route | Chậm do server, do tải tài nguyên hay do render |
+| So sánh release N với N-1 trên cùng khung giờ | Release mới có làm tệ đi không |
+| Tỷ lệ phiên có lỗi và lỗi chunk theo release | Release có làm hỏng gì không |
+
+## Alert khi thoái lui và quy trình deploy marker
+
+### Alert dựa trên thứ người dùng cảm nhận
+
+Mình chỉ đặt rất ít alert cho frontend, và mỗi cái phải dẫn tới một hành động:
+
+- **Thoái lui web vitals**: p75 INP hoặc LCP của một route quan trọng trong một giờ qua cao hơn cùng khung giờ tuần trước một tỷ lệ đáng kể, **và** vượt ngưỡng tuyệt đối, **và** có đủ số mẫu. Cả ba điều kiện — chỉ dùng tỷ lệ thì route ít traffic báo động giả liên tục; chỉ dùng ngưỡng tuyệt đối thì không bắt được thoái lui từ từ.
+- **Issue mới trong release mới** ảnh hưởng tới hơn một số phiên nhất định trong giờ đầu sau deploy.
+- **Tỷ lệ phiên không lỗi giảm** so với release trước.
+- **Lỗi chunk tăng vọt** sau deploy — dấu hiệu asset cũ bị xoá quá sớm.
+
+So sánh với cùng khung giờ tuần trước thay vì giờ trước đó, vì traffic frontend có chu kỳ ngày và tuần rất rõ: tối thứ Bảy người dùng mobile nhiều hơn, p75 tự nhiên tệ hơn mà không có gì hỏng cả.
+
+### Deploy marker: dòng kẻ dọc trên mọi biểu đồ
+
+Câu hỏi đầu tiên khi một biểu đồ đi xuống luôn là "có ai deploy gì không?". Deploy marker trả lời câu đó trước khi ai kịp hỏi.
+
+```yaml
+# .github/workflows/deploy.yml (bước sau khi deploy thành công)
+- name: Record deploy marker
+  env:
+    SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+    GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
+  run: |
+    SHORT="web@${GITHUB_SHA::12}"
+    bunx sentry-cli releases set-commits "$SHORT" --auto
+    bunx sentry-cli releases finalize "$SHORT"
+    bunx sentry-cli deploys new --release "$SHORT" -e production
+
+    curl -sf -X POST https://grafana.example.com/api/annotations \
+      -H "Authorization: Bearer $GRAFANA_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"tags\":[\"deploy\",\"web\"],\"text\":\"$SHORT deployed\"}"
+```
+
+Nhưng marker theo thời gian có một điểm yếu mà nhiều team không để ý: **người dùng không chuyển sang bản mới cùng lúc**. Tab mở từ hôm qua vẫn chạy bundle cũ; app cài lên màn hình chính có thể chạy bản cũ cả tuần. Vì vậy, ngoài marker trên trục thời gian, mình luôn so sánh theo **cohort release**: p75 của các event có `release = N` so với `release = N-1` trong cùng khung giờ. Đó là lý do chuỗi `release` phải có trong mọi beacon.
+
+Quy trình sau mỗi deploy của team mình:
+
+1. Deploy lên một phần traffic (canary) nếu hạ tầng cho phép.
+2. Trong 30–60 phút đầu, người deploy mở dashboard "release N vs N-1": issue mới, tỷ lệ phiên lỗi, lỗi chunk, INP và LCP p75 trên các route chính.
+3. Đủ mẫu và không có gì tệ đi thì mở rộng; có thì rollback trước, điều tra sau.
+4. Mọi sự cố được ghi lại kèm link tới đúng panel và trace — lần sau ai đó điều tra sẽ đi nhanh hơn.
+
+## Những lỗi mình hay gặp
+
+**Chỉ có Lighthouse trong CI và gọi đó là monitoring.** Lab bắt được thoái lui có tái hiện, nhưng không bao giờ thấy được INP thật, thiết bị thật, mạng thật.
+
+**Dùng bản web-vitals không có attribution.** Biết INP tệ mà không biết tương tác nào, script nào thì chỉ tạo ra một ticket "cải thiện hiệu năng" không ai nhận.
+
+**Gửi beacon trong `unload`, hoặc bằng `fetch` thường.** Mất đúng CLS và INP — hai metric chốt muộn nhất.
+
+**Gom theo URL thật thay vì route template.** Vừa không đủ mẫu, vừa rò PII.
+
+**Sampling theo từng event, hoặc khởi động RUM quá muộn.** Không phân tích tương quan được, và đánh rơi đúng nhóm người dùng có trải nghiệm tệ nhất.
+
+**Deploy source map công khai, hoặc release string không khớp.** Cái đầu lộ source; cái sau làm stack trace không map được và không join được metric với lỗi.
+
+**`ignoreErrors` mọi thứ khó chịu.** ChunkLoadError bị tắt tiếng trong khi người dùng thật đang bấm vào nút chết.
+
+**Bật `traceparent` mà quên CORS.** Mọi request cross-origin gãy ngay ở preflight.
+
+**Alert theo ngưỡng tuyệt đối trên trung bình.** Hoặc kêu suốt đêm, hoặc không bao giờ kêu.
+
+**Chỉ nhìn deploy marker theo thời gian.** Bỏ qua người dùng còn chạy bundle cũ, nên kết luận sai release nào gây ra thoái lui.
+
+## Tóm tắt
+
+<Checklist>
+
+- Xác định câu hỏi cần trả lời trước khi chọn công cụ; metric, error, trace và ngữ cảnh deploy dùng chung `release`, `route`, `session_id`, `trace_id`.
+- Dùng lab trong CI để chặn thoái lui, CrUX để kiểm tra chéo, RUM của mình để debug — không so số lab với số field.
+- Thu RUM bằng `web-vitals/attribution`; lưu đủ ba khúc của INP, script dài nhất từ LoAF, bốn phase của LCP; tách `navigationType` và engine trình duyệt.
+- Gắn metric vào route template; với SPA, gắn INP theo `interactionTime`.
+- Gom event vào hàng đợi, flush khi `visibilitychange` sang `hidden` và khi `pagehide`, gửi chuỗi qua `sendBeacon` với fallback `fetch keepalive`, giữ batch dưới khoảng 64 KiB.
+- Collector validate, giới hạn kích thước, rate limit, không lưu IP/UA thô, đẩy vào hàng đợi rồi trả `204`.
+- Sampling theo phiên, gửi kèm `sampleRate` để cân trọng số; nạp script RUM sớm, lazy phần nặng.
+- Source map: sinh dạng hidden, upload kèm Debug ID, xoá khỏi artifact; chuỗi `release` khớp ở mọi nơi.
+- Fingerprint theo nguyên nhân: ResizeObserver, extension, lỗi mạng, lỗi chunk; sửa gốc lỗi chunk bằng giữ asset cũ và reload một lần.
+- `traceparent` chỉ tới origin của mình, backend cho phép header qua CORS; dùng `Server-Timing` để nối request HTML với trace backend.
+- Lọc PII ở client và lọc lần nữa ở collector; replay che toàn bộ theo mặc định; tôn trọng consent.
+- Dashboard p75 theo route × device, luôn kèm số mẫu; alert kết hợp tỷ lệ so với tuần trước, ngưỡng tuyệt đối và số mẫu tối thiểu.
+- Ghi deploy marker từ CI và so sánh theo cohort release, không chỉ theo thời gian.
+
+</Checklist>

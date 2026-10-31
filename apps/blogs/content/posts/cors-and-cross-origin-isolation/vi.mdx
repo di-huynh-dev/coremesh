@@ -1,0 +1,460 @@
+---
+title: "CORS và cross-origin isolation chuyên sâu: origin và site, preflight, credentials, CORP, COEP, COOP và Fetch Metadata"
+excerpt: "Mô hình cross-origin của trình duyệt từ gốc: Same-Origin Policy chặn gì, CORS nới lỏng gì và không bao giờ bảo vệ gì, preflight và credentials, bug cache vì thiếu Vary: Origin, allowlist nguy hiểm, rồi CORP, COEP, COOP, Fetch Metadata và SameSite — kèm cấu hình NestJS và Next.js làm cho đúng."
+---
+
+<Lead>Team nào mình từng làm cùng cũng có một câu chuyện CORS. Thường nó diễn ra thế này: frontend báo "blocked by CORS policy", ai đó dán một đoạn code đặt `Access-Control-Allow-Origin` bằng đúng `Origin` của request, thêm `Allow-Credentials: true`, lỗi biến mất, ticket được đóng. Vài tháng sau, một đợt review bảo mật phát hiện bất kỳ website nào cũng đọc được dữ liệu của mọi người dùng đang đăng nhập qua API đó. CORS gây rối vì nó là cơ chế *nới lỏng* mà mọi người lại coi là cơ chế *bảo vệ*, và vì nó nằm trên một mô hình — origin, site, Same-Origin Policy — mà phần lớn chúng ta chưa từng học cho bài bản. Bài này dựng lại mô hình đó từ gốc, rồi đi xa hơn CORS, tới những header thực sự cô lập ứng dụng của bạn: CORP, COEP, COOP, Fetch Metadata và cookie SameSite, kèm cấu hình NestJS và Next.js mà mình yên tâm đưa lên production.</Lead>
+
+## Origin và site: hai từ quyết định mọi thứ
+
+Gần như mọi quy tắc trong bài này dựa trên một trong hai phép so sánh, và nhầm lẫn giữa chúng là gốc rễ của rất nhiều bug.
+
+- **Origin** là bộ ba *scheme + host + port*. `https://app.example.com` và `https://app.example.com:443` là cùng origin; `https://api.example.com` là origin khác; `http://app.example.com` cũng vậy.
+- **Site** là *scheme + tên miền đăng ký được*, còn gọi là eTLD+1: public suffix (`com`, `co.uk`, `github.io`) cộng thêm một nhãn. `app.example.com` và `api.example.com` cùng site `example.com`. Từ khi Chrome áp dụng "schemeful same-site", scheme cũng được tính: `http://example.com` và `https://example.com` là cross-site.
+
+Danh sách public suffix lấy từ [Public Suffix List](https://publicsuffix.org/), nên `alice.github.io` và `bob.github.io` là hai site *khác nhau* dù chung domain cha — vì `github.io` là một public suffix.
+
+| A | B | Cùng origin? | Cùng site? |
+| --- | --- | --- | --- |
+| `https://app.example.com` | `https://app.example.com/settings` | Có | Có |
+| `https://app.example.com` | `https://api.example.com` | Không | Có |
+| `https://example.com` | `http://example.com` | Không | Không (schemeful) |
+| `http://localhost:3000` | `http://localhost:4000` | Không | Có |
+| `https://alice.github.io` | `https://bob.github.io` | Không | Không |
+| `https://example.com` | `https://example.co.uk` | Không | Không |
+
+Quy tắc dễ nhớ: **CORS, CORP same-origin, COOP và Same-Origin Policy nghĩ theo origin. Cookie SameSite, `Sec-Fetch-Site: same-site` và CORP same-site nghĩ theo site.** Giữ bảng này trong đầu là một nửa những hành vi khó hiểu hết khó hiểu.
+
+## Same-Origin Policy: gửi, nhúng, đọc
+
+Same-Origin Policy hay được tóm tắt là "trang web không nói chuyện được với origin khác". Sai, và chính phiên bản sai này khiến CORS bị hiểu nhầm. Một trang trên `evil.example` làm được khá nhiều thứ với origin của bạn:
+
+| Hành động | Được phép cross-origin? | Ví dụ |
+| --- | --- | --- |
+| **Gửi** request | Phần lớn là có | Form POST, `img` GET, `fetch` ở mode `no-cors` |
+| **Nhúng** tài nguyên | Có | `script`, `img`, `video`, `link rel=stylesheet`, `iframe` |
+| **Đọc** response | Không, trừ khi server đồng ý | Đọc body của `fetch()`, header response, pixel canvas |
+| **Chạm** vào DOM cửa sổ khác | Không | `iframe.contentWindow.document` |
+
+Same-Origin Policy chủ yếu là về **đọc**. Request vẫn rời trình duyệt, cookie có thể được đính kèm (tuỳ SameSite), server vẫn xử lý — policy chỉ ngăn trang kia nhìn thấy kết quả. Có hai hệ quả quan trọng:
+
+1. **Policy không ngăn tác dụng phụ.** Một form POST cross-site tới `/transfer` vẫn được thực thi. Chặn chuyện đó là việc của chống CSRF (SameSite, token, Fetch Metadata), không phải của Same-Origin Policy.
+2. **Nhúng thì rò rỉ một chút.** Một `img` để lộ việc nó có tải được không và kích thước; một `script` chạy trong ngữ cảnh của trang nhúng. Trong lịch sử, và lại một lần nữa với Spectre, "nhúng được" hoá ra nghĩa là "đọc được nếu đủ cố gắng". Đó là thứ CORP và COEP giải quyết ở phần sau.
+
+## CORS là gì — và không phải là gì
+
+CORS (Cross-Origin Resource Sharing, định nghĩa trong Fetch standard) là cách server nói: *response này được phép cho origin kia đọc*. Nó là opt-in, do trình duyệt thực thi, và chỉ **nới lỏng** Same-Origin Policy. Nó không bao giờ làm gì chặt hơn.
+
+Từ đó ra danh sách mình cứ phải nhắc lại khi review code:
+
+- **CORS không phải xác thực hay phân quyền.** `curl`, Postman, code phía server và script bỏ qua nó hoàn toàn. Endpoint trả dữ liệu không nên trả thì CORS không cứu được.
+- **CORS không phải chống CSRF.** Simple request được gửi và thực thi trước khi trình duyệt kiểm tra gì. Trình duyệt chỉ giấu response.
+- **Lỗi CORS không phải lỗi server.** Server thường đã trả 200; trình duyệt từ chối giao body cho JavaScript. Đó cũng là lý do lỗi trong JS cố tình mơ hồ, `TypeError: Failed to fetch` — nói cho trang biết *tại sao* là làm lộ thông tin về origin kia.
+- **`mode: "no-cors"` không sửa được CORS.** Nó cho bạn một response *opaque*: status 0, không header, không body. Lỗi biến mất vì bạn không còn đọc được gì nữa.
+
+## Simple request và preflighted request
+
+Trình duyệt chia request cross-origin thành hai nhóm, dựa trên việc request đó có thể được tạo ra bởi một form HTML từ trước khi có CORS hay không.
+
+### Thế nào là "simple"
+
+Request chỉ bỏ qua preflight khi thoả **tất cả** điều kiện:
+
+- Method là `GET`, `HEAD` hoặc `POST`.
+- Header do trang tự đặt chỉ gồm các header CORS-safelisted: `Accept`, `Accept-Language`, `Content-Language`, `Content-Type`, và `Range` với byte range đơn giản — mỗi cái trong giới hạn độ dài.
+- `Content-Type`, nếu có, là `application/x-www-form-urlencoded`, `multipart/form-data` hoặc `text/plain`.
+- Không có body dạng `ReadableStream`, không có upload event listener trên `XMLHttpRequest`.
+
+Mọi thứ khác — `PUT`, `DELETE`, `Content-Type: application/json`, header `Authorization`, bất kỳ header `X-` tự đặt — đều kích hoạt preflight. Để ý hệ quả: `fetch(url, { method: "POST", body: JSON.stringify(x) })` không đặt content type sẽ được gửi dưới dạng `text/plain` và là simple request. Server nào parse mọi body thành JSON bất kể content type là đang lặng lẽ biến API JSON của mình thành mục tiêu cho simple request.
+
+### Cuộc trao đổi preflight
+
+<Figure src="/blog/cors-and-cross-origin-isolation-preflight.svg" alt="Sơ đồ tuần tự với ba làn: trang trên app.example.com, trình duyệt thực hiện kiểm tra CORS, và API trên api.other.com. Trang yêu cầu một PUT có JSON và cookie. Trình duyệt gửi trước OPTIONS /orders/42 kèm Origin và các header Access-Control-Request, không có cookie. API trả 204 với đúng origin, Allow-Credentials, Allow-Methods, Allow-Headers và Max-Age. Sau đó trình duyệt gửi PUT kèm Origin và Cookie; API trả 200 với đúng origin, Allow-Credentials, Vary: Origin và Expose-Headers, và trang đọc được body. Ghi chú: nếu preflight thất bại thì PUT không bao giờ được gửi; simple request luôn được gửi và thực thi, chỉ việc đọc bị chặn. Bảng bên phải ghép câu hỏi với header: cho origin khác đọc response thì dùng CORS; chặn người khác nhúng tài nguyên thì dùng CORP; cần SharedArrayBuffer thì dùng COOP cộng COEP; từ chối request cross-site thì dùng Fetch Metadata; không gửi cookie trong request cross-site thì dùng SameSite." caption="Preflight xin phép trước khi một request không-simple được gửi đi. Bảng bên phải là bản tóm tắt cho phần còn lại của bài." />
+
+```http
+OPTIONS /orders/42 HTTP/1.1
+Host: api.other.com
+Origin: https://app.example.com
+Access-Control-Request-Method: PUT
+Access-Control-Request-Headers: content-type, idempotency-key
+
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: https://app.example.com
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE
+Access-Control-Allow-Headers: Content-Type, Idempotency-Key
+Access-Control-Max-Age: 7200
+Vary: Origin
+```
+
+Những chi tiết từng ngốn của mình hàng giờ debug:
+
+- **Preflight không bao giờ mang cookie hay `Authorization`.** Nếu middleware auth chạy trước CORS và trả 401 cho request `OPTIONS`, mọi request không-simple đều thất bại. Preflight phải được trả lời trước bước xác thực, với status 2xx.
+- **`Access-Control-Max-Age` bị giới hạn trần.** Chromium giới hạn ở hai giờ, Firefox ở 24 giờ; không khai báo thì cache chỉ sống khoảng năm giây. Thiếu max-age là SPA nói nhiều sẽ gấp đôi số request.
+- **Cache preflight tính theo origin và URL.** `/orders/1` và `/orders/2` là hai entry khác nhau, nên REST path có ID sẽ preflight rất nhiều. Nếu độ trễ quan trọng, cân nhắc đặt frontend và API chung origin sau một reverse proxy và bỏ hẳn CORS.
+
+### Đọc header của response
+
+Kể cả khi request thành công, JavaScript chỉ đọc được một danh sách ngắn header response: `Cache-Control`, `Content-Language`, `Content-Length`, `Content-Type`, `Expires`, `Last-Modified`, `Pragma`. Mọi thứ khác — `X-Request-Id`, `RateLimit`, `Location`, `ETag` — cần `Access-Control-Expose-Headers`. "Header có trong tab Network mà `res.headers.get()` trả null" gần như luôn là chuyện này.
+
+## Credentials: phần khắt khe nhất của CORS
+
+`fetch` có option `credentials`: `"omit"`, `"same-origin"` (mặc định) và `"include"`. Chỉ `"include"` mới gửi cookie, HTTP auth và client certificate tới origin khác, và đi kèm những luật nghiêm ngặt:
+
+- `Access-Control-Allow-Origin` phải là origin **chính xác**. `*` bị từ chối.
+- Phải có `Access-Control-Allow-Credentials: true` — trên preflight *và* trên response thật.
+- Trong `Allow-Headers`, `Allow-Methods` và `Expose-Headers`, `*` mất nghĩa wildcard và bị coi là tên theo nghĩa đen. Còn `Authorization` thì không bao giờ được wildcard bao phủ, có credentials hay không — hãy liệt kê nó tường minh.
+
+Luật khắt khe vì response có credentials là thứ cá nhân: hộp thư *của bạn*, đơn hàng *của bạn*. Cho một origin đọc nó là một quyết định về lòng tin, và trình duyệt muốn bạn gọi đúng tên origin đó.
+
+### Thực tế về third-party cookie
+
+Kể cả khi header CORS hoàn hảo, cookie vẫn có thể không tới. Nếu `app.example.com` gọi `api.other.com`, đó là request **cross-site**, nên cookie cần `SameSite=None; Secure` — và lúc đó nó là third-party cookie, thứ Safari và Firefox chặn mặc định và người dùng chặn được ở mọi trình duyệt. "CORS cấu hình đúng rồi mà không thấy đăng nhập" thường là vì thế.
+
+Kiến trúc mặc định của mình né hẳn vấn đề: đặt API cùng site (`api.example.com`, nơi cookie `SameSite=Lax` được gửi khi dùng `credentials: "include"`), hoặc cùng origin dưới một path prefix (`app.example.com/api`, không cần CORS). Auth bằng cookie cross-site là thứ mình chỉ chấp nhận khi thật sự hết cách, và khi đó mình thích pattern BFF hơn để trình duyệt không bao giờ giữ credential của bên thứ ba.
+
+## Vary: Origin và những bug cache
+
+Đây là bug mình đã debug hai lần ở hai công ty khác nhau. Một API phục vụ `GET /config` với `Access-Control-Allow-Origin` động, phản chiếu origin được phép. Phía trước là CDN, cache theo URL. App admin trên `admin.example.com` gọi trước; CDN cache response *kèm* `Access-Control-Allow-Origin: https://admin.example.com`. Suốt một giờ sau đó, app khách hàng trên `app.example.com` nhận đúng response đã cache ấy, và trình duyệt từ chối. Lỗi lúc có lúc không, tuỳ region của cache và thời điểm, rồi biến mất khi bạn purge cache để điều tra.
+
+Cách sửa là `Vary: Origin`, báo cho mọi tầng cache rằng response phụ thuộc vào header `Origin` của request:
+
+- **Gửi `Vary: Origin` bất cứ khi nào header CORS phụ thuộc vào origin — kể cả khi bạn quyết định *không* gửi header CORS.** Một response thiếu `Access-Control-Allow-Origin` (vì origin bị từ chối, hoặc không có) mà được cache không kèm `Vary` sẽ bị phục vụ cho một origin hợp lệ sau đó và làm hỏng nó. Thư viện CORS có thêm `Vary` trên mọi nhánh — kể cả origin bị từ chối và preflight — hay không là tuỳ thư viện và cấu hình; mình tự đặt nó, vô điều kiện, trên mọi response của API.
+- **Kiểm tra cache key của CDN.** Một số CDN không tôn trọng `Vary` đầy đủ, hoặc chỉ với vài header. Thêm `Origin` vào cache key một cách tường minh, hoặc đừng cache response API có credentials ở edge.
+- **Cache của trình duyệt cũng dính y hệt.** Một ảnh lần đầu được tải bằng thẻ `img` thường (không CORS) rồi sau đó được fetch với `crossorigin` có thể bị lấy từ HTTP cache mà không có header CORS, làm lần tải thứ hai thất bại. `Vary: Origin` trên asset, hoặc dùng `crossorigin` nhất quán, là sửa được.
+
+## Những cấu hình sai biến CORS thành lỗ hổng
+
+### Phản chiếu mọi origin kèm credentials
+
+```ts
+// "Sửa" được mọi lỗi CORS. Xin đừng.
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", req.headers.origin ?? "*");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  next();
+});
+```
+
+Đoạn này nói với trình duyệt rằng **mọi** origin đều được tin để đọc response có credentials. Tệ tới đâu phụ thuộc vào cookie: với session cookie `SameSite=None`, bất kỳ website nào người dùng đã đăng nhập ghé qua cũng gọi được `fetch("https://api.example.com/me", { credentials: "include" })` và đọc kết quả. Với `SameSite=Lax`, request cross-site không mang cookie, nhưng mọi origin *cùng site* — kể cả cái subdomain marketing bị bỏ quên có lỗ XSS — vẫn làm được. Những package có option `origin: true` làm đúng kiểu phản chiếu này; ổn với dữ liệu công khai không cần credentials, còn lại là một cái lỗ.
+
+### Tin origin null
+
+Một số request mang `Origin: null`: document trong iframe sandbox, URL `file:`, URL `data:`, và request đi qua một redirect cross-origin. Dev hay cho phép `null` để test local chạy được. Kẻ tấn công tạo ra `null` bất cứ lúc nào bằng `<iframe sandbox="allow-scripts" srcdoc="...">`, nên cho phép `null` là cho phép tất cả. Đừng bao giờ đưa `null` vào allowlist.
+
+### Bug suffix và regex
+
+Đây là thứ mình gặp nhiều nhất khi review code, vì code *trông* rất cẩn thận:
+
+| Phép kiểm tra | Ý định | Cũng khớp luôn |
+| --- | --- | --- |
+| `/example\.com$/` | example.com và subdomain | `https://evil-example.com` |
+| `/^https:\/\/.*\.example\.com/` | subdomain | `https://a.example.com.evil.net` (thiếu `$`) |
+| `/^https:\/\/app.example.com$/` | đúng app | `https://appxexample.com` (dấu chấm không escape) |
+| `origin.includes("example.com")` | mọi thứ của mình | `https://example.com.evil.net`, `https://notexample.com` |
+| `origin.startsWith("https://app.example.com")` | app | `https://app.example.com.evil.net` |
+| `/^https?:\/\/(.+\.)?example\.com$/` | subdomain | origin `http://` mà kẻ tấn công trên mạng chèn vào được |
+
+Cách sửa là thôi coi origin như một chuỗi. Parse nó, so sánh theo cấu trúc, và ưu tiên khớp chính xác:
+
+```ts
+// security/origins.ts
+const EXACT = new Set(["https://app.example.com", "https://admin.example.com"]);
+const PREVIEW_SUFFIX = ".preview.example.com"; // bản preview: https://<branch>.preview.example.com
+
+export function isAllowedOrigin(origin: string): boolean {
+  if (EXACT.has(origin)) return true;
+  let url: URL;
+  try {
+    url = new URL(origin); // "null" và chuỗi rác sẽ ném lỗi ở đây
+  } catch {
+    return false;
+  }
+  if (url.origin !== origin) return false; // loại path, userinfo, dấu / cuối, chữ hoa lạ
+  return url.protocol === "https:" && url.port === "" && url.hostname.endsWith(PREVIEW_SUFFIX);
+}
+```
+
+Để ý dấu chấm ở đầu suffix — `endsWith("preview.example.com")` không có nó sẽ chấp nhận `evilpreview.example.com` nếu cái tên đó tồn tại được, và thói quen quan trọng hơn trường hợp cụ thể.
+
+<Callout type="warning" title="Mỗi origin được phép là một phần bề mặt tấn công">
+  Luật suffix kiểu "mọi subdomain của example.com" nghĩa là một lỗ XSS hay một vụ chiếm subdomain (bản ghi DNS bỏ quên trỏ tới bucket hay app đã xoá) ở bất kỳ đâu dưới domain đó đều đọc được API có credentials của bạn. Hãy allowlist vài origin thực sự gọi API, và chỉ dùng wildcard cho các bản preview không chứa session người dùng thật.
+</Callout>
+
+## Private Network Access: web công khai và cái router nhà bạn
+
+Same-Origin Policy chưa bao giờ ngăn một website công khai *gửi* request tới `http://192.168.1.1` hay `http://localhost:8080`. Điều đó đã cho phép những cuộc tấn công thật vào router, máy in và dev server local — simple request đổi cấu hình mà trang không cần đọc response.
+
+Câu trả lời của Chrome đã qua nhiều vòng. Private Network Access đưa ra một preflight riêng: trình duyệt gửi `Access-Control-Request-Private-Network: true`, và thiết bị local phải trả `Access-Control-Allow-Private-Network: true`. Một phần đã được triển khai (request từ ngữ cảnh không an toàn tới mạng private bị chặn), nhưng việc bắt buộc preflight bị đình lại vì rất nhiều thiết bị không thể cập nhật. Từ 2025, Chrome chuyển dần sang **Local Network Access**, nơi một site công khai muốn chạm tới địa chỉ local hay loopback phải được người dùng cấp quyền qua prompt. Hãy kiểm tra tình trạng hiện tại trước khi dựa vào chi tiết.
+
+Bài học thực tế thì không đổi: nếu bạn phát hành một agent hay thiết bị local mà website gọi tới, hãy chờ đợi permission prompt và preflight, yêu cầu HTTPS ở site gọi, và xác thực request ngay tại service local — "chỉ truy cập được từ localhost" không phải là xác thực khi mọi website đều khiến trình duyệt gửi request tới đó được.
+
+## Cross-origin isolation: CORP, COEP và COOP
+
+### Vì sao có nó: Spectre
+
+Năm 2018, Spectre cho thấy JavaScript có bộ đếm thời gian đủ chính xác có thể đọc vùng nhớ trong chính process của nó mà lẽ ra không được đọc. Nếu một ảnh, script hay response JSON cross-origin nằm chung process với trang của kẻ tấn công, câu "nhúng được nhưng không đọc được" không còn nhiều ý nghĩa. Trình duyệt phản ứng theo hai hướng: site isolation (mỗi site một process), và chỉ mở những công cụ đo thời gian mạnh nhất — `SharedArrayBuffer` và `performance.now()` độ phân giải cao — cho những trang chứng minh được rằng chúng không kéo dữ liệu của origin khác vào khi chưa được đồng ý. Bằng chứng đó là **cross-origin isolation**: `self.crossOriginIsolated === true`.
+
+Để có nó, document cần hai header, và mọi tài nguyên nó nhúng phải hợp tác qua header thứ ba.
+
+### CORP: ai được nhúng tài nguyên của tôi
+
+`Cross-Origin-Resource-Policy` do **chủ tài nguyên** đặt trên response: `same-origin`, `same-site` hoặc `cross-origin`. Nó báo trình duyệt những origin nào được tải response này ở mode `no-cors` — `img`, `script`, `video` không có `crossorigin`. Lần tải bị chặn sẽ thất bại như lỗi mạng.
+
+Mình đặt mặc định `Cross-Origin-Resource-Policy: same-site` cho response API và asset riêng tư. Rẻ, và ngăn site khác kéo response của bạn vào process của họ. Asset công khai dành để nhúng (CDN, API ảnh công khai) gửi `cross-origin` — đúng thứ mà một trang đã isolate sẽ đòi khi nhúng chúng.
+
+### COEP: mọi thứ tôi nhúng phải đồng ý
+
+`Cross-Origin-Embedder-Policy` đặt trên **document** và ràng buộc các subresource của nó:
+
+- **`require-corp`:** mọi subresource cross-origin ở mode `no-cors` phải có header CORP cho phép, còn các lần tải ở mode CORS (attribute `crossorigin`, `fetch`) phải qua được CORS. Một ảnh bên thứ ba thiếu CORP là bị chặn.
+- **`credentialless`:** request cross-origin `no-cors` được gửi *không kèm* cookie, và khi đó không cần CORP. Lý lẽ: không có credentials thì response chắc là công khai, nên tải nó vào process của bạn không làm lộ gì cá nhân. Dễ áp dụng hơn nhiều khi có ảnh, font và embed của bên thứ ba. Chromium và Firefox hỗ trợ; kiểm tra tình trạng của Safari trước khi dựa vào nó.
+
+Iframe bên trong trang đã isolate cũng phải opt in: document của chúng phải tự gửi COEP (và CORP, nếu dùng `require-corp`).
+
+### COOP: một browsing context group của riêng tôi
+
+`Cross-Origin-Opener-Policy` quyết định chuyện gì xảy ra với mối quan hệ giữa trang của bạn và các cửa sổ đã mở nó, hoặc được nó mở:
+
+- **`same-origin`:** document top-level có browsing context group riêng. Opener cross-origin mất tham chiếu tới bạn (`window.opener` thành `null`), và bạn mất tham chiếu tới popup cross-origin.
+- **`same-origin-allow-popups`:** giữ tham chiếu tới popup bạn mở, miễn là chúng không tự đặt COOP. Hữu ích, nhưng **không** cho bạn isolation.
+- **`unsafe-none`:** mặc định.
+
+COOP đáng dùng kể cả khi không cần isolation: nó vô hiệu hoá những tấn công dựa vào tham chiếu cửa sổ, như cross-site leak đếm số frame hay tab-nabbing qua `window.opener`.
+
+### Ghép lại với nhau
+
+```http
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: credentialless
+```
+
+Có cả hai trên document, `crossOriginIsolated` thành `true` và `SharedArrayBuffer` được gửi sang worker — đúng thiết lập mình dùng cho các ví dụ shared memory trong bài [đẩy việc ra khỏi main thread với Web Worker](/blog/web-workers-off-main-thread). Script của worker cũng nên được phục vụ với cùng các header đó.
+
+| Header | Đặt trên | Bảo vệ | Giá trị thường dùng |
+| --- | --- | --- | --- |
+| `Access-Control-Allow-Origin` | Response | Cho một origin cụ thể **đọc** response | Origin chính xác |
+| `Cross-Origin-Resource-Policy` | Response / asset | Chặn người khác **nhúng** | `same-site` |
+| `Cross-Origin-Embedder-Policy` | Document | Bắt tài nguyên được nhúng phải đồng ý | `credentialless` |
+| `Cross-Origin-Opener-Policy` | Document | Cắt tham chiếu cửa sổ giữa các origin | `same-origin` |
+| `Sec-Fetch-*` | Request (trình duyệt gửi) | Cho server từ chối request cross-site | — |
+| `SameSite` | Cookie | Không gửi cookie trong request cross-site | `Lax` |
+
+### Triển khai mà không làm vỡ mọi thứ
+
+Câu chuyện thực chiến ở đây là OAuth. Bọn mình bật COOP `same-origin` cho toàn app để có `SharedArrayBuffer` cho tính năng editor, và popup "Đăng nhập bằng..." ngừng hoạt động: popup của nhà cung cấp không còn `postMessage` về `window.opener` được, vì làm gì còn opener. Popup thanh toán cũng vỡ theo cách tương tự. Giờ mình làm thế này:
+
+1. **Chỉ isolate những route cần.** Editor dưới `/studio` có COOP + COEP; login và checkout thì không.
+2. **Chạy report-only trước.** `Cross-Origin-Embedder-Policy-Report-Only` và `Cross-Origin-Opener-Policy-Report-Only` kèm endpoint `report-to` liệt kê chính xác những gì sẽ vỡ.
+3. **Ưu tiên luồng redirect thay vì popup** cho OAuth trên trang đã isolate.
+4. **Feature-detect trong code:** kiểm tra `crossOriginIsolated` và có đường lui không dùng shared memory, thay vì giả định.
+
+## Fetch Metadata: resource isolation policy
+
+Mọi thứ nãy giờ là trình duyệt thực thi luật ở phía client. Fetch Metadata cho **server** thông tin để tự thực thi luật của mình. Trình duyệt hiện đại gắn các header này vào mọi request qua HTTPS, và trang web không giả mạo được:
+
+- **`Sec-Fetch-Site`:** `same-origin`, `same-site`, `cross-site` hoặc `none` (người dùng gõ URL, bookmark).
+- **`Sec-Fetch-Mode`:** `navigate`, `cors`, `no-cors`, `same-origin`, `websocket`.
+- **`Sec-Fetch-Dest`:** `document`, `iframe`, `image`, `script`, `empty` (fetch/XHR), và nhiều giá trị khác.
+- **`Sec-Fetch-User`:** `?1` khi điều hướng do người dùng kích hoạt.
+
+Với chúng, vài dòng middleware đủ chặn phần lớn tấn công cross-site — CSRF, cross-site script inclusion, nhiều loại cross-site leak — trước khi tới bất kỳ handler nào. Đây là pattern "resource isolation policy":
+
+```ts
+// security/resource-isolation.middleware.ts
+import type { NextFunction, Request, Response } from "express";
+
+const CROSS_SITE_PATHS = ["/api/public/", "/oauth/callback", "/webhooks/"]; // cố ý mở
+
+export function resourceIsolation(req: Request, res: Response, next: NextFunction) {
+  const site = req.get("sec-fetch-site");
+
+  // 1. Không có header: trình duyệt cũ hoặc client không phải trình duyệt. Để các lớp khác lo.
+  if (!site) return next();
+
+  // 2. Trang của chính mình, hoặc người dùng tự gõ URL. Chỉ dùng "same-origin" nếu không tin subdomain.
+  if (site === "same-origin" || site === "same-site" || site === "none") return next();
+
+  // 3. Điều hướng top-level thông thường từ site khác (bấm link), nhưng không phải nhúng qua object/embed.
+  const mode = req.get("sec-fetch-mode");
+  const dest = req.get("sec-fetch-dest");
+  if (mode === "navigate" && req.method === "GET" && dest !== "object" && dest !== "embed") return next();
+
+  // 4. Endpoint vốn được thiết kế để gọi cross-site.
+  if (CROSS_SITE_PATHS.some((p) => req.path.startsWith(p))) return next();
+
+  res.status(403).json({ error: "Cross-site request blocked" });
+}
+```
+
+Một form POST cross-site tới với `Sec-Fetch-Site: cross-site`, `Sec-Fetch-Mode: navigate` và method `POST`, nên luật 3 không áp dụng và nó bị chặn — chống CSRF mà không phụ thuộc token. Một `script src` độc hại trỏ vào endpoint JSON của bạn là `no-cors` + `script` và cũng bị chặn. Mình luôn triển khai ở chế độ chỉ ghi log trước, xem những gì hợp lệ đang tới từ cross-site — lần nào cũng có thứ mà không ai nhớ.
+
+## Cookie SameSite trong cùng bức tranh
+
+SameSite quyết định trình duyệt có đính cookie hay không, dựa trên **site**, không phải origin:
+
+| Tình huống | `Strict` | `Lax` | `None; Secure` |
+| --- | --- | --- | --- |
+| `fetch` từ `app.example.com` tới `api.example.com` (cùng site) | Gửi | Gửi | Gửi |
+| Bấm link từ site khác vào app (GET top-level) | Không gửi | Gửi | Gửi |
+| Form POST cross-site | Không gửi | Không gửi | Gửi |
+| `fetch` cross-site với `credentials: "include"` | Không gửi | Không gửi | Gửi, nếu third-party cookie được phép |
+| App của bạn trong iframe cross-site | Không gửi | Không gửi | Gửi nếu được phép; `Partitioned` (CHIPS) để lưu riêng theo trang nhúng |
+
+Cách nó tương tác với mọi thứ khác:
+
+- **API cùng site + `SameSite=Lax` là điểm ngọt.** CORS có credentials chạy được cho frontend của bạn, còn kẻ tấn công cross-site không khiến trình duyệt đính cookie được.
+- **SameSite không tách các subdomain anh em.** `blog.example.com` cùng site với `app.example.com`. Đó là lý do phép kiểm `same-origin` của Fetch Metadata và allowlist CORS chính xác vẫn quan trọng.
+- **Chrome coi cookie không khai báo SameSite là `Lax`**, với một ngoại lệ ngắn cho POST top-level ngay sau khi cookie được đặt. Không phải trình duyệt nào cũng áp dụng mặc định đó, nên luôn khai báo attribute tường minh.
+
+## Làm cho đúng trong NestJS / Express
+
+```ts
+// main.ts
+import { NestFactory } from "@nestjs/core";
+import type { NestExpressApplication } from "@nestjs/platform-express";
+import { isAllowedOrigin } from "./security/origins";
+import { resourceIsolation } from "./security/resource-isolation.middleware";
+
+const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+// Vô điều kiện, trước CORS: mọi response đều vary theo Origin, dù được phép hay không.
+app.use((req, res, next) => {
+  res.vary("Origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  next();
+});
+
+app.use(resourceIsolation);
+
+app.enableCors({
+  origin: (origin, callback) => {
+    // Không có Origin: GET cùng origin hoặc client không phải trình duyệt. CORS không áp dụng; không thêm header.
+    if (!origin) return callback(null, false);
+    callback(null, isAllowedOrigin(origin) ? origin : false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Request-Id"],
+  exposedHeaders: ["X-Request-Id", "RateLimit", "Retry-After", "Location"],
+  maxAge: 7200,
+});
+```
+
+Vì sao từng phần có mặt:
+
+- **`enableCors` chạy như middleware trước guard**, nên preflight được trả lời trước bước xác thực — không có 401 cho `OPTIONS`.
+- **Callback origin trả về chuỗi origin chính xác**, không bao giờ `true` (phản chiếu) trừ khi dữ liệu công khai và không có credentials.
+- **Origin không được phép chỉ đơn giản là không có header CORS.** Đừng ném lỗi: lỗi sẽ thành 500, mà origin bị từ chối đâu phải sự cố của server. Việc chặn để trình duyệt làm.
+- **Danh sách method và header tường minh** ghi lại API chấp nhận gì và tránh bất ngờ với wildcard khi có credentials.
+
+Với adapter Fastify, các option tương tự đưa vào `@fastify/cors`; hook đặt `Vary` và CORP chuyển thành hook `onSend`. Với một API công khai chuyên biệt không dùng cookie, cấu hình đúng là cấu hình đơn giản: `origin: "*"`, không credentials, bearer token trong `Authorization`.
+
+## Làm cho đúng trong Next.js
+
+Header tĩnh thuộc về `next.config.ts`: isolation cho đúng route cần, CORP cho mọi thứ, và CORS cho endpoint thực sự công khai, không có credentials:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "Cross-Origin-Resource-Policy", value: "same-site" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" }, // popup OAuth vẫn chạy
+        ],
+      },
+      {
+        // Chỉ editor cần SharedArrayBuffer; entry sau ghi đè cùng key của entry trước.
+        source: "/studio/:path*",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
+        ],
+      },
+      {
+        source: "/api/public/:path*",
+        headers: [
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Access-Control-Allow-Methods", value: "GET" },
+          { key: "Cross-Origin-Resource-Policy", value: "cross-origin" },
+        ],
+      },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
+CORS có credentials cần logic theo từng request, nên nó nằm trong proxy (`proxy.ts` từ Next.js 16; trước đó là `middleware.ts`). Proxy tự trả lời preflight, vì Route Handler không export `OPTIONS` sẽ trả 405:
+
+```ts
+// proxy.ts
+import { NextResponse, type NextRequest } from "next/server";
+import { isAllowedOrigin } from "./lib/security/origins";
+
+export function proxy(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const allowed = origin !== null && isAllowedOrigin(origin);
+
+  const res =
+    request.method === "OPTIONS" ? new NextResponse(null, { status: allowed ? 204 : 403 }) : NextResponse.next();
+
+  res.headers.append("Vary", "Origin");
+  if (allowed) {
+    res.headers.set("Access-Control-Allow-Origin", origin);
+    res.headers.set("Access-Control-Allow-Credentials", "true");
+    if (request.method === "OPTIONS") {
+      res.headers.set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE");
+      res.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.headers.set("Access-Control-Max-Age", "7200");
+    }
+  }
+  return res;
+}
+
+export const config = { matcher: "/api/private/:path*" };
+```
+
+Nhớ lại từ bài [bảo mật frontend thực chiến](/blog/frontend-security-in-practice): Server Actions đã tự so `Origin` với host, nhưng Route Handler thì không. Một lớp kiểm tra cross-site — Fetch Metadata, hoặc so sánh `Origin` — cho các Route Handler thay đổi dữ liệu vẫn là việc của bạn.
+
+## Những lỗi mình hay gặp
+
+**Coi CORS là ranh giới bảo mật.** Nó là quyền đọc dành cho trình duyệt. Phân quyền, chống CSRF và rate limit nằm ở chỗ khác.
+
+**Phản chiếu `Origin` kèm credentials "tạm thời".** Cấu hình CORS tạm thời sống được nhiều năm. Dùng allowlist từ ngày đầu; chỉ mười dòng code.
+
+**So khớp origin bằng chuỗi.** `endsWith`, `includes`, regex không neo, dấu chấm không escape. Parse bằng `URL` và so sánh theo cấu trúc.
+
+**Cho phép `null`.** Đó là origin của mọi iframe sandbox mà kẻ tấn công tạo được.
+
+**Quên `Vary: Origin`**, nhất là trên những response mà bạn *không* gửi header CORS. Rồi mất một tuần cho một bug chập chờn chỉ xảy ra sau CDN.
+
+**Bắt preflight phải xác thực.** `OPTIONS` không bao giờ có cookie hay token. Trả lời nó trước bước auth.
+
+**Bật COOP `same-origin` cho toàn site** chỉ vì một tính năng, và làm vỡ mọi popup OAuth lẫn thanh toán. Isolate theo route, không theo site, và chạy report-only trước.
+
+**Dùng `mode: "no-cors"` làm cách sửa.** Lỗi biến mất vì response trở nên không đọc được.
+
+## Tóm tắt
+
+<Checklist>
+
+- Biết phép so sánh nào đang áp dụng: CORS, COOP và Same-Origin Policy dùng origin; SameSite, `Sec-Fetch-Site: same-site` và CORP `same-site` dùng site (eTLD+1, có tính scheme).
+- Same-Origin Policy chặn việc đọc, không chặn việc gửi. CORS chỉ nới lỏng việc đọc; nó không phải auth và không phải chống CSRF.
+- Biết thứ gì kích hoạt preflight; trả lời `OPTIONS` trước bước xác thực với 2xx, method và header tường minh, và `Access-Control-Max-Age`.
+- CORS có credentials: origin chính xác, `Allow-Credentials: true` trên cả preflight và response, liệt kê `Authorization` tường minh. Ưu tiên API cùng site hoặc cùng origin thay vì cookie cross-site.
+- Gửi `Vary: Origin` trên mọi response mà header CORS có thể phụ thuộc vào origin, kể cả khi từ chối; kiểm tra cache key của CDN.
+- Allowlist origin bằng cách parse với `URL` và so sánh chính xác; không bao giờ cho phép `null`, origin `http:` hay suffix lỏng lẻo.
+- Xác thực service và thiết bị local; đừng dựa vào "chỉ truy cập được từ localhost".
+- Mặc định gửi `Cross-Origin-Resource-Policy: same-site`; chỉ dùng `cross-origin` cho asset dành để nhúng.
+- Cần `SharedArrayBuffer`? COOP `same-origin` + COEP `credentialless` (hoặc `require-corp`) trên đúng route cần, chạy report-only trước, dùng OAuth kiểu redirect ở đó.
+- Thêm resource isolation policy dựa trên Fetch Metadata với danh sách endpoint cross-site tường minh, triển khai ở chế độ chỉ ghi log trước.
+- Khai báo `SameSite` tường minh cho mọi cookie; `Lax` cộng API cùng site là điểm ngọt.
+
+</Checklist>

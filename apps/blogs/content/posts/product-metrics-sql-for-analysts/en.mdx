@@ -1,0 +1,894 @@
+---
+title: "Product Analytics in SQL: Metric Definitions, Tracking Plans, Funnels, Cohort Retention and A/B Tests That Don't Fool You"
+excerpt: "From metric definitions precise down to the numerator, denominator and time window, through tracking plans and user identity, to real PostgreSQL for funnels, cohort retention, DAU/WAU/MAU, window functions, the Asia/Ho_Chi_Minh timezone and A/B tests with an SRM check."
+---
+
+<Lead>The first time I saw two dashboards in the same company report "active users" numbers that differed by almost a factor of two, I assumed someone's SQL had a bug. Nobody's did. One dashboard counted every app open, including the ones caused by a push notification waking the app in the background; the other counted people who did at least one real thing. Both were "correct", and the company spent three weeks arguing about a number nobody had ever defined. This post is how I do data-driven product analysis so the numbers survive scrutiny: defining metrics down to the numerator, denominator and time window; designing a tracking plan and handling user identity; then real PostgreSQL for funnels, cohort retention, DAU/WAU/MAU, window functions, timezones and event dedup — plus the statistical traps that lead smart people to wrong conclusions, A/B tests included.</Lead>
+
+## A vague metric is a bug
+
+Engineers think of bugs as things that live in code. In analytics, the most dangerous bugs live in **definitions**: what "active" means, whether "conversion" is per user or per session, which timezone "September" is in. SQL does exactly what you tell it; if what you tell it is ambiguous, two people write two queries that both run and return two different numbers.
+
+Signs a metric is vague:
+
+- Two people ask "what's conversion this week?" and the answer is "which conversion?".
+- The number on the dashboard changes when you switch the timezone on your BI account.
+- Nobody can say whether the metric **could go up while the product gets worse** — and if it could, who's watching for that.
+- The definition lives in one person's head, or in a 200-line query inside the BI tool that nobody dares to touch.
+
+I treat a metric definition like an API contract: it has a name, an owner, a precise spec, a version, and changes get announced. Everything else in this post builds on that.
+
+## A metric system: north star, input metrics and guardrails
+
+A single number can't steer a product. I use three layers; the running example is a small marketplace selling household goods.
+
+### North star: the value users actually get
+
+A north star metric reflects **the value customers actually receive**, while moving in the same direction as long-term revenue. For our marketplace: *the number of buyers with at least one completed, non-refunded order in the week* (weekly active buyers). Not GMV — GMV goes up if you push a few big orders or run loss-making discounts. Not visits — traffic goes up with junk ads.
+
+The criteria I use to pick one:
+
+1. **It measures value, not activity.** "Non-refunded orders" beats "orders placed" because a refunded order is negative value.
+2. **Product teams can move it** within weeks, not years.
+3. **It's hard to game harmlessly.** If the easiest way to raise it is to do right by customers, it's a good north star.
+
+### Input metrics: the levers teams actually pull
+
+The north star moves slowly and is affected by everything. Teams work on **input metrics** — numbers they influence directly that have a plausible causal link to the north star:
+
+- Share of product viewers who add to cart (discovery team).
+- Seven-day checkout completion (checkout team).
+- Share of first-time buyers who buy again within 30 days (CRM team).
+- New buyers per week (acquisition team).
+
+### Guardrails: what must not get worse
+
+A guardrail is a metric you're **not trying to increase** but **must not let degrade** while optimizing something else. Without guardrails, every local optimization looks like a win:
+
+| Layer | Example | Owner | How fast it moves |
+| --- | --- | --- | --- |
+| North star | Weekly active buyers (non-refunded orders) | Product leadership | Slow, weekly/monthly |
+| Input | 7-day checkout conversion | Checkout team | Fast, reacts to releases |
+| Input | 30-day repeat purchase | CRM team | Medium, 30-day lag |
+| Guardrail | Refund rate | Ops + product | Lagging, needs constant watching |
+| Guardrail | Support tickets per 1,000 orders | Support | Fast |
+| Guardrail | Product page LCP p75 | Frontend | Fast |
+| Guardrail | Email unsubscribe rate | CRM | Fast |
+
+A real one I've seen: a change that made the "Buy now" button more prominent lifted checkout conversion noticeably, and the refund rate went up with it because people were tapping it by accident. Without a refund guardrail, that experiment would have been recorded as a win.
+
+### A metric definition template
+
+This is the template I insist every important metric fills in before it goes on a dashboard. It lives in the repo and gets reviewed in PRs like code:
+
+```yaml
+# metrics/checkout_conversion_7d.yaml
+name: checkout_conversion_7d
+version: 2
+owner: team-checkout
+description: >
+  Of the people who start checkout, the percentage who complete at least
+  one order within 7 days of their first checkout start.
+unit: user                      # unit of analysis: user, not session or order
+numerator:
+  count: distinct user_id
+  condition: >
+    has an order_completed event with occurred_at in
+    [first_checkout_started_at, first_checkout_started_at + 7 days)
+denominator:
+  count: distinct user_id
+  condition: first checkout_started event falls in the reporting period
+time_window:
+  cohort_by: first_checkout_started_at
+  grain: week
+  week_start: monday
+  timezone: Asia/Ho_Chi_Minh
+  maturity: 7 days              # a cohort is final only after 7 days; before that it's provisional
+exclusions:
+  - internal_users
+  - bot_traffic
+  - orders.status = 'test'
+guardrails: [refund_rate_14d, support_tickets_per_1k_orders]
+source_of_truth: analytics.events_clean, analytics.orders
+changelog:
+  - v2 (2026-09-15): window changed from 24h to 7 days; history recomputed.
+```
+
+Every line answers a question that, left blank, someone will answer differently:
+
+- **unit** drives everything after it. Per-user and per-session conversion can differ several-fold and both are legitimate — as long as you don't mix them.
+- **Who the window is anchored to.** "Orders this week / checkouts this week" is a ratio of two different groups of people. Anchor the window to *each person's own* checkout time and the numerator is always a subset of the denominator.
+- **maturity** prevents the most common trap of all: the current week always looks bad because yesterday's checkouts haven't had 7 days to convert yet.
+- **changelog** means that when the number jumps, readers know the definition changed, not the product.
+
+<Callout type="tip" title="Write the definition in words first, SQL second">
+  If you can't write the definition as one clear sentence someone outside your team understands, your SQL is encoding an ambiguity. I often hand the sentence to a PM and an engineer separately and ask how they'd count three edge cases: someone who starts checkout twice, someone who buys from a different account, an order cancelled after five minutes.
+</Callout>
+
+## The tracking plan: good data starts at write time
+
+No query can rescue badly collected data. A tracking plan specifies every event: name, when it fires, which properties, which types, who owns it. It should live in the repo too, and be validated automatically.
+
+### Naming conventions
+
+Mine: **`object_action`, snake_case, past-tense verb**. `order_completed`, `cart_item_added`, `checkout_started`, `product_viewed`. Why:
+
+- Sorted by name, events about the same object sit together.
+- The past tense is a reminder that an event is **a fact that happened**, not an intention. `order_completed` fires when the server confirms the order, not when someone taps a button.
+- Values don't go in names: `filter_applied` with a `filter_type` property, not `price_filter_applied`, `brand_filter_applied`, ... all the way to 40 events.
+
+| Do | Don't | Why |
+| --- | --- | --- |
+| `order_completed` | `Purchase`, `buy_click` | One naming standard; separates facts from clicks |
+| `filter_applied` + `filter_type` | `price_filter_applied` | Event names don't grow with the data |
+| `total_vnd` (bigint) | `total` (string "1.250.000đ") | Unit in the name, a numeric type you can compute with |
+| `checkout_started` fires once per checkout entry | fires on every re-render | Events attach to behavior, not to a component lifecycle |
+
+### Properties and schemas
+
+Each event has two kinds of properties: **common properties** (attached by the SDK: `event_id`, `anonymous_id`, `user_id`, `occurred_at`, `platform`, `app_version`) and the event's **own properties**. I keep the latter in `jsonb` but validate them against a schema at ingestion:
+
+```ts
+// tracking/events.ts
+import { z } from "zod";
+
+export const events = {
+  product_viewed: z.object({
+    product_id: z.string(),
+    category_id: z.string(),
+    price_vnd: z.number().int().nonnegative(),
+    source: z.enum(["search", "category", "recommendation", "direct"]),
+  }),
+  cart_item_added: z.object({
+    product_id: z.string(),
+    quantity: z.number().int().positive(),
+    price_vnd: z.number().int().nonnegative(),
+  }),
+  checkout_started: z.object({
+    cart_id: z.string(),
+    item_count: z.number().int().positive(),
+    subtotal_vnd: z.number().int().nonnegative(),
+  }),
+  // Fired by the server after the order is written — never by the client
+  order_completed: z.object({
+    order_id: z.string(),
+    total_vnd: z.number().int().nonnegative(),
+    payment_method: z.enum(["card", "cod", "wallet", "bank_transfer"]),
+  }),
+} as const;
+
+export type EventName = keyof typeof events;
+```
+
+Validating at ingestion means a malformed event lands in a quarantine table with its error instead of quietly entering the warehouse with `price_vnd = "120k"`. An alert on a spike in the quarantine rate catches a surprising number of releases that broke tracking.
+
+<Callout type="warning" title="Critical events belong on the server">
+  Client events get blocked by ad blockers, lost on flaky networks, duplicated by double taps, and can be forged. For the events your revenue rests on — `order_completed`, `subscription_renewed`, `refund_issued` — fire them from the server right after the transaction commits, or better, compute them straight from the `orders` table. Client events are for browsing behavior (views, scrolls, taps), where losing a few percent is acceptable.
+</Callout>
+
+### Identity: anonymous_id, user_id and stitching
+
+People browse logged out (only an `anonymous_id` in a cookie), then log in or sign up (now there's a `user_id`). If you don't stitch the two, your funnel will show "people who viewed products" and "people who ordered" as two barely overlapping groups.
+
+What I do: on login, the client sends an `identity_linked` event carrying both `anonymous_id` and `user_id`; the pipeline writes a mapping table.
+
+```sql
+-- One anonymous_id maps to at most one user: the first link wins.
+CREATE TABLE identity_map (
+  anonymous_id    text PRIMARY KEY,
+  user_id         bigint      NOT NULL,
+  first_linked_at timestamptz NOT NULL
+);
+
+INSERT INTO identity_map (anonymous_id, user_id, first_linked_at)
+SELECT anonymous_id, user_id, MIN(occurred_at)
+FROM events
+WHERE event_name = 'identity_linked'
+GROUP BY anonymous_id, user_id
+ON CONFLICT (anonymous_id) DO NOTHING;
+```
+
+I've deliberately left one weakness in that `INSERT` to talk about: if a single batch contains two different `user_id`s for the same `anonymous_id` (a shared family computer), `ON CONFLICT DO NOTHING` keeps one of them nondeterministically. A production version should choose explicitly with `DISTINCT ON (anonymous_id) ... ORDER BY anonymous_id, MIN(occurred_at)`. And "first link wins" is a business rule, not a truth: a shared device will attribute one person's behavior to another. I accept that error and document it rather than pretend identity is perfect.
+
+## SQL foundations: a clean events table
+
+Every analysis below reads from a clean view, never from raw events. The raw table:
+
+```sql
+CREATE TABLE events (
+  event_id     uuid        NOT NULL,          -- generated on client/server, used for dedup
+  event_name   text        NOT NULL,
+  anonymous_id text,
+  user_id      bigint,
+  occurred_at  timestamptz NOT NULL,          -- the device's clock
+  received_at  timestamptz NOT NULL DEFAULT now(),
+  platform     text,
+  app_version  text,
+  properties   jsonb       NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX ON events (event_name, occurred_at);
+CREATE INDEX ON events (user_id, occurred_at);
+```
+
+### Deduplicating events
+
+Duplicate events are normal: the SDK retries when it doesn't get a response, an offline app resends a whole batch, people double-tap. If the client generates `event_id` once and keeps it across retries, dedup is easy:
+
+```sql
+-- Portable: ROW_NUMBER
+SELECT *
+FROM (
+  SELECT e.*,
+         ROW_NUMBER() OVER (PARTITION BY e.event_id ORDER BY e.received_at) AS rn
+  FROM events e
+) t
+WHERE t.rn = 1;
+
+-- PostgreSQL-specific: DISTINCT ON, usually shorter and faster
+SELECT DISTINCT ON (event_id) *
+FROM events
+ORDER BY event_id, received_at;
+```
+
+Without an `event_id` (old data, third-party sources) you're stuck with fuzzy dedup: same user, same event name, same key properties, a few seconds apart. That always has a trade-off — merging two genuine back-to-back add-to-carts — so I only apply it to events where duplicates hurt more than false merges, and I document the threshold.
+
+### The events_clean view
+
+```sql
+CREATE MATERIALIZED VIEW events_clean AS
+WITH dedup AS (
+  SELECT DISTINCT ON (event_id) *
+  FROM events
+  ORDER BY event_id, received_at
+)
+SELECT
+  d.event_id,
+  d.event_name,
+  COALESCE(d.user_id, m.user_id) AS user_id,
+  d.anonymous_id,
+  -- Device clocks drift: don't trust timestamps from the future
+  CASE WHEN d.occurred_at > d.received_at + INTERVAL '5 minutes'
+       THEN d.received_at
+       ELSE d.occurred_at
+  END AS occurred_at,
+  d.received_at,
+  d.platform,
+  d.properties
+FROM dedup d
+LEFT JOIN identity_map m ON m.anonymous_id = d.anonymous_id
+WHERE NOT EXISTS (
+  SELECT 1 FROM internal_users iu
+  WHERE iu.user_id = COALESCE(d.user_id, m.user_id)
+);
+
+CREATE UNIQUE INDEX ON events_clean (event_id);
+CREATE INDEX ON events_clean (event_name, occurred_at);
+CREATE INDEX ON events_clean (user_id, occurred_at);
+-- The unique index enables REFRESH MATERIALIZED VIEW CONCURRENTLY
+```
+
+Three decisions worth calling out:
+
+- **`occurred_at` or `received_at`?** `occurred_at` reflects real behavior (an offline app sends events hours late), but device clocks can be wrong. I use `occurred_at` and only override the obviously absurd case of a timestamp in the future.
+- **Exclude internal users** in exactly one place. Staff testing checkout in production every day is enough to skew conversion for a small product.
+- **Late events** change yesterday's numbers after you've reported them. That's why metrics have a `maturity`, and dashboards should mark days that are still provisional.
+
+## Timezones: Asia/Ho_Chi_Minh and its traps
+
+PostgreSQL's `timestamptz` stores an absolute instant (UTC internally) and only renders it according to the session's `TimeZone` setting. That's great for storage and dangerous for reporting, because every "get the date" operation implicitly uses the session timezone — which depends on the BI tool, the driver, or the machine of whoever runs the query.
+
+### Trap 1: casting to date in the session timezone
+
+```sql
+-- ❌ Result depends on the session's SET TimeZone
+SELECT occurred_at::date AS day, COUNT(*) FROM events_clean GROUP BY 1;
+
+-- ✅ Explicit: convert to local time, then take the date
+SELECT (occurred_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day, COUNT(*)
+FROM events_clean
+GROUP BY 1;
+
+-- ✅ Or the three-argument date_trunc (PostgreSQL 12+),
+--    which returns a timestamptz at local midnight in Vietnam
+SELECT date_trunc('day', occurred_at, 'Asia/Ho_Chi_Minh') AS day_start, COUNT(*)
+FROM events_clean
+GROUP BY 1;
+```
+
+If the BI connection is set to UTC, an order placed at 6:30 a.m. on September 1st Vietnam time is 23:30 on August 31st UTC — and it lands in the August report. Every order between midnight and 7 a.m. moves to the previous day. For a marketplace with plenty of late-night orders, the daily chart is systematically skewed and nobody notices.
+
+### Trap 2: the direction of AT TIME ZONE
+
+`AT TIME ZONE` does two opposite things depending on its input type:
+
+| Expression | Input | Result | Meaning |
+| --- | --- | --- | --- |
+| `ts_tz AT TIME ZONE 'Asia/Ho_Chi_Minh'` | `timestamptz` | `timestamp` (no tz) | "At this instant, what does a clock in Saigon show?" |
+| `ts AT TIME ZONE 'Asia/Ho_Chi_Minh'` | `timestamp` (no tz) | `timestamptz` | "This wall-clock time in Saigon is which absolute instant?" |
+
+The second is the right way to write filter boundaries:
+
+```sql
+-- All of September 2026 in Vietnam time, half-open [start, end)
+WITH params AS (
+  SELECT TIMESTAMP '2026-09-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS start_at,
+         TIMESTAMP '2026-10-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS end_at
+)
+SELECT COUNT(*)
+FROM events_clean e, params p
+WHERE e.event_name = 'order_completed'
+  AND e.occurred_at >= p.start_at
+  AND e.occurred_at <  p.end_at;
+```
+
+Two more things in that example: compare **directly on the column** `occurred_at` so the index gets used (wrapping the column in a function in `WHERE` usually means the index is skipped), and use a **half-open interval** instead of `BETWEEN '2026-09-01' AND '2026-09-30'` — the latter misses nearly all of the last day, because `'2026-09-30'` means midnight at the start of the 30th.
+
+<Callout type="danger" title="Never write 'UTC+7'">
+  In `AT TIME ZONE` and the `TimeZone` setting, PostgreSQL reads strings like `'UTC+7'` using the POSIX convention, where positive means **west** of Greenwich. So `'UTC+7'` is actually UTC−7, fourteen hours off from what you meant. Always use IANA zone names such as `'Asia/Ho_Chi_Minh'`. Vietnam has no daylight saving time, so you're bitten less often, but if the product expands to a market with DST, zone names are the only way 23- and 25-hour days get handled correctly.
+</Callout>
+
+### Trap 3: which day the week starts on
+
+`date_trunc('week', ...)` follows ISO 8601: weeks start on Monday. `EXTRACT(DOW ...)` returns 0 for Sunday, while `EXTRACT(ISODOW ...)` returns 7 for Sunday. If marketing reports Sunday-start weeks and product reports ISO weeks, the two "last week" numbers will never match. Pick one, put it in the metric definition (`week_start: monday`), done.
+
+### A calendar spine: don't let empty days disappear
+
+`GROUP BY` day only returns days that have data. A day with no orders vanishes, the chart draws a straight line across it, and a moving average over "7 rows" actually spans 9 days. Always join to a calendar spine:
+
+```sql
+SELECT DATE '2026-09-01' + i AS day
+FROM generate_series(0, 29) AS i;
+```
+
+I use `generate_series` over integers and add them to a `date` (`date + integer` yields a `date`) to avoid `generate_series` with `date` arguments plus an `interval` being resolved to the `timestamptz` version and dragging the session timezone in once again.
+
+## DAU, WAU, MAU and stickiness
+
+### What "active" means
+
+Before counting, decide **which actions make someone active**. `app_opened` is almost always a bad choice: push notifications, widgets and background prefetch can all generate it. For our marketplace, active means at least one of `product_viewed`, `search_performed`, `cart_item_added`, `order_completed`. Put that list in one place:
+
+```sql
+CREATE VIEW active_user_days AS
+SELECT DISTINCT
+  user_id,
+  (occurred_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day
+FROM events_clean
+WHERE user_id IS NOT NULL
+  AND event_name IN ('product_viewed', 'search_performed', 'cart_item_added', 'order_completed');
+```
+
+This only counts people with a `user_id` (including stitched anonymous users). To include guests, count `COALESCE(user_id::text, anonymous_id)` — but then one person on two logged-out browsers counts twice, and you should say so.
+
+### Rolling WAU and MAU
+
+`COUNT(DISTINCT ...)` can't be used as a window function in PostgreSQL, and distinct counts **don't add up**: the sum of seven DAUs isn't WAU, because someone active on five days is counted five times. The right way is, for each day, to count distinct users in the trailing window ending that day:
+
+```sql
+WITH days AS (
+  SELECT DATE '2026-09-01' + i AS day
+  FROM generate_series(0, 29) AS i
+)
+SELECT
+  d.day,
+  COUNT(DISTINCT a.user_id) FILTER (WHERE a.day = d.day)     AS dau,
+  COUNT(DISTINCT a.user_id) FILTER (WHERE a.day > d.day - 7) AS wau,
+  COUNT(DISTINCT a.user_id)                                  AS mau_28d,
+  ROUND(
+    COUNT(DISTINCT a.user_id) FILTER (WHERE a.day = d.day)::numeric
+      / NULLIF(COUNT(DISTINCT a.user_id), 0),
+    3
+  ) AS stickiness_dau_mau
+FROM days d
+LEFT JOIN active_user_days a
+  ON a.day >  d.day - 28
+ AND a.day <= d.day
+GROUP BY d.day
+ORDER BY d.day;
+```
+
+I use a 28-day window instead of "a month" because 28 days contains each weekday exactly four times — a 30-day MAU wobbles depending on how many weekends fall in the window. On large tables this query is heavy, since each day rescans 28 days of data; at that point I precompute `active_user_days` as a materialized table and only recompute recent days.
+
+### Stickiness: how to read it
+
+DAU/MAU answers: *of the people active this month, what share come back on an average day?* A value of 0.5 means the typical user is active about half the days. Two caveats:
+
+- **Stickiness depends on what the product is.** A messaging app and a flight booking app shouldn't be compared. Low stickiness is normal for a household goods marketplace; what matters is its own trend.
+- **A ratio can rise because its denominator fell.** Stop running ads, the casual users disappear, MAU drops, and stickiness "improves" without anyone using the product more. Always read a ratio alongside its numerator and denominator.
+
+## Funnels: conversion between steps
+
+A funnel answers "where do people drop off". There are several ways to define one, and each answers a different question:
+
+| Choice | Option A | Option B | I use |
+| --- | --- | --- | --- |
+| Unit | Per user | Per session | User for considered purchases spanning days; session for short flows like sign-up |
+| Order | Strict order | Event just has to exist | Strict, otherwise "bought first, viewed later" still counts |
+| Window | Anchored to each person's first step | Calendar (same week) | Anchored per person, so the numerator is always a subset of the denominator |
+| Rate | Between adjacent steps | Relative to step one | Both: adjacent to find the leak, overall to report |
+
+A per-user, strictly ordered funnel with a 7-day window from each person's first product view in September:
+
+```sql
+WITH params AS (
+  SELECT TIMESTAMP '2026-09-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS start_at,
+         TIMESTAMP '2026-10-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS end_at,
+         INTERVAL '7 days' AS conv_window
+),
+s1 AS (  -- step 1: first product view in the period
+  SELECT e.user_id, MIN(e.occurred_at) AS t1
+  FROM events_clean e, params p
+  WHERE e.event_name = 'product_viewed'
+    AND e.occurred_at >= p.start_at AND e.occurred_at < p.end_at
+    AND e.user_id IS NOT NULL
+  GROUP BY e.user_id
+),
+s2 AS (  -- step 2: add to cart after t1, inside the window
+  SELECT s1.user_id, s1.t1, MIN(e.occurred_at) AS t2
+  FROM s1
+  CROSS JOIN params p
+  LEFT JOIN events_clean e
+    ON e.user_id = s1.user_id
+   AND e.event_name = 'cart_item_added'
+   AND e.occurred_at >= s1.t1
+   AND e.occurred_at <  s1.t1 + p.conv_window
+  GROUP BY s1.user_id, s1.t1
+),
+s3 AS (  -- step 3: checkout started after t2
+  SELECT s2.user_id, s2.t1, s2.t2, MIN(e.occurred_at) AS t3
+  FROM s2
+  CROSS JOIN params p
+  LEFT JOIN events_clean e
+    ON e.user_id = s2.user_id
+   AND e.event_name = 'checkout_started'
+   AND e.occurred_at >= s2.t2
+   AND e.occurred_at <  s2.t1 + p.conv_window
+  GROUP BY s2.user_id, s2.t1, s2.t2
+),
+s4 AS (  -- step 4: order completed after t3
+  SELECT s3.user_id, s3.t1, s3.t2, s3.t3, MIN(e.occurred_at) AS t4
+  FROM s3
+  CROSS JOIN params p
+  LEFT JOIN events_clean e
+    ON e.user_id = s3.user_id
+   AND e.event_name = 'order_completed'
+   AND e.occurred_at >= s3.t3
+   AND e.occurred_at <  s3.t1 + p.conv_window
+  GROUP BY s3.user_id, s3.t1, s3.t2, s3.t3
+)
+SELECT
+  COUNT(*)  AS viewed,
+  COUNT(t2) AS added_to_cart,
+  COUNT(t3) AS started_checkout,
+  COUNT(t4) AS ordered,
+  ROUND(100.0 * COUNT(t2) / NULLIF(COUNT(*), 0), 1)  AS view_to_cart_pct,
+  ROUND(100.0 * COUNT(t3) / NULLIF(COUNT(t2), 0), 1) AS cart_to_checkout_pct,
+  ROUND(100.0 * COUNT(t4) / NULLIF(COUNT(t3), 0), 1) AS checkout_to_order_pct,
+  ROUND(100.0 * COUNT(t4) / NULLIF(COUNT(*), 0), 2)  AS overall_pct
+FROM s4;
+```
+
+Small details that decide whether it's right:
+
+- **Conditions on the right-hand table go in `ON`, not `WHERE`.** Writing `WHERE e.event_name = 'cart_item_added'` after a `LEFT JOIN` drops every `NULL` row — which means dropping exactly the people who fell out of the funnel. The funnel then reports 100% at every step, and I've seen a dashboard like that run for months.
+- **`COUNT(t2)`, not `COUNT(*)`**: `COUNT(column)` skips `NULL`s, so it counts exactly the people who made it through that step.
+- **`100.0 *` up front**: in PostgreSQL, `integer / integer` is integer division. `COUNT(t2) / COUNT(*)` returns 0 for every rate below 1.
+- **Taking the MIN at each step** means measuring "the earliest moment they could have moved on". Someone who views, leaves, comes back three days later and buys still converts — which matches how people buy household goods.
+- **The September cohort isn't final until October 8th**: someone who viewed a product on September 30th still has 7 days to buy. Running this on October 2nd gives a number lower than the truth.
+
+To find the leak, I slice the funnel by `platform`, the `source` of the first view, or new versus returning — but I always look at each slice's sample size before its rate. A 40-person slice converting at 15% tells you nothing.
+
+<Figure src="/blog/product-metrics-sql-for-analysts-funnel-cohort.svg" alt="Two panels side by side. On the left, a four-step per-user funnel over 30 days: product_viewed 10,000 users, cart_item_added 3,200 users at a 32% step rate, checkout_started 1,400 users at 43.8%, order_completed 980 users at 70%, overall conversion 9.8%. On the right, a weekly cohort retention matrix: five signup cohorts from the week of August 31 to the week of September 28, columns week 0 to week 5, darker cells mean higher retention, week 0 is always 100%, week 1 is around 40 to 47%, and the bottom-right cells are greyed out because they are not observable yet" caption="The funnel shows which step people drop at; the cohort shows whether they come back. Illustrative numbers. Read the cohort matrix down a column to compare cohorts at the same age, and never treat a grey cell as 0%." />
+
+## Cohort retention
+
+Overall retention ("what percentage of users came back") is nearly meaningless while a product is growing: new users always make up a large share and drag the number down, or up. Cohorts split users by **when they started** so you compare people of the same "age".
+
+### A weekly cohort matrix
+
+```sql
+WITH cohorts AS (
+  SELECT
+    user_id,
+    date_trunc('week', signed_up_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS cohort_week
+  FROM users
+  WHERE signed_up_at >= TIMESTAMP '2026-08-31' AT TIME ZONE 'Asia/Ho_Chi_Minh'
+),
+activity AS (
+  SELECT DISTINCT
+    user_id,
+    date_trunc('week', day::timestamp)::date AS active_week
+  FROM active_user_days
+),
+cohort_size AS (
+  SELECT cohort_week, COUNT(*) AS users
+  FROM cohorts
+  GROUP BY cohort_week
+),
+current_week AS (
+  SELECT date_trunc('week', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS wk
+)
+SELECT
+  c.cohort_week,
+  cs.users AS cohort_users,
+  (a.active_week - c.cohort_week) / 7 AS week_n,
+  COUNT(DISTINCT a.user_id) AS retained,
+  ROUND(100.0 * COUNT(DISTINCT a.user_id) / cs.users, 1) AS retention_pct
+FROM cohorts c
+JOIN cohort_size cs USING (cohort_week)
+JOIN activity a
+  ON a.user_id = c.user_id
+ AND a.active_week >= c.cohort_week
+CROSS JOIN current_week cw
+WHERE a.active_week < cw.wk          -- drop the current, unfinished week
+GROUP BY c.cohort_week, cs.users, week_n
+ORDER BY c.cohort_week, week_n;
+```
+
+In PostgreSQL, `date - date` returns a number of days (an integer), so dividing by 7 gives the week index. To pivot it into a matrix:
+
+```sql
+-- Assuming the query above is saved as retention_long
+SELECT
+  cohort_week,
+  cohort_users,
+  MAX(retention_pct) FILTER (WHERE week_n = 0) AS w0,
+  MAX(retention_pct) FILTER (WHERE week_n = 1) AS w1,
+  MAX(retention_pct) FILTER (WHERE week_n = 2) AS w2,
+  MAX(retention_pct) FILTER (WHERE week_n = 3) AS w3,
+  MAX(retention_pct) FILTER (WHERE week_n = 4) AS w4,
+  MAX(retention_pct) FILTER (WHERE week_n = 5) AS w5
+FROM retention_long
+GROUP BY cohort_week, cohort_users
+ORDER BY cohort_week;
+```
+
+### Reading a cohort matrix
+
+- **Read down a column** to compare cohorts at the same age: is week 1 for the September cohorts better than for August? This is where you see the effect of a new onboarding.
+- **Read along a row** to see the shape of the curve: does it flatten? A retention curve that flattens above zero means some group of users found lasting value. A curve that keeps sliding to zero is a product-market fit problem, not an optimization problem.
+- **An empty cell is not 0%.** Last week's cohort doesn't have a week 3 yet. An "average week-3 retention" chart that counts too-young cohorts as 0 drags everything down. In the SQL above those cells simply have no row, and `FILTER` returns `NULL` — the correct meaning.
+
+### Classic, rolling, and what "came back" means
+
+There are two definitions of week-N retention that I regularly see mixed up:
+
+- **Classic (bounded):** active **during exactly** week N. The query above is this kind.
+- **Rolling (unbounded):** active **in week N or any time after**. Always higher than classic, and a better fit for products used irregularly, like travel or seasonal shopping.
+
+Both are legitimate. What isn't legitimate is reporting rolling this month and comparing it to classic last month. Metric definitions again.
+
+One more detail: in the figure, week 0 is 100% because signing up counts as active. The `active_user_days` event list above doesn't include sign-up, so with that SQL week 0 will be below 100% — and that number is an activation metric worth tracking on its own: how many new users do something valuable in their very first week.
+
+## Window functions: the analyst's everyday tool
+
+Window functions compute over a "window" of related rows without collapsing them the way `GROUP BY` does. Five patterns I use almost every week.
+
+### ROW_NUMBER: first orders and purchase sequence
+
+```sql
+SELECT
+  user_id,
+  order_id,
+  created_at,
+  total_vnd,
+  ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at, order_id) AS order_seq
+FROM orders
+WHERE status = 'completed';
+```
+
+`order_seq = 1` is the first order; the share of people with an `order_seq = 2` within 30 days of their first is the repeat purchase rate. Adding `order_id` to the `ORDER BY` makes the ordering **deterministic** when two orders share a `created_at` — otherwise two runs can give two answers.
+
+### LAG: time between orders and week-over-week growth
+
+```sql
+WITH weekly AS (
+  SELECT
+    date_trunc('week', created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS week,
+    SUM(total_vnd) AS revenue_vnd
+  FROM orders
+  WHERE status = 'completed'
+  GROUP BY 1
+)
+SELECT
+  week,
+  revenue_vnd,
+  LAG(revenue_vnd) OVER (ORDER BY week) AS prev_week_vnd,
+  ROUND(
+    100.0 * (revenue_vnd - LAG(revenue_vnd) OVER (ORDER BY week))
+      / NULLIF(LAG(revenue_vnd) OVER (ORDER BY week), 0),
+    1
+  ) AS wow_pct
+FROM weekly
+ORDER BY week;
+```
+
+And the gap between consecutive orders for the same person, the basis for timing a "buy again" email:
+
+```sql
+SELECT
+  user_id,
+  created_at,
+  created_at - LAG(created_at) OVER (PARTITION BY user_id ORDER BY created_at) AS gap
+FROM orders
+WHERE status = 'completed';
+```
+
+Careful: `LAG` takes the previous row **in the result**, not the previous week **on the calendar**. If a week had no revenue it has no row, and `LAG` compares this week with the one before that. Another reason to join a calendar spine.
+
+### Running totals and LTV curves by cohort
+
+```sql
+SELECT
+  day,
+  revenue_vnd,
+  SUM(revenue_vnd) OVER (
+    PARTITION BY date_trunc('month', day)
+    ORDER BY day
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  ) AS month_to_date_vnd
+FROM daily_revenue;
+```
+
+The same technique with `PARTITION BY cohort_week ORDER BY week_n` gives cumulative revenue per user by cohort age — the LTV curve marketing needs to know how much it can spend to acquire a customer.
+
+### A 7-day moving average
+
+```sql
+SELECT
+  day,
+  dau,
+  ROUND(AVG(dau) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 0) AS dau_7d_avg
+FROM daily_dau     -- already joined to the spine, days with nobody active have dau = 0
+ORDER BY day;
+```
+
+`ROWS BETWEEN 6 PRECEDING` means "6 rows back", not "6 days back". It's only right when every day has exactly one row.
+
+### Sessionization: LAG plus a running sum
+
+Split events into sessions with a 30-minute inactivity threshold:
+
+```sql
+WITH ordered AS (
+  SELECT
+    user_id,
+    event_id,
+    occurred_at,
+    LAG(occurred_at) OVER (PARTITION BY user_id ORDER BY occurred_at, event_id) AS prev_at
+  FROM events_clean
+  WHERE user_id IS NOT NULL
+),
+flagged AS (
+  SELECT *,
+    CASE WHEN prev_at IS NULL OR occurred_at - prev_at > INTERVAL '30 minutes'
+         THEN 1 ELSE 0 END AS is_new_session
+  FROM ordered
+)
+SELECT
+  user_id,
+  event_id,
+  occurred_at,
+  SUM(is_new_session) OVER (
+    PARTITION BY user_id
+    ORDER BY occurred_at, event_id
+    ROWS UNBOUNDED PRECEDING
+  ) AS session_seq
+FROM flagged;
+```
+
+<Callout type="note" title="The default frame is RANGE, not ROWS">
+  With an `ORDER BY` and no explicit frame, PostgreSQL uses `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, which includes all rows with the **same** sort value. Two events with the same `occurred_at` get the same running sum, and the cumulative total "jumps" two steps at once. Spell out `ROWS` and add a tie-breaker column like `event_id` so results are deterministic.
+</Callout>
+
+## The traps that lead smart people to wrong conclusions
+
+Correct SQL isn't enough. Most analytics mistakes I see are reasoning errors on top of correct numbers.
+
+### Simpson's paradox
+
+Overall conversion fell from August to September and the team panicked. Split by platform:
+
+| | Aug visits | Aug orders | Aug CR | Sep visits | Sep orders | Sep CR |
+| --- | --- | --- | --- | --- | --- | --- |
+| Desktop | 8,000 | 480 | 6.0% | 3,000 | 195 | 6.5% |
+| Mobile | 2,000 | 40 | 2.0% | 7,000 | 175 | 2.5% |
+| **Total** | **10,000** | **520** | **5.2%** | **10,000** | **370** | **3.7%** |
+
+Desktop and mobile conversion both **went up**, yet the total **went down** — because the traffic mix shifted heavily toward mobile, which converts lower to begin with (say, after a TikTok campaign). "The product got worse" is the wrong conclusion; the right one is "new traffic is mostly mobile, and mobile is still our weak spot". Those two conclusions lead to very different work.
+
+The defense: whenever an overall rate moves, split it by the largest mix dimensions (platform, traffic source, new vs returning) and check whether the **composition of the denominator** changed before drawing conclusions about performance.
+
+### Survivorship bias
+
+"Users of the wishlist feature have three times the 90-day retention of non-users. Let's push everyone into wishlists!" The problem: wishlist users are people who stuck around long enough to discover it. Causality may run the other way — they stayed and then used wishlists, rather than using wishlists and therefore staying.
+
+Another version of the same trap: a "what do our best customers have in common" analysis that only looks at those who stayed, ignoring people with the same traits who left. The defense: define the group **at the starting point** (say, people who used wishlists in their first 7 days), follow them forward, and remember it's still correlation. If you want causation, run an experiment.
+
+### Mixing units
+
+- **User numerator, session denominator**: "320 buyers / 12,000 sessions" isn't anybody's conversion rate.
+- **Money**: gross or net of discounts and refunds, with or without VAT, VND or USD, minor units or not. I put the unit in the column name (`total_vnd`) and never add two money columns from different sources without checking their definitions.
+- **Two data sources**: sessions from a web analytics tool, orders from the database. They filter bots differently, use different timezones, define sessions differently. A ratio across sources like that can be off by tens of percent with nothing actually wrong.
+
+### Averages of ratios
+
+Two days: day 1 has 2 visits and 1 order (50%); day 2 has 1,000 visits and 90 orders (9%). The average of the two rates is 29.5%. The pooled rate is 91 / 1,002, about 9.1%. Averaging rates gives the 2-visit day the same weight as the 1,000-visit day.
+
+My rule: **compute a rate as total numerator over total denominator**, unless you have a clear reason to weight each group equally (for example "conversion of a typical shop" on a marketplace, where each shop is the unit you care about). And then say so in the metric's name.
+
+From the same family: **means hide distributions**. Average order value gets pulled by a few wholesale orders; average delivery time hides the 5% of orders that arrive a week late. Report the median and p90 alongside the mean.
+
+### Regression to the mean
+
+You pick the 10 categories with the worst conversion last week, do something to them, and this week they improve. Much of that improvement might have happened anyway: last week's worst categories were partly unlucky, and bad luck doesn't repeat on schedule. That's why "before and after" can't replace a control group.
+
+## A/B tests: the basics you can't get wrong
+
+An A/B test is the only way I trust to answer the causal question "does this change make the metric better". It's also an easy way to produce wrong conclusions that look very scientific.
+
+### Randomization unit and metric unit
+
+Randomize by **user** (stable across sessions and devices when possible), and compute the primary metric per user too: "share of users with an order within 7 days of entering the experiment". If you split by user but measure "conversion per session", one person's sessions aren't independent, the usual standard error formula underestimates the uncertainty, and you'll see "statistically significant" more often than you should. Ratio metrics whose denominator isn't the randomization unit need the delta method or a user-level bootstrap.
+
+Only count people **actually exposed** to the change: if the experiment is on the checkout page, assign the variant when the user reaches checkout, or analyze only people who reached checkout in **both** arms. Including people who never saw checkout dilutes the effect.
+
+### Sample size: intuition first, calculator second
+
+An approximation for rate metrics, at 5% two-sided significance and 80% power:
+
+```text
+n per arm ≈ 16 × p × (1 − p) / δ²
+
+p = current conversion, δ = smallest absolute difference you want to detect (MDE)
+
+Example: p = 5%, detect a 10% relative lift, i.e. δ = 0.5 percentage points
+n ≈ 16 × 0.05 × 0.95 / 0.005² = 0.76 / 0.000025 ≈ 30,400 users per arm
+
+To detect δ = 1 percentage point: ≈ 7,600 users per arm
+```
+
+The single most important thing to remember: **sample size scales with the inverse square of the MDE**. To detect an effect half as large, you need four times as many people. For a product with only 2,000 new users entering the experiment each week, detecting a 0.5-point change on a 5% baseline needs about 60,000 people, roughly 30 weeks. Do this math **before** designing the experiment — it usually tells you to only test changes bold enough to have a big effect.
+
+Run experiments for **whole weeks** (7, 14, 21 days) to balance day-of-week effects, and beware novelty effects: existing users click the new thing because it's new, not because it's better.
+
+### SRM: check before you look at results
+
+Sample Ratio Mismatch: you designed a 50/50 split and got 50,400 and 49,200. Looks close, but a chi-square test says it's very unlikely to happen by chance:
+
+```sql
+WITH assignment AS (
+  SELECT DISTINCT ON (user_id) user_id, variant, assigned_at
+  FROM experiment_assignments
+  WHERE experiment_key = 'checkout_one_page'
+  ORDER BY user_id, assigned_at
+),
+counts AS (
+  SELECT variant, COUNT(*)::numeric AS observed
+  FROM assignment
+  GROUP BY variant
+),
+expected AS (
+  -- Designed split: 50/50
+  SELECT variant, (SELECT SUM(observed) FROM counts) * 0.5 AS expected
+  FROM counts
+)
+SELECT
+  SUM((c.observed - e.expected) ^ 2 / e.expected) AS chi_square,
+  -- 2 arms = 1 degree of freedom; 10.83 corresponds to p = 0.001
+  SUM((c.observed - e.expected) ^ 2 / e.expected) > 10.83 AS srm_detected
+FROM counts c
+JOIN expected e USING (variant);
+```
+
+With 50,400 and 49,200: the expected count per arm is 49,800, chi-square = 2 × 600² / 49,800 ≈ 14.5, well past the 10.83 threshold. I use a strict p below 0.001 for SRM because the check runs on every experiment and I don't want false alarms.
+
+**If there's SRM, don't read the results.** SRM means something removed users from one arm non-randomly: the new variant crashes on some devices so the assignment event never gets logged, a redirect drops tracking, bots get filtered differently, a CDN cache serves one arm more often. Any of those makes the two groups incomparable — and the metric difference could be entirely due to it.
+
+### Reading results: z-test and confidence interval
+
+```sql
+WITH assignment AS (
+  SELECT DISTINCT ON (user_id) user_id, variant, assigned_at
+  FROM experiment_assignments
+  WHERE experiment_key = 'checkout_one_page'
+    AND assigned_at < now() - INTERVAL '7 days'   -- only users with a full 7 days
+  ORDER BY user_id, assigned_at
+),
+outcome AS (
+  SELECT
+    a.variant,
+    EXISTS (
+      SELECT 1 FROM events_clean e
+      WHERE e.user_id = a.user_id
+        AND e.event_name = 'order_completed'
+        AND e.occurred_at >= a.assigned_at
+        AND e.occurred_at <  a.assigned_at + INTERVAL '7 days'
+    ) AS converted
+  FROM assignment a
+),
+ab AS (
+  SELECT
+    COUNT(*) FILTER (WHERE variant = 'control')                 AS n_a,
+    COUNT(*) FILTER (WHERE variant = 'control' AND converted)   AS x_a,
+    COUNT(*) FILTER (WHERE variant = 'treatment')               AS n_b,
+    COUNT(*) FILTER (WHERE variant = 'treatment' AND converted) AS x_b
+  FROM outcome
+),
+rates AS (
+  SELECT *,
+    x_a::numeric / n_a AS p_a,
+    x_b::numeric / n_b AS p_b,
+    (x_a + x_b)::numeric / (n_a + n_b) AS p_pool
+  FROM ab
+)
+SELECT
+  n_a, n_b,
+  ROUND(p_a, 4) AS p_a,
+  ROUND(p_b, 4) AS p_b,
+  ROUND(p_b - p_a, 4) AS diff,
+  ROUND((p_b - p_a) / sqrt(p_pool * (1 - p_pool) * (1.0 / n_a + 1.0 / n_b)), 2) AS z,
+  ROUND((p_b - p_a) - 1.96 * sqrt(p_a * (1 - p_a) / n_a + p_b * (1 - p_b) / n_b), 4) AS ci95_low,
+  ROUND((p_b - p_a) + 1.96 * sqrt(p_a * (1 - p_a) / n_a + p_b * (1 - p_b) / n_b), 4) AS ci95_high
+FROM rates;
+```
+
+An absolute `z` above 1.96 corresponds to a two-sided p-value below 0.05. But I read the **confidence interval** before the p-value: "B lifts conversion by somewhere between 0.1 and 0.9 percentage points" tells a decision-maker far more than "p = 0.03". And it forces the real question: even at the lower bound, is this effect worth the cost of maintaining the feature?
+
+What a p-value does **not** tell you: it isn't the probability that B is better than A, and "not statistically significant" doesn't mean "no effect" — the experiment may just not have had enough people to see it.
+
+### The peeking problem
+
+A familiar scene: the experiment dashboard updates daily, someone sees the p-value dip below 0.05 on day 4 and proposes stopping early "because we've won". The problem: the 5% threshold only holds if you look **once**, at a sample size fixed in advance. Every look where you're willing to stop is another chance for random noise to cross the line. Checking daily for a few weeks and stopping the first time it's "significant" pushes the false positive rate several times above 5%, even when A and B are identical.
+
+Honest ways to handle it:
+
+1. **Fix the sample size and duration up front.** Watch the dashboard to catch incidents (SRM, crashes, collapsing guardrails), but only decide on the primary metric once the sample is complete.
+2. **Use methods designed for continuous monitoring**: group sequential tests with strict stopping boundaries at early looks (O'Brien-Fleming style), or always-valid p-values / sequential confidence intervals, which many experimentation platforms now offer. They allow controlled early stopping in exchange for needing somewhat more data if the test runs to the end.
+3. **Stopping early for a guardrail is always allowed**: if payment errors spike, kill the experiment right away, no significance required.
+
+<Callout type="warning" title="One primary metric, declared in advance">
+  Look at 20 metrics and report whichever is "significant", and on average you'll find about one even if the change does nothing. Declare the primary metric and guardrails in the experiment doc **before** it starts; every other metric is exploratory and needs another experiment to confirm. Slicing results into 10 segments and telling the story of the winning one is the same trap.
+</Callout>
+
+Two advanced techniques worth knowing by name once the basics are solid: **CUPED**, which uses each user's pre-experiment data to reduce variance so you need fewer samples; and the **delta method**, for correct standard errors on ratio metrics such as revenue per session when randomizing by user.
+
+## Mistakes I keep seeing
+
+**"Active" means `app_opened`.** Push notifications and background activity inflate DAU. Define active by valuable actions.
+
+**Adding DAUs into WAU, WAUs into MAU.** Distinct counts don't add up. Recompute over the window.
+
+**Integer division.** `COUNT(a) / COUNT(b)` in PostgreSQL returns 0. Multiply by `100.0` or cast to `::numeric` before dividing.
+
+**Conditions in `WHERE` after a `LEFT JOIN`.** It turns the left join into an inner join and deletes exactly the people you wanted to count as dropping out of the funnel.
+
+**Reporting unfinished weeks and immature cohorts.** The current week always looks like it's collapsing. Mark provisional data, or don't show it.
+
+**The BI session's timezone.** A connection set to UTC moves everything between midnight and 7 a.m. to the previous day.
+
+**Changing tracking without versioning.** Rename an event, change when it fires, add a screen that fires the same event again — and the chart jumps with nobody knowing why. The tracking plan has a changelog; dashboards get annotations on change dates.
+
+**Reading A/B results before checking SRM, and stopping as soon as it's green.** Those two habits have produced more unrepeatable "wins" than every SQL bug combined.
+
+**A 200-line query that only lives in the BI tool.** No review, no tests, no versioning. Move metric logic into views or models in the repo (dbt, or just SQL files) so dashboards only `SELECT` from them.
+
+## Summary
+
+<Checklist>
+
+- Every important metric has a written definition: unit, numerator, denominator, a time window anchored per person, timezone, week start, exclusions, maturity, owner and changelog.
+- Pick a north star that measures the value customers receive, a few input metrics teams move directly, and guardrails for every optimization.
+- Keep the tracking plan in the repo: `object_action` past-tense names, typed properties with units, validation at ingestion; revenue events come from the server.
+- Have an explicit identity strategy: `anonymous_id`, `user_id`, a mapping table, and the accepted error written down.
+- Analyses read from `events_clean`: dedup by `event_id`, stitched identity, internal users excluded, future timestamps clamped.
+- Always use `AT TIME ZONE 'Asia/Ho_Chi_Minh'` or the three-argument `date_trunc`; filter with half-open ranges on the raw column; never write `'UTC+7'`; join a calendar spine for empty days.
+- Recompute WAU/MAU over a trailing window instead of adding DAUs; read stickiness with its numerator and denominator.
+- Funnels: strict order, window anchored to the first step, conditions in `ON`, `COUNT(column)`, multiply by `100.0` before dividing, wait for cohorts to mature.
+- Cohorts: read down columns, unobserved cells are `NULL` not 0, distinguish classic from rolling retention.
+- Window functions: add a tie-breaker for determinism, spell out `ROWS` frames, remember `LAG` is the previous row, not the previous day.
+- Before concluding: check denominator composition (Simpson), define groups at the start (survivorship), keep units consistent, compute rates from totals.
+- A/B tests: compute sample size first, randomize and measure per user, run whole weeks, check SRM before reading results, declare one primary metric up front, read the confidence interval, and don't stop early without a sequential method.
+
+</Checklist>

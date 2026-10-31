@@ -1,0 +1,782 @@
+---
+title: "Accessible Custom Widgets in React: ARIA Patterns That Actually Work"
+excerpt: "When native elements run out, ARIA is a contract you have to keep. The accessibility tree and name computation, roving tabindex vs aria-activedescendant, a combobox and tabs built step by step, live regions that really announce, focus on route changes, and how to test it all."
+---
+
+<Lead>Every design system I've worked on eventually grows a custom combobox, a tab strip and a "smart" dropdown — and almost every one of them shipped with a screen reader experience nobody on the team had ever heard. Not because people didn't care, but because ARIA looks like attributes you sprinkle on and turns out to be a contract you have to keep: every role you claim comes with keyboard behaviour, states and focus rules that the browser will *not* provide for you. This post is how I build custom widgets in React following the WAI-ARIA Authoring Practices: when not to build them at all, how the accessibility tree and accessible names really work, the two focus models, a combobox and tabs built step by step, live regions that actually speak, focus on route changes, and how I test all of it — including what to listen for in NVDA and VoiceOver.</Lead>
+
+## The first rule of ARIA is a budget, not a slogan
+
+The W3C's guidance on using ARIA opens with a rule everybody quotes and few teams apply: if a native HTML element or attribute already has the semantics and behaviour you need, use it instead of re-purposing an element and adding ARIA. The Authoring Practices Guide (APG) puts it even more bluntly in its "read me first" section: no ARIA is better than bad ARIA.
+
+The reason is mechanical, not philosophical. ARIA changes exactly one thing: **what the element reports to assistive technology**. It does not add focusability, it does not add keyboard handling, it does not make a `div` submit a form. Write `role="button"` on a `div` and you have made a promise to screen reader users — "this is a button, Enter and Space will activate it" — that your code now has to keep, by hand, forever.
+
+So I treat every ARIA role as a cost I'm signing up for, and I check the native list first:
+
+| Need | Native first | What you get for free | When custom is justified |
+| --- | --- | --- | --- |
+| Action | `<button>` | Focus, Enter and Space, `disabled`, form submit | Practically never |
+| Show/hide section | `<details>` / `<summary>` | Expanded state, keyboard, find-in-page | Rarely; `name` even gives you exclusive accordions |
+| Pick one from a short list | `<select>` | Keyboard, typeahead, mobile pickers | Rich option content, async search |
+| Free text with suggestions | `<input list>` + `<datalist>` | Suggestion UI | You need filtering control, async results, styling |
+| Modal | `<dialog>` + `showModal()` | Top layer, inert background, Esc | Almost never — see [Accessible modal dialogs](/blog/accessible-modal-dialogs) |
+| Floating panel | `popover` attribute | Top layer, light dismiss | The *role* inside is still yours to get right |
+| Tabs | none | — | Build it |
+| Filterable combobox | none that's styleable and async | — | Build it |
+
+Two notes on that table. First, `<select>` is becoming far more styleable: Chromium ships customizable select (`appearance: base-select`), which lets you put rich content in options while keeping native behaviour. Check support for your audience before you rely on it, but it's worth re-evaluating every custom "select" you own. Second, the last two rows are where most teams genuinely need ARIA, and they're what the rest of this post builds.
+
+<Callout type="note" title="Scope">
+Dialogs have their own post: [Accessible modal dialogs](/blog/accessible-modal-dialogs) covers `showModal()`, the top layer, initial focus, returning focus and `inert`. I won't repeat any of that here — this post is about widgets that live *inside* the page: comboboxes, tabs, toolbars and the announcements around them.
+</Callout>
+
+## The accessibility tree and how names are computed
+
+Screen readers don't read your DOM. The browser builds a parallel structure — the **accessibility tree** — and exposes it through platform APIs (UI Automation and IAccessible2 on Windows, NSAccessibility on macOS, AT-SPI on Linux). Each node has, roughly:
+
+- a **role** (button, combobox, option, tab, heading…),
+- an **accessible name** ("Delete invoice INV-2041"),
+- an optional **description**,
+- **states and properties** (expanded, selected, checked, disabled, level, position in set),
+- and relationships (controls, active descendant, labelled by).
+
+Plenty of DOM never makes it into the tree: `display: none`, `hidden`, `aria-hidden="true"` subtrees, and generic `div`s and `span`s that contribute only their text. You can — and should — look at the tree directly. Chrome and Edge have an Accessibility pane in the Elements panel with a full-tree view; Firefox has a dedicated Accessibility Inspector. When a widget "doesn't work with screen readers", the first thing I do is check whether role, name and state in that pane are what I expect. Half the time the bug is visible right there.
+
+### Accessible name computation, the parts that matter
+
+The algorithm is specified in *Accessible Name and Description Computation* (accname). It has a lot of edge cases, but the precedence you need day to day is:
+
+1. **`aria-labelledby`** — wins over everything. It can point at multiple IDs (concatenated in order) and even at hidden elements.
+2. **`aria-label`** — a string directly on the element.
+3. **Native labelling** — `<label for>`, `alt` on images, `<caption>` for tables, `<legend>` for fieldsets, `<title>` inside SVG.
+4. **Name from content** — only for roles that allow it: buttons, links, options, tabs, headings, cells and a few more. A `div` with `role="dialog"` does *not* take its name from its contents.
+5. **Fallbacks** — `title`, and for inputs `placeholder`. Treat these as "something went wrong", not as labelling.
+
+Practical consequences that show up in code review:
+
+```tsx
+// ❌ aria-label on an element with no role: a generic div can't be named,
+// so most screen readers ignore this label entirely.
+<div aria-label="Revenue chart">{chart}</div>
+
+// ✅ Give it a role that supports a name, or use a real element.
+<figure aria-labelledby="revenue-title">
+  <h2 id="revenue-title">Revenue, last 12 months</h2>
+  {chart}
+</figure>
+
+// ✅ Icon-only button: the name comes from aria-label, the icon is decoration.
+<button type="button" aria-label="Delete invoice INV-2041" onClick={onDelete}>
+  <TrashIcon aria-hidden="true" />
+</button>
+
+// ❌ Visible text "Send" but accessible name "Submit form":
+// voice control users say "click Send" and nothing happens.
+<button aria-label="Submit form">Send</button>
+```
+
+That last one is a real WCAG failure (2.5.3 *Label in Name*): when a control has visible text, the accessible name must contain it. `aria-label` *replaces* content, so the rule of thumb is: if there's visible text, don't override it — add context with `aria-describedby` instead.
+
+### Role, name, state: the minimum contract
+
+For every custom widget I write down three things before I write code: which **role** each part has, where each part's **name** comes from, and which **states** change at runtime. If I can't fill in that table from the APG pattern, I'm not ready to build it.
+
+| Part | Role | Name from | States that change |
+| --- | --- | --- | --- |
+| Text input | `combobox` | `<label for>` | `aria-expanded`, `aria-activedescendant` |
+| Popup | `listbox` | `aria-label` or `aria-labelledby` | visibility (`hidden`) |
+| Each item | `option` | content | `aria-selected` |
+| Result count | `status` | — | text content |
+
+## Two focus models: roving tabindex vs aria-activedescendant
+
+Composite widgets — tab lists, toolbars, listboxes, grids, trees — follow one rule from the APG: **the whole widget is one Tab stop, and arrow keys move inside it**. Tab moves between widgets; arrows move between items. There are two ways to implement "moving inside".
+
+### Roving tabindex
+
+Exactly one item has `tabIndex={0}`; all others have `tabIndex={-1}`. Arrow keys move real DOM focus with `element.focus()` and shift the `0` along. Because focus really moves, the browser scrolls the item into view, `:focus-visible` styles apply, and screen readers announce the newly focused element natively.
+
+```tsx
+// hooks/use-roving-focus.ts
+import { useRef, useState, type KeyboardEvent } from "react";
+
+type Orientation = "horizontal" | "vertical";
+
+export function useRovingFocus(count: number, orientation: Orientation = "horizontal") {
+  const [current, setCurrent] = useState(0);
+  const refs = useRef<(HTMLElement | null)[]>([]);
+
+  const move = (index: number) => {
+    const next = (index + count) % count; // wrap around
+    setCurrent(next);
+    refs.current[next]?.focus();
+  };
+
+  const prevKey = orientation === "horizontal" ? "ArrowLeft" : "ArrowUp";
+  const nextKey = orientation === "horizontal" ? "ArrowRight" : "ArrowDown";
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    const handlers: Record<string, () => void> = {
+      [prevKey]: () => move(current - 1),
+      [nextKey]: () => move(current + 1),
+      Home: () => move(0),
+      End: () => move(count - 1),
+    };
+    const handler = handlers[event.key];
+    if (!handler) return;
+    event.preventDefault(); // stop the page from scrolling
+    handler();
+  };
+
+  const itemProps = (index: number) => ({
+    ref: (el: HTMLElement | null) => {
+      refs.current[index] = el;
+    },
+    tabIndex: index === current ? 0 : -1,
+    onFocus: () => setCurrent(index), // keep state in sync with mouse clicks
+  });
+
+  return { onKeyDown, itemProps };
+}
+```
+
+```tsx
+// components/editor-toolbar.tsx
+export function EditorToolbar() {
+  const { onKeyDown, itemProps } = useRovingFocus(3);
+  return (
+    <div role="toolbar" aria-label="Text formatting" onKeyDown={onKeyDown}>
+      <button type="button" aria-pressed={bold} {...itemProps(0)} onClick={toggleBold}>Bold</button>
+      <button type="button" aria-pressed={italic} {...itemProps(1)} onClick={toggleItalic}>Italic</button>
+      <button type="button" {...itemProps(2)} onClick={insertLink}>Link</button>
+    </div>
+  );
+}
+```
+
+### aria-activedescendant
+
+DOM focus stays on **one container element** (often a text input) for the entire interaction. The "current" item is indicated by setting `aria-activedescendant` on the focused element to the `id` of that item. Nothing else moves. The browser tells assistive technology "focus is logically on that option", the screen reader announces it, and your CSS has to draw the highlight — `:focus-visible` won't apply to the option because it isn't focused.
+
+This is the only sane model for an editable combobox: the user must be able to keep typing while they arrow through suggestions, so focus *cannot* leave the input.
+
+### Choosing between them
+
+| | Roving tabindex | `aria-activedescendant` |
+| --- | --- | --- |
+| Where DOM focus is | On the item | On the container / input |
+| Scroll into view | Automatic | You call `scrollIntoView` |
+| Focus styles | `:focus-visible` works | Custom class or `[aria-selected]` styling |
+| Item must be focusable | Yes (`tabIndex`) | No, but must exist in the DOM with an `id` |
+| Typing while navigating | No | Yes |
+| Virtualized lists | Hard (focused node may unmount) | Works if the active item stays rendered |
+| Screen reader consistency | Very good everywhere | Good, but test VoiceOver specifically |
+| Typical widgets | Tabs, toolbar, radio group, menu, tree | Combobox, listbox with filter, grid with editing |
+
+My default is roving tabindex, because real focus is the most robust signal there is. I switch to `aria-activedescendant` only when focus genuinely has to stay put — which, in practice, means comboboxes.
+
+## Building tabs step by step
+
+Tabs are the best first custom widget: small, well specified, and they exercise roving tabindex, ID wiring and `hidden` panels.
+
+### The structure
+
+The APG pattern is:
+
+- A container with `role="tablist"` and a name (`aria-label` or `aria-labelledby`).
+- Each tab is a `button` with `role="tab"`, `aria-selected`, and `aria-controls` pointing at its panel.
+- Each panel has `role="tabpanel"` and `aria-labelledby` pointing back at its tab.
+- Only the selected tab is in the Tab sequence (`tabIndex={0}`); the others have `-1`.
+- Left/Right move between tabs (Up/Down if the list is vertical, with `aria-orientation="vertical"`); Home/End jump to the ends.
+
+### Automatic vs manual activation
+
+The APG describes two flavours. With **automatic activation**, moving focus to a tab also selects it and shows its panel. With **manual activation**, arrows only move focus; Enter or Space selects. Automatic is nicer when panels are instant. If showing a panel triggers a network request or a heavy render, use manual — otherwise a keyboard user arrowing from tab 1 to tab 5 fires four requests they never wanted.
+
+### The component
+
+```tsx
+// components/tabs.tsx
+"use client";
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+
+type TabItem = { id: string; label: string; content: ReactNode };
+
+type TabsProps = {
+  label: string;
+  tabs: TabItem[];
+  activation?: "automatic" | "manual";
+};
+
+export function Tabs({ label, tabs, activation = "automatic" }: TabsProps) {
+  const baseId = useId();
+  const [selected, setSelected] = useState(0);
+  const [focused, setFocused] = useState(0);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const tabId = (t: TabItem) => `${baseId}-tab-${t.id}`;
+  const panelId = (t: TabItem) => `${baseId}-panel-${t.id}`;
+
+  function focusTab(index: number) {
+    const next = (index + tabs.length) % tabs.length;
+    setFocused(next);
+    tabRefs.current[next]?.focus();
+    if (activation === "automatic") setSelected(next);
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const actions: Record<string, () => void> = {
+      ArrowRight: () => focusTab(focused + 1),
+      ArrowLeft: () => focusTab(focused - 1),
+      Home: () => focusTab(0),
+      End: () => focusTab(tabs.length - 1),
+    };
+    const action = actions[event.key];
+    if (!action) return;
+    event.preventDefault();
+    action();
+  }
+
+  return (
+    <div className="tabs">
+      <div role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+        {tabs.map((tab, i) => (
+          <button
+            key={tab.id}
+            ref={(el) => {
+              tabRefs.current[i] = el;
+            }}
+            type="button"
+            role="tab"
+            id={tabId(tab)}
+            aria-selected={i === selected}
+            aria-controls={panelId(tab)}
+            // The *selected* tab is the Tab stop, so Shift+Tab back into
+            // the list lands on what's showing, not on where you last arrowed.
+            tabIndex={i === selected ? 0 : -1}
+            onFocus={() => setFocused(i)}
+            // Enter/Space on a <button> fire click natively: manual mode is free.
+            onClick={() => setSelected(i)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {tabs.map((tab, i) => (
+        <div
+          key={tab.id}
+          role="tabpanel"
+          id={panelId(tab)}
+          aria-labelledby={tabId(tab)}
+          hidden={i !== selected}
+          // Lets keyboard users reach a panel that has no focusable content.
+          tabIndex={0}
+        >
+          {tab.content}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+Details that matter more than they look:
+
+- **`button` underneath `role="tab"`.** You get Enter and Space activation, focusability and correct disabled behaviour without writing a single key handler for them.
+- **`useId` for every ID.** Two instances on one page must never share IDs; `aria-controls` and `aria-labelledby` that point at the wrong element are worse than missing.
+- **Render all panels, hide with `hidden`.** `aria-controls` must point at an element that exists. If panels are expensive, render them lazily on first selection but keep the element.
+- **`tabIndex={0}` on the panel** is in the APG for panels whose first content isn't focusable. If every panel starts with a form field, you can drop it.
+
+<Callout type="tip" title="Tabs are not navigation">
+If clicking a "tab" changes the URL and loads a different page, it's navigation, not a tab widget. Use a `nav` with links and mark the current one with `aria-current="page"`. Screen reader users then get link semantics, middle-click works, and nobody expects arrow keys to do anything.
+</Callout>
+
+## Building a combobox step by step
+
+This is the widget teams get wrong most often, partly because the ARIA pattern changed: ARIA 1.0 and 1.1 had different structures (1.1 put `role="combobox"` on a wrapper and used `aria-owns`), and plenty of blog posts and libraries still copy those. The current pattern, from ARIA 1.2 and the APG, puts the role on the input itself.
+
+### The structure
+
+- The **`input`** has `role="combobox"`, a real `<label>`, `aria-expanded`, `aria-controls` pointing at the popup, and `aria-autocomplete="list"` (suggestions are filtered by what you type).
+- The **popup** is a `ul` with `role="listbox"` and its own name.
+- Each **item** is an `li` with `role="option"`, a unique `id`, and `aria-selected="true"` on the one that's currently highlighted.
+- While an option is highlighted, the input's **`aria-activedescendant`** holds that option's `id`. When nothing is highlighted, the attribute is removed.
+
+<Figure src="/blog/accessible-aria-widget-patterns-combobox.svg" alt="State map of an editable combobox. Three states: Collapsed with aria-expanded false and no active descendant; Open with aria-expanded true and no active descendant; Option active with aria-expanded true and aria-activedescendant pointing at an option. Typing or Alt+Down goes from Collapsed to Open; Down or Up from Collapsed opens directly on the first or last option; Down and Up move from Open to Option active; typing refilters and returns to Open; Escape, Tab or blur collapse; Enter commits the active option, fills the input and collapses. Bottom notes: DOM focus always stays on the input, option clicks prevent default on mousedown, and a polite status region announces the result count." caption="The whole combobox is three states and a handful of keys. Focus never leaves the input; the active option is a virtual cursor expressed through aria-activedescendant." />
+
+### The keyboard map
+
+This is the APG map for an editable combobox with list autocomplete, trimmed to what I actually implement:
+
+| Key | Collapsed | Expanded |
+| --- | --- | --- |
+| Typing | Filters and opens the list, no option active | Filters, clears the active option |
+| ↓ | Opens, activates the first option | Next option (wrap is optional) |
+| ↑ | Opens, activates the last option | Previous option |
+| Alt + ↓ | Opens without activating anything | — |
+| Enter | Nothing (or submits the surrounding form) | Commits the active option, collapses |
+| Escape | Clears the input (optional) | Collapses, keeps the typed text |
+| Tab | Normal focus move | Collapses, moves focus normally |
+| Home / End | Move the caret in the input | Move the caret in the input |
+
+Note the last row. Home and End belong to the text field in an editable combobox — hijacking them to jump to the first option breaks editing, and I've seen that "improvement" land in code review more than once.
+
+### The component
+
+```tsx
+// components/combobox.tsx
+"use client";
+import { useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+
+export type ComboOption = { id: string; label: string };
+
+type ComboboxProps = {
+  label: string;
+  options: ComboOption[];
+  onSelect: (option: ComboOption) => void;
+};
+
+export function Combobox({ label, options, onSelect }: ComboboxProps) {
+  const baseId = useId();
+  const inputId = `${baseId}-input`;
+  const listboxId = `${baseId}-listbox`;
+  const optionDomId = (option: ComboOption) => `${baseId}-opt-${option.id}`;
+
+  const [value, setValue] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+
+  const filtered = useMemo(() => {
+    const q = value.trim().toLowerCase();
+    return q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options;
+  }, [options, value]);
+
+  const expanded = open && filtered.length > 0;
+  const active = expanded && activeIndex >= 0 ? filtered[activeIndex] : undefined;
+
+  function openAt(index: number) {
+    setOpen(true);
+    setActiveIndex(index);
+  }
+
+  function close() {
+    setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  function commit(option: ComboOption) {
+    setValue(option.label);
+    close();
+    onSelect(option);
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    const last = filtered.length - 1;
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault(); // otherwise the caret jumps to the end
+        if (!expanded) return openAt(event.altKey ? -1 : 0);
+        return setActiveIndex((i) => (i >= last ? 0 : i + 1));
+      case "ArrowUp":
+        event.preventDefault();
+        if (!expanded) return openAt(last);
+        return setActiveIndex((i) => (i <= 0 ? last : i - 1));
+      case "Enter":
+        if (active) {
+          event.preventDefault(); // don't submit the form on commit
+          commit(active);
+        }
+        return;
+      case "Escape":
+        if (expanded) {
+          event.preventDefault();
+          event.stopPropagation(); // first Esc closes the list, not the dialog around us
+          close();
+        } else if (value) {
+          setValue("");
+        }
+        return;
+      case "Tab":
+        close();
+        return;
+    }
+  }
+
+  // aria-activedescendant doesn't scroll anything: we have to.
+  useEffect(() => {
+    if (!active) return;
+    document.getElementById(optionDomId(active))?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  return (
+    <div className="combobox">
+      <label htmlFor={inputId}>{label}</label>
+      <input
+        id={inputId}
+        type="text"
+        role="combobox"
+        aria-expanded={expanded}
+        aria-controls={listboxId}
+        aria-autocomplete="list"
+        aria-activedescendant={active ? optionDomId(active) : undefined}
+        autoComplete="off"
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          openAt(-1); // typing never auto-activates an option
+        }}
+        onKeyDown={onKeyDown}
+        onBlur={close}
+      />
+      <ul id={listboxId} role="listbox" aria-label={label} hidden={!expanded}>
+        {filtered.map((option) => (
+          <li
+            key={option.id}
+            id={optionDomId(option)}
+            role="option"
+            aria-selected={option === active}
+            // Keep DOM focus in the input; otherwise blur closes the list
+            // before the click lands, and the screen reader loses its place.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => commit(option)}
+          >
+            {option.label}
+          </li>
+        ))}
+      </ul>
+      <ResultCount open={open} count={filtered.length} />
+    </div>
+  );
+}
+
+function ResultCount({ open, count }: { open: boolean; count: number }) {
+  const message = !open ? "" : count === 0 ? "No results." : `${count} results available.`;
+  // Don't announce on every keystroke; wait until the user pauses.
+  const debounced = useDebouncedValue(message, 500);
+  return (
+    <div role="status" className="sr-only">
+      {debounced}
+    </div>
+  );
+}
+```
+
+```ts
+// hooks/use-debounced-value.ts
+import { useEffect, useState } from "react";
+
+export function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(t);
+  }, [value, delayMs]);
+  return debounced;
+}
+```
+
+### What this code is quietly getting right
+
+- **Typing resets the active option to none.** Auto-highlighting the first match feels helpful, but then Enter commits something the user never chose, and the screen reader starts reading options while they're still typing. If you want inline completion, that's `aria-autocomplete="both"` with selected text in the input — a different, harder pattern.
+- **`aria-selected` follows the highlight.** In a combobox listbox, the option referenced by `aria-activedescendant` is the one marked selected. Style the highlight from `[aria-selected="true"]` so the visual and the semantic state can't drift apart.
+- **`hidden` when collapsed**, so collapsed options aren't in the accessibility tree and `aria-controls` still points at a real element.
+- **`onMouseDown` with `preventDefault`** is the single most important line for mouse users. Without it, pressing on an option blurs the input, `onBlur` closes the list, and the click hits nothing.
+- **The live region is always mounted** and only its text changes. More on why in the next section.
+- **Escape with `stopPropagation`** only when the key was actually consumed. If the combobox lives inside a dialog, the first Escape should close the list; the second should close the dialog.
+
+### Async options and virtualization
+
+Two production complications:
+
+**Async results.** Keep the same structure; while loading, keep the listbox open with whatever you have and set the status text to "Loading…" only if the request takes noticeably long. Ignore stale responses (an `AbortController` per query is the cleanest way), otherwise results for "vi" can arrive after results for "viet" and overwrite them.
+
+**Virtualized lists.** `aria-activedescendant` must point at an element that **exists in the DOM**. If your virtualizer unmounts the active option when it scrolls off-screen, the reference dangles and screen readers go silent. Make sure the active index is always in the rendered window (scroll the virtualizer to it first), and add `aria-setsize` and `aria-posinset` to each option so "4 of 230" is announced correctly even though only twenty options exist in the DOM.
+
+<Callout type="warning" title="The bug I've shipped myself">
+An early combobox of mine moved real focus into the list on ↓ — roving tabindex on the options. Sighted keyboard users were fine. NVDA users heard the option, then pressed a letter to refine the search… and the letter went to the listbox, not the input. Their query was gone. The editable combobox pattern exists precisely because focus must stay in the text field. If your combobox moves focus to options, it's not an editable combobox; it's a listbox in a popup, and it needs a different keyboard contract.
+</Callout>
+
+## Live regions done right
+
+A live region is an element whose content changes get announced without focus moving there. They're how a screen reader user learns "3 results available", "Saved", or "Payment failed".
+
+### polite, assertive, status and alert
+
+| Markup | Behaviour | Use for |
+| --- | --- | --- |
+| `role="status"` | Polite, atomic by default | Result counts, "Saved", progress milestones |
+| `aria-live="polite"` | Waits until the user is idle | Non-urgent updates |
+| `role="alert"` | Assertive, atomic | Errors that block the user's task |
+| `aria-live="assertive"` | Interrupts current speech | Very rarely — real emergencies only |
+| `role="log"` | Polite, additions only | Chat messages, activity feeds |
+
+Assertive interrupts whatever the screen reader is saying — including the label of the field the user just tabbed into. I use it for one thing: an error that means the action the user just took did not happen. Everything else is polite.
+
+### The pitfalls that make regions silent
+
+1. **The region must exist before the content changes.** Screen readers watch regions they already know about. If you render `{saved && <div role="status">Saved</div>}`, the region and its text appear at the same moment and most combinations announce nothing. Mount the empty region with the page; change only its text.
+2. **Identical text isn't a change.** "Saved" followed by "Saved" is no mutation, so nothing is announced the second time. Clear the region first, then set the message on the next tick.
+3. **Too much, too often.** A live region on a whole results container reads every card. Announce a summary ("12 results"), not the content.
+4. **`display: none` regions are not in the tree.** Hide live regions visually with an `sr-only` class (clip, 1px size), never with `display: none` or `hidden`.
+5. **Toasts are live regions too.** If a toast disappears after three seconds and contains a "Undo" button, keyboard and screen reader users mostly can't reach it in time. Announce the message; put the action somewhere persistent.
+
+### A small announcer
+
+For app-wide messages I keep one pair of regions at the root and expose a hook:
+
+```tsx
+// components/announcer.tsx
+"use client";
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+
+type Politeness = "polite" | "assertive";
+type Announce = (message: string, politeness?: Politeness) => void;
+
+const AnnounceContext = createContext<Announce>(() => {});
+
+export function Announcer({ children }: { children: ReactNode }) {
+  const [messages, setMessages] = useState<Record<Politeness, string>>({ polite: "", assertive: "" });
+  const timers = useRef<Partial<Record<Politeness, ReturnType<typeof setTimeout>>>>({});
+
+  const announce = useCallback<Announce>((message, politeness = "polite") => {
+    // Clear first so repeating the same message is still a change.
+    setMessages((m) => ({ ...m, [politeness]: "" }));
+    clearTimeout(timers.current[politeness]);
+    timers.current[politeness] = setTimeout(() => {
+      setMessages((m) => ({ ...m, [politeness]: message }));
+    }, 100);
+  }, []);
+
+  return (
+    <AnnounceContext value={announce}>
+      {children}
+      <div role="status" className="sr-only">
+        {messages.polite}
+      </div>
+      <div aria-live="assertive" aria-atomic="true" className="sr-only">
+        {messages.assertive}
+      </div>
+    </AnnounceContext>
+  );
+}
+
+export const useAnnounce = () => useContext(AnnounceContext);
+```
+
+```tsx
+// Usage in a form action
+const announce = useAnnounce();
+
+async function onSave(formData: FormData) {
+  const result = await saveProfile(formData);
+  if (result.ok) announce("Profile saved.");
+  else announce(`Couldn't save: ${result.message}`, "assertive");
+}
+```
+
+Keep the announcer for *global* messages. Widget-specific regions, like the combobox result count, belong next to the widget so they mount and unmount with it.
+
+<Callout type="note" title="ariaNotify">
+There's an in-progress proposal for an `ariaNotify()` method that lets you ask the screen reader to speak a string without a DOM region at all. It's promising, but support is limited at the time of writing — feature-detect it and keep the region as the fallback.
+</Callout>
+
+## Focus management on route changes
+
+In a classic multi-page site, every navigation loads a new document: focus resets to the top, and the screen reader announces the new page title. In a client-side router none of that happens by default. The URL changes, the content swaps, and focus stays on the link you clicked — which might not even exist anymore, in which case focus quietly falls back to `body`.
+
+There are two separate problems here: **announcing** that the page changed, and **placing focus** somewhere sensible.
+
+### Announcing
+
+Next.js's App Router includes a route announcer: after a client-side navigation it announces the new page's title (falling back to the first `h1` or the path). That covers the "where am I" part — as long as every route sets a meaningful, unique `title`. A site where every page is titled "Dashboard" announces "Dashboard" forever.
+
+### Placing focus
+
+Focus behaviour after navigation differs across routers and versions, so I don't assume — I verify by clicking a link with the keyboard and pressing Tab once: where do I land? If the answer is "the second link in the header" or "the top of the page", I add an explicit handler. My default target is the new page's `h1`:
+
+```tsx
+// app/route-focus.tsx
+"use client";
+import { usePathname } from "next/navigation";
+import { useEffect, useRef } from "react";
+
+export function RouteFocus() {
+  const pathname = usePathname();
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    // Never steal focus on the initial page load.
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    const target =
+      document.querySelector<HTMLElement>("main h1") ?? document.querySelector<HTMLElement>("main");
+    if (!target) return;
+    // -1: focusable by script, not added to the Tab order.
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+  }, [pathname]);
+
+  return null;
+}
+```
+
+Trade-offs to be honest about:
+
+- **Only on pathname changes.** Changing a filter that updates `?sort=price` should *not* yank focus to the heading; the user is in the middle of a task.
+- **Streaming and Suspense.** If the `h1` arrives later in a streamed segment, the effect may run before it exists. In that case, focus from inside the page component once its heading has rendered, or fall back to `main`.
+- **Heading vs `main` vs skip link.** Focusing the `h1` gives screen reader users an immediate "you are here" and keyboard users a starting point right at the content. Some teams prefer focusing a visually hidden "skip to content" link at the top; either is defensible — leaving focus on a stale link is not.
+- **Don't draw a giant focus ring on headings.** Use `:focus-visible` and a subtle style for `[tabindex="-1"]:focus`; programmatic focus on a heading isn't something users need outlined like a button.
+
+### Focus loss inside the page
+
+The same bug appears at a smaller scale whenever you remove the element that has focus: deleting a row, closing an inline editor, dismissing a toast with its own close button. Focus drops to `body` and keyboard users start again from the top. Decide where focus goes *before* removing the element — the next row, the previous row, or the list heading when the list becomes empty.
+
+## Testing: what automation catches and what it doesn't
+
+I use three layers, and each catches things the others can't.
+
+### Role-based queries in Testing Library
+
+Testing Library's `getByRole` queries the same role and accessible name a screen reader would see — computed by its own implementation of the accname algorithm, not by a real browser, but close enough to catch wiring mistakes. If your test can find `getByRole("combobox", { name: "Country" })`, your label works. If it can't, neither can a screen reader user.
+
+```tsx
+// components/combobox.test.tsx
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, test, vi } from "vitest";
+import { Combobox } from "./combobox";
+
+const COUNTRIES = [
+  { id: "vn", label: "Vietnam" },
+  { id: "th", label: "Thailand" },
+  { id: "jp", label: "Japan" },
+];
+
+test("keyboard flow follows the combobox contract", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  render(<Combobox label="Country" options={COUNTRIES} onSelect={onSelect} />);
+
+  const input = screen.getByRole("combobox", { name: "Country" });
+  expect(input).toHaveAttribute("aria-expanded", "false");
+  // A hidden listbox is not in the accessibility tree.
+  expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+  await user.type(input, "an");
+  expect(input).toHaveAttribute("aria-expanded", "true");
+  const listbox = screen.getByRole("listbox", { name: "Country" });
+  expect(within(listbox).getAllByRole("option")).toHaveLength(2); // Thailand, Japan
+  expect(input).not.toHaveAttribute("aria-activedescendant");
+
+  await user.keyboard("{ArrowDown}");
+  const first = screen.getByRole("option", { name: "Thailand" });
+  expect(input).toHaveAttribute("aria-activedescendant", first.id);
+  expect(first).toHaveAttribute("aria-selected", "true");
+  expect(input).toHaveFocus(); // focus never moved
+
+  await user.keyboard("{Enter}");
+  expect(onSelect).toHaveBeenCalledWith(COUNTRIES[1]);
+  expect(input).toHaveValue("Thailand");
+  expect(input).toHaveAttribute("aria-expanded", "false");
+});
+```
+
+Test the keyboard contract, not the implementation: which element has focus, what `aria-expanded` and `aria-activedescendant` say, and which callback fired. Those assertions survive refactors and fail exactly when a user would notice.
+
+### axe for the statically checkable
+
+axe-core catches the mechanical class of bugs: missing names, invalid ARIA attributes, IDs that `aria-controls` points at but don't exist, roles in places they aren't allowed, contrast. I run it in two places:
+
+```tsx
+// In component tests (vitest-axe or jest-axe expose the same API)
+import { axe } from "vitest-axe";
+
+test("open combobox has no axe violations", async () => {
+  const user = userEvent.setup();
+  const { container } = render(<Combobox label="Country" options={COUNTRIES} onSelect={() => {}} />);
+  await user.type(screen.getByRole("combobox"), "a");
+  expect(await axe(container)).toHaveNoViolations();
+});
+```
+
+```ts
+// e2e/a11y.spec.ts — Playwright against real pages and real browsers
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test } from "@playwright/test";
+
+test("checkout page", async ({ page }) => {
+  await page.goto("/checkout");
+  await page.getByRole("combobox", { name: "Country" }).fill("vi");
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag22aa"]).analyze();
+  expect(results.violations).toEqual([]);
+});
+```
+
+Scan the **open** state, not just the initial render — most combobox bugs only exist while the listbox is showing. And remember what axe can't know: it can't tell whether your arrow keys work, whether focus went somewhere sensible, or whether "3 results available" was ever spoken. A green axe run is a floor, not a verdict.
+
+Playwright's ARIA snapshots (`toMatchAriaSnapshot`) are a useful middle layer here: they assert on the accessibility tree a real browser computed, so an accidental role or name change shows up as a diff in review.
+
+### Manual screen reader testing
+
+Nothing replaces actually listening. My minimum matrix is **NVDA with Firefox or Chrome** on Windows and **VoiceOver with Safari** on macOS; add VoiceOver on iOS for anything mobile-heavy. Learn a handful of commands — NVDA's browse vs focus mode (NVDA+Space toggles), VoiceOver's VO keys and rotor — and run the same script every time:
+
+| Step | What you should hear (roughly) | Red flag |
+| --- | --- | --- |
+| Tab into the combobox | Label, "combo box", collapsed, editable | No label, or just "edit text" |
+| Type two letters | Characters echoed; after a pause, "N results available" | Silence, or every option read out |
+| Press ↓ | The option's name, and ideally "1 of N" | Nothing, or the input text repeated |
+| Press ↓ again | The next option | Same option again (stale `aria-activedescendant`) |
+| Press Enter | The committed value, "collapsed" | Form submitted, or nothing |
+| Tab to the tab list | Tab name, "tab", "selected", "1 of 4" | "button" instead of "tab" |
+| Arrow to next tab | Next tab, selected (automatic mode) | Focus jumps out of the list |
+| Navigate to another page | The new page title, then the `h1` | Nothing at all |
+
+Two practical tips. Turn on the speech viewer (NVDA) or caption panel (VoiceOver) so you can read what was spoken instead of trying to remember it. And test with the screen reader's *own* navigation too — heading navigation, form field lists, the rotor — not only with Tab. That's how real users move around, and it's where missing names and wrong roles become obvious.
+
+## Mistakes I see in code review
+
+**`role="button"` on a `div`, with `onClick` only.** No Tab stop, no Enter, no Space. Use `<button>`. If a design system component must render a `div`, it owes you `tabIndex={0}` and a key handler for both keys — and you'll still miss form semantics.
+
+**`role="menu"` for site navigation.** Menu roles promise an application-style menu with arrow keys and typeahead, and screen readers switch into a different interaction mode. A dropdown of links is a disclosure button plus a list of links.
+
+**`aria-hidden="true"` on something focusable.** The user can Tab to an element that, as far as their screen reader is concerned, doesn't exist. Use `inert` to remove a subtree from both focus and the tree.
+
+**Positive `tabIndex`.** `tabIndex={3}` reorders the whole page's Tab sequence. Only `0` and `-1` belong in application code.
+
+**Confusing the state attributes.** `aria-selected` for options and tabs, `aria-checked` for checkboxes and radios, `aria-pressed` for toggle buttons, `aria-current` for "the current item in a set" like the active nav link. They are not interchangeable and screen readers announce them differently.
+
+**Placeholder as the label.** It disappears on input, often fails contrast, and is only a last-resort fallback in name computation.
+
+**Live regions rendered conditionally.** They appear with their content already in place and announce nothing.
+
+**`aria-activedescendant` pointing at nothing.** Index-based IDs that go stale after filtering, or options removed by virtualization.
+
+**"axe is green, so we're accessible."** axe proves the absence of a class of mechanical errors. It says nothing about keyboard behaviour or what was announced.
+
+## Further reading
+
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/) — especially the Combobox, Tabs, Listbox and Toolbar patterns, and "Developing a Keyboard Interface".
+- [Accessible Name and Description Computation](https://www.w3.org/TR/accname-1.2/).
+- [Using ARIA](https://www.w3.org/TR/using-aria/) — the rules of ARIA use.
+- [Testing Library: ByRole](https://testing-library.com/docs/queries/byrole/) and [axe-core](https://github.com/dequelabs/axe-core).
+- [Accessible modal dialogs](/blog/accessible-modal-dialogs) — the companion post for dialogs.
+
+## Summary
+
+<Checklist>
+
+- Check the native element list first: `button`, `details`, `select`, `datalist`, `dialog`, `popover`. Every ARIA role is a keyboard and state contract you take on.
+- Before building, write down role, name source and changing states for every part of the widget; verify them in the browser's accessibility tree.
+- Names come from `aria-labelledby`, then `aria-label`, then native labels, then content for roles that allow it. Never name a generic `div`; never let `aria-label` contradict visible text.
+- Composite widgets are one Tab stop; arrows move inside. Default to roving tabindex; use `aria-activedescendant` when focus must stay in an input.
+- Tabs: `button` with `role="tab"`, `aria-selected`, `aria-controls`, `useId` IDs, the selected tab as Tab stop, manual activation when panels are expensive.
+- Combobox: `role="combobox"` on the input, `aria-expanded`, `aria-controls`, `aria-autocomplete="list"`, `aria-activedescendant` only while an option is active, Home/End left to the text field, `preventDefault` on option mousedown.
+- Live regions: mounted before they change, cleared before repeats, polite by default, assertive only for blocking errors, summaries instead of content.
+- On route changes: unique page titles for the announcer, focus moved to the `h1` (or `main`) on pathname changes only; decide where focus goes before removing a focused element.
+- Test the contract with `getByRole` and `user-event`, scan open states with axe, snapshot the tree with Playwright, and listen with NVDA and VoiceOver before shipping.
+
+</Checklist>

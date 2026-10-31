@@ -1,0 +1,558 @@
+---
+title: "Quản lý secret cho team nhỏ: từ file .env đến GitHub Actions OIDC và credential ngắn hạn"
+excerpt: "Thế nào là secret, file .env và token CI dài hạn thực sự bị lộ ra sao, làm gì trong giờ đầu tiên sau khi lộ, so sánh các kho secret, GitHub Actions OIDC sang AWS và GCP thay cho key tĩnh, xoay vòng secret không downtime, và validate env có kiểu trong monorepo Turborepo."
+---
+
+<Lead>Phần lớn các team mình từng tham gia không có *vấn đề* về secret — họ có *thói quen* về secret. Một file `.env` chuyền tay nhau qua Slack, một AWS access key tạo từ năm 2021 nằm trong GitHub Actions secrets với quyền admin, một Stripe key "để sau launch rồi xoay". Rất lâu không có chuyện gì xảy ra, và chính vì thế không có gì thay đổi. Rồi một chiếc laptop bị mất, một dependency bị chiếm quyền, hoặc ai đó chạy `console.log(process.env)` khi debug production, và cả team mới biết cái key đó đã lan ra bao nhiêu chỗ. Bài này là cách thiết lập mình giờ luôn đề xuất cho team nhỏ và vừa: coi cái gì là secret, secret thực sự lộ ra như thế nào, làm gì sau khi lộ, cất chúng ở đâu, và loại bỏ hẳn nhóm nguy hiểm nhất — cloud key dài hạn trong CI — bằng OIDC.</Lead>
+
+## Thế nào thì được coi là secret
+
+Secret là bất cứ thứ gì **cấp quyền truy cập hoặc chứng minh danh tính** nếu người khác có được nó. Phép thử thực tế mình dùng: "nếu giá trị này xuất hiện trong một repo GitHub public vào ngày mai, mình có phải đổi nó không?" Nếu có, đó là secret.
+
+| Secret (phải xoay nếu lộ) | Cấu hình nhạy cảm (không công khai, nhưng không phải credential) | Công khai theo thiết kế |
+| --- | --- | --- |
+| Database URL có mật khẩu | Hostname nội bộ, VPC ID | Stripe publishable key `pk_...` |
+| Cloud access key, file JSON của service account | Rule của feature flag | Write key analytics dành cho trình duyệt |
+| Secret ký session / cookie, private key ký JWT | Ngưỡng rate limit | OAuth client ID |
+| OAuth client secret, secret ký webhook | ID tài khoản bên thứ ba | Sentry DSN (có rate limit, chỉ ghi) |
+| API key bên thứ ba (Stripe `sk_`, OpenAI, Resend) | Cấu hình riêng từng khách hàng | Supabase anon key *khi* đã bật RLS |
+| Token publish npm / registry, GitHub PAT | | Firebase web config |
+| Khoá mã hoá, private key TLS, SSH key | | |
+
+Có hai nhóm hay khiến người ta vấp. Thứ nhất, **key "công khai" chỉ an toàn khi backend thực thi điều gì đó**: Supabase anon key ổn khi bật row-level security, và là một vụ rò rỉ dữ liệu khi tắt. Thứ hai, **connection string giấu mật khẩu bên trong**: `DATABASE_URL`, `REDIS_URL` hay `SENTRY_AUTH_TOKEN` hay bị coi là config vì trông giống URL hoặc ID.
+
+<Callout type="tip" title="Làm cho token của bạn grep được">
+
+Nếu bạn tự phát hành token (API key cho khách hàng, token giữa các service nội bộ), hãy cho chúng một tiền tố dễ nhận như `acme_live_` cộng với đủ ký tự ngẫu nhiên. `ghp_` của GitHub hay `sk_live_` của Stripe làm đúng như vậy, và đó là lý do các scanner tìm ra chúng với tỉ lệ báo nhầm gần như bằng 0. Một chuỗi hex ngẫu nhiên 32 ký tự thì vô hình với mọi scanner bạn từng chạy.
+
+</Callout>
+
+## Vòng đời, và những bước team hay bỏ qua
+
+Mọi secret đều đi qua các giai đoạn giống nhau. Sự cố gần như luôn đến từ một giai đoạn không ai chịu trách nhiệm.
+
+1. **Tạo.** Sinh với đủ entropy (`openssl rand -base64 32`, không phải mật khẩu ai đó gõ tay), với phạm vi hẹp nhất mà nhà cung cấp cho phép.
+2. **Lưu trữ.** Ở một nơi duy nhất có thẩm quyền — một secret manager — chứ không phải năm file `.env` trên năm cái laptop.
+3. **Phân phối.** Tới đúng runtime cần nó, lý tưởng là runtime tự kéo về bằng danh tính của chính nó, chứ không phải người copy-paste đẩy vào.
+4. **Sử dụng.** Đọc một lần lúc khởi động, không lọt vào log, báo cáo lỗi, URL hay bundle phía client.
+5. **Xoay vòng.** Theo lịch với những thứ không thể ngắn hạn, và ngay lập tức khi nghi ngờ. Việc xoay phải là chuyện thường ngày, nếu không bạn sẽ không làm nổi giữa lúc có sự cố.
+6. **Thu hồi.** Khi một người nghỉ việc, một service bị gỡ bỏ, hay một giá trị bị lộ.
+7. **Kiểm toán.** Ai đọc gì, lúc nào. Thiếu bước này, câu hỏi "key bị lộ đã bị dùng chưa?" không có lời đáp.
+
+Team nhỏ thường làm bước 1 và 2 kém, bước 3 và 4 làm được là nhờ may, còn 5 đến 7 thì không bao giờ. Mục tiêu của bài này là làm cho 5 đến 7 đủ rẻ để chúng thực sự diễn ra — và thu nhỏ bài toán bằng cách thay càng nhiều secret dài hạn càng tốt bằng credential ngắn hạn được cấp khi cần.
+
+## Secret thực sự bị lộ như thế nào
+
+Trong các vụ rò rỉ mình từng dọn dẹp hay đọc postmortem, nguyên nhân hiếm khi tinh vi. Nó thường là một trong những thứ sau.
+
+### File .env và lịch sử git
+
+- `.env` được commit trước khi có `.gitignore`, rồi bị xoá ở một commit sau. **Nó vẫn nằm trong lịch sử.** Ai có bản clone là có nó.
+- `.env.example` điền giá trị thật "cho dev mới chạy được ngay".
+- `.env.production` được commit vì "chỉ build dùng thôi mà".
+- Secret dán vào test fixture, Postman collection, `docker-compose.yml`, hay ô output của Jupyter notebook.
+
+### Log và công cụ theo dõi lỗi
+
+- `console.log(process.env)` hay `console.log(config)` lúc khởi động, rồi quên xoá.
+- Lỗi của HTTP client bị serialize nguyên khối: một lỗi axios chứa cả `config.headers.Authorization`. Đẩy nó vào logger là mỗi lần 401 lại ghi API key của bạn vào kho log.
+- Công cụ theo dõi lỗi mặc định bắt cả header và body của request. Hãy lọc `authorization`, `cookie`, `x-api-key`, và mọi thứ có tên kiểu `*token*`, `*secret*` trước khi gửi đi.
+- Log CI với `set -x` in ra các lệnh chứa token. GitHub Actions che các secret đã đăng ký, nhưng chỉ khớp chuỗi chính xác — secret đã encode base64 hay URL-encode sẽ đi qua mà không bị che.
+
+### Artifact build và image
+
+- `ARG` và `ENV` trong Dockerfile nằm lại trong metadata của image; `docker history` hiện chúng ra. `COPY . .` mà không có `.dockerignore` sẽ đưa file `.env` local của bạn vào một layer.
+- Source map được upload công khai, bên trong có code server.
+- Output build nằm trong **remote cache**. Nếu một secret phía server bị inline vào `.next` hay `dist`, giờ nó cũng nằm trong remote cache của Turborepo, ai có quyền vào cache là đọc được.
+
+### Bundle phía client: `NEXT_PUBLIC_` và đồng bọn
+
+Đây là kiểu riêng của frontend, và mình đã gặp nó ở mọi framework. Next.js inline mọi tham chiếu `process.env.NEXT_PUBLIC_*` vào JavaScript gửi xuống trình duyệt ngay lúc build. Vite làm điều tương tự với `VITE_`. Kịch bản thất bại luôn là một câu chuyện: biến chỉ-dành-cho-server của một dev "không chạy" trong client component, thế là họ đổi tên nó với tiền tố public. Giờ nó nằm trong một file `.js` trên CDN của bạn.
+
+Biến thể âm thầm hơn trong App Router: một Server Component đọc `process.env.SECRET` rồi truyền nó làm prop cho Client Component. Prop đi qua ranh giới đó được serialize vào RSC payload — secret xuất hiện ngay trong HTML response.
+
+```tsx
+// app/settings/page.tsx  (Server Component)
+import { BillingWidget } from "./billing-widget"; // "use client"
+
+export default function Page() {
+  // ❌ Giá trị này được serialize và gửi xuống trình duyệt.
+  return <BillingWidget stripeKey={process.env.STRIPE_SECRET_KEY!} />;
+}
+```
+
+Cách sửa nằm ở cấu trúc: giữ code đọc secret trong những module *không thể* import từ client. Trong app Next.js, `import "server-only"` ở đầu module env phía server khiến mọi lần import từ client làm build thất bại.
+
+### Token CI dài hạn
+
+Mục tiêu giá trị nhất ở đa số tổ chức không phải laptop của dev; đó là CI. Hệ thống CI giữ deploy key cho mọi môi trường, chạy code bên thứ ba (action, package npm, plugin build) ở mỗi lần push, và secret của nó hiếm khi được xoay vì "đang chạy ổn mà". Làn sóng tấn công chuỗi cung ứng npm năm 2025–2026 được xây đúng trên điều này: install script độc hại vơ token từ môi trường CI và máy dev, rồi dùng chúng để publish thêm malware. Mình đã viết chi tiết về chuỗi đó trong bài [tấn công chuỗi cung ứng npm](/blog/npm-supply-chain-security).
+
+Một `AWS_SECRET_ACCESS_KEY` tĩnh trong GitHub secrets là loại secret tệ nhất: sống lâu, thường thừa quyền, dùng được từ bất cứ đâu trên internet, và mọi step trong mọi workflow tham chiếu tới nó đều đọc được. Chiến lược xoay tốt nhất cho nó là làm cho nó không tồn tại — đó là phần OIDC bên dưới.
+
+## Phát hiện: chặn trước khi bị push
+
+Phát hiện có ba lớp, và bạn cần cả ba, vì mỗi lớp bắt được thứ mà lớp khác bỏ sót.
+
+### Pre-commit với gitleaks
+
+`gitleaks` quét các định dạng token đã biết cộng với pattern chung có entropy cao. Chạy nó trên các thay đổi đã stage để secret không bao giờ vào được commit. Trong monorepo JS, mình gắn nó qua lefthook, cài đặt cùng các dev dependency khác:
+
+```yaml
+# lefthook.yml
+pre-commit:
+  commands:
+    gitleaks:
+      run: gitleaks git --pre-commit --staged --redact --no-banner
+```
+
+Thêm định dạng token của riêng bạn để cả secret nội bộ cũng được bao phủ:
+
+```toml
+# .gitleaks.toml
+title = "acme gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "acme-service-token"
+description = "Acme internal service token"
+regex = '''acme_(live|test)_[A-Za-z0-9]{32}'''
+keywords = ["acme_live_", "acme_test_"]
+```
+
+Hook pre-commit là dây an toàn mà người ta có thể tháo ra (`--no-verify`, hoặc đơn giản là không cài hook), nên nó là tiện ích, không phải kiểm soát.
+
+### CI mới là kiểm soát thật
+
+Cùng bản quét đó chạy trong CI như một required check trên mọi pull request, quét toàn bộ lịch sử của branch:
+
+```yaml
+# .github/workflows/secrets-scan.yml
+name: secrets-scan
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for secrets
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.2 \
+            git /repo --redact --verbose
+```
+
+Pin image (tốt hơn nữa là theo digest) — scanner secret là một công cụ có đặc quyền, đọc toàn bộ repository của bạn. TruffleHog là bổ sung tốt: chế độ `--only-verified` của nó kiểm tra credential nghi vấn với API của nhà cung cấp, biến câu "cái này trông giống key" thành "key này còn sống", và đó mới là điều quyết định bạn có đang gặp sự cố hay không.
+
+### GitHub push protection
+
+GitHub secret scanning với **push protection** chặn lần push ngay phía server khi phát hiện định dạng token của các nhà cung cấp được hỗ trợ, trước khi nó tới remote. Nó miễn phí cho repository public; với repository private, nó nằm trong GitHub Secret Protection. Nó chỉ biết định dạng của đối tác và các custom pattern bạn định nghĩa, nên không thay được gitleaks — nhưng nó là lớp duy nhất mà dev không thể bỏ qua chỉ vì quên cài hook.
+
+Về bức tranh lớn hơn — CI chạy những gì và được nối với nhau ra sao — xem bài [CI cho monorepo frontend](/blog/ci-for-frontend-monorepo).
+
+## Sau khi lộ: xoay trước, dọn lịch sử sau
+
+Khi một secret bị lộ, thứ tự các bước quan trọng hơn mọi thứ khác. Mình từng chứng kiến team dành hai giờ đầu tiên viết lại lịch sử git trong khi key vẫn còn hiệu lực.
+
+1. **Thu hồi hoặc xoay credential ngay.** Bot quét GitHub public liên tục và thử AWS key mới trong vòng vài phút. Hãy giả định nó đã bị copy. Nếu việc xoay cần deploy thì deploy — runbook xoay secret sinh ra để làm việc này.
+2. **Kiểm tra nó đã bị dùng chưa.** Với AWS key, truy vấn CloudTrail theo access key ID từ thời điểm bị lộ. Với API SaaS, xem audit log hoặc usage log của nhà cung cấp. Tìm IP lạ, region bạn không dùng, các lời gọi bất thường như `iam:CreateUser`, `ec2:RunInstances` ở region kỳ lạ, hay API key mới được tạo ra.
+3. **Tìm mọi bản sao.** Fork, log CI, artifact build, thread Slack nơi ai đó đã dán nó, ticket có trích dẫn thông báo lỗi. Mỗi chỗ là một vụ lộ riêng.
+4. **Rồi mới dọn lịch sử**, nếu repository còn tiếp tục tồn tại: `git filter-repo --replace-text` với các giá trị bị lộ, force-push, yêu cầu mọi người clone lại, và liên hệ GitHub support để xoá cache hiển thị nếu repo là public.
+5. **Viết postmortem ngắn**: nó lọt vào đó thế nào, vì sao khâu phát hiện không bắt được, thêm lớp nào.
+
+### Vì sao dọn lịch sử là chưa đủ
+
+Viết lại lịch sử xoá secret khỏi *bản* branch của bạn. Nó không đụng tới:
+
+- Mọi bản clone đang có trên laptop, CI runner và hệ thống backup.
+- Fork, vốn có bản sao object riêng.
+- Ref của pull request (`refs/pull/123/head`) trên GitHub, thứ bạn không tự viết lại được.
+- Cache, mirror, dịch vụ lưu trữ, và mọi scraper đã kịp lấy về.
+
+Vì vậy secret coi như đã cháy ngay khi bị push. Dọn lịch sử là vệ sinh để scanner *tiếp theo* không báo lại nó — việc khắc phục thực sự là bước 1.
+
+<Callout type="danger" title="Xoá file không phải là cách sửa">
+
+Một commit xoá `.env` vẫn để secret nằm ở commit trước đó, cách bạn đúng một lệnh `git log -p`. Mình vẫn thấy đây là toàn bộ phản ứng trong các pull request. Nếu credential đã tới remote, hãy xoay nó.
+
+</Callout>
+
+## Secret nên sống ở đâu
+
+Không có một kho đúng duy nhất; chỉ có kho đúng cho quy mô team, mức độ dùng cloud và mức chịu đựng việc vận hành hạ tầng của bạn.
+
+| Lựa chọn | Điểm mạnh | Cần để ý | Phù hợp khi |
+| --- | --- | --- | --- |
+| **Secret manager của cloud** (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault) | Kiểm soát truy cập gắn liền IAM, audit log có sẵn, xoay tự động cho một số database, không phải chạy server | Chi phí theo từng secret cộng dồn, gắn chặt với một cloud, cần giải pháp cho dev local | Bạn chủ yếu dùng một cloud — mặc định cho đa số team |
+| **AWS SSM Parameter Store** (SecureString) | Rất rẻ, đơn giản, mã hoá bằng KMS, có IAM và CloudTrail | Ít tính năng xoay hơn, giới hạn throughput API khi scale | Team AWS nhỏ, config cộng vài secret |
+| **HashiCorp Vault / OpenBao** | Dynamic secret (user DB theo từng lease), PKI, đa cloud, policy chi tiết | Gánh nặng vận hành thật sự: HA, unseal, nâng cấp, backup; license của Vault đổi sang BSL năm 2023, OpenBao là bản fork mã nguồn mở | Đa cloud hoặc on-prem, có platform team vận hành |
+| **Doppler / Infisical** | Trải nghiệm dev rất tốt, một chỗ cho mọi môi trường, đồng bộ sang cloud và CI, `doppler run` / `infisical run` ở local | Thêm một vendor nắm giữ mọi secret bạn có; kiểm tra audit, SSO và mô hình phân quyền của họ | Team nhỏ trải trên nhiều nền tảng (Vercel, Fly, AWS) muốn một nguồn sự thật; Infisical có thể tự host |
+| **SOPS + age** (file mã hoá trong git) | Secret có version và được review cùng code, không server, chạy offline, diff cho thấy key nào đổi | Tự lo việc phân phối khoá; thu hồi quyền một người nghĩa là mã hoá lại *và* xoay giá trị, vì ciphertext cũ vẫn nằm trong lịch sử | Repo hạ tầng, GitOps, team nhỏ muốn không thêm service nào |
+
+Đề xuất thường thấy của mình cho team 5–30 kỹ sư trên một cloud: **secret manager của cloud làm nguồn sự thật**, danh tính runtime (IAM role, workload identity) để đọc nó, và **OIDC cho CI** để CI không giữ cloud key nào cả. Thêm Doppler hoặc Infisical nếu bạn trải trên nhiều nền tảng không chung hệ thống danh tính. Dùng SOPS cho repo hạ tầng, nơi bạn muốn secret được review cùng với Terraform sử dụng nó.
+
+```yaml
+# .sops.yaml — khoá age nào giải mã được file nào
+creation_rules:
+  - path_regex: secrets/prod/.*\.yaml$
+    age: age1prodci0000000000000000000000000000000000000000000000000000
+  - path_regex: secrets/staging/.*\.yaml$
+    age: age1stagingci000000000000000000000000000000000000000000000000,age1devteam0000000000000000000000000000000000000000000000000
+```
+
+```bash
+sops --encrypt --in-place secrets/staging/api.yaml   # giá trị bị mã hoá, tên key vẫn đọc được
+sops exec-env secrets/staging/api.yaml 'bun run start' # giải mã vào env cho đúng một process
+```
+
+## GitHub Actions OIDC thay cho key tĩnh
+
+Đây là thay đổi có tỉ lệ công sức trên rủi ro loại bỏ tốt nhất. Thay vì lưu AWS access key trong GitHub, mỗi lần chạy workflow sẽ xin GitHub một **token danh tính có chữ ký** mô tả chính xác thứ đang chạy (repo nào, branch nào, môi trường nào, workflow nào) và đổi nó với cloud lấy credential hết hạn sau khoảng một giờ. Không có gì dài hạn được lưu trong GitHub. Token bị đánh cắp thành vô dụng khi hết hạn, và chỉ đổi được lấy role có trust policy khớp với các claim của nó.
+
+### Quá trình trao đổi diễn ra thế nào
+
+<Figure src="/blog/secrets-management-ci-oidc-oidc-flow.svg" alt="Sơ đồ liên kết danh tính GitHub Actions qua OIDC: một job trong acme/web chạy deploy.yml ở môi trường production với quyền id-token write xin JWT từ OIDC provider của GitHub; provider trả về token có chữ ký; job gửi token cùng role ARN tới AWS STS AssumeRoleWithWebIdentity; STS xác minh chữ ký bằng khoá công khai GitHub công bố và kiểm tra điều kiện trust policy của role về issuer, audience và claim sub repo:acme/web:environment:production; nếu khớp, STS trả credential có hiệu lực khoảng một giờ để job deploy lên S3 và CloudFront; mọi repo, branch, fork hay môi trường khác đều nhận AccessDenied" caption="CI không lưu cloud key nào. Mỗi lần chạy tự chứng minh danh tính bằng một token ký số ngắn hạn, và trust policy của role quyết định đúng repo, branch và môi trường đó có được assume hay không." />
+
+1. Job có `permissions: id-token: write`, cho phép nó xin token từ OIDC provider của GitHub.
+2. GitHub trả về một JWT ký bằng khoá của họ. Claim gồm `iss` (`https://token.actions.githubusercontent.com`), `aud`, `sub`, `repository`, `repository_owner`, `ref`, `environment`, `workflow_ref`, `job_workflow_ref`, `event_name` và `run_id`, cùng thời hạn ngắn.
+3. Job gọi `AssumeRoleWithWebIdentity` (AWS) hoặc STS token exchange (GCP) với JWT đó.
+4. Cloud lấy khoá ký công khai của GitHub (JWKS), xác minh chữ ký, và đánh giá **điều kiện tin cậy** của bạn trên các claim.
+5. Nếu mọi thứ khớp, nó trả về credential tạm thời gói gọn trong phạm vi role đó.
+
+Toàn bộ độ an toàn của cơ chế nằm ở bước 4. Viết sai điều kiện là bạn đã dựng một cánh cửa mở cho nhầm người.
+
+### AWS: trust policy của role
+
+Trước hết, tạo IAM OIDC identity provider cho `token.actions.githubusercontent.com` với audience `sts.amazonaws.com` (một lần mỗi account, thường bằng Terraform). Sau đó mỗi mục đích một role, với trust policy ghim vào đúng ngữ cảnh workflow:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:acme/web:environment:production"
+        }
+      }
+    }
+  ]
+}
+```
+
+Định dạng của claim `sub` phụ thuộc vào trigger:
+
+| Ngữ cảnh | Giá trị `sub` |
+| --- | --- |
+| Job có environment | `repo:acme/web:environment:production` |
+| Push lên branch, không có environment | `repo:acme/web:ref:refs/heads/main` |
+| Tag | `repo:acme/web:ref:refs/tags/v1.4.0` |
+| Pull request | `repo:acme/web:pull_request` |
+
+Để ý dòng đầu tiên: **khi job khai báo `environment`, `sub` dùng dạng environment, không phải branch.** Đó là tính năng — environment của GitHub có thể giới hạn branch nào được deploy và yêu cầu người duyệt — nhưng chỉ khi bạn cấu hình các protection rule đó. Một environment `production` không giới hạn branch có thể bị nhắm tới từ bất kỳ branch nào có workflow ghi `environment: production`.
+
+Và workflow:
+
+```yaml
+# .github/workflows/deploy.yml
+name: deploy
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production   # được bảo vệ: chỉ main, cần người duyệt
+    permissions:
+      id-token: write          # chỉ job này được xin OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx turbo run build --filter=web
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/gha-web-deploy-prod
+          aws-region: ap-southeast-1
+          role-session-name: gha-web-${{ github.run_id }}
+      - run: aws s3 sync apps/web/out s3://acme-web-prod --delete
+      - run: aws cloudfront create-invalidation --distribution-id E123EXAMPLE --paths "/*"
+```
+
+Chú ý credential được xin **sau** bước install và build. Mọi thứ chạy trước `configure-aws-credentials` — bao gồm mọi script `postinstall` trong cây dependency — không bao giờ thấy cloud credential. Riêng thứ tự đó đã là một biện pháp giảm thiểu rủi ro chuỗi cung ứng rẻ tiền. Trong workflow thật, hãy pin action bên thứ ba theo commit SHA đầy đủ thay vì tag.
+
+### GCP: Workload Identity Federation
+
+Cùng ý tưởng, khác tên gọi. Một workload identity pool tin issuer của GitHub; một provider ánh xạ claim thành attribute và áp điều kiện; một service account cấp quyền impersonate cho các principal khớp attribute.
+
+```bash
+gcloud iam workload-identity-pools create github \
+  --location=global --display-name="GitHub Actions"
+
+gcloud iam workload-identity-pools providers create-oidc github \
+  --location=global --workload-identity-pool=github \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
+  --attribute-condition="assertion.repository_owner == 'acme'"
+
+gcloud iam service-accounts add-iam-policy-binding web-deploy@acme-prod.iam.gserviceaccount.com \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/github/attribute.repository/acme/web"
+```
+
+```yaml
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/github
+          service_account: web-deploy@acme-prod.iam.gserviceaccount.com
+```
+
+`attribute-condition` trên provider là tương đương phía GCP của điều kiện `sub` bên AWS: thiếu nó, bất kỳ repository GitHub nào trên thế giới cũng ít nhất trình được token cho pool của bạn. Giữ nó lại, và siết chặt theo từng provider khi các repo khác nhau cần quyền khác nhau.
+
+### Những lỗi điều kiện tin cậy làm hỏng tất cả
+
+- **Không có điều kiện `sub`, hoặc `StringLike` với `repo:*`.** Như vậy là tin mọi repository trên GitHub. Đây là lỗi thảm hoạ.
+- **`repo:acme/*`** trong khi chỉ một repository deploy. Mọi repo trong org, kể cả bản thử nghiệm của bạn intern dùng một action đáng ngờ, giờ đều assume được role production.
+- **Một role cho mọi thứ.** PR check, deploy staging và deploy production dùng chung role, nên một workflow pull request làm được những gì production làm được.
+- **Tin `pull_request` cho bất cứ thứ gì có quyền ghi.** Dùng một role chỉ đọc riêng (cho plan và preview) trong ngữ cảnh PR. Pull request từ fork mặc định không nhận OIDC token, còn `pull_request_target` chạy với đặc quyền của repository gốc — hãy rất cẩn thận khi cấp `id-token: write` trong các workflow nó kích hoạt.
+- **Repository bị đổi tên hoặc tạo lại.** `sub` dùng tên. Nếu tên org hay repo được giải phóng rồi có người khác lấy lại, tên đó lại khớp. GitHub cho phép tuỳ biến template của claim `sub` để thêm ID bất biến như `repository_id` và `repository_owner_id`; với role giá trị cao thì đáng làm.
+
+## Inject lúc runtime hay lúc build
+
+Quy tắc mình theo: **secret đi vào lúc runtime, từ danh tính của nền tảng; build chỉ nhận cấu hình công khai.**
+
+Lúc build là thời điểm sai cho secret vì build tạo ra artifact được copy, cache và chia sẻ: image trong registry, bundle trên CDN, output trong remote cache. Thứ gì có mặt lúc build đều có nguy cơ rơi vào một trong số đó.
+
+| | Lúc build | Lúc runtime |
+| --- | --- | --- |
+| **Giá trị nằm ở đâu sau đó** | Bên trong artifact (bundle, layer image, cache) | Chỉ trong process đang chạy |
+| **Xoay vòng** | Build lại và deploy lại | Restart, hoặc reload không cần restart |
+| **Cùng artifact cho mọi môi trường** | Không — build staging và prod khác nhau | Có — promote một image qua các môi trường |
+| **Phù hợp cho** | `NEXT_PUBLIC_*`, URL API công khai, phiên bản release | Credential database, API key, secret ký |
+
+Khi build thực sự cần secret — cài từ registry private, upload source map — hãy dùng cơ chế không lưu nó lại:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM oven/bun:1 AS deps
+WORKDIR /app
+COPY package.json bun.lock ./
+# Token chỉ được mount cho đúng lệnh RUN này; nó không bao giờ vào layer.
+RUN --mount=type=secret,id=npm_token \
+    NPM_TOKEN="$(cat /run/secrets/npm_token)" bun install --frozen-lockfile
+```
+
+```bash
+docker build --secret id=npm_token,env=NPM_TOKEN -t acme/api .
+```
+
+Lúc runtime, để nền tảng inject secret từ secret manager bằng chính danh tính của workload: task definition của ECS với các mục `secrets` trỏ tới ARN của Secrets Manager, Kubernetes với External Secrets Operator đồng bộ từ kho của cloud, Cloud Run với secret reference. App đọc biến môi trường (hoặc file được mount) và không cần credential SDK của riêng mình.
+
+Biến môi trường không hoàn hảo: chúng được process con kế thừa, cùng user đọc được qua `/proc`, và thỉnh thoảng bị dump vào crash report. File mount trên `tmpfs` nhỉnh hơn một chút. Nhưng bước nhảy từ "secret nướng sẵn trong image" sang "secret inject lúc runtime" lớn hơn nhiều so với bước từ biến môi trường sang file.
+
+## Xoay vòng không downtime
+
+Các team không xoay secret vì xoay gây sự cố: ngay khi bạn đổi giá trị, mọi thứ còn giữ giá trị cũ đều hỏng. Cách sửa ở đâu cũng giống nhau — **trong một khoảng thời gian, hai secret cùng hợp lệ**.
+
+Trình tự chung:
+
+1. **Thêm** secret mới bên cạnh secret cũ. Cả hai đều hợp lệ.
+2. **Deploy bên tiêu thụ** chấp nhận cả hai (bên xác minh thử cái mới, rồi tới cái cũ).
+3. **Chuyển bên tạo ra** sang secret mới (bên ký dùng cái mới, client gửi cái mới).
+4. **Chờ** hết thời gian sống dài nhất của mọi thứ đã ký bằng cái cũ: TTL của session, hạn của token, các lần retry webhook còn trong hàng đợi.
+5. **Gỡ** secret cũ và thu hồi nó ở nhà cung cấp.
+6. **Xác nhận** qua audit log rằng không còn gì dùng cái cũ.
+
+Với secret bạn tự xác minh — chữ ký webhook, token HMAC — hãy hỗ trợ dạng danh sách ngay từ ngày đầu:
+
+```ts
+// lib/hmac.ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { env } from "@/env/server";
+
+// env.WEBHOOK_SECRETS là ["new", "old"]: ký bằng cái đầu, chấp nhận bất kỳ cái nào.
+export function sign(payload: string): string {
+  return createHmac("sha256", env.WEBHOOK_SECRETS[0]).update(payload).digest("hex");
+}
+
+export function verify(payload: string, signatureHex: string): boolean {
+  const given = Buffer.from(signatureHex, "hex");
+  return env.WEBHOOK_SECRETS.some((secret) => {
+    const expected = createHmac("sha256", secret).update(payload).digest();
+    return expected.length === given.length && timingSafeEqual(expected, given);
+  });
+}
+```
+
+Cùng pattern ở những chỗ khác:
+
+- **Khoá ký JWT**: công bố JWKS chứa cả hai khoá với `kid` khác nhau; ký bằng khoá mới; bỏ khoá cũ sau thời gian sống dài nhất của token.
+- **Mật khẩu database**: hai user database luân phiên. Chiến lược xoay "alternating users" của AWS Secrets Manager làm đúng việc này, nên app luôn có một credential dùng được.
+- **API key bên thứ ba**: đa số nhà cung cấp cho phép hai key cùng hoạt động. Tạo key mới, deploy, xác nhận traffic đã chuyển, rồi xoá key cũ.
+- **Secret của session**: nhiều thư viện session nhận một mảng secret chính vì lý do này.
+
+<Callout type="note" title="Xoay theo lịch để runbook luôn nóng">
+
+Lần đầu tiên bạn xoay một secret không nên là giữa lúc có sự cố. Mình lên lịch xoay những thứ nhàm chán mỗi quý. Vấn đề không phải key 90 ngày tuổi rủi ro hơn key 30 ngày tuổi nhiều; mà là team biết các bước chạy được và mất bao lâu.
+
+</Callout>
+
+## Least privilege, làm cho thực tế
+
+Least privilege nghe như một nguyên tắc; trong thực tế nó là vài quyết định cụ thể:
+
+- **Mỗi mục đích workflow và mỗi môi trường một role.** `gha-web-deploy-prod` ghi được vào một bucket và invalidate một distribution. Nó không đọc được secret, không đụng được IAM, không chạm tới service khác.
+- **Tách account hoặc project cho production.** Bán kính ảnh hưởng của credential staging chỉ nên là staging.
+- **Không có IAM user với access key cho con người.** SSO (`aws sso login`, `gcloud auth login`) cũng cho dev credential ngắn hạn.
+- **Đường đọc giới hạn theo service.** API đọc `prod/api/*` trong secret manager; worker đọc `prod/worker/*`. Không bên nào liệt kê được của bên kia.
+- **Review bằng dữ liệu.** IAM Access Analyzer (hoặc công cụ tương đương) cho thấy role thực sự đã dùng quyền nào; sau vài tuần thì cắt bớt phần còn lại.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::acme-web-prod", "arn:aws:s3:::acme-web-prod/*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudfront:CreateInvalidation",
+      "Resource": "arn:aws:cloudfront::123456789012:distribution/E123EXAMPLE"
+    }
+  ]
+}
+```
+
+## Validate env lúc khởi động bằng schema có kiểu
+
+Mảnh ghép cuối ít liên quan tới kẻ tấn công mà nhiều hơn tới sự cố lúc 2 giờ sáng, khi production khởi động thiếu `DATABASE_URL` và chỉ chết ở request đầu tiên thay vì lúc deploy. Một module env có kiểu biến "undefined lúc runtime" thành "từ chối khởi động, kèm thông báo rõ ràng", và cho mọi file khác một object `env` có kiểu, có tài liệu, thay vì `process.env.X!` rải rác khắp nơi.
+
+### Env phía server, nằm trong app
+
+```ts
+// apps/web/src/env/server.ts
+import "server-only"; // mọi lần import từ Client Component giờ làm build thất bại
+import { z } from "zod";
+
+const csv = z
+  .string()
+  .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean));
+
+const ServerEnv = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  DATABASE_URL: z.url(),
+  SESSION_SECRET: z.string().min(32, "SESSION_SECRET must be at least 32 characters"),
+  WEBHOOK_SECRETS: csv.pipe(z.array(z.string().min(32)).min(1)),
+  STRIPE_SECRET_KEY: z.string().startsWith("sk_"),
+  S3_UPLOAD_BUCKET: z.string().min(1),
+});
+
+const parsed = ServerEnv.safeParse(process.env);
+
+if (!parsed.success) {
+  // In ra biến nào sai, không bao giờ in giá trị.
+  console.error("Invalid server environment:\n" + z.prettifyError(parsed.error));
+  throw new Error("Invalid server environment");
+}
+
+export const env = parsed.data;
+```
+
+### Env phía client, liệt kê tường minh
+
+```ts
+// apps/web/src/env/client.ts
+import { z } from "zod";
+
+const ClientEnv = z.object({
+  NEXT_PUBLIC_API_URL: z.url(),
+  NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+});
+
+// Mỗi biến phải được tham chiếu nguyên văn: Next.js chỉ inline biểu thức tĩnh
+// `process.env.NEXT_PUBLIC_X`, không inline khi bạn spread cả process.env.
+export const clientEnv = ClientEnv.parse({
+  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+  NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+});
+```
+
+Vài lưu ý riêng cho monorepo:
+
+- **Giữ `server-only` trong app Next.js, không đặt trong package dùng chung.** Package `server-only` throw khi được import bên ngoài môi trường server của React, nên một `@repo/env` dùng chung cho service NestJS hay một script sẽ crash ngay khi import. Hãy chia sẻ *schema* từ package; để mỗi app sở hữu module đọc `process.env` của riêng nó.
+- **`next build` có chạy các module phía server.** Nếu build chạy ở nơi không có secret runtime (và nó nên như vậy), validate sẽ thất bại lúc build. Hoặc validate lười ở lần truy cập đầu tiên, hoặc cho phép một biến `SKIP_ENV_VALIDATION=1` tường minh chỉ ở bước build. `@t3-oss/env-nextjs` đóng gói sẵn pattern này nếu bạn không muốn tự viết.
+- **Không bao giờ log giá trị.** `z.prettifyError` báo đường dẫn và thông điệp; hãy chắc chắn các thông điệp tuỳ biến không lặp lại input.
+
+### Khai báo env trong turbo.json
+
+Turborepo 2 chạy task ở strict env mode: task chỉ thấy những biến môi trường đã được khai báo, và biến đã khai báo là một phần của cache key. Điều đó có ích cho vệ sinh secret, không chỉ cho cache:
+
+```json
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalEnv": ["NODE_ENV"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": ["NEXT_PUBLIC_*", "SKIP_ENV_VALIDATION"],
+      "passThroughEnv": ["SENTRY_AUTH_TOKEN"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "start": {
+      "cache": false,
+      "passThroughEnv": ["DATABASE_URL", "SESSION_SECRET", "WEBHOOK_SECRETS", "STRIPE_SECRET_KEY"]
+    }
+  }
+}
+```
+
+- **`env`** liệt kê các biến làm thay đổi output build — cấu hình công khai. Nếu `build` cần một secret phía server trong danh sách này, hãy hỏi tại sao: hoặc nó đang bị inline ở đâu đó (một vụ lộ), hoặc đoạn code đó nên chạy lúc khởi động.
+- **`passThroughEnv`** cho task dùng được biến mà không băm nó vào cache key — đúng cho token mà bước build *sử dụng* (upload source map) nhưng không làm đổi output.
+- **Remote cache lưu output, không lưu env.** Điều đó chỉ an toàn khi output không chứa secret — chính là lý do phải giữ secret khỏi thời điểm build.
+
+## Những sai lầm mình hay gặp
+
+- **"Repo private mà."** Repository private được clone về laptop, mirror vào cache CI, chia sẻ với contractor, và thỉnh thoảng bị public nhầm. Hãy đối xử như thể nó sẽ bị lộ.
+- **Xoá file thay vì xoay key.** Đã nói ở trên, vẫn là phản ứng phổ biến nhất.
+- **Một `AWS_ACCESS_KEY_ID` dùng chung cho CI, ba dev và một cron job.** Khi nó lộ, bạn không biết ai đã dùng, và không xoay được mà không làm hỏng tất cả.
+- **Secret trong URL**: `?api_key=...` rơi vào access log, proxy, lịch sử trình duyệt và header `Referer`.
+- **Đổi tên biến server thành `NEXT_PUBLIC_` để "cho nó chạy".** Nếu client component cần nó, thứ nó cần là một endpoint phía server, không phải secret.
+- **Workflow `pull_request_target` checkout code của PR rồi chạy với secret sẵn có.** Như vậy là trao secret cho bất kỳ ai mở được pull request.
+- **Không ai chịu trách nhiệm xoay.** Mỗi secret trong secret manager nên có người sở hữu và ghi chú "cách xoay". Một secret không ai biết cách xoay là secret sẽ không được xoay giữa lúc có sự cố.
+- **Chỉ validate env ở môi trường dev.** Production mới là nơi thiếu một biến gây thiệt hại lớn nhất.
+
+## Tổng kết
+
+<Checklist>
+
+- Mỗi secret có một nơi lưu có thẩm quyền duy nhất (secret manager), một người sở hữu, và quy trình xoay được viết ra.
+- File `.env*` nằm trong gitignore và dockerignore; `.env.example` chỉ chứa placeholder.
+- gitleaks chạy ở pre-commit và là required check trong CI trên toàn bộ lịch sử; push protection đã bật; token của chính mình có tiền tố grep được.
+- Runbook khi lộ ghi rõ: xoay trước, kiểm tra audit log xem đã bị dùng chưa, tìm mọi bản sao, rồi mới dọn lịch sử.
+- CI không có cloud key tĩnh: GitHub Actions dùng OIDC, với điều kiện tin cậy trên `aud` và `sub` chính xác (repo cộng environment hoặc branch), mỗi mục đích một role.
+- Environment production trên GitHub giới hạn branch và yêu cầu người duyệt, vì điều kiện `sub` dựa vào chúng.
+- Cloud credential được xin sau bước install và build, action bên thứ ba được pin theo SHA.
+- Build chỉ nhận cấu hình công khai; secret được inject lúc runtime từ danh tính của nền tảng; Docker build dùng secret mount.
+- Những secret mình tự xác minh hỗ trợ hai giá trị cùng lúc, nên xoay không cần downtime.
+- Env phía server được validate bằng schema có kiểu lúc khởi động và được bảo vệ bởi `server-only`; env phía client được liệt kê tường minh.
+- `turbo.json` khai báo `env` và `passThroughEnv` có chủ đích, và không output build nào chứa secret phía server.
+
+</Checklist>

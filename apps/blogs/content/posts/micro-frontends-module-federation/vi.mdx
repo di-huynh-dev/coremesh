@@ -1,0 +1,573 @@
+---
+title: "Micro-frontends nói thật: khi nào đáng làm, Module Federation 2.0 chạy ra sao và cái giá phải trả"
+excerpt: "Micro-frontends giải quyết bài toán tổ chức — nhiều team deploy độc lập — chứ không phải bài toán kỹ thuật. Bài này so sánh năm cách ghép frontend, đi sâu vào Module Federation 2.0 (shared singleton, version skew, manifest, type, fallback) và chỉ ra khi nào một monorepo Turborepo là câu trả lời tốt hơn."
+---
+
+<Lead>Lần đầu mình được giao "tách frontend thành micro-frontends", lý do được đưa ra là "để app nhanh hơn". Nó không nhanh hơn — nó chậm hơn, nặng hơn, và mất ba tháng để debug được lỗi "Invalid hook call" chỉ xuất hiện trên production. Lần thứ hai thì khác: sáu team, một release train hai tuần, và mỗi lần một team có bug là cả năm team còn lại phải chờ. Lần đó micro-frontends thực sự cứu dự án. Bài này là những gì mình rút ra từ cả hai: micro-frontends giải quyết vấn đề gì, các cách ghép frontend khác nhau ra sao, Module Federation 2.0 hoạt động thế nào ở mức đủ để debug, những mối quan tâm xuyên suốt mà không ai nói trước, và khi nào bạn nên chọn một monorepo bình thường.</Lead>
+
+## Micro-frontends giải quyết bài toán tổ chức, không phải bài toán kỹ thuật
+
+Định nghĩa ngắn gọn nhất mình dùng: **micro-frontends là cách chia một sản phẩm frontend thành nhiều phần mà mỗi phần được một team sở hữu, build và deploy độc lập**. Chữ quan trọng là "deploy độc lập". Nếu các phần vẫn phải release cùng nhau, bạn chỉ có một monolith được cắt ra nhiều repo — tệ hơn cả monolith gốc.
+
+Đây là ứng dụng trực tiếp của định luật Conway: kiến trúc phần mềm có xu hướng phản chiếu cấu trúc giao tiếp của tổ chức. Khi tổ chức có nhiều team tự chủ theo domain (catalog, checkout, tài khoản, back-office), một frontend monolith buộc họ phối hợp ở những chỗ không đáng phải phối hợp: chung pipeline, chung release, chung lock file, chung quyết định nâng cấp framework.
+
+### Dấu hiệu bạn thực sự cần
+
+Mình chỉ đề xuất micro-frontends khi thấy ít nhất vài dấu hiệu sau cùng lúc:
+
+- **Nhiều team (thường từ bốn trở lên) làm trên cùng một sản phẩm**, mỗi team sở hữu một domain rõ ràng và có product owner riêng.
+- **Release bị nghẽn vì phối hợp**, không phải vì kỹ thuật: một team phải đợi team khác fix bug mới deploy được, hoặc phải "đóng băng code" để chờ release train.
+- **Nhịp phát hành khác nhau thật sự**: team growth muốn ship thử nghiệm mỗi ngày, team thanh toán cần quy trình kiểm duyệt chặt hơn.
+- **Ranh giới domain ổn định**: bạn biết rõ trang checkout và trang catalog là hai thứ khác nhau, và điều đó sẽ không đổi trong vài năm tới.
+- **Có phần legacy cần thay dần**: bọc app cũ (AngularJS, jQuery) làm một "remote" và thay từng phần là một use case rất thực tế.
+
+### Dấu hiệu bạn không cần
+
+Ngược lại, đây là những lý do mình từng nghe và đều là lý do sai:
+
+- **"Để app nhanh hơn."** Micro-frontends gần như luôn làm tăng tổng lượng JavaScript và số request. Code splitting trong một app duy nhất làm tốt hơn nhiều.
+- **"Để mỗi team dùng framework họ thích."** Về lý thuyết được, trên thực tế bạn vừa nhân đôi bundle vừa mất khả năng chia sẻ design system. Mix framework chỉ hợp lý khi đang migrate.
+- **"Codebase to quá, build chậm."** Đó là bài toán của build tool và cache — Turborepo, Nx, remote cache giải quyết rẻ hơn rất nhiều.
+- **Một hoặc hai team.** Nếu cùng một nhóm người sở hữu tất cả các remote, bạn có toàn bộ chi phí của hệ phân tán mà không có lợi ích nào.
+
+<Callout type="warning" title="Distributed monolith">
+  Phép thử đơn giản nhất: nếu để thay đổi một tính năng bạn phải deploy hai remote theo đúng thứ tự, hoặc shell phải deploy lại mỗi khi remote đổi, bạn đã có một distributed monolith. Nó có mọi nhược điểm của monolith (phối hợp release) cộng với mọi nhược điểm của hệ phân tán (lỗi mạng, version skew, khó debug).
+</Callout>
+
+### Cái giá phải trả
+
+Mình liệt kê ra trước để không ai ngạc nhiên sau này:
+
+| Chi phí | Biểu hiện thực tế |
+| --- | --- |
+| Độ phức tạp runtime | Code được nối với nhau lúc chạy, lỗi tích hợp chỉ lộ ra trên môi trường thật |
+| Version skew | Shell build với React 19.1, remote build với React 19.2, design system v3 lẫn v4 trên cùng trang |
+| Dependency trùng lặp | Mỗi remote tự mang lodash, date-fns, thư viện chart của riêng nó |
+| Test tích hợp | Unit test mỗi remote xanh, nhưng trang ghép lại vẫn vỡ |
+| Observability | Lỗi trong console không cho biết nó thuộc remote nào, team nào |
+| Nhất quán UX | Mỗi team tự "sáng tạo" loading state, empty state, toast |
+| Trải nghiệm dev local | Muốn chạy một trang phải dựng shell cộng ba remote, hoặc trỏ vào môi trường staging |
+
+Không có chi phí nào ở trên là không giải quyết được. Nhưng mỗi cái cần một người, một quy ước, một công cụ. Nếu tổ chức không có ai (thường là một platform team nhỏ) chịu trách nhiệm cho những thứ đó, chúng sẽ mục dần.
+
+## Năm cách ghép frontend: so sánh thẳng thắn
+
+"Micro-frontends" không đồng nghĩa với Module Federation. Có ít nhất năm cách ghép, và chọn đúng cách quan trọng hơn chọn đúng thư viện.
+
+| Cách ghép | Deploy độc lập | Cách ly | Hiệu năng | Chia sẻ UX / state | Độ phức tạp | Hợp khi |
+| --- | --- | --- | --- | --- | --- | --- |
+| Package lúc build (npm, workspace) | Không — shell phải build lại | Thấp | Tốt nhất, một bundle tối ưu | Dễ | Thấp | Một vài team, cần chia sẻ code chứ không cần deploy riêng |
+| iframe | Có | Cao nhất (origin, JS, CSS riêng) | Kém: mỗi frame tải lại mọi thứ | Khó: resize, focus, routing, modal | Trung bình | Widget bên thứ ba, phần legacy, nội dung không tin cậy |
+| Ghép phía server / edge include | Có | Trung bình | Tốt cho trang nặng nội dung, HTML đến sớm | Trung bình, tương tác phải tự hydrate | Trung bình đến cao | Trang thương mại, nội dung, SEO quan trọng |
+| Runtime với Module Federation 2.0 | Có | Thấp (chung window, chung DOM) | Tốt nếu chia sẻ dependency đúng | Tốt: chung React tree | Cao | SPA nhiều team, tương tác dày, cần cảm giác một app |
+| Next.js multi-zones | Có, theo route | Cao giữa các zone | Tốt trong zone, chuyển zone là tải lại trang | Chỉ qua URL, cookie, package chung | Thấp đến trung bình | Các khu vực tách bạch theo path: /blog, /docs, /app |
+
+### Package lúc build
+
+Mỗi team publish component hoặc tính năng thành package (`@acme/checkout`), shell import và build tất cả. Đây là "micro-frontends" mà không có runtime nào cả — và với nhiều tổ chức, nó là đủ. Bạn có ranh giới code, ownership qua CODEOWNERS, versioning qua semver. Thứ bạn không có là deploy độc lập: muốn checkout lên production, shell phải build và deploy lại.
+
+Điều đó nghe như điểm yếu, nhưng nếu shell deploy tự động và nhanh (vài phút), "deploy độc lập" khác "deploy qua shell" ít hơn bạn nghĩ. Thứ thực sự gây đau là khi shell có quy trình release thủ công, chậm.
+
+### iframe
+
+iframe bị coi thường, nhưng nó là cách ly *thật* duy nhất trong danh sách: origin riêng, global riêng, CSS riêng, crash riêng. Mình vẫn dùng iframe cho hai việc: nhúng công cụ bên thứ ba và bọc một app legacy không ai dám động vào.
+
+Cái giá là UX: chiều cao phải đồng bộ bằng `postMessage` và `ResizeObserver`, modal không thể phủ ra ngoài frame, focus và phím tắt bị tách rời, deep link phải tự đồng bộ hai chiều, và mỗi frame tải lại toàn bộ runtime của nó.
+
+### Ghép phía server và edge include
+
+Ý tưởng cũ từ thời Edge Side Includes (ESI): trang được ghép từ các mảnh HTML do nhiều service khác nhau render. Ngày nay mình hay làm ở edge, ví dụ với `HTMLRewriter` của Cloudflare Workers:
+
+```ts
+// edge/compose.ts — Cloudflare Worker ghép các fragment HTML
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const page = await fetch(new URL(url.pathname, "https://shell.internal.example.com"), request);
+
+    return new HTMLRewriter()
+      .on("mfe-fragment", {
+        async element(el) {
+          const src = el.getAttribute("src");
+          if (!src) return el.remove();
+          try {
+            const res = await fetch(src, { signal: AbortSignal.timeout(300) });
+            if (!res.ok) throw new Error(`fragment ${src} ${res.status}`);
+            el.replace(await res.text(), { html: true });
+          } catch {
+            // Fragment chậm hoặc lỗi: giữ trang, bỏ mảnh đó
+            el.replace(`<div class="fragment-fallback"></div>`, { html: true });
+          }
+        },
+      })
+      .transform(page);
+  },
+};
+```
+
+Ưu điểm lớn: HTML đến trình duyệt đã đầy đủ, tốt cho SEO và LCP, và một fragment chậm có thể bị cắt bằng timeout. Nhược điểm: phần tương tác vẫn phải hydrate, và nếu mỗi fragment mang JavaScript riêng, bạn quay lại bài toán dependency trùng lặp. Các công cụ như Podium hay Tailor (từ Zalando) đi theo hướng này ở tầng Node.
+
+### Runtime với Module Federation
+
+Shell (host) tải JavaScript của các remote lúc chạy, và chúng chia sẻ chung dependency như React. Kết quả là một React tree duy nhất, chuyển trang mượt như SPA, và mỗi remote deploy độc lập. Đây là cách cho cảm giác "một app" tốt nhất, và cũng là cách phức tạp nhất. Phần lớn bài này nói về nó.
+
+### Next.js multi-zones
+
+Multi-zones là cách Next.js chia một domain thành nhiều app theo path. Mỗi zone là một app Next.js độc lập; một zone chính dùng `rewrites` để chuyển các path thuộc zone khác.
+
+```ts
+// apps/web/next.config.ts — zone chính
+import type { NextConfig } from "next";
+
+const BLOG_ORIGIN = process.env.BLOG_ORIGIN!; // ví dụ https://blog-zone.internal.example.com
+
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return [
+      { source: "/blog", destination: `${BLOG_ORIGIN}/blog` },
+      { source: "/blog/:path+", destination: `${BLOG_ORIGIN}/blog/:path+` },
+      // Asset của zone blog đi qua prefix riêng để không đụng /_next của zone chính
+      { source: "/blog-static/:path+", destination: `${BLOG_ORIGIN}/blog-static/:path+` },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
+```ts
+// apps/blog/next.config.ts — zone con
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  assetPrefix: "/blog-static",
+};
+
+export default nextConfig;
+```
+
+Những điều cần biết: link *giữa* các zone phải là thẻ `a` thường chứ không phải `Link` của Next.js, vì đó là điều hướng sang app khác — trang tải lại hoàn toàn. Nếu dùng Server Actions qua domain chính, zone con cần khai báo origin được phép trong `experimental.serverActions.allowedOrigins`. Và cookie session nên đặt ở domain chính để mọi zone đọc được.
+
+Multi-zones là lựa chọn mình thích nhất khi ranh giới trùng với ranh giới URL: marketing, docs, blog, dashboard. Nó rẻ, dễ hiểu, cách ly tốt. Nó không hợp khi hai team cần render cạnh nhau trên *cùng một trang*.
+
+<Callout type="note" title="Module Federation và Next.js App Router">
+  Plugin `@module-federation/nextjs-mf` chưa bao giờ hỗ trợ App Router, và chính những người bảo trì đã khuyến nghị không dùng nó cho dự án mới. Nếu stack của bạn là Next.js App Router, multi-zones và package lúc build là hai lựa chọn thực tế. Module Federation hợp nhất với SPA build bằng Rspack, Rsbuild, webpack hoặc Vite.
+</Callout>
+
+## Module Federation 2.0 chuyên sâu
+
+Module Federation ra đời trong webpack 5. Phiên bản 2.0, do cộng đồng module-federation (gắn chặt với hệ sinh thái Rspack) phát triển, tách phần runtime ra khỏi bundler và bổ sung những thứ mà bản đầu thiếu khi dùng thật: manifest, runtime plugin, chia sẻ type, công cụ debug. Package chính là `@module-federation/enhanced` cho webpack và Rspack, `@module-federation/rsbuild-plugin` cho Rsbuild, và `@module-federation/vite` cho Vite.
+
+### Host và remote
+
+**Remote** khai báo những module nó "expose". **Host** (thường gọi là shell) khai báo những remote nó dùng. Một app có thể vừa là host vừa là remote, nhưng mình khuyên tránh: đồ thị phụ thuộc vòng giữa các remote là nguồn gốc của những lỗi khó hiểu nhất.
+
+```ts
+// apps/checkout/rsbuild.config.ts — remote
+import { defineConfig } from "@rsbuild/core";
+import { pluginReact } from "@rsbuild/plugin-react";
+import { pluginModuleFederation } from "@module-federation/rsbuild-plugin";
+import { sharedDeps } from "@acme/mf-config";
+
+export default defineConfig({
+  plugins: [
+    pluginReact(),
+    pluginModuleFederation({
+      name: "checkout",
+      filename: "remoteEntry.js",
+      manifest: true,
+      exposes: {
+        // Expose một "app" có contract rõ ràng, không expose từng component lẻ
+        "./CheckoutApp": "./src/expose/CheckoutApp.tsx",
+      },
+      shared: sharedDeps,
+    }),
+  ],
+  output: {
+    // Asset của remote phải được tải từ CDN của chính nó, không phải từ origin của shell
+    assetPrefix: "https://mfe.example.com/checkout/",
+  },
+});
+```
+
+```ts
+// apps/shell/rsbuild.config.ts — host
+import path from "node:path";
+import { defineConfig } from "@rsbuild/core";
+import { pluginReact } from "@rsbuild/plugin-react";
+import { pluginModuleFederation } from "@module-federation/rsbuild-plugin";
+import { sharedDeps } from "@acme/mf-config";
+
+export default defineConfig({
+  plugins: [
+    pluginReact(),
+    pluginModuleFederation({
+      name: "shell",
+      // Remote tĩnh để dev local; production dùng dynamic remote (xem bên dưới)
+      remotes: {
+        checkout: "checkout@http://localhost:3003/mf-manifest.json",
+      },
+      shared: sharedDeps,
+      runtimePlugins: [path.resolve("./src/mf/fallback-plugin.ts")],
+    }),
+  ],
+});
+```
+
+Hai quy ước mình áp dụng từ ngày đầu:
+
+1. **Cấu hình `shared` nằm ở một package dùng chung** (`@acme/mf-config`), để không remote nào "quên" khai báo React là singleton.
+2. **Expose một app, không expose component.** Remote expose `CheckoutApp` với props tối thiểu (`basePath`, `session`, `onNavigate`). Expose hàng chục component lẻ biến remote thành một thư viện UI phân tán — và mỗi component là một API công khai phải giữ tương thích.
+
+### Shared singleton: React chỉ được có một bản
+
+Đây là phần quan trọng nhất và cũng hay sai nhất. React, React DOM, router và bất kỳ thư viện nào giữ state ở mức module (context, store, theme) **phải tồn tại đúng một instance** trên trang. Hai bản React DOM nghĩa là hai bộ dispatcher hook; component của remote gọi `useState` vào dispatcher không đang render — và bạn nhận lỗi "Invalid hook call".
+
+```ts
+// packages/mf-config/src/shared.ts
+import pkg from "../package.json" with { type: "json" };
+
+const deps = pkg.peerDependencies;
+
+export const sharedDeps = {
+  react: { singleton: true, requiredVersion: deps.react },
+  "react-dom": { singleton: true, requiredVersion: deps["react-dom"] },
+  "react-router": { singleton: true, requiredVersion: deps["react-router"] },
+  "@acme/design-system": { singleton: true, requiredVersion: deps["@acme/design-system"] },
+  // Thư viện thuần hàm, không giữ state: share để giảm trùng lặp, không cần singleton
+  "date-fns": { requiredVersion: deps["date-fns"] },
+} as const;
+```
+
+Các tuỳ chọn cần hiểu:
+
+- **`singleton: true`**: chỉ tải một bản duy nhất trong shared scope, kể cả khi các bên yêu cầu version khác nhau.
+- **`requiredVersion`**: range semver mà app này chấp nhận. Nếu bản singleton đang có không thoả, runtime cảnh báo trong console nhưng vẫn dùng bản đó.
+- **`strictVersion: true`**: biến cảnh báo trên thành lỗi. Mình chỉ bật cho những thư viện mà chạy sai version chắc chắn hỏng (thường là design system có breaking change về token).
+- **`eager: true`**: đưa dependency vào bundle khởi động thay vì tải bất đồng bộ. Tránh dùng: nó làm tăng bundle đầu và dễ gây lỗi "Shared module is not available for eager consumption" khi cấu hình lệch nhau.
+
+<Callout type="danger" title="War story: lỗi chỉ xảy ra khi đi đúng một đường">
+  Một remote khai báo `react` là singleton nhưng quên `react-dom`. Mọi thứ chạy bình thường khi người dùng vào thẳng trang của remote đó. Lỗi "Invalid hook call" chỉ xuất hiện khi người dùng đi từ trang chủ (shell đã khởi tạo `react-dom` của nó) sang trang của remote. Test E2E của remote mở thẳng URL nên không bao giờ bắt được. Từ đó mình chuyển cấu hình shared vào một package chung và thêm một test kiểm tra `__FEDERATION__` trên trang ghép rằng mỗi singleton chỉ có một version được tải.
+</Callout>
+
+### Version skew: khi các bên không đồng ý về version
+
+Trong một hệ deploy độc lập, version skew không phải sự cố mà là trạng thái bình thường. Shell build tuần trước với React 19.1, remote build hôm nay với 19.2. Vậy bản nào được dùng?
+
+Runtime Module Federation 2.0 có tuỳ chọn `shareStrategy`. Mặc định `version-first` sẽ xem tất cả version mà các remote đã đăng ký và chọn bản cao nhất thoả mãn; `loaded-first` ưu tiên bản đã được tải trước. `version-first` cho kết quả nhất quán hơn nhưng có thể khiến shell tải entry của mọi remote sớm hơn để biết version. Dù chọn cách nào, đây là các quy tắc mình dùng để version skew không thành sự cố:
+
+1. **Range rộng cho patch và minor, chặt cho major.** `^19.0.0` cho React; không bao giờ ghim chính xác `19.1.0`.
+2. **Nâng major là một sự kiện có kế hoạch.** Nâng React 19 lên 20 trong micro-frontends nghĩa là: shell hỗ trợ cả hai trong một khoảng thời gian (hoặc không thể), mọi remote nâng lần lượt, có ngày chốt. Đây là chi phí phối hợp mà micro-frontends không xoá được.
+3. **Design system phải tương thích ngược trong cùng major.** Nếu `@acme/design-system` 4.3 đổi tên một CSS variable, mọi remote đang chạy 4.1 sẽ vỡ khi shell nâng lên.
+4. **Đo version thực tế trên production.** Gửi version của mỗi shared dependency đã resolve vào telemetry. Bạn sẽ ngạc nhiên về số remote đang chạy bản design system từ nửa năm trước.
+
+### Manifest và dynamic remote
+
+Bản đầu của Module Federation trỏ thẳng vào `remoteEntry.js`. Bản 2.0 sinh thêm `mf-manifest.json`: một file mô tả remote expose những gì, cần shared dependency nào với version nào, asset nào cần preload, và type ở đâu. Shell trỏ vào manifest thay vì entry.
+
+Điều quan trọng hơn: **đừng hardcode URL remote trong build của shell**. Nếu URL nằm trong bundle shell, mỗi lần đổi version remote lại phải build shell — bạn mất đúng thứ micro-frontends hứa hẹn. Mình dùng một registry đơn giản (một file JSON trên CDN hoặc một endpoint nhỏ) và đăng ký remote lúc chạy:
+
+```ts
+// apps/shell/src/mf/bootstrap.ts
+import { registerRemotes } from "@module-federation/enhanced/runtime";
+
+type RemoteMap = Record<string, { entry: string; version: string }>;
+
+export async function registerFromRegistry(env: "staging" | "production") {
+  const res = await fetch(`https://mfe.example.com/registry/${env}.json`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`registry ${res.status}`);
+  const remotes = (await res.json()) as RemoteMap;
+
+  registerRemotes(
+    Object.entries(remotes).map(([name, r]) => ({
+      name,
+      // URL có version: deploy mới = file mới, rollback = trỏ registry về bản cũ
+      entry: r.entry, // vd. https://mfe.example.com/checkout/1.42.0/mf-manifest.json
+    })),
+  );
+  return remotes;
+}
+```
+
+```json
+// registry/production.json
+{
+  "checkout": { "version": "1.42.0", "entry": "https://mfe.example.com/checkout/1.42.0/mf-manifest.json" },
+  "catalog": { "version": "3.8.1", "entry": "https://mfe.example.com/catalog/3.8.1/mf-manifest.json" }
+}
+```
+
+Mô hình này cho bạn ba thứ miễn phí: **rollback tức thì** (trỏ registry về version cũ, không build gì cả), **canary** (registry trả bản mới cho 5% người dùng), và **ghi đè khi debug** (đọc version từ query string hoặc cookie trên staging để test một remote đang review). Asset của mỗi version nằm ở đường dẫn bất biến, cache vĩnh viễn; chỉ registry là `no-store`.
+
+### Chia sẻ type giữa các repo
+
+Khi shell gọi `loadRemote("checkout/CheckoutApp")`, TypeScript không biết module đó trông thế nào. Module Federation 2.0 giải quyết bằng tuỳ chọn `dts`: remote sinh file khai báo type cho các module được expose và đóng gói thành `@mf-types.zip` đặt cạnh manifest; host tải về thư mục `@mf-types` khi dev và build.
+
+```json
+// apps/shell/tsconfig.json
+{
+  "compilerOptions": {
+    "paths": {
+      "*": ["./@mf-types/*"]
+    }
+  }
+}
+```
+
+Nó hoạt động, nhưng mình coi type tự sinh là *tiện lợi* chứ không phải *contract*. Contract thật nằm ở một package nhỏ, versioned, cả hai bên cùng import:
+
+```ts
+// packages/mfe-contracts/src/checkout.ts
+import type { ComponentType } from "react";
+
+export type CheckoutAppProps = {
+  basePath: string;
+  locale: "vi" | "en";
+  session: { userId: string; getAccessToken: () => Promise<string> };
+  onNavigate: (to: string) => void;
+};
+
+export type CheckoutModule = {
+  default: ComponentType<CheckoutAppProps>;
+  contractVersion: 2;
+};
+```
+
+`contractVersion` là một hằng số mà shell kiểm tra lúc tải: nếu remote export version contract mà shell không hiểu, shell hiển thị fallback thay vì render một component với props sai. Thô sơ nhưng đã cứu mình một lần khi một remote deploy breaking change vào lúc nửa đêm.
+
+### Khi remote sập: fallback
+
+Remote là một dependency mạng. CDN có thể trả 503, một deploy có thể làm hỏng entry, mạng di động có thể timeout. Thiết kế mặc định phải là: **một remote sập không được kéo cả trang sập theo**.
+
+Có hai loại lỗi cần xử lý riêng:
+
+1. **Lỗi tải**: manifest hoặc entry không tải được. Bắt bằng runtime plugin với hook `errorLoadRemote`.
+2. **Lỗi khi render**: remote tải được nhưng ném lỗi lúc chạy. Bắt bằng error boundary của React quanh mỗi remote.
+
+```ts
+// apps/shell/src/mf/fallback-plugin.ts
+import type { ModuleFederationRuntimePlugin } from "@module-federation/enhanced/runtime";
+import { RemoteUnavailable } from "../components/RemoteUnavailable";
+import { track } from "../telemetry";
+
+export default function fallbackPlugin(): ModuleFederationRuntimePlugin {
+  return {
+    name: "shell-remote-fallback",
+    errorLoadRemote({ id, error, lifecycle }) {
+      track("remote_load_failed", { id, lifecycle, message: String(error) });
+      if (lifecycle === "onLoad") {
+        // Factory thay thế, cùng shape với module được expose
+        return () => ({ __esModule: true, default: RemoteUnavailable, contractVersion: 2 });
+      }
+      // Lỗi ở giai đoạn khác (manifest, entry): để loadRemote reject,
+      // error boundary bên dưới sẽ hiển thị fallback
+      return undefined;
+    },
+  };
+}
+```
+
+Runtime gọi hook này ở nhiều giai đoạn khác nhau — khi tải manifest, khi tải entry, khi lấy module — và cho biết giai đoạn qua `lifecycle`. Mình chỉ thay module ở giai đoạn `onLoad`; các trường hợp còn lại để lỗi đi tiếp và được error boundary bắt. Hai lớp chồng lên nhau là có chủ đích: plugin ghi telemetry thống nhất cho mọi remote, boundary đảm bảo không lỗi nào lọt ra ngoài ô của remote.
+
+```tsx
+// apps/shell/src/mf/RemoteSlot.tsx
+import { Component, lazy, Suspense, type ReactNode } from "react";
+import { loadRemote } from "@module-federation/enhanced/runtime";
+import type { CheckoutAppProps, CheckoutModule } from "@acme/mfe-contracts";
+import { RemoteUnavailable } from "../components/RemoteUnavailable";
+import { track } from "../telemetry";
+
+class RemoteBoundary extends Component<{ name: string; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    track("remote_render_failed", { remote: this.props.name, message: String(error) });
+  }
+  render() {
+    return this.state.failed ? <RemoteUnavailable /> : this.props.children;
+  }
+}
+
+const CheckoutApp = lazy(async () => {
+  const mod = await loadRemote<CheckoutModule>("checkout/CheckoutApp");
+  if (!mod || mod.contractVersion !== 2) return { default: RemoteUnavailable };
+  return mod;
+});
+
+export function CheckoutSlot(props: CheckoutAppProps) {
+  return (
+    <RemoteBoundary name="checkout">
+      <Suspense fallback={<div className="slot-skeleton" aria-busy="true" />}>
+        <CheckoutApp {...props} />
+      </Suspense>
+    </RemoteBoundary>
+  );
+}
+```
+
+Vài chi tiết thực tế:
+
+- **Fallback phải có nghĩa với người dùng.** "Thanh toán đang tạm gián đoạn, giỏ hàng của bạn vẫn được giữ" tốt hơn một khung trắng. Với trang mà remote là toàn bộ nội dung, có nút "Thử lại" gọi lại `loadRemote`.
+- **Đặt timeout.** Một CDN treo còn tệ hơn CDN trả lỗi nhanh. Kết hợp skeleton với giới hạn thời gian để chuyển sang fallback.
+- **Theo dõi theo remote.** Telemetry phải gắn tên và version remote vào mọi lỗi; nếu không, team on-call của shell sẽ nhận mọi alert.
+
+<Figure src="/blog/micro-frontends-module-federation-composition.svg" alt="Sơ đồ ghép micro-frontends lúc chạy: registry trả về version của từng remote cho shell; shell chịu trách nhiệm routing, session và error boundary, gửi telemetry; shell gọi loadRemote tới remote catalog và account (tải thành công), còn remote checkout bị lỗi 503 hoặc timeout nên runtime plugin errorLoadRemote trả về Fallback UI và phần còn lại của trang vẫn hoạt động; dưới cùng là shared scope chứa react 19, react-dom 19 và design system 4 được tải đúng một lần và các remote dùng lại thay vì tự bundle" caption="Registry ghim version, shared scope đảm bảo React và design system chỉ có một bản, và một remote sập chỉ làm mất đúng ô của nó trên trang." />
+
+## Các mối quan tâm xuyên suốt mà không ai nói trước
+
+Chọn cách ghép xong mới là phần dễ. Phần khó là những thứ đi xuyên qua mọi remote.
+
+### Ai sở hữu routing
+
+Quy tắc mình dùng: **shell sở hữu route cấp một, remote sở hữu mọi thứ bên dưới**. Shell biết `/checkout/*` thuộc checkout, nhưng không biết `/checkout/payment` hay `/checkout/review` tồn tại.
+
+```tsx
+// apps/shell/src/routes.tsx
+import { createBrowserRouter } from "react-router";
+import { CatalogSlot, CheckoutSlot, AccountSlot } from "./mf/slots";
+import { ShellLayout } from "./ShellLayout";
+
+export const router = createBrowserRouter([
+  {
+    element: <ShellLayout />,
+    children: [
+      { path: "/", element: <CatalogSlot basePath="/" /> },
+      { path: "/checkout/*", element: <CheckoutSlot basePath="/checkout" /> },
+      { path: "/account/*", element: <AccountSlot basePath="/account" /> },
+    ],
+  },
+]);
+```
+
+Bên trong remote, dùng `Routes` lồng nhau với đường dẫn tương đối, *không* tạo thêm một `BrowserRouter` thứ hai. Hai router cùng lắng nghe history là công thức cho những bug "bấm back hai lần mới quay lại được". Điều này cũng là lý do router phải là shared singleton.
+
+Khi một remote cần điều hướng sang khu vực của remote khác (từ catalog sang checkout), nó không import gì từ checkout — nó chỉ điều hướng tới URL `/checkout`. **URL là API công khai ổn định nhất giữa các team.**
+
+### Design system dùng chung
+
+Design system là thứ giữ cho năm team trông như một sản phẩm. Nó cũng là dependency dễ gây version skew nhất. Những gì mình học được:
+
+- **Token đi qua CSS custom properties**, được shell định nghĩa ở `:root`. Remote không nhúng giá trị màu; nó dùng `var(--color-primary)`. Đổi theme, dark mode, rebrand — remote không cần deploy lại. (Mình viết chi tiết hơn trong bài về [design tokens và theming](/blog/design-tokens-and-theming).)
+- **Component là shared singleton với range major cố định**, và design system phải nghiêm túc với semver.
+- **Shell cung cấp các "primitive" của trang**: toast, dialog host, layout. Nếu mỗi remote tự mount một toast container, bạn sẽ có ba toast chồng nhau.
+
+### Auth và session
+
+Session thuộc về shell. Remote không bao giờ tự đăng nhập, không tự đọc cookie, không tự refresh token.
+
+- **Mọi thứ phục vụ dưới một domain**, qua reverse proxy hoặc CDN, để cookie session là first-party và `SameSite` hoạt động như mong đợi. Remote gọi API qua `/api/...` cùng origin, tốt nhất là qua một backend-for-frontend.
+- **Shell truyền vào một interface, không truyền token.** `getAccessToken()` trả về token còn hạn (shell tự refresh khi cần). Remote không lưu token vào state lâu dài.
+- **Hết phiên là một sự kiện toàn cục.** Khi API trả 401, remote phát sự kiện, shell xử lý chuyển hướng đăng nhập — một chỗ duy nhất.
+
+### Giao tiếp giữa các app: sự kiện, URL, và đừng dùng chung global store
+
+Cám dỗ lớn nhất là "dùng chung một Redux store cho tiện". Đừng. Một store chung nghĩa là mọi remote phụ thuộc vào shape state của nhau — thay đổi một reducer là breaking change cho cả hệ thống. Bạn đã quay lại monolith, chỉ là khó debug hơn.
+
+Thứ tự ưu tiên mình dùng:
+
+1. **URL** cho mọi thứ người dùng có thể chia sẻ hoặc bookmark: bộ lọc, sản phẩm đang chọn, bước checkout.
+2. **Props từ shell** cho ngữ cảnh ổn định: locale, session, feature flag.
+3. **Custom event** cho thông báo "đã xảy ra chuyện gì đó": thêm vào giỏ, hết phiên, đổi tiền tệ.
+4. **Backend** là nguồn sự thật cho dữ liệu dùng chung. Giỏ hàng nằm ở server; header của shell tự fetch lại số lượng khi nhận sự kiện, không nhận state từ remote.
+
+```ts
+// packages/mfe-contracts/src/events.ts
+export type MfeEvents = {
+  "cart:changed": { itemCount: number };
+  "auth:session-expired": { reason: "timeout" | "revoked" };
+  "locale:changed": { locale: "vi" | "en" };
+};
+
+type EventName = keyof MfeEvents;
+
+export function emit<K extends EventName>(type: K, detail: MfeEvents[K]) {
+  window.dispatchEvent(new CustomEvent(`mfe:${type}`, { detail }));
+}
+
+export function on<K extends EventName>(type: K, handler: (detail: MfeEvents[K]) => void) {
+  const listener = (e: Event) => handler((e as CustomEvent<MfeEvents[K]>).detail);
+  window.addEventListener(`mfe:${type}`, listener);
+  return () => window.removeEventListener(`mfe:${type}`, listener);
+}
+```
+
+Sự kiện có type, có namespace, nằm trong package contract có version. Thêm sự kiện là thay đổi tương thích; đổi shape `detail` là breaking change và phải theo quy trình như đổi API. Payload nhỏ, chỉ mang ý nghĩa "chuyện gì vừa xảy ra" — bên nhận tự lấy dữ liệu đầy đủ từ nguồn sự thật.
+
+### Cách ly CSS
+
+Mọi remote chung một document, nghĩa là chung một cascade. Một remote viết `.button { padding: 0 }` là đủ phá giao diện của remote khác. Các lớp phòng thủ, từ rẻ đến đắt:
+
+- **CSS Modules hoặc class có hash** cho style riêng của từng remote. Không bao giờ viết selector thẻ trần (`h2`, `button`) ở cấp toàn cục.
+- **Prefix khi dùng Tailwind**: Tailwind v4 cho phép `@import "tailwindcss" prefix(co);` để class trở thành `co:flex`. Đặc biệt quan trọng khi hai remote dùng hai version Tailwind và cùng sinh ra class `flex` với định nghĩa khác nhau.
+- **Cascade layers** để thứ tự ưu tiên không phụ thuộc vào thứ tự tải: shell khai báo `@layer reset, ds, remotes, overrides;` và mỗi remote bọc CSS của mình trong layer `remotes`.
+- **Shadow DOM** cho cách ly thật — nhưng có giá: portal của modal render ra ngoài shadow root sẽ mất style, font phải khai báo ở document, và nhiều thư viện UI chưa sẵn sàng. CSS custom properties vẫn kế thừa xuyên qua shadow root, nên token của design system vẫn dùng được.
+
+Và đừng quên dọn dẹp: CSS của remote được inject khi mount phải được gỡ hoặc ít nhất không gây ảnh hưởng khi remote unmount — nhiều bundler để style lại vĩnh viễn trong `head`.
+
+### Ngân sách hiệu năng: dependency trùng lặp
+
+Micro-frontends làm mất đi thứ quý nhất của một bundler: cái nhìn toàn cục để loại bỏ trùng lặp. Mỗi remote là một build riêng. Nếu ba remote cùng dùng một thư viện chart mà không share, người dùng tải nó ba lần.
+
+Những gì mình đặt trong CI của mỗi remote:
+
+- **Ngân sách kích thước cho entry và chunk khởi đầu** của remote (tính sau nén), fail build khi vượt.
+- **Kiểm tra rằng singleton không bị bundle**: phân tích output (Rsdoctor với Rspack/Rsbuild làm tốt việc này) và fail nếu thấy `react-dom` trong chunk của remote.
+- **Preload có chủ đích**: dùng `preloadRemote` của runtime khi người dùng hover vào link "Thanh toán", không preload mọi remote ngay khi tải trang.
+- **Đo trên trang ghép**, không đo từng remote riêng. Core Web Vitals của người dùng thật trên trang `/checkout` mới là con số có ý nghĩa.
+
+<Callout type="tip" title="Một câu hỏi trước khi share">
+  Không phải dependency nào cũng nên share. Share có chi phí: shell phải tải metadata và đàm phán version lúc chạy, và chunk share không được tree-shake theo nhu cầu từng remote. Thư viện nhỏ, ít remote dùng thì để mỗi remote tự bundle còn rẻ hơn. Share những thứ lớn, phổ biến, hoặc buộc phải singleton.
+</Callout>
+
+## Khi nào modular monolith và monorepo là câu trả lời tốt hơn
+
+Sau tất cả những điều trên, mình muốn nói thẳng: với phần lớn đội từ một đến bốn team, **một modular monolith trong monorepo tốt hơn micro-frontends**. Bạn có được phần lớn lợi ích về ranh giới và ownership, mà không phải trả chi phí runtime.
+
+Monorepo cho bạn:
+
+- **Ranh giới được kiểm tra lúc build.** Mỗi domain là một package (`@acme/checkout`, `@acme/catalog`). Quy tắc import (ESLint `no-restricted-imports`, hoặc tính năng boundaries của Turborepo với tag trong `turbo.json`) cấm catalog import thẳng vào nội bộ của checkout.
+- **Ownership qua CODEOWNERS**: team checkout review mọi thay đổi trong `packages/checkout`.
+- **Build và test theo phần bị ảnh hưởng**: `turbo run test --affected` chỉ chạy những package bị ảnh hưởng bởi thay đổi, remote cache tránh build lại thứ không đổi.
+- **Một version React, một version design system**, được nâng một lần, kiểm tra một lần, bởi một PR.
+- **Refactor xuyên ranh giới trong một PR**, có type check toàn bộ — điều gần như không thể với các repo deploy độc lập.
+
+Thứ duy nhất monorepo không cho là deploy độc lập ở mức runtime. Và nếu pipeline của app nhanh, có feature flag để tách deploy khỏi release, thì nhu cầu đó thường nhỏ hơn bạn nghĩ. Mình đã viết về những bài học khi dựng chính monorepo của site này trong bài [monorepo với Bun và Turborepo](/blog/monorepo-lessons-bun-turborepo).
+
+Lộ trình mình hay đề xuất:
+
+1. **Bắt đầu bằng modular monolith** trong monorepo, ranh giới domain rõ, quy tắc import được enforce.
+2. **Nếu các khu vực tách theo URL**, tách thành Next.js multi-zones — chi phí thấp, cách ly tốt.
+3. **Chỉ khi nhiều team cần cùng render trên một trang và deploy độc lập là nút thắt thật**, mới đưa Module Federation vào — và lúc đó ranh giới package đã có sẵn, việc tách trở nên cơ học.
+
+Điểm hay của lộ trình này: bước 1 không bao giờ là công sức bỏ phí. Ranh giới tốt trong monolith chính là điều kiện để micro-frontends thành công sau này.
+
+## Những sai lầm mình hay gặp
+
+- **Chia theo lớp kỹ thuật thay vì theo domain.** "Remote header", "remote footer", "remote form" — mọi tính năng đều chạm vào mọi remote. Chia theo khả năng kinh doanh: catalog, checkout, tài khoản.
+- **Remote quá nhỏ.** Mỗi remote là một pipeline, một bộ alert, một bộ dependency phải nâng cấp. Hai mươi remote cho sáu team là quá nhiều.
+- **Shell phình ra thành monolith.** Shell nên mỏng: layout, routing cấp một, session, error boundary, telemetry. Khi logic nghiệp vụ bắt đầu rơi vào shell, mọi team lại phải chờ shell.
+- **Không có môi trường tích hợp.** Mỗi remote có test riêng nhưng không ai test trang ghép trước khi đổi registry production. Ít nhất cần một bộ smoke test E2E chạy trên staging với registry staging.
+- **URL remote "latest".** Trỏ vào `checkout/latest/mf-manifest.json` nghĩa là deploy của checkout có hiệu lực ngay, không có rollback, không có canary, và cache CDN quyết định ai thấy version nào.
+- **Chia sẻ state qua `window`.** `window.__CART__ = ...` bắt đầu như một hack tạm thời và kết thúc như một API không có type, không có version, mà mọi người sợ đụng vào.
+- **Không ai sở hữu platform.** Cấu hình shared, registry, contract, budget cần một chủ sở hữu. Không có, mỗi team tự giải quyết theo cách riêng và hệ thống dần phân mảnh.
+
+## Checklist trước khi chọn micro-frontends
+
+<Checklist>
+
+- Có ít nhất vài team tự chủ, ranh giới domain ổn định, và nút thắt thực sự là phối hợp release.
+- Đã cân nhắc modular monolith trong monorepo và multi-zones trước, và có lý do cụ thể vì sao chúng không đủ.
+- Cấu hình `shared` nằm trong một package chung; React, React DOM, router, design system là singleton với range semver hợp lý.
+- URL remote đến từ registry lúc chạy, trỏ vào manifest có version bất biến; rollback là đổi registry.
+- Contract giữa shell và remote (props, sự kiện, `contractVersion`) nằm trong một package có version.
+- Mỗi remote được bọc bởi fallback khi tải lỗi và error boundary khi render lỗi, kèm timeout.
+- Shell sở hữu route cấp một và session; remote chỉ dùng route lồng nhau và interface auth do shell cung cấp.
+- Không có global store chung; giao tiếp qua URL, props, custom event có type, và backend.
+- CSS được cách ly bằng CSS Modules, prefix hoặc cascade layers; token qua CSS custom properties.
+- CI có ngân sách kích thước cho mỗi remote và kiểm tra singleton không bị bundle trùng.
+- Telemetry gắn tên và version remote vào mọi lỗi; có smoke test E2E trên trang ghép.
+- Có một người hoặc team sở hữu platform: registry, cấu hình shared, contract, budget.
+
+</Checklist>

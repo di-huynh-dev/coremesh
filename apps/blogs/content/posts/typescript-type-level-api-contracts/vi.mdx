@@ -1,0 +1,691 @@
+---
+title: "TypeScript ở tầng type cho API contract không thể dùng sai"
+excerpt: "Conditional type và infer, key remapping, template literal type biến \"/users/:id/posts/:postId\" thành params có type, một fetch client suy ra từ route map, lỗi có type, branded ID, satisfies và const type parameter, cầu nối Zod để type không nói dối — và khi nào nên dừng."
+---
+
+<Lead>Phần lớn bug API mình từng debug ở frontend chẳng có gì cao siêu. Một path param sai thứ tự. Một `userId` được truyền vào chỗ của `postId`. Một body `POST` gửi tới route đã đổi tên từ hai sprint trước. Một lỗi `404` bị xử lý như lỗi mạng. TypeScript có thể biến từng cái đó thành một dòng gạch đỏ thay vì một sự cố production — nhưng không phải bằng vài interface rắc lên `fetch`. Cần một chút máy móc ở tầng type: conditional type và `infer`, template literal type đọc được chuỗi path, mapped type dựng client từ route map, và một cầu nối runtime để type mô tả đúng những gì thực sự tới. Bài này dựng client đó từ đầu tới cuối, giải thích từng món máy móc đúng lúc cần đến nó, và nói thật về hoá đơn: thời gian compile, thông báo lỗi không ai đọc nổi, và chỗ mình dừng lại.</Lead>
+
+## "Không thể dùng sai" thực ra nghĩa là gì
+
+Nếu bạn chưa đọc [Những pattern TypeScript thực sự đáng giá](/blog/typescript-patterns-that-pay-off), hãy bắt đầu từ đó: bài ấy nói về discriminated union, `switch` vét cạn với `never`, `as const`, `satisfies` và branded type ở mức dùng hằng ngày. Bài này coi như bạn đã nắm hết và đi xuống thêm một tầng — vào những type *tính toán* ra type khác.
+
+Một API contract có nhiều phần hơn một interface cho response:
+
+| Phần của contract | Kiểu dùng sai hay gặp | Máy móc ngăn nó |
+| --- | --- | --- |
+| Endpoint nào tồn tại | Gõ sai path, gọi route đã bị xoá | Key literal từ route map |
+| Path param | Thiếu `:postId`, đảo ID | Template literal type + branded ID |
+| Query và body | Gửi body cho `GET`, sai tên field | Kiểu tham số có điều kiện |
+| Response thành công | Đọc field không tồn tại | `z.infer` từ schema của response |
+| Response lỗi | Coi 404 như lỗi mạng | Discriminated union các lỗi theo từng route |
+| Bản thân dữ liệu | Server đổi shape, type vẫn nói khác | Validate lúc runtime ở biên |
+
+Mục tiêu là **một khai báo duy nhất cho mỗi endpoint** — method, path, schema — và *mọi* type người gọi nhìn thấy đều được suy ra từ đó. Không có interface `GetUserPostParams` viết tay có thể lệch dần. Khi ai đó đổi path, mọi chỗ gọi không còn khớp sẽ dừng compile.
+
+<Figure src="/blog/typescript-type-level-api-contracts-flow.svg" alt="Sơ đồ pipeline sáu bước. Bước 1, defineRoutes với const type parameter, giữ nguyên literal path /users/:id/posts/:postId và method GET. Bước 2, template literal type với infer đệ quy tách ra union id hoặc postId. Bước 3, mapped type biến union đó thành object type, hoặc schema params của route cung cấp UserId và PostId có brand. Bước 4, key remapping biến tên route thành key endpoint như GET /users/:id/posts/:postId. Bước 5, conditional type khiến params chỉ bắt buộc khi path có placeholder và body chỉ được phép khi có schema. Bước 6, lời gọi api.call với params trả về ApiResult gồm Post hoặc NotFound. Dải dưới cùng thể hiện cầu nối Zod: schema response sinh ra type Post qua z.infer, và cùng schema đó chạy safeParse lúc runtime, trả về lỗi contract khi dữ liệu lệch." caption="Một literal trong route map nuôi mọi type ở chỗ gọi. Schema Zod sinh ra type của response cũng chính là schema kiểm tra response lúc runtime." />
+
+## Conditional type và `infer`: pattern matching trên type
+
+Conditional type là một câu `if` chạy trong compiler: `T extends U ? X : Y`. Điều thú vị là `U` có thể là một *pattern* có lỗ hổng, và `infer` đặt tên cho các lỗ đó.
+
+```ts
+type ElementOf<T> = T extends readonly (infer E)[] ? E : never;
+type FirstArg<F> = F extends (first: infer A, ...rest: any[]) => unknown ? A : never;
+
+type E1 = ElementOf<string[]>; // string
+type A1 = FirstArg<(id: number, opts: object) => void>; // number
+```
+
+### Distribution: quy tắc làm ai cũng ngạc nhiên một lần
+
+Khi type được kiểm tra là một **type parameter trần** và bạn truyền vào một union, conditional chạy riêng cho từng thành viên rồi gộp kết quả thành union:
+
+```ts
+type ToArray<T> = T extends unknown ? T[] : never;
+type D1 = ToArray<string | number>; // string[] | number[]
+
+// Bọc cả hai vế trong tuple để tắt distribution.
+type ToArrayAll<T> = [T] extends [unknown] ? T[] : never;
+type D2 = ToArrayAll<string | number>; // (string | number)[]
+```
+
+Distribution thường là thứ bạn muốn — `Exclude` và `Extract` hoạt động nhờ nó. Nhưng nó có một hệ quả bạn sẽ gặp trong type cho API: `never` là union rỗng, nên distribute trên nó cho ra `never` mà không hề chạy các nhánh của bạn. Một phép kiểm tra ngây thơ "route này có params không?" sẽ hỏng một cách lặng lẽ:
+
+```ts
+type HasParamsNaive<Names> = Names extends never ? false : true;
+type H1 = HasParamsNaive<never>; // never — không phải false!
+
+type HasParams<Names> = [Names] extends [never] ? false : true;
+type H2 = HasParams<never>; // false
+```
+
+Hãy nhớ `[X] extends [never]`. Lát nữa ta sẽ cần nó.
+
+### `infer` có ràng buộc, và tách số ra khỏi chuỗi
+
+Từ TypeScript 4.7, `infer` có thể mang ràng buộc, và từ 4.8, infer vào `number` từ một template literal sẽ thực sự cho ra number literal:
+
+```ts
+type StatusOf<S extends string> = S extends `${infer N extends number} ${string}` ? N : never;
+type S1 = StatusOf<"404 Not Found">; // 404 (number literal, không phải "404")
+
+type StatusClass<S extends number> = `${S}` extends `2${string}`
+  ? "success"
+  : `${S}` extends `4${string}`
+    ? "client-error"
+    : `${S}` extends `5${string}`
+      ? "server-error"
+      : "other";
+
+type C1 = StatusClass<409>; // "client-error"
+```
+
+Mẹo cuối — đổi số thành chuỗi bằng template literal để pattern match trên nó — là loại thứ vui trong một bài blog và nên dùng dè dặt trong codebase. Giữ suy nghĩ đó cho phần chi phí.
+
+## Template literal type: suy ra params từ path
+
+Đây là phần trung tâm. Từ `"/users/:id/posts/:postId"`, mình muốn có `{ id: string; postId: string }` — được suy ra, không phải khai báo.
+
+```ts
+// contracts/path-params.ts
+export type PathParamNames<P extends string> =
+  P extends `${string}:${infer Name}/${infer Rest}`
+    ? Name | PathParamNames<`/${Rest}`>
+    : P extends `${string}:${infer Name}`
+      ? Name
+      : never;
+
+/** Làm phẳng intersection để hover trong editor hiện một object bình thường. */
+export type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
+export type PathParams<P extends string> = Simplify<{ [K in PathParamNames<P>]: string }>;
+```
+
+Đi qua từng bước với `"/users/:id/posts/:postId"`:
+
+1. Pattern đầu cần "gì cũng được, dấu hai chấm, một cái tên, dấu gạch chéo, phần còn lại". Suy luận template literal khớp mỗi placeholder *ngắn nhất có thể* tính từ trái: `${string}` lấy `/users/`, `Name` lấy `id` (tới dấu `/` kế tiếp), `Rest` lấy `posts/:postId`.
+2. Ta hợp `"id"` với lời gọi đệ quy trên `/posts/:postId`.
+3. Trong lời gọi đệ quy, sau cái tên cuối không còn `/`, nên pattern đầu thất bại và pattern thứ hai khớp: `Name` là `postId`.
+4. Kết quả: `"id" | "postId"`. Mapped type biến union đó thành các key.
+
+```ts
+type T1 = PathParamNames<"/users/:id/posts/:postId">; // "id" | "postId"
+type T2 = PathParams<"/users/:id/posts/:postId">; // { id: string; postId: string }
+type T3 = PathParams<"/health">; // {}
+type T4 = PathParams<string>; // {}  ← nhớ cái này
+```
+
+`T4` là cái bẫy. Nếu path bị nới thành `string` ở đâu đó phía trên, sẽ không tìm được tên nào, object params thành `{}`, và compiler vui vẻ cho mọi lời gọi đi qua mà không cần params. Máy móc ở tầng type chỉ tốt bằng literal bạn đưa vào — đó là lý do có hẳn một phần bên dưới nói về việc giữ literal là literal.
+
+<Callout type="tip" title="Vì sao cần Simplify">
+Không có `Simplify`, hover vào type suy ra sẽ thấy công thức: `{ [K in PathParamNames<"/users/:id/posts/:postId">]: string } & { signal?: AbortSignal }`. Có nó, bạn thấy món ăn: `{ id: string; postId: string; signal?: AbortSignal }`. Phần `& {}` ở cuối thúc compiler tính ngay. Đây là cải thiện DX rẻ nhất trong cả bài.
+</Callout>
+
+### Segment tuỳ chọn và catch-all
+
+Router thật có `:slug?` và `*rest`. Bạn có thể mở rộng pattern — khớp `:${infer Name}?` trước rồi đưa vào key tuỳ chọn — nhưng mỗi phần mở rộng là thêm một nhánh phải tính cho mọi path. Mình chỉ hỗ trợ đúng cú pháp backend đang dùng (segment có tên, bắt buộc) và không gì khác. Nếu backend thêm segment tuỳ chọn, type có thêm nhánh và một type test ngay trong ngày.
+
+## Route map và client có type
+
+Giờ tới route map: mỗi endpoint một entry, với schema Zod cho mọi thứ đi qua đường truyền.
+
+```ts
+// contracts/route.ts
+import type { z } from "zod";
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+export type RouteDef = {
+  method: HttpMethod;
+  path: string;
+  params?: z.ZodObject;
+  query?: z.ZodObject;
+  body?: z.ZodType;
+  response: z.ZodType;
+  errors?: { [status: number]: z.ZodType };
+};
+
+export type RouteMap = Record<string, RouteDef>;
+
+export function defineRoutes<const R extends RouteMap>(routes: R): R {
+  return routes;
+}
+```
+
+```ts
+// contracts/routes.ts
+import { z } from "zod";
+import { defineRoutes } from "./route";
+
+export const UserId = z.uuid().brand<"UserId">();
+export type UserId = z.infer<typeof UserId>;
+export const PostId = z.uuid().brand<"PostId">();
+export type PostId = z.infer<typeof PostId>;
+
+export const Post = z.object({
+  id: PostId,
+  authorId: UserId,
+  title: z.string(),
+  slug: z.string(),
+  publishedAt: z.iso.datetime().nullable(),
+});
+export type Post = z.infer<typeof Post>;
+
+const NotFound = z.object({ code: z.literal("not_found"), resource: z.string() });
+const SlugTaken = z.object({ code: z.literal("slug_taken"), slug: z.string() });
+
+export const routes = defineRoutes({
+  getUserPost: {
+    method: "GET",
+    path: "/users/:id/posts/:postId",
+    params: z.object({ id: UserId, postId: PostId }),
+    response: Post,
+    errors: { 404: NotFound },
+  },
+  listUserPosts: {
+    method: "GET",
+    path: "/users/:id/posts",
+    query: z.object({
+      cursor: z.string().optional(),
+      limit: z.number().int().max(100).optional(),
+    }),
+    response: z.object({ items: z.array(Post), nextCursor: z.string().nullable() }),
+  },
+  createPost: {
+    method: "POST",
+    path: "/users/:id/posts",
+    body: z.object({ title: z.string().min(1), slug: z.string().regex(/^[a-z0-9-]+$/) }),
+    response: Post,
+    errors: { 404: NotFound, 409: SlugTaken },
+  },
+  health: {
+    method: "GET",
+    path: "/health",
+    response: z.object({ ok: z.literal(true) }),
+  },
+});
+```
+
+### Kiểu tham số có điều kiện
+
+Chữ ký hàm phải trả lời ba câu hỏi cho từng route: params có bắt buộc không, có query không (và query có tuỳ chọn không), có được gửi body không? Mỗi câu là một conditional type nhỏ:
+
+```ts
+// contracts/client-types.ts
+import type { z } from "zod";
+import type { PathParamNames, PathParams, Simplify } from "./path-params";
+import type { RouteDef } from "./route";
+
+// Schema params (có brand) được ưu tiên hơn string trơn suy ra từ path.
+type ParamsOf<R extends RouteDef> =
+  R extends { params: infer S extends z.ZodType } ? z.output<S> : PathParams<R["path"]>;
+
+type ParamsArg<R extends RouteDef> =
+  [PathParamNames<R["path"]>] extends [never] ? {} : { params: ParamsOf<R> };
+
+type QueryArg<R extends RouteDef> =
+  R extends { query: infer Q extends z.ZodType }
+    ? {} extends z.input<Q>
+      ? { query?: z.input<Q> } // mọi field đều tuỳ chọn → cả query tuỳ chọn
+      : { query: z.input<Q> }
+    : {};
+
+type BodyArg<R extends RouteDef> =
+  R extends { body: infer B extends z.ZodType } ? { body: z.input<B> } : {};
+
+export type CallArgs<R extends RouteDef> = Simplify<
+  ParamsArg<R> & QueryArg<R> & BodyArg<R> & { signal?: AbortSignal }
+>;
+
+// Khi không có gì bắt buộc, bản thân tham số trở thành tuỳ chọn: api.health()
+export type ArgsTuple<R extends RouteDef> =
+  {} extends CallArgs<R> ? [args?: CallArgs<R>] : [args: CallArgs<R>];
+```
+
+Vài lựa chọn có chủ đích:
+
+- **`z.input` cho thứ người gọi gửi đi, `z.output` cho thứ người gọi nhận về.** Hai cái khác nhau mỗi khi schema có default hoặc transform. Lẫn lộn chúng là cách kinh điển để type nói dối theo một hướng khó thấy.
+- **`{} extends X`** là thành ngữ cho "mọi property của `X` đều tuỳ chọn". Cũng chính phép kiểm tra đó, lật lại, giúp `api.health()` gọi được mà không cần tham số.
+- **Body không có trong type nếu không có schema.** Vì tham số là một object literal mới tạo, truyền `body` cho `GET` là lỗi excess property, không phải một field bị lặng lẽ bỏ qua.
+
+### Mapped type với key remapping
+
+Client theo tên là một mapped type bình thường trên route map. Góc nhìn thứ hai — gọi theo `"METHOD /path"` — dùng key remapping với `as`, cho phép mapped type tính ra key mới:
+
+```ts
+// contracts/client-types.ts (tiếp)
+import type { RouteMap } from "./route";
+
+export type Client<R extends RouteMap> = {
+  [K in keyof R]: (...args: ArgsTuple<R[K]>) => Promise<ResultOf<R[K]>>;
+};
+
+type EndpointKey<D extends RouteDef> = `${D["method"]} ${D["path"]}`;
+
+export type Endpoints<R extends RouteMap> = {
+  [K in keyof R as EndpointKey<R[K]>]: R[K];
+};
+
+// Key remapping còn lọc được: map một key về never là nó biến mất.
+export type ReadEndpoints<R extends RouteMap> = {
+  [K in keyof Endpoints<R> as K extends `GET ${string}` ? K : never]: Endpoints<R>[K];
+};
+
+/** Tra một endpoint và nhắc compiler rằng nó vẫn là RouteDef. */
+export type At<R extends RouteMap, E extends keyof Endpoints<R>> = Extract<Endpoints<R>[E], RouteDef>;
+```
+
+`Endpoints<typeof routes>` có các key `"GET /users/:id/posts/:postId"`, `"GET /users/:id/posts"`, `"POST /users/:id/posts"` và `"GET /health"`. Những key này grep được, khớp với những gì backend ghi log, và được autocomplete trong editor. `ReadEndpoints` là thứ mình đưa cho code prefetch, vốn không bao giờ được phép kích hoạt một `POST`.
+
+`Extract` trong `At` là một lời thừa nhận nhỏ: sau khi remap, compiler không còn chứng minh được giá trị là `RouteDef`, nên bạn phải nói lại. Code ở tầng type nào cũng có vài đường nối như thế.
+
+### Phần runtime bên dưới
+
+API ở tầng type có một hình dạng dễ nhận ra: **bề mặt an toàn phủ lên một lõi nhỏ đầy cast**. Lõi là code bình thường coi mọi thứ là `RouteDef`; các cast được dồn vào một file bạn test kỹ.
+
+```ts
+// contracts/client.ts
+import type { ApiResult } from "./results";
+import type { ArgsTuple, At, Client, Endpoints, ResultOf } from "./client-types";
+import type { RouteDef, RouteMap } from "./route";
+
+type ClientOptions = {
+  baseUrl: string;
+  fetch?: typeof fetch;
+  headers?: () => Record<string, string>;
+};
+
+type AnyArgs = {
+  params?: Record<string, string>;
+  query?: Record<string, unknown>;
+  body?: unknown;
+  signal?: AbortSignal;
+};
+
+export function createClient<R extends RouteMap>(routes: R, options: ClientOptions) {
+  const run = (def: RouteDef, args: AnyArgs = {}) => request(def, args, options);
+
+  // Cast này thành thật với bản chất của nó: shape dựng động lúc runtime, khẳng định type một lần.
+  const byName = Object.fromEntries(
+    Object.entries(routes).map(([name, def]) => [name, (args?: AnyArgs) => run(def, args)]),
+  ) as unknown as Client<R>;
+
+  const byEndpoint = new Map(Object.values(routes).map((def) => [`${def.method} ${def.path}`, def]));
+
+  function call<E extends keyof Endpoints<R> & string>(
+    endpoint: E,
+    ...args: ArgsTuple<At<R, E>>
+  ): Promise<ResultOf<At<R, E>>> {
+    const def = byEndpoint.get(endpoint);
+    if (!def) throw new Error(`Unknown endpoint: ${endpoint}`);
+    return run(def, args[0] as AnyArgs) as Promise<ResultOf<At<R, E>>>;
+  }
+
+  // Cái tên duy nhất route không được dùng là "call".
+  return Object.assign(byName, { call });
+}
+
+function buildPath(template: string, params: Record<string, string>): string {
+  return template.replace(/:(\w+)/g, (_, name: string) => {
+    const value = params[name];
+    if (value === undefined) throw new Error(`Missing path param "${name}" in ${template}`);
+    return encodeURIComponent(value);
+  });
+}
+
+async function request(def: RouteDef, args: AnyArgs, options: ClientOptions): Promise<ApiResult<unknown, unknown>> {
+  const params = (def.params ? def.params.parse(args.params) : (args.params ?? {})) as Record<string, string>;
+  // Ghép tương đối: dấu "/" ở đầu sẽ xoá mất prefix path trong baseUrl.
+  const base = options.baseUrl.endsWith("/") ? options.baseUrl : `${options.baseUrl}/`;
+  const url = new URL(buildPath(def.path, params).replace(/^\//, ""), base);
+
+  if (def.query && args.query) {
+    for (const [key, value] of Object.entries(def.query.parse(args.query))) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+  }
+  const body = def.body ? JSON.stringify(def.body.parse(args.body)) : undefined;
+
+  let res: Response;
+  try {
+    res = await (options.fetch ?? fetch)(url, {
+      method: def.method,
+      headers: { ...(body ? { "content-type": "application/json" } : {}), ...options.headers?.() },
+      body,
+      signal: args.signal,
+    });
+  } catch (cause) {
+    if (args.signal?.aborted) return { ok: false, error: { kind: "aborted" } };
+    return { ok: false, error: { kind: "network", cause } };
+  }
+
+  const json: unknown = res.status === 204 ? undefined : await res.json().catch(() => undefined);
+
+  if (res.ok) {
+    const parsed = def.response.safeParse(json);
+    return parsed.success
+      ? { ok: true, data: parsed.data }
+      : { ok: false, error: { kind: "contract", status: res.status, issues: parsed.error.issues } };
+  }
+
+  const declared = def.errors?.[res.status]?.safeParse(json);
+  if (declared?.success) return { ok: false, error: { kind: "http", status: res.status, body: declared.data } };
+  return { ok: false, error: { kind: "unexpected", status: res.status, body: json } };
+}
+```
+
+Đoạn xử lý `baseUrl` trong đó là một vết sẹo, không phải sở thích. `new URL("/users/1", "https://example.com/api/")` cho ra `https://example.com/users/1` — dấu gạch chéo đầu biến path thành tuyệt đối và prefix `/api` biến mất. Môi trường staging của bọn mình phục vụ API dưới một prefix còn production thì không; bug chỉ tồn tại trên staging, và đó là một buổi chiều khá "thú vị".
+
+## Discriminated union cho response và lỗi
+
+`fetch` cho bạn hai kênh thất bại — lỗi bị ném ra và status không phải 2xx — và đa số wrapper gộp cả hai thành một `throw`. Rồi mọi khối `catch` phải đoán chuyện gì đã xảy ra. Mình trả về một giá trị, và biến lỗi thành discriminated union trong đó các lỗi khai báo của từng route là một phần của type:
+
+```ts
+// contracts/results.ts
+import type { z } from "zod";
+
+export type TransportError =
+  | { kind: "network"; cause: unknown }
+  | { kind: "aborted" }
+  | { kind: "unexpected"; status: number; body: unknown }
+  | { kind: "contract"; status: number; issues: z.ZodError["issues"] };
+
+export type ApiResult<T, E> = { ok: true; data: T } | { ok: false; error: E | TransportError };
+```
+
+```ts
+// contracts/client-types.ts (tiếp)
+export type ResponseOf<R extends RouteDef> = z.output<R["response"]>;
+
+// Mapped type đánh chỉ số bằng chính key của nó: cách chuẩn để biến record thành union.
+export type DeclaredErrors<R extends RouteDef> =
+  R extends { errors: infer E extends Record<number, z.ZodType> }
+    ? { [S in keyof E & number]: { kind: "http"; status: S; body: z.output<E[S]> } }[keyof E & number]
+    : never;
+
+export type ResultOf<R extends RouteDef> = ApiResult<ResponseOf<R>, DeclaredErrors<R>>;
+```
+
+Với `createPost`, `DeclaredErrors` là `{ kind: "http"; status: 404; body: { code: "not_found"; resource: string } } | { kind: "http"; status: 409; body: { code: "slug_taken"; slug: string } }`. Thu hẹp theo `kind`, rồi theo `status`, và type của body đi theo:
+
+```tsx
+// app/posts/new/actions.ts
+const result = await api.createPost({ params: { id: userId }, body: { title, slug } });
+
+if (!result.ok) {
+  const { error } = result;
+  switch (error.kind) {
+    case "http":
+      if (error.status === 409) return { fieldErrors: { slug: `"${error.body.slug}" đã có người dùng` } };
+      return { formError: "Tác giả này không còn tồn tại." }; // chỉ còn 404
+    case "contract":
+      reportContractDrift("createPost", error.issues);
+      return { formError: "Có lỗi xảy ra. Vui lòng thử lại." };
+    case "network":
+    case "aborted":
+    case "unexpected":
+      return { formError: "Không kết nối được tới server." };
+    default:
+      return assertNever(error);
+  }
+}
+
+redirect(`/posts/${result.data.slug}`);
+```
+
+Thêm `422` vào `errors` của `createPost` thì không có gì vỡ — nhưng comment "chỉ còn 404" ở trên trở thành lời nói dối, nên với những route mà lỗi điều khiển UI, mình thích một `switch (error.status)` lồng bên trong với `assertNever` riêng. [Bài cơ bản](/blog/typescript-patterns-that-pay-off) đã nói về chính pattern switch vét cạn.
+
+<Callout type="note" title="Sao không throw cho xong?">
+Exception ổn cho "chuyện này không bao giờ được xảy ra". Những kết cục được trông đợi — không tìm thấy, xung đột, validate thất bại — là một phần của contract, và kiểu trả về là chỗ duy nhất compiler nhìn thấy chúng. Nếu tầng dữ liệu của bạn (TanStack Query, Server Action) cần một lần throw, hãy unwrap ở đúng ranh giới đó bằng một helper ném ra lỗi có type. Đừng để `catch (e: unknown)` là nơi contract kết thúc.
+</Callout>
+
+## Branded type cho ID
+
+Bài cơ bản giới thiệu brand như cách giữ `userId` khỏi ngồi nhầm ghế của `orderId`. Trong một API client, chúng thực sự đáng tiền ở một chỗ cụ thể: **path param, nơi giá trị nào cũng là string và rất dễ sai thứ tự**.
+
+```ts
+const userId: UserId = session.userId;
+const postId: PostId = params.postId;
+
+api.getUserPost({ params: { id: userId, postId } }); // ✅
+
+// @ts-expect-error — UserId không được ngồi vào chỗ postId
+api.getUserPost({ params: { id: userId, postId: userId } });
+
+// @ts-expect-error — string trơn chưa phải ID cho tới khi được validate
+api.getUserPost({ params: { id: "8c1f…", postId: "a9d2…" } });
+```
+
+Giá trị có brand đến từ đâu? Từ **parse**, không bao giờ từ `as`. `.brand()` của Zod cho bạn một schema mà type output mang brand, nên cách duy nhất để có `PostId` là chạy qua `PostId.parse()` (ở ranh giới route, từ form, từ segment URL) hoặc nhận nó trong một response đã được validate. Nếu mình thấy `as PostId` khi review ở ngoài test fixture, đó là một comment.
+
+Có một kiểu brand thứ hai rẻ hơn khi ID của bạn có prefix — kiểu Stripe `usr_…`, `post_…`:
+
+```ts
+type UserKey = `usr_${string}`;
+type PostKey = `post_${string}`;
+
+function loadUser(id: UserKey) {}
+loadUser("usr_8f2k"); // ✅
+// @ts-expect-error
+loadUser("post_19a"); // sai prefix, bắt được mà không tốn gì lúc runtime
+```
+
+Brand bằng template literal miễn phí với literal, nhưng một `string` từ JSON vẫn cần type guard hoặc schema (`z.string().startsWith("usr_")` cộng một cast ở đúng chỗ đã validate) — compiler không kiểm tra được prefix của một giá trị nó không nhìn thấy.
+
+## `satisfies` và `const` type parameter: giữ literal là literal
+
+Mọi thứ phía trên đều phụ thuộc vào việc route map giữ `"/users/:id/posts/:postId"` dưới dạng literal type. Đây là chỗ phần lớn các bản tự viết thất bại một cách lặng lẽ, và quy tắc đủ tinh tế để nói rõ ra.
+
+```ts
+const def = { method: "GET", path: "/users/:id", response: User };
+
+// 1. Annotation: bạn nhận về đúng type đã annotate.
+const a: RouteMap = { getUser: def };
+type PathA = (typeof a)["getUser"]["path"]; // string → PathParams = {} → không cần params!
+
+// 2. satisfies: được kiểm tra với RouteMap, giữ type suy ra… nhưng đã bị nới.
+const b = { getUser: { method: "GET", path: "/users/:id", response: User } } satisfies RouteMap;
+type MethodB = (typeof b)["getUser"]["method"]; // "GET"   (contextual type là union các literal)
+type PathB = (typeof b)["getUser"]["path"]; //     string  (contextual type là string trơn)
+
+// 3. as const satisfies: literal, readonly, và vẫn được kiểm tra.
+const c = { getUser: { method: "GET", path: "/users/:id", response: User } } as const satisfies RouteMap;
+type PathC = (typeof c)["getUser"]["path"]; // "/users/:id"
+```
+
+Trường hợp 2 là cái hay cắn người. `satisfies` giữ type *suy ra*, nhưng suy luận cho một property mutable sẽ nới string literal thành `string`, trừ khi bản thân contextual type có chứa literal type. `method` sống sót vì `HttpMethod` là union các literal; `path` thì không, vì `RouteDef["path"]` là `string`.
+
+`const` type parameter (TypeScript 5.0) cho bạn trường hợp 3 mà không bắt mọi người gọi phải nhớ `as const`:
+
+```ts
+export function defineRoutes<const R extends RouteMap>(routes: R): R {
+  return routes;
+}
+```
+
+Hai lưu ý từ lúc dùng thật:
+
+- **Nó chỉ áp dụng cho literal viết thẳng trong lời gọi.** `defineRoutes(someObject)` suy ra từ type của biến, vốn đã bị nới. Đó là lý do route map luôn được viết ngay trong `defineRoutes(...)`.
+- **Ràng buộc có kiểu mảng nên là `readonly`.** Suy luận `const` sinh ra tuple readonly; nếu ràng buộc ghi `string[]`, tuple readonly không thoả và suy luận rơi về chính ràng buộc. Hãy viết `readonly string[]` trong những ràng buộc bạn định dùng với `const`.
+
+Và một chốt chặn rẻ biến thất bại im lặng thành thất bại ồn ào:
+
+```ts
+type LiteralPath<P extends string> = string extends P
+  ? "❌ path đã bị nới thành string — hãy khai báo route bên trong defineRoutes()"
+  : P;
+```
+
+Dùng nó trong `ParamsArg`, một path bị nới sẽ sinh ra thông báo lỗi nói rõ chuyện gì đã xảy ra, thay vì một client chấp nhận mọi thứ.
+
+## Cầu nối runtime: Zod để type không nói dối
+
+Mọi thứ tới giờ đều ở compile time. Server không đọc type của bạn. Khi backend đổi `publishedAt` thành `published_at`, một client có type `Post` viết tay vẫn compile, vẫn render `undefined`, và không ai biết cho tới khi người dùng gửi ảnh chụp màn hình.
+
+Cách sửa là **type và phép kiểm tra là cùng một object**. `Post` là một schema Zod; `z.infer<typeof Post>` là type; `request()` chạy `Post.safeParse()` trên mọi response thành công. Nếu shape bị lệch, client trả về `{ kind: "contract" }` kèm chính xác các issue, và thứ đó đi vào hệ thống theo dõi lỗi cùng tên route. Bạn biết chuyện từ một dashboard, không phải từ ảnh chụp màn hình.
+
+### input và output, và transform
+
+Schema Zod có hai type: thứ đi vào và thứ đi ra. Chúng chỉ khác nhau khi schema có transform — và đó chính là chỗ mọi người hay rối:
+
+```ts
+const Event = z.object({
+  at: z.iso.datetime().transform((s) => new Date(s)),
+  tags: z.array(z.string()).default([]),
+});
+
+type EventIn = z.input<typeof Event>; //  { at: string; tags?: string[] }
+type EventOut = z.output<typeof Event>; // { at: Date; tags: string[] }
+```
+
+Quy tắc trong client: **body và query dùng `z.input`** (thứ bạn được phép gửi trước khi parse) và **response dùng `z.output`** (thứ bạn nhận sau khi parse). Dùng `Date` trong type của request body trong khi định dạng trên dây là string là cách bạn gửi đi `"[object Object]"`.
+
+### Validate tốn bao nhiêu, và chia sẻ schema ở đâu
+
+Parse không miễn phí. Với response JSON điển hình (vài KB), chi phí không đáng kể so với mạng. Với một endpoint export 5 MB, validate từng dòng trên main thread là nguy cơ giật lag thật; mình hoặc validate một mẫu, hoặc validate trong worker, hoặc đánh dấu route đó là tin cậy kèm comment giải thích. Hãy biến đó thành quyết định tường minh cho từng route, không phải một cờ toàn cục "tắt validate trên production" — cái cờ đó là cách type trở lại thành lời nói dối.
+
+Trong monorepo của bọn mình, schema nằm trong một package contracts dùng chung. Backend NestJS validate body đi vào bằng chính các schema `body`, còn frontend validate response bằng chính các schema `response`. Đó không phải type safety end-to-end bằng phép màu — đó là một nguồn sự thật được kiểm tra ở cả hai đầu dây. Nếu không muốn bị buộc vào Zod, Standard Schema là một interface chung mà Zod, Valibot và ArkType đều hiện thực; client viết theo nó có thể nhận bất kỳ thư viện nào.
+
+### Tự viết hay dùng công cụ có sẵn
+
+Mình không bảo bạn nên tự viết thứ này. Đôi khi nên; nhưng thường đã có thư viện làm rồi:
+
+| Cách tiếp cận | Nguồn sự thật | Backend không phải TS | Validate lúc runtime | Khi nào mình chọn |
+| --- | --- | --- | --- | --- |
+| Route map tự viết (bài này) | Schema Zod dùng chung | Được, nếu có kỷ luật | Có, cùng schema | Bề mặt nhỏ, bạn sở hữu cả hai phía, muốn toàn quyền kiểm soát |
+| ts-rest | Object contract kèm schema | Được | Có | Cùng ý tưởng, có người bảo trì, có adapter cho server |
+| tRPC | Định nghĩa procedure phía server | Không | Input có, output tuỳ chọn | TypeScript ở cả hai đầu, chấp nhận kiểu RPC |
+| OpenAPI + openapi-typescript / openapi-fetch | Tài liệu OpenAPI | Được | Mặc định không | Backend viết bằng ngôn ngữ khác, hoặc API public |
+| Hono RPC client | Định nghĩa route của Hono | Không | Qua validator | Backend đã dùng Hono |
+
+Giá trị của việc tự dựng một lần — kể cả khi sau đó bạn dùng thư viện — là bạn hiểu type của thư viện đang làm gì khi thông báo lỗi của nó hiện lên.
+
+## Mặt chi phí: thời gian compile, lỗi khó đọc, khi nào dừng
+
+Code ở tầng type cũng là code. Nó chạy trong editor của mọi developer ở mỗi phím gõ và trong CI ở mỗi lần push, và khi nó lỗi, nó lỗi bằng thông báo do compiler viết, không phải bạn.
+
+### Đo trước khi đoán
+
+```bash
+# Checker đang làm bao nhiêu việc, và ở đâu?
+npx tsc --noEmit --extendedDiagnostics
+
+# Trace theo từng file và từng type, mở được bằng profiler
+npx tsc --noEmit --generateTrace ./trace
+npx @typescript/analyze-trace ./trace
+```
+
+`--extendedDiagnostics` báo số lần instantiation và thời gian check. Khi sửa một utility type "nhỏ" mà những con số đó nhích lên thấy rõ, đó là tín hiệu. `analyze-trace` chỉ ra các biểu thức cụ thể đang nóng. Compiler native viết bằng Go giúp check nhanh hơn rất nhiều, nhưng nó đổi hằng số chứ không đổi độ phức tạp — một type tăng theo hàm mũ vẫn là hàm mũ.
+
+### Đệ quy có giới hạn
+
+Conditional type đệ quy bị giới hạn độ sâu. Chạm trần là bạn nhận lỗi 2589, "Type instantiation is excessively deep and possibly infinite", thường ở rất xa chỗ type gây ra nó. Conditional type đệ quy đuôi — khi lời gọi đệ quy là toàn bộ kết quả của một nhánh — được phép đi sâu hơn nhiều, nên với thứ gì đệ quy trên input dài, hãy dùng accumulator:
+
+```ts
+type PathParamNamesTR<P extends string, Acc extends string = never> =
+  P extends `${string}:${infer Name}/${infer Rest}`
+    ? PathParamNamesTR<`/${Rest}`, Acc | Name> // vị trí đuôi
+    : P extends `${string}:${infer Name}`
+      ? Acc | Name
+      : Acc;
+```
+
+Với path URL có hai, ba param, chuyện này không quan trọng. Với type parse SQL hay đệ quy vào JSON lồng sâu, đó là khác biệt giữa chạy được và lỗi 2589.
+
+### Lỗi con người đọc được
+
+Chi phí tệ nhất không phải CPU, mà là một bạn junior nhìn chằm chằm vào bốn mươi dòng conditional type lồng nhau chỉ vì truyền `limit: "20"`. Những thứ giúp ích:
+
+- **`Simplify`** ở mọi ranh giới public, để hover và lỗi hiện object bình thường.
+- **Type trung gian có tên** thay vì một biểu thức inline khổng lồ. Lỗi nhắc tới tên, và tên giải thích ý định.
+- **Type lỗi dạng chuỗi literal**, như `LiteralPath` ở trên, cho những kiểu dùng sai bạn đoán trước được.
+- **`NoInfer`** (TypeScript 5.4) khi một generic nên được suy ra từ một tham số và chỉ được *kiểm tra* với tham số khác — nó ngăn compiler nới type parameter ra để chiều theo một lỗi.
+- **Type test.** `expectTypeOf` trong Vitest (hoặc các dòng `@ts-expect-error` trong file `.test-d.ts`) chốt cả những gì phải compile lẫn những gì không được compile. Code ở tầng type không có type test là code chưa được test.
+
+```ts
+// contracts/client.test-d.ts
+import { expectTypeOf, test } from "vitest";
+
+test("route params được suy ra từ path", () => {
+  expectTypeOf<PathParams<"/users/:id/posts/:postId">>().toEqualTypeOf<{ id: string; postId: string }>();
+  expectTypeOf<PathParams<"/health">>().toEqualTypeOf<{}>();
+});
+
+test("health không cần tham số, createPost bắt buộc có body", () => {
+  expectTypeOf(api.health).parameters.toEqualTypeOf<[args?: { signal?: AbortSignal }]>();
+  // @ts-expect-error — body là bắt buộc
+  api.createPost({ params: { id: userId } });
+});
+```
+
+### Khi nào mình dừng
+
+Quy tắc của mình, học được từ những lần làm quá tay:
+
+1. **Đặt type cho contract, không cho phần hiện thực.** Bề mặt public của client xứng đáng có máy móc. Phần bên trong dùng `RouteDef` và vài cast.
+2. **Nếu một test runtime đơn giản hơn, viết test runtime.** Bọn mình từng có một type kiểm tra ngay lúc compile rằng schema `params` của mọi route có đúng các key của placeholder trong path. Nó chạy được. Thông báo lỗi thì không đọc nổi và nó làm editor chậm thấy rõ. Bọn mình thay nó bằng một unit test mười dòng duyệt qua route map — cùng một đảm bảo, lỗi dễ đọc, editor không tốn gì.
+3. **Một người phải giải thích được mọi type trong chưa tới một phút.** Nếu chỉ tác giả bảo trì được, nó là rủi ro vào đúng ngày tác giả đi nghỉ.
+4. **Đặt ngân sách cho đệ quy.** Path thì được. Một parser URL pattern đầy đủ với nhóm tuỳ chọn, ràng buộc regex và wildcard thì không.
+5. **Ưu tiên type được sinh tự động cho bề mặt lớn bên ngoài.** Với API bên thứ ba có hai trăm endpoint, hãy sinh từ OpenAPI; đừng tự bảo trì type khéo léo cho nó.
+
+```ts
+// contracts/routes.test.ts — test runtime đã thay thế một type
+import { expect, test } from "vitest";
+import { routes } from "./routes";
+
+test("schema params khớp với placeholder trong path", () => {
+  for (const [name, def] of Object.entries(routes)) {
+    const fromPath = [...def.path.matchAll(/:(\w+)/g)].map((m) => m[1]).sort();
+    const fromSchema = "params" in def && def.params ? Object.keys(def.params.shape).sort() : fromPath;
+    expect(fromSchema, name).toEqual(fromPath);
+  }
+});
+```
+
+<Callout type="warning" title="Một type nói dối còn tệ hơn không có type">
+`any` ít ra trông còn nguy hiểm. Một type trông rất chính xác cho dữ liệu chưa ai validate thì trông an toàn, được tin tưởng, và hỏng ở rất xa nguyên nhân của nó. Mọi type suy ra trong bài này đều chạm đáy ở một schema thực sự được chạy. Nếu chỉ mang về một điều: đừng bao giờ để một type response tồn tại mà thiếu phép kiểm tra khiến nó đúng.
+</Callout>
+
+## Những lỗi mình hay gặp khi review code
+
+**Annotate route map bằng `: RouteMap`.** Mọi path thành `string`, mọi type params thành `{}`, và client chấp nhận mọi thứ. Dùng `defineRoutes` hoặc `as const satisfies`.
+
+**`as` ở chỗ gọi để "sửa" lỗi type.** `api.getUserPost({ params } as any)` tắt đúng phép kiểm tra đang cố giúp bạn. Nếu type sai, sửa contract; nếu dữ liệu chưa validate, hãy parse nó.
+
+**Type response không có validate lúc runtime.** Một `interface Post` viết tay cho kết quả `fetch` là một comment mà compiler giả vờ tin.
+
+**Nhầm `z.input` và `z.output`.** Gửi `Date` trong khi đường truyền cần string, hoặc đọc một field mà `.default()` lẽ ra phải điền.
+
+**Bất ngờ vì distribution.** Một phép kiểm tra `T extends never` trả về `never`, hoặc một conditional áp lên union mà bạn tưởng nó nhìn cả khối. Khi phân vân, dùng `[T] extends [...]`.
+
+**Brand tạo bằng `as` khắp codebase.** Nếu ai cũng viết được `as PostId`, brand không chứng minh gì cả. Brand đến từ parse.
+
+**Khéo léo mà không có type test.** Lần refactor đầu tiên một utility ở tầng type chưa được test là lúc bạn phát hiện nó chưa từng từ chối thứ gì.
+
+**Throw cho lỗi được trông đợi.** 409 là một phần của contract; `catch (e: unknown)` làm mất nó. Trả nó về trong một discriminated union và để compiler bắt buộc xử lý.
+
+## Đọc thêm
+
+- [TypeScript Handbook: Conditional Types](https://www.typescriptlang.org/docs/handbook/2/conditional-types.html), [Mapped Types](https://www.typescriptlang.org/docs/handbook/2/mapped-types.html) và [Template Literal Types](https://www.typescriptlang.org/docs/handbook/2/template-literal-types.html).
+- Release notes của TypeScript 4.7 (ràng buộc cho `infer`), 4.9 (`satisfies`), 5.0 (`const` type parameter) và 5.4 (`NoInfer`).
+- [TypeScript wiki: Performance](https://github.com/microsoft/TypeScript/wiki/Performance) — trace và giữ cho việc check nhanh.
+- [Zod](https://zod.dev) — `z.infer`, `z.input`, `z.output`, `.brand()`.
+- [Standard Schema](https://standardschema.dev) — interface chung giữa các thư viện validate.
+- [Những pattern TypeScript thực sự đáng giá](/blog/typescript-patterns-that-pay-off) — các pattern hằng ngày mà bài này xây tiếp lên.
+
+## Tóm tắt
+
+<Checklist>
+
+- Khai báo mỗi endpoint một lần — method, path literal, schema Zod cho params, query, body, response và lỗi — và suy ra mọi type phía người gọi từ khai báo đó.
+- Tách path param bằng template literal type đệ quy; bọc type public trong `Simplify` để hover và lỗi đọc như object bình thường.
+- Dùng `[X] extends [never]` cho phép kiểm tra "có rỗng không?"; nhớ rằng conditional type distribute trên type parameter trần.
+- Làm tham số có điều kiện: params chỉ khi path có placeholder, query tuỳ chọn khi mọi field đều tuỳ chọn, body chỉ khi có schema, và không cần tham số nào khi không có gì bắt buộc.
+- Dựng client bằng mapped type; dùng key remapping cho truy cập theo endpoint và để lọc (ví dụ, chỉ các endpoint đọc).
+- Trả về discriminated union: lỗi khai báo theo từng route cộng lỗi tầng truyền tải (`network`, `aborted`, `unexpected`, `contract`), và xử lý vét cạn.
+- Brand ID qua schema, không bao giờ qua `as`; cân nhắc template literal prefix khi ID của bạn có prefix.
+- Giữ literal là literal bằng `defineRoutes<const R>` hoặc `as const satisfies`; thêm chốt chặn báo lỗi khi path bị nới thành `string`.
+- Validate mọi response bằng đúng schema sinh ra type của nó; dùng `z.input` cho thứ gửi đi và `z.output` cho thứ nhận về.
+- Đo bằng `--extendedDiagnostics` và trace, viết type test, ưu tiên test runtime khi nó đơn giản hơn, và dừng lại khi type cần giải thích nhiều hơn chính đoạn code nó bảo vệ.
+
+</Checklist>

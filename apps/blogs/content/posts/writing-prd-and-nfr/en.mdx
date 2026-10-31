@@ -1,0 +1,451 @@
+---
+title: "Writing a PRD Engineering Can Estimate and QA Can Test: Structure, Testable Requirements and Measurable NFRs"
+excerpt: "A good PRD isn't long, it's clear. This post covers PRD structure, writing testable requirements, measurable NFRs using ISO 25010 (p95 performance, SLOs, security, Vietnam's Decree 13 and data protection law, WCAG 2.2 AA), traceability from goal to test, and a complete sample PRD."
+---
+
+<Lead>The worst PRD I ever received had one line I still remember: "The checkout page must be fast, user-friendly and secure." Three developers estimated it at anywhere from two weeks to three months — and all three were right, because each one read "fast" differently. QA couldn't write a single test for that sentence. On release day, the whole team sat arguing about whether 3 seconds counted as "fast". What I learned is that PRDs don't fail for lack of ideas; they fail for lack of numbers, boundaries and sentences other people can verify. This post is how I write — and review — a PRD that engineering can estimate, QA can test, and that's still true six months later: the structure, writing testable requirements, NFRs in measurable form, traceability from goal to test, and a complete sample PRD you can copy.</Lead>
+
+## What a PRD is for, and what it isn't
+
+A PRD (Product Requirements Document) answers three questions: **why** we're doing this, **what** we're building, and **how we'll know it worked**. It doesn't answer *how* — that's the job of a design doc or RFC written by engineering.
+
+I judge a PRD with three very practical tests:
+
+- **The estimation test:** give it to two developers to read independently. Do their estimates differ by more than 2x? If so, the scope is ambiguous.
+- **The QA test:** for every requirement, can QA write at least one test case with a clear pass/fail?
+- **The six-months-later test:** can a new team member read the PRD and understand why the feature behaves the way it does — including what was deliberately *not* built?
+
+A PRD also has many readers, each reading different parts. Writing with that in mind tells you which parts need to be precise down to the number:
+
+| Reader | Reads closely | Needs from the PRD |
+| --- | --- | --- |
+| Leadership, stakeholders | Problem, goals, success metrics | The reason to invest, measurable expectations |
+| Designers | Users, user flows, scope | Who uses it, in what context, under which constraints |
+| Engineering | Scope, FRs, NFRs, open questions | Enough detail to estimate and design |
+| QA | FRs, acceptance criteria, NFRs | Verifiable behavior, including failure cases |
+| Legal, security | Data, privacy, security NFRs | What data, for what purpose, kept how long |
+| Operations, support | Rollout, user flows, open questions | When it turns on, who's affected, how to roll back |
+
+## Anatomy of a PRD
+
+This is the structure I use for most mid-sized features (two to eight engineer-weeks). Smaller features merge sections; bigger projects split into several PRDs by area.
+
+<Figure src="/blog/writing-prd-and-nfr-traceability.svg" alt="On the left, a PRD with ten sections: problem and context, goals and non-goals, users, success metrics, scope, user flows, functional requirements, non-functional requirements per ISO 25010, open questions, rollout and risks. The goals section connects to a Goal card G1 'reduce no-shows for online bookings'; functional and non-functional requirements connect to a Requirement card FR-01 / NFR-04 'remind at 24h and 2h, no health data in SMS'; success metrics connect to a Metric card M1. On the right is a traceability chain from top to bottom: the Goal is refined into a Requirement, delivered by User story BK-142, verified by Test case TC-142-3, proven in production by Metric M1, with a dashed arrow from the Metric back to the Goal to revisit after launch. Each card has an owner: PM, BA and Eng, Team, QA, Data." caption="Every requirement traces up to a goal and down to a test; the production metric closes the loop by answering one question: did the goal actually move?" />
+
+| Section | Answers | Common mistake |
+| --- | --- | --- |
+| 1. Problem and context | What's wrong, for whom, and what's the evidence? | Describing a solution instead of a problem |
+| 2. Goals / non-goals | What does success look like? What are we deliberately not doing? | No non-goals, so scope creeps |
+| 3. Users | Who uses it, in what context, how tech-savvy? | A generic "user" |
+| 4. Success metrics | Measured how, baseline, target, when? | Metrics with no baseline, or unmeasurable |
+| 5. Scope | What's in v1, what isn't? | Listing only what's in, never what's out |
+| 6. User flows | The main path and the failure branches | Only the happy path |
+| 7. Functional requirements | What the system must do, with IDs, testable | Vague words, several requirements in one sentence |
+| 8. Non-functional requirements | How well the system must do it | Missing, or "fast and secure" |
+| 9. Open questions | What's unknown, who answers, by when | Hidden so the PRD looks "done" |
+| 10. Rollout and risks | How it's turned on, for whom, how to roll back | Skipped entirely |
+
+### Problem first, solution second
+
+The first section is the one most often written wrong. "We need to send reminders via Zalo" is a solution. The problem is: "Online bookings have twice the no-show rate of phone bookings, and receptionists spend two hours every afternoon calling patients to remind them." Writing the problem first lets readers — developers included — propose better solutions. Maybe the real issue is that patients book too far ahead, and the fix is to narrow the booking window rather than send more reminders.
+
+Evidence can be data, support tickets, user interview notes, or the output of an [Event Storming](/blog/event-storming-domain-modeling) session. If there's no evidence, label it an "assumption" and turn it into an open question.
+
+### Goals, non-goals and success metrics
+
+Goals are about outcomes, not output. "Launch the reminder feature" is output; "reduce the no-show rate" is an outcome. Every goal should map to at least one metric with a **baseline, a target, a measurement window and a data source**.
+
+I take non-goals almost as seriously as goals. They're the most effective anti-scope-creep tool there is: when someone asks "why not let them reschedule too?", the answer is already written down, with the reason.
+
+Metrics come in three kinds:
+
+- **Primary:** what the goal wants to move (no-show rate).
+- **Leading:** what changes sooner and explains the primary metric (the share of patients who tap "confirm").
+- **Guardrail:** what must not get worse (opt-out rate, complaints, SMS spend).
+
+## Writing testable requirements
+
+A requirement is testable when two different people, reading independently, reach the same pass/fail verdict for the same behavior. Most requirements fail this test because of a handful of familiar words.
+
+### Words I ban from PRDs
+
+| Vague word | Why it's a problem | Replace with |
+| --- | --- | --- |
+| "fast", "smooth", "instant" | No threshold, no idea where it's measured | "API server response time p95 ≤ 300ms at 50 req/s" |
+| "user-friendly", "intuitive", "easy" | An opinion, not a requirement | Specific criteria: "completed in ≤ 2 steps", meets WCAG 2.2 AA, usability-tested with 5 people |
+| "etc.", "and other cases" | Infinitely open scope; devs guess, QA guesses differently | List them all, or write "only the cases above" |
+| "support", "handle" | Support how far? Handle how? | Concrete verbs: "display", "reject with error code", "retry at most 3 times" |
+| "secure", "safe" | Against what? | The specific threat and control: "random token of ≥ 128 bits, expiring at the appointment time" |
+| "real-time" | 100ms or a minute? | "shown on the dashboard within 60 seconds" |
+| "should", "may" | Mandatory or optional? | "must" for mandatory; put optional items in a lower priority |
+| "and/or" | One requirement or two? | Split into two requirements |
+| "the user" (generic) | Patient? Receptionist? Admin? | A specific role |
+| "appropriate", "reasonable" | Who decides what's reasonable? | A specific threshold or rule |
+
+I keep this table right inside the team's PRD template. It doesn't make anyone a better writer, but it gives reviewers an excuse to ask.
+
+### Use EARS sentence patterns
+
+EARS (Easy Approach to Requirements Syntax) is a small set of sentence templates proposed by Alistair Mavin and colleagues at Rolls-Royce. I don't make the team follow it strictly, but it's the fastest way to turn a vague sentence into a testable one:
+
+| Pattern | Structure | Example |
+| --- | --- | --- |
+| Ubiquitous | The system shall ... | The system shall store times in UTC and display them in Vietnam time |
+| Event-driven | When [trigger], the system shall ... | When an appointment is confirmed more than 24 hours ahead, the system shall schedule a reminder at T−24h |
+| State-driven | While [state], the system shall ... | While a patient has opted out of Zalo messages, the system shall use SMS only |
+| Unwanted behavior | If [failure condition], then the system shall ... | If Zalo reports a delivery failure, then the system shall send an SMS within 5 minutes |
+| Optional feature | Where [feature is present], the system shall ... | Where a branch collects deposits, the cancel page shall show the deposit policy before confirmation |
+
+The "unwanted behavior" pattern is especially valuable: it forces the writer to think about failure paths, which take most of the real effort yet rarely appear in PRDs.
+
+### One requirement, one ID, one thing
+
+- **Every requirement has a stable ID** (`FR-01`, `NFR-04`). Never renumber when deleting — mark it "dropped" so old links don't point at the wrong thing.
+- **Every requirement says one thing.** A sentence joining two behaviors with "and" usually wants to be two requirements.
+- **Every requirement has a priority** (Must/Should/Could, or P0/P1/P2) so that when time runs short, the team knows what to cut without a meeting.
+- **Acceptance criteria in Given/When/Then**, specific enough that QA can turn them into tests almost verbatim:
+
+```text
+FR-02  Reminder at T−2h
+  Given an appointment at 15:00 on 10 Oct with status "confirmed"
+    And the patient has not responded to the T−24h reminder
+  When the system clock reaches 13:00 on 10 Oct
+  Then the patient receives exactly one Zalo reminder between 13:00 and 13:05
+
+  Given the same appointment, but the patient tapped "Cancel" from the T−24h reminder
+  When the clock reaches 13:00
+  Then no message is sent
+```
+
+## NFRs in depth: ISO 25010 as a checklist
+
+Non-functional requirements are where PRDs are most often empty, and where the most incidents come from. It's not that writers don't care; they don't know where to start. I use the **ISO/IEC 25010** product quality model as a checklist: walk through each characteristic, ask "does this feature carry any risk here?", and only write NFRs where the answer is yes.
+
+The 2023 edition has nine characteristics (some renamed from the 2011 edition many references still use — "usability" became "interaction capability", "portability" became "flexibility", and "safety" was added):
+
+| Characteristic | Question to ask | Measurable form |
+| --- | --- | --- |
+| Functional suitability | Does it do the right things, completely? | Usually already covered by FRs and acceptance criteria |
+| Performance efficiency | How fast, and at what resource cost? | p95/p99 latency at load X; LCP at p75 |
+| Compatibility | Which systems and browsers must it work with? | Browser/device matrix; API versions |
+| Interaction capability | Can everyone use it? | WCAG 2.2 AA; task completion rate |
+| Reliability | What happens when it breaks? Is data lost? | SLOs; RPO/RTO; behavior when dependencies fail |
+| Security | Against whom, against what? | Specific controls; an OWASP ASVS level |
+| Maintainability | Easy to change, test and extend? | Coverage threshold for new modules; config changes without deploys |
+| Flexibility | What if the environment or scale changes? | Design load, e.g. 3x today |
+| Safety | Can it harm people or property? | Fail-safe behavior |
+
+For healthcare, finance, or anything touching personal data, I add two items ISO 25010 doesn't break out separately but that you always need in practice: **privacy** (data protection, legal compliance) and **observability** (seeing what the system is doing).
+
+### Performance: percentiles, load and where you measure
+
+A measurable performance NFR needs all four of: **a metric, a percentile, a threshold, conditions**.
+
+- "Fast API" → "Server-side p95 response time for `POST /reminders/:token/confirm` ≤ 300ms at a sustained 50 req/s for 10 minutes."
+- "Page loads fast" → "LCP ≤ 2.5 seconds at p75, measured with RUM on real mobile devices."
+
+Why percentiles rather than averages? Averages hide long tails: 95% of requests at 100ms and 5% at 4 seconds averages out around 300ms, which looks fine — but one user in twenty is waiting 4 seconds. The 2.5-second LCP at p75 is Core Web Vitals' "good" threshold, so use it rather than inventing your own.
+
+Conditions matter just as much: server or client, 4G or office Wi-Fi, how much load. And the best NFR is one that's checked automatically:
+
+```js
+// load/reminder-confirm.k6.js
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    steady: { executor: "constant-arrival-rate", rate: 50, timeUnit: "1s", duration: "10m", preAllocatedVUs: 100 },
+  },
+  thresholds: {
+    // NFR-01: p95 ≤ 300ms, under 0.1% errors
+    http_req_duration: ["p(95)<300"],
+    http_req_failed: ["rate<0.001"],
+  },
+};
+
+export default function () {
+  const token = __ENV.TEST_TOKEN;
+  const res = http.post(`${__ENV.BASE_URL}/reminders/${token}/confirm`);
+  check(res, { "status is 200": (r) => r.status === 200 });
+}
+```
+
+When a threshold fails, k6 exits non-zero — CI goes red, and NFR-01 stops being a line of text in a document.
+
+### Availability: SLOs instead of "always up"
+
+"The system must always be available" is a requirement nobody can meet and nobody can verify. Replace it with an SLO (Service Level Objective):
+
+- **SLI** — exactly what's measured: "the share of valid requests to the reminder page that return a non-5xx response in under 1 second".
+- **Target**: 99.9%.
+- **Window**: rolling 30 days.
+
+99.9% over 30 days is roughly 43 minutes of allowed "broken". That number is the **error budget** — the team uses it to decide when it can deploy aggressively and when it must stop and fix stability. Putting the SLO in the PRD forces the "do we need 99.99%?" conversation to happen before the build, while it's still cheap. Each extra nine usually costs significantly more in architecture and operations.
+
+Don't forget SLOs for things that aren't requests: "99.5% of reminders are sent within 10 minutes of their scheduled time" is an SLO for a background job, and for a reminder feature it matters more than the web page's uptime.
+
+### Security: specific threats, specific controls
+
+A good security NFR starts with "who could do what wrong?". For a reminder link that doesn't require login:
+
+- Guessing a token → viewing or cancelling someone else's appointment → a random token of at least 128 bits, bound to one appointment, expiring at the appointment time.
+- A forwarded link → someone else cancels on the patient's behalf → the page shows minimal information; cancelling needs a second confirmation step.
+- Mass token probing → per-IP rate limits, an alert when the invalid-token rate spikes.
+- Tokens ending up in logs or the `Referer` header → never log full URLs, `Referrer-Policy: no-referrer` on that page.
+
+For larger systems, referencing an OWASP ASVS (Application Security Verification Standard) level saves you from re-listing hundreds of baseline requirements; the PRD only needs what's *specific* to the feature.
+
+### Privacy: Decree 13/2023 and Vietnam's data protection law
+
+In Vietnam, Decree 13/2023/NĐ-CP on personal data protection (in force since 1 July 2023) was the first comprehensive legal framework, and since 1 January 2026 the Law on Personal Data Protection has been in force, raising many of those rules to the level of law with new implementing regulations. I'm not a lawyer, and a PRD isn't the place to interpret the law — but a PRD *is* the place to turn principles into requirements a team can build. What I always ask:
+
+- **What data, and is it sensitive?** Health information is sensitive personal data, with stricter requirements. An SMS saying "your psychiatry appointment" discloses health data to anyone holding the phone.
+- **Purpose and consent:** what was the data collected for, where did the user consent, and is that separate from marketing consent?
+- **Data subject rights:** how does a user withdraw consent or request deletion, and how quickly does the system act?
+- **Retention:** how long are delivery logs with phone numbers kept, and are they then deleted or anonymized?
+- **Impact assessment:** does the feature change the company's personal data processing impact assessment?
+- **Incidents:** is there a process to detect and report breaches within the legal deadline (Decree 13 sets 72 hours)?
+- **Cross-border transfer:** do the SMS or analytics vendors process data outside Vietnam?
+
+<Callout type="warning" title="Ask legal, but bring specific questions">
+
+"Is this feature compliant with Decree 13?" is nearly unanswerable. "We send phone number, appointment time and branch name to SMS vendor X, keep logs for 90 days, based on consent given at booking — is that sufficient?" can be answered in one meeting. The privacy section of the PRD is the draft of that question. And since implementing regulations for the new law are still being issued, always ask legal which version currently applies.
+
+</Callout>
+
+### Accessibility: WCAG 2.2 AA and specific criteria
+
+"Accessible" isn't testable; "meets WCAG 2.2 level AA" is. WCAG 2.2 became a W3C Recommendation in October 2023 and added a few very practical criteria for mobile:
+
+- **2.5.8 Target Size (Minimum):** targets at least 24×24 CSS pixels (or enough spacing). I usually specify 44×44 for primary buttons in the PRD, because the users skew older.
+- **2.4.11 Focus Not Obscured (Minimum):** the focused element isn't completely hidden by a sticky header or a cookie banner.
+- **3.3.8 Accessible Authentication (Minimum):** no cognitive puzzles to log in; allow pasting passwords and password managers.
+- **3.3.7 Redundant Entry:** don't make people re-enter information they already gave in the same process.
+- **2.5.7 Dragging Movements:** every drag interaction has a tap-based alternative.
+
+In the PRD I state the overall level and call out the highest-risk criteria for that specific feature, plus how it'll be verified: automated axe checks in CI and manual testing with TalkBack/VoiceOver on the main flow.
+
+### Scalability and observability
+
+**Scalability** should be written as expected load plus headroom: "designed for 3x today's peak-day appointment volume; at that level, all T−24h reminders are still sent within 10 minutes". A number lets engineering decide whether it needs a queue, batching, or will hit a vendor rate limit — this is where one sentence in a PRD decides the whole architecture of a [background job](/blog/nestjs-background-jobs-bullmq).
+
+**Observability** is the NFR I see forgotten most often, even though it's the only thing that tells you whether the other NFRs are being met. Write it as requirements:
+
+- Which metrics must exist (reminders scheduled, sent, delivered, failed, per channel).
+- Which alerts, at which thresholds, sent to whom.
+- Which dashboard serves the success metrics from section 4.
+- A trace ID that runs from the scheduler to the vendor call.
+
+If a success metric has no corresponding metric or event in the observability NFR, you'll launch without being able to measure it. I've seen that happen more often than I'd like to admit.
+
+## Traceability: from goal to requirement, story, test and metric
+
+Traceability sounds like something for aerospace or medical devices, but a lightweight version is extremely useful for any team: **every requirement points up to a goal, and down to at least one story and one test.** A requirement that points to no goal is a candidate for cutting. A requirement with no test is an uncontrolled risk.
+
+| Goal | Requirement | Story | Test | Metric |
+| --- | --- | --- | --- | --- |
+| G1 Reduce no-shows | FR-01 Remind at T−24h and T−2h | BK-140 | TC-140-1..4 | M1 no-show rate |
+| G1 Reduce no-shows | FR-05 Confirm / cancel from link | BK-142 | TC-142-1..5 | M2 response rate |
+| G2 Fewer manual calls | FR-08 Unresponsive list | BK-145 | TC-145-1..2 | M3 reception calls |
+| G1, G3 | NFR-02 All sent within 10 minutes | BK-141 | k6 + TC-141-3 | Delivery SLO |
+| — (compliance) | NFR-04 No health data in messages | BK-140 | TC-140-5 | — |
+
+You don't need expensive tooling. What I do: the requirement ID appears in the ticket, in the test name, and in the test's tags. Playwright supports tags directly in the test declaration:
+
+```ts
+// e2e/reminder-link.spec.ts
+import { expect, test } from "@playwright/test";
+
+test("BK-142: patient confirms from the reminder link", { tag: ["@FR-05", "@FR-06"] }, async ({ page }) => {
+  await page.goto(`/r/${process.env.TEST_REMINDER_TOKEN}`);
+  await expect(page.getByRole("heading", { name: "Your appointment" })).toBeVisible();
+  // NFR-04: the page shows neither the specialty nor the doctor's name
+  await expect(page.getByText(/specialty|doctor/i)).toHaveCount(0);
+
+  await page.getByRole("button", { name: "I'll be there" }).click();
+  await expect(page.getByRole("status")).toHaveText("Thanks for confirming");
+});
+```
+
+Run just one requirement's tests with `npx playwright test --grep @FR-05`. And a small CI script flags requirements that have no test at all:
+
+```ts
+// scripts/trace-check.ts
+import { readFileSync } from "node:fs";
+import { Glob } from "bun";
+
+const ID = /\b(?:FR|NFR)-\d{2}\b/g;
+const prd = readFileSync("docs/prd/appointment-reminders.md", "utf8");
+const required = new Set(prd.match(ID) ?? []);
+
+const covered = new Set<string>();
+for await (const file of new Glob("{e2e,src,load}/**/*.{spec,test,k6}.{ts,js}").scan(".")) {
+  for (const id of readFileSync(file, "utf8").match(ID) ?? []) covered.add(id);
+}
+
+const missing = [...required].filter((id) => !covered.has(id)).sort();
+if (missing.length) {
+  console.error(`Requirements with no test: ${missing.join(", ")}`);
+  process.exit(1);
+}
+console.log(`All ${required.size} requirements have at least one test.`);
+```
+
+The script is crude — it only checks that *some* test mentions the ID, not that the test is any good. But it catches the most common case: a requirement added to the PRD last week that nobody wrote a test for.
+
+## A condensed sample PRD: appointment reminders via Zalo/SMS
+
+This is a condensed version of a real PRD with names and numbers changed. The numbers in the sample are illustrative — what matters is their *shape*.
+
+### Context, goals and metrics
+
+**Status:** Approved · **Owner:** Scheduling PM · **Updated:** 5 Oct 2026 · **Design doc:** RFC-031
+
+**Problem.** Online bookings have a noticeably higher no-show rate than phone bookings (last three months in the Scheduling dashboard). At every branch, receptionists spend most of the afternoon calling patients about tomorrow's appointments. Empty slots don't get resold because nobody knows in advance that a patient won't show up.
+
+**Goals.**
+
+- **G1** — Bring the no-show rate for online bookings down to the level of phone bookings within 3 months of chain-wide launch.
+- **G2** — Cut reception's reminder-calling time by at least half.
+- **G3** — Slots cancelled more than 2 hours ahead get rebooked.
+
+**Non-goals (v1).** No rescheduling from the link (confirm or cancel only; rescheduling links to the booking page). No reminders for walk-ins. No marketing content in reminders. No email.
+
+**Metrics.**
+
+| ID | Metric | Type | Baseline | Target | Source |
+| --- | --- | --- | --- | --- | --- |
+| M1 | No-show rate, online bookings, weekly | Primary | The 12 weeks before launch | Level with phone bookings | `appointments` table |
+| M2 | % of reminders with a response (confirm or cancel) | Leading | None yet | ≥ 50% | `ReminderResponded` event |
+| M3 | Reminder calls by reception per day | Primary (G2) | 2-week survey | Down ≥ 50% | Call center logs |
+| M4 | Zalo opt-out rate | Guardrail | — | ≤ 2% | ZNS webhook |
+
+### Users, scope and flows
+
+**Users.** Patients (many over 50, more comfortable with Zalo than a dedicated app); receptionists (see who hasn't responded); branch managers (see the metrics).
+
+**In scope.** T−24h and T−2h reminders; the confirm/cancel link page; SMS fallback; an "unresponsive" list for reception; a metrics dashboard.
+
+**Main flow.** Appointment confirmed → the system schedules two reminders → at T−24h the patient gets a Zalo message → taps the link → taps "I'll be there" or "Cancel appointment" → reception sees the status on the dashboard.
+
+**Failure branches.** Zalo delivery fails → SMS. No response → reminder again at T−2h; at T−3h the name appears on reception's "unresponsive" list. Expired link → a page explaining how to call the hotline. Appointment rescheduled after reminders were scheduled → cancel the old reminders, schedule new ones.
+
+### Functional requirements
+
+| ID | Priority | Requirement |
+| --- | --- | --- |
+| FR-01 | Must | When an appointment is confirmed more than 24 hours ahead, the system must send reminders at T−24h and T−2h (within 5 minutes). |
+| FR-02 | Must | If the patient cancelled from the T−24h reminder, the system must not send the T−2h reminder. |
+| FR-03 | Must | The system must send via Zalo ZNS first; if ZNS reports a failure or has no sent status after 5 minutes, the system must send an SMS. |
+| FR-04 | Must | When an appointment is rescheduled or cancelled, the system must cancel that appointment's unsent reminders within 1 minute. |
+| FR-05 | Must | The link in the message must open a page showing the branch, date and time, and two buttons, "I'll be there" and "Cancel appointment", without requiring login. |
+| FR-06 | Must | When the patient taps "I'll be there", the "attendance confirmed" status must appear on the reception dashboard within 60 seconds. |
+| FR-07 | Must | When the patient taps "Cancel appointment", the system must show the applicable deposit policy (if any) and cancel only after a second confirmation. |
+| FR-08 | Should | At T−3h, appointments with no response must appear on the branch's "unresponsive" list. |
+| FR-09 | Should | Patients must be able to turn off Zalo messages from the link page; SMS is then used instead. |
+| FR-10 | Could | Branch managers can view M1–M3 per branch and per week. |
+
+### Non-functional requirements
+
+| ID | Characteristic | Requirement | Verified by |
+| --- | --- | --- | --- |
+| NFR-01 | Performance | Confirm/cancel API: server-side p95 ≤ 300ms at 50 req/s. Link page: LCP ≤ 2.5 seconds at p75 on mobile (RUM). | k6 in CI; RUM dashboard |
+| NFR-02 | Scalability | At 3x today's peak-day appointment volume, all T−24h reminders are sent within 10 minutes of their scheduled time without exceeding vendor rate limits. | Staging load test |
+| NFR-03 | Reliability | SLO: 99.9% of valid link-page requests succeed over 30 days; 99.5% of reminders sent within their window. Each reminder window sends at most one message per appointment, even when jobs are retried. | SLO dashboard; TC-142-3 |
+| NFR-04 | Privacy | Messages and the link page contain no specialty, doctor name, service or diagnosis; only brand, branch, time and link. Delivery logs with phone numbers are kept 90 days, then deleted. Opt-outs take effect within 1 hour. Legal confirms the processing basis and updates the impact assessment before launch. | Template review; TC-140-5; log deletion job |
+| NFR-05 | Security | Random token of ≥ 128 bits, bound to one appointment, expiring at the appointment time. 10 req/min per IP on token endpoints. No logging of URLs containing tokens; `Referrer-Policy: no-referrer`. Cancel uses `POST`. | Unit tests; security review |
+| NFR-06 | Accessibility | Link page meets WCAG 2.2 AA; primary buttons at least 44×44 CSS px; usable at 200% zoom; main flow tested with TalkBack and VoiceOver. | axe in CI; manual testing |
+| NFR-07 | Observability | Metrics: reminders scheduled/sent/failed per channel; responses by type. Alert when delivery success drops below 95% over 30 minutes. Trace ID from scheduler to vendor call. | Dashboard review before launch |
+| NFR-08 | Compatibility | Link page works on the last 2 versions of Chrome for Android, Safari on iOS 17+, and the Zalo in-app browser. | Manual test matrix |
+
+### Open questions and rollout
+
+| # | Question | Owner | Due |
+| --- | --- | --- | --- |
+| Q1 | How far ahead must ZNS templates be approved? | Operations | 10 Oct |
+| Q2 | Do patients who confirmed at T−24h still need the T−2h reminder? | PM + head receptionist | 12 Oct |
+| Q3 | Has legal approved the wording about forfeited deposits on late cancellation? | Legal | 15 Oct |
+| Q4 | What's the maximum monthly SMS budget? | Finance | 15 Oct |
+
+**Rollout.** Feature flag per branch. Pilot at 2 branches for 2 weeks, comparing M1 with 2 similar branches without the flag. Criteria to expand: M1 improves, M4 within its threshold, no privacy incidents. A kill switch stops all sending within 1 minute; when it's off, reception goes back to calling as before. Train reception on the "unresponsive" list before the pilot starts.
+
+**Risks.** The ZNS vendor changes its template policy; older patients aren't used to tapping links; reminders landing at awkward hours — every T−24h reminder for an early-morning appointment goes out the previous evening, so we need to agree on "do not disturb" hours.
+
+## PRD, RFC, ADR: who writes what
+
+A classic source of friction is the PRD wandering into technical design, or the reverse — developers guessing requirements from a design doc. The boundaries I use:
+
+| Document | Answers | Primary author | Reviewers | When |
+| --- | --- | --- | --- | --- |
+| PRD / spec | Why, what, what success looks like | PM or BA | Eng lead, design, QA, legal when needed | Before estimation |
+| RFC / design doc | How, the options, the trade-offs | Engineer | Other engineers, sometimes PM for scope impacts | Once the PRD's FRs/NFRs are stable |
+| ADR | Which architectural decision, why, at what cost | Engineer | Tech lead | When a decision is hard to reverse |
+| Test plan | How it's verified, environments, test data | QA | Eng, PM | In parallel with the RFC |
+| Runbook | Operations, alerts, rollback | Engineer, SRE | On-call | Before launch |
+
+NFRs are the overlap zone: the PRD says *what quality level* is enough for the business ("reminders must arrive within 10 minutes"), the RFC says *how to achieve it* (queues, batching, rate limiting). If the PM isn't sure what threshold to set, write your best guess and mark it as an open question for engineering — a wrong number people can push back on is far better than no number at all.
+
+## The review process
+
+A PRD isn't "approved" in one go. I split review into small rounds, each with one question:
+
+1. **Problem review (early, short):** sections 1–4 only. Do readers agree this problem is worth solving and the measurement makes sense? Plenty of PRDs should stop here.
+2. **Solution review:** scope, flows, FRs. Design and the eng lead join. The question: is there a simpler way to hit the same goal?
+3. **Estimability review (engineering):** does every FR/NFR have enough detail to estimate? Developers flag each vague line with a comment.
+4. **Testability review (QA):** does every requirement have at least one pass/fail test? QA writes test case IDs right in the comments.
+5. **Compliance review (when needed):** security, and legal for personal data.
+
+Review asynchronously with document comments, then hold one 30-minute meeting only to resolve comments that are still open. Don't read the PRD in the meeting. The output of the whole process is a PRD that meets the "definition of ready": no open question blocks estimating the Must items.
+
+<Callout type="tip" title="Questions I ask in every PRD review">
+
+"If we only had half the time, what would get cut?" If the PRD can't answer that from its priority column, it isn't ready. And "How would we know this feature failed?" — if nobody can answer, the success metrics section isn't done.
+
+</Callout>
+
+## Keeping the document alive
+
+A PRD dies fastest on the day the first sprint starts: decisions get made in Slack, tickets and standups — and never make it back into the document. Three months later, the PRD describes a product that doesn't exist. What I do to prevent that:
+
+- **A status header** at the top: Draft → In review → Approved → In build → Launched → Archived. Every reader knows how much to trust it.
+- **A short changelog** at the bottom: date, what changed, why, who decided. No detail needed, just a trail.
+- **Decisions made in Slack go back into the PRD.** Team rule: a scope or requirement change that isn't in the PRD hasn't been decided.
+- **Tickets link to requirement IDs** instead of copying the text. Copying is the fastest way to end up with two versions of the truth.
+- **After launch, update the "as-built":** what actually differed from the plan, and how the metrics compare to the targets. That's the most valuable part for whoever reads it six months later, and for the next PRD.
+- **Archive at the right time:** when the feature is replaced, mark the PRD archived and point to the new document; don't delete it.
+
+## Mistakes I keep seeing
+
+**The PRD is a list of solutions.** "Add button X, add screen Y", with no problem section. The team builds exactly what was asked and solves nothing.
+
+**No non-goals.** Anything not explicitly excluded will be requested by someone as "while you're at it".
+
+**NFRs copied from the last PRD.** "99.99% uptime, responses under 100ms" for an internal page with five users. NFRs must come from this feature's risks, not from a template.
+
+**Metrics with no baseline.** "Increase conversion" — from what? Without a baseline you'll never know whether you succeeded.
+
+**Hidden open questions.** The PRD looks "complete", but everyone knows nobody has decided the refund policy. Write it down with an owner and a deadline; clearly listed open questions are a sign of an honest PRD, not a weak one.
+
+**Writing it alone, then "handing it over".** The best PRDs I've read were written with a developer and a QA engineer from the first draft. They ask the questions the author never thought of, and they understand the document because they helped write it.
+
+**Specifying UI in prose.** Three pages describing where each button goes. Link to the design and write only the behavior, rules and failure cases the design can't show.
+
+## Summary
+
+<Checklist>
+
+- A PRD answers why, what and how we'll know it worked; leave "how" to the RFC/design doc.
+- Write the problem before the solution, with evidence; label assumptions as assumptions.
+- Every goal has a metric with a baseline, target, window and data source; add leading and guardrail metrics.
+- State non-goals explicitly to fight scope creep.
+- Ban vague words ("fast", "user-friendly", "etc."); use EARS patterns, with one ID, one thing and one priority per requirement.
+- Write acceptance criteria as Given/When/Then, failure branches included.
+- Walk ISO/IEC 25010 as an NFR checklist, plus privacy and observability; every NFR has a metric, threshold, conditions and a way to verify it.
+- Performance as percentiles under specific load; availability as SLOs and error budgets; accessibility as WCAG 2.2 AA.
+- For personal data: list the data, purpose, consent, retention and impact assessment; ask legal specific questions under Decree 13 and the current law.
+- Trace goal → requirement → story → test → metric with IDs in tickets, test names and tags; automatically flag requirements with no test.
+- Review in rounds: problem, solution, estimability, testability, compliance; reach "definition of ready" before estimating.
+- Keep the PRD alive: a status header, a changelog, decisions flowing back into the doc, and an "as-built" update after launch.
+
+</Checklist>

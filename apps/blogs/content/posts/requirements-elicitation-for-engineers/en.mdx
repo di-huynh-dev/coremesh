@@ -1,0 +1,520 @@
+---
+title: "Requirements Elicitation for Engineers: A Business Analyst's Toolbox, from Interviews to Assumption Logs"
+excerpt: "Stated requirements are rarely real needs. This post walks engineers and BAs through a business analyst's toolbox: stakeholder mapping, interview technique, shadowing, Jobs-to-be-Done, prototyping, assumption logs, BABOK-style requirement types, and a B2B invoice-approval case study from a Vietnamese company."
+---
+
+<Lead>"Build us a mobile app so the director can approve invoices on his phone." That was the entire requirement I got in my first meeting with the finance department of a distribution company. Had we built exactly that, we'd have shipped a nice, working app — and solved nothing, because the director was never the bottleneck. It took me two weeks of interviews, sitting next to the accountants and reading their Excel files, to understand the real problem. This post is the toolbox I picked up from the great business analysts I've worked with, written for engineers and BAs alike: why stated requirements aren't real needs, who to listen to, how to ask, what to write down, how to classify it, and how to confirm you've understood before writing the first line of code.</Lead>
+
+## Stated requirements are not real needs
+
+Customers aren't lying, and it's not that they don't know what they want. The problem is that the way people describe their own work is distorted in very systematic ways:
+
+- **They describe solutions instead of problems.** "We need a mobile app", "we need an Excel export", "we need a real-time dashboard" — all solutions they've imagined based on what they've seen before. The problem underneath is often narrower, or completely different.
+- **They remember the most painful exception, not the common case.** The time the boss got stuck at the airport and couldn't approve an urgent payment gets told far more vividly than the thousand times the process just worked.
+- **Tacit knowledge.** The "everybody knows" rules — supplier X's invoices always need a confirmation call, no new invoices are accepted at month-end — never get said out loud, because the person saying them no longer recognizes them as rules.
+- **They speak in their own vocabulary.** To an accountant, "approved" means "reconciled"; to the director it means "OK to pay". Same word, two different states in the system.
+- **Politics.** A requirement is sometimes a way for one department to keep control, or to push responsibility onto another. You don't need to judge it, but you do need to notice it.
+
+| What you hear | What it often really is | Next question |
+| --- | --- | --- |
+| "We need a mobile app to approve" | There's a delay at approval, and someone guessed the device is the cause | "The last time a payment was approved late, what happened?" |
+| "We need an Excel export" | They need to do something next with the data that the system doesn't support | "Once you have the Excel file, what do you do with it?" |
+| "It has to be real-time" | Stale data once led them to a wrong decision | "If the numbers were an hour old, what would happen?" |
+| "Exactly like the old system" | They're afraid of losing something important but can't articulate it | "Which part of the old system would worry you most if it disappeared?" |
+| "This one's simple" | The speaker hasn't thought about the exceptions | "Are there cases that don't go this way?" |
+
+### A requirement is a hypothesis, not an order
+
+The mindset that has helped me most: **every requirement is a hypothesis about what will create value**, and the job of whoever elicits requirements is to test that hypothesis before it turns into code. "A mobile app will speed up approvals" is a hypothesis. It might be true. But it needs evidence, and the cheapest time to find evidence is while everything is still words and sketches.
+
+This is also why engineers should take part in elicitation instead of waiting for a BA to hand over a spec. Engineers have a particular talent: asking "what if...?". What if a supplier delivers in two shipments but issues one invoice? What if an invoice is replaced after it's been approved? Those questions, asked in an interview, are hundreds of times cheaper than asked in sprint five.
+
+## The elicitation loop
+
+BABOK (the Business Analysis Body of Knowledge, published by the IIBA) describes an "Elicitation and Collaboration" knowledge area with tasks for preparing for elicitation, conducting it, confirming the results, communicating information and managing stakeholder collaboration. I compress that into a five-step loop I use day to day:
+
+1. **Prepare:** what's this session for, who am I talking to, what am I assuming that needs testing.
+2. **Elicit:** ask, observe, read documents — choosing the technique by who I'm talking to.
+3. **Document:** raw notes, the assumption log, the open questions log, process models.
+4. **Confirm:** play back what I understood to the stakeholder, in their language.
+5. **Refine:** whatever was wrong or missing becomes the questions for the next round.
+
+The key word is **loop**. No interview captures "all the requirements". I stop looping when new sessions stop changing my model — when the fifth person describes the same process the previous four did, and no new exceptions show up.
+
+<Figure src="/blog/requirements-elicitation-for-engineers-loop.svg" alt="Diagram of the requirements elicitation loop with five steps: prepare (goals, who, assumptions), elicit (ask, watch, read), document (notes, logs, models), confirm (playback, glossary) and refine (gaps, new questions) leading back to prepare; the centre says stop looping when new sessions stop changing the model; on the right, a panel maps stakeholder types to techniques: sponsors and executives get short interviews and laddering, process owners get interviews plus document analysis, day-to-day users get shadowing and prototypes, control functions such as finance, audit and IT get workshops and a non-functional checklist, and external parties such as suppliers get sample documents and JTBD interviews" caption="Go around the loop more than once, and pick the technique by who you're listening to — no single technique fits every stakeholder." />
+
+## Stakeholder mapping: listen to the right people
+
+The first mistake usually isn't asking the wrong question; it's asking the wrong people — or missing some. Before the first interview I always spend an hour mapping stakeholders.
+
+### The power/interest grid
+
+A power/interest grid places stakeholders on two axes: how much influence they have over the project, and how much they care about the outcome.
+
+| | Low interest | High interest |
+| --- | --- | --- |
+| **High power** | **Keep satisfied:** brief updates, consult on big decisions | **Manage closely:** regular involvement, decide together |
+| **Low power** | **Monitor:** general information, don't overload | **Keep informed:** frequent updates, invite to testing |
+
+<Callout type="warning" title="The grid is a communication strategy, not a ranking of information value">
+  The accountant who runs the process every day usually sits in "low power, high interest". That tells you how to *update* them, not that they matter less when *eliciting*. Quite the opposite: they're often the most accurate source on how the work actually happens. Don't let the power grid decide who you listen to most.
+</Callout>
+
+### RACI for requirement decisions
+
+RACI (Responsible, Accountable, Consulted, Informed) is usually applied to tasks, but I find it most useful for **decisions**. Each kind of requirement decision has exactly one Accountable person — the one who gets to say "final". When it's unclear who decides, requirements get changed back and forth forever.
+
+| Decision | CFO | Chief accountant | AP accountant | Head of purchasing | IT | BA / tech lead |
+| --- | --- | --- | --- | --- | --- | --- |
+| Goals and success metrics | A | C | I | C | I | R |
+| Approval-limit matrix (policy) | A | R | I | C | I | C |
+| Tolerances when matching POs | C | A | R | C | I | R |
+| Integration with the accounting software | I | C | I | I | A | R |
+| Approval screen design | I | C | C | C | I | A |
+| Acceptance | A | R | R | C | C | R |
+
+Drawing the table surfaces interesting things right away: the approval-limit matrix is **company policy**, not a software requirement. The engineering team doesn't get to decide it, even though it ends up in code.
+
+### People who get forgotten
+
+- **The people who do the work**, not just their managers. Managers describe the process as it *should* run; staff show you how it *actually* runs.
+- **Control functions:** the chief accountant, internal audit, legal. They rarely attend the kick-off but hold a veto at acceptance.
+- **IT operations:** who's on call when the system breaks at 7 a.m. on closing day? They have requirements about sign-in, backups and permissions.
+- **People on the other side of the process:** suppliers, customers, the warehouse. They don't use the system, but they produce its input data.
+
+## Interviews: the core skill
+
+Interviewing is the most used elicitation technique and the most often done badly. A good interview isn't reading a list of questions; it's a purposeful conversation in which the other person does most of the talking.
+
+### Preparation: goals and assumptions to test
+
+Before every session I write down three things: **the goal** (what I need to know afterwards), **assumptions** (what I believe without evidence), and **documents to ask for** (files, forms, screenshots). If there's no assumption to test, the session probably isn't needed.
+
+Something about Vietnamese workplace culture I learned over many projects: **interview people one by one before any group meeting**. In a meeting with the boss present, staff very rarely say "actually, the process doesn't work the way you just described". And "dạ, vâng" ("yes, yes") in a meeting usually means "I heard you", not "I agree".
+
+### Open questions and "show me how you do it today"
+
+Closed questions (yes/no, A or B) confirm what you already thought. Open questions show you what you hadn't thought of. Early in a session I use open questions almost exclusively:
+
+- "Could you walk me through a normal day, from receiving an invoice to being done with it?"
+- "The last time something didn't go smoothly, how did that unfold?"
+- "Which part of this takes the most time? Which part is the most frustrating?"
+
+But the most powerful line isn't a question at all: **"Could you show me how you do it today?"** When people tell, they tell the ideal version. When they do it in front of you, you see the third Excel window, the notebook of supplier phone numbers, and the sticky note on the monitor with a rule no document mentions.
+
+### Avoid leading questions
+
+A leading question contains the answer the asker expects. People being interviewed — especially by "the software vendor" — tend to agree to be polite.
+
+| Leading | Neutral |
+| --- | --- |
+| "Would you like to approve on your phone?" | "The last time you needed to approve something while away from the office, what happened?" |
+| "Matching must take ages, right?" | "Which part of the process takes most of your time?" |
+| "An Excel export button would be handy, wouldn't it?" | "Once you have these numbers, what do you use them for?" |
+| "The system needs to be real-time, right?" | "If the numbers were an hour old, would that affect anything?" |
+| "The problem is purchasing being slow, isn't it?" | "When an invoice doesn't match the PO, who handles it and how?" |
+
+### 5 Whys — and when it misleads
+
+5 Whys — asking "why" repeatedly to get from a symptom to a root cause — comes from the Toyota Production System. It's useful, but it has two traps:
+
+1. **It assumes a single causal chain.** In reality there are often several causes in parallel. When a "why" has two plausible answers, follow both branches.
+2. **"Why" sounds like an accusation.** "Why didn't you enter the PO first?" puts people on the defensive. I usually rephrase as "What led to...?" or "What happened before that?". Same purpose, much less pressure.
+
+### Laddering: up and down
+
+Laddering is a technique I borrowed from user research: from something a person says, you climb **up** to understand why it matters, or step **down** to understand what it concretely means.
+
+- **Up** ("Why is that important to you?"): from feature, to consequence, to business goal. "Approve on the phone" → "so we don't pay late" → "so suppliers don't stop delivering, and so we get early-payment discounts".
+- **Down** ("What does that look like exactly? Can you give me an example?"): from abstract concept to observable behaviour. "Matching" → "comparing the quantity and unit price of each line against the PO and the goods receipt".
+
+Going up finds the real business requirement. Going down lets you write acceptance criteria.
+
+### Template: an interview guide
+
+This is the skeleton I use and adapt for each session. It's an outline, not a script — I rarely follow it in order.
+
+```text
+INTERVIEW GUIDE — [Name] / [Role] / [Date] / [Length: 45–60 min]
+
+Goal of this session
+- Understand process [X] from the perspective of [role]
+- Test assumptions: A-03, A-07 (see assumption log)
+
+Opening (5 min)
+- Explain the purpose: understanding the work, not evaluating anyone
+- Ask permission to record / take notes; say the notes will be sent back for confirmation
+
+Context (10 min)
+- What are you responsible for? How much of your week goes to [X]?
+- Walk me through the last time you did [X], from start to finish.
+
+Show me (15–20 min)
+- Could you do a real case in front of me?
+- (Observe: which tools, which files, who gets contacted, where the waiting is)
+
+Exceptions and pain (10 min)
+- Which cases don't follow this path? When was the last one?
+- Which part takes the longest? Which part is most error-prone?
+- If one thing could change tomorrow, what would you pick? Why?
+
+Closing (5 min)
+- Here's what I understood: ... — what did I get wrong?
+- Are there documents or sample files you could share?
+- Who else should I talk to?
+```
+
+That last question — "who else should I talk to?" — is the cheapest way to find stakeholders missing from your map.
+
+### Notes during and after the session
+
+I keep three kinds of notes clearly apart, because mixing them causes a lot of misunderstanding later:
+
+- **Verbatim quotes** (in quotation marks): "Quang signs everything, the whole stack."
+- **Observations** (what I saw): Lan opened three Excel files to find a goods-receipt number.
+- **Interpretations** (what I inferred, clearly marked): the bottleneck seems to be matching, not signing.
+
+Rewrite clean notes **within 24 hours**. After that, you start remembering what you thought rather than what they said.
+
+## Workshops, observation and shadowing
+
+### Structured workshops
+
+Workshops are good for **aligning** several parties — not for **discovering** what each person knows. I only run a workshop after the one-on-one interviews, so I walk in with a concrete draft of the process rather than a blank sheet.
+
+A few principles that make workshops useful:
+
+- **One goal, one output.** For example: "Agree on the states of an invoice and who may move it between them". Not "discuss the new system".
+- **Write silently first, discuss second.** Everyone writes on sticky notes for five minutes before anyone speaks. This dramatically reduces the "boss speaks first, everyone nods" effect.
+- **Record decisions and decision-makers on the board, right there.** Include what couldn't be decided — those go into the open questions log, with an owner and a due date.
+
+### Contextual inquiry and shadowing
+
+Contextual inquiry (from Beyer and Holtzblatt's Contextual Design method) is built on a "master and apprentice" model: you sit with people at their workplace, watch them do real work, and ask questions as they go — like an apprentice learning the trade. Shadowing is the lighter version: follow along and observe, interrupting less.
+
+What shadowing gives you that interviews can't:
+
+- **Workarounds**: side spreadsheets, internal Zalo chat groups, notebooks — each workaround is an unmet requirement.
+- **Real waiting time**: nobody says "I wait two days for an email reply", but you can see it in their inbox.
+- **Interruptions**: phone calls, colleagues asking questions, screen switching — important when designing for people who juggle several things at once.
+
+<Callout type="tip" title="Ask to observe the hard days, not just the normal ones">
+  Month-end closing, the day before the Tết holiday, the day the old system crawls — that's when a process shows its real limits. One shadowing session on the 28th of the month taught me more than three in mid-month.
+</Callout>
+
+## Jobs-to-be-Done: ask about progress, not features
+
+Jobs-to-be-Done (JTBD) asks: what job do people "hire" this product to do, and in what situation? It shifts the conversation from "what feature do you want" to "what progress are you trying to make".
+
+I usually write the results as **job stories**:
+
+```text
+When [situation], I want to [motivation], so I can [expected outcome].
+
+When an invoice doesn't match the purchase order,
+I want to know immediately which line is off and who needs to fix it,
+so I don't have to email back and forth and the invoice doesn't sit stuck for days.
+
+When I'm travelling and a large payment needs approval,
+I want to see enough information to decide in a few minutes,
+so an important supplier isn't paid late because of me.
+```
+
+Compared with a user story like "As a director, I want to approve on my phone", a job story keeps the **situation** — and the situation is what lets you design the right thing. "A large payment needs approval" immediately raises questions: how large is large? What about the small ones?
+
+The JTBD questions I use most revolve around a specific past event: "When did you last switch from the old way of doing this to the current one? What made you decide to switch? What made you hesitate?" Answers about behaviour that already happened are far more reliable than predictions about future behaviour.
+
+## Document analysis and prototyping
+
+### Documents are silent witnesses
+
+Document analysis is often seen as dry, but documents don't forget, aren't polite, and have no politics. What I always ask for:
+
+- **The Excel files people actually use.** This is the gold mine. Every column is a data field, every fill colour is a state, every "temp" sheet is a process nobody has systematized.
+- **Internal policies, procedures, permission matrices.** Compare them with real practice to see where they diverge.
+- **Real forms and documents** (with sensitive data masked): invoices, payment requests, goods receipts.
+- **Emails and support tickets.** Errors and complaints show where the process breaks.
+- **Relevant regulations.** For invoices in Vietnam, that means the e-invoice rules (Decree 123/2020/ND-CP and its amendments) and the Law on Accounting's rules on retaining records. You don't need to become an expert, but you need to know enough to ask the right person.
+
+### Prototype to ask, not to sign off
+
+Prototypes are one of the strongest elicitation tools, because people react to concrete things far better than to abstract descriptions. But the purpose must be clear: **a prototype is for asking questions, not for collecting signatures**.
+
+- **Paper sketches or grey wireframes** early on. The rougher it looks, the more willing people are to comment on structure rather than button colour.
+- **A clickable prototype with their own real data.** An approval screen showing last week's actual supplier names and amounts makes users say "ah, but in this case..." — which is exactly the exception you're looking for.
+- **Wizard of Oz:** the interface looks automated, but a person does the work by hand behind it. Great for testing whether "automatic matching" is worth building before you write the algorithm.
+
+The biggest risk with a polished prototype is that stakeholders think it's nearly done. Say it clearly before every session: this is a sketch for asking questions; there's nothing behind it yet.
+
+## The assumption log and the open questions log
+
+These two documents travel with me from project to project. They're small, continuously alive, and they save projects from late surprises.
+
+### Assumption log
+
+An assumption is something the team believes is true but has no evidence for yet. Each one has a risk if it's wrong and a way to test it.
+
+| ID | Assumption | Source | If wrong | How to test | Owner | Due | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A-01 | The main bottleneck is the director's signature | Kick-off meeting | We build the wrong thing; processing time doesn't drop | Measure each step's duration on the last 40 invoices | BA | Week 1 | False — see case study |
+| A-02 | Every invoice has a PO before goods arrive | Purchasing policy | Automatic matching can't work for some invoices | Ask purchasing; count invoices without a PO over one month | Tech lead | Week 1 | Partly false |
+| A-03 | The accounting software has an API for POs | Team's assumption | We must sync via files; data lags | Ask IT; read the software vendor's documentation | Tech lead | Week 1 | False — nightly file export only |
+| A-04 | The director accepts approving only above a limit | Director interview | He still approves everything; volume doesn't drop | CFO proposes a policy change | CFO | Week 3 | Confirmed |
+
+### Open questions log
+
+Open questions are things the team knows it doesn't know. Unlike assumptions, nobody believes anything here yet — someone just needs to answer.
+
+| ID | Question | Ask whom | Blocks | Due | Answer |
+| --- | --- | --- | --- | --- | --- |
+| Q-01 | What unit-price tolerance is allowed when matching? | Chief accountant | Matching rules | Week 2 | No price variance; quantity may differ across partial deliveries |
+| Q-02 | What happens when an invoice is replaced after approval? | Chief accountant | State model | Week 2 | Previous approvals are voided; start again |
+| Q-03 | Who approves when the CFO is on leave? | CFO | Approval matrix | Week 3 | Time-limited delegation, recorded in the system |
+
+<Callout type="note" title="One small rule that keeps the logs alive">
+  At each weekly stand-up, the team skims the open rows. Any assumption past its due date without being tested gets flagged as a risk in the sponsor report. A log nobody reads is the same as no log.
+</Callout>
+
+## Classifying requirements: business, stakeholder, solution, transition
+
+Once you have notes, the next step is classification. BABOK splits requirements into four groups, and classifying them makes sure each requirement gets asked the right question:
+
+| Type | Answers | Example from the invoice project | Who decides |
+| --- | --- | --- | --- |
+| Business requirement | What does the organization want to achieve, and why? | Pay on time and capture early-payment discounts, without loosening spending control | Sponsor |
+| Stakeholder requirement (user requirement) | What does each group of people need to be able to do? | AP accountants need to see immediately where an invoice mismatches and who's handling it | User group representative |
+| Solution requirement — functional | What must the system do? | The system automatically matches each invoice line against the PO and the goods receipt | Product owner / BA |
+| Solution requirement — non-functional | How well, and under what constraints? | Every approval action has an immutable history; sign-in uses company accounts | Architecture / IT / control functions |
+| Transition requirement | What's needed to move from now to the future state, then discarded? | Import open POs before go-live; run in parallel with the paper process for a month | Sponsor + IT |
+
+<Callout type="note" title="On naming">
+  BABOK says "stakeholder requirements"; many other sources (Karl Wiegers' books, for example) say "user requirements". The name matters less than separating the layers: one business requirement can be met by several different sets of solution requirements, and that's exactly the space where engineers can propose cheaper options.
+</Callout>
+
+### Non-functional requirements must be measurable
+
+"The system must be fast" and "it must be secure" aren't requirements; they're wishes. Every non-functional requirement needs a number or a testable condition:
+
+- **Performance:** the approval screen renders completely in under 2 seconds on 4G for a 50-line invoice.
+- **Availability:** the system is available during business hours; maintenance only happens outside them and never in the last three days of the month.
+- **Audit:** every state transition records who, when, and the before and after values; nobody, admins included, can edit the history.
+- **Retention:** documents and approval history are kept for the period the Law on Accounting requires, and can be exported for audits.
+
+### From requirements to something engineers can use
+
+For engineers, the fun part starts after classification: turning requirements into acceptance criteria and a domain model. Given/When/Then acceptance criteria force everyone to state the conditions:
+
+```text
+Feature: Route approvals by amount limit
+
+  Scenario: Small invoice from an established supplier
+    Given an 18,000,000 VND invoice that matched cleanly
+    And the supplier has been trading with us for more than 6 months
+    When the AP accountant submits it for approval
+    Then only the chief accountant needs to approve it
+    And the director receives no approval request
+
+  Scenario: New supplier, regardless of amount
+    Given a 5,000,000 VND invoice from a first-time supplier
+    When the AP accountant submits it for approval
+    Then the chief accountant and then the director must approve it
+```
+
+And the approval matrix — being policy — should live as data, not buried in `if/else`, because it will change on someone else's decision, not the engineering team's:
+
+```ts
+// domain/approval-policy.ts
+export type Role = "chief_accountant" | "director" | "cfo";
+
+// Fixed signing order, bottom up
+const SIGNING_ORDER: Role[] = ["chief_accountant", "director", "cfo"];
+
+type ApprovalRule = {
+  id: string;
+  // Applies when the total (tax included) is at least this amount, in VND
+  minAmountVnd: number;
+  newSupplierOnly?: boolean;
+  approvers: Role[];
+};
+
+// Source: revised spending policy, signed off by the CFO (see RACI)
+export const APPROVAL_MATRIX: ApprovalRule[] = [
+  { id: "R1", minAmountVnd: 0, approvers: ["chief_accountant"] },
+  { id: "R2", minAmountVnd: 0, newSupplierOnly: true, approvers: ["chief_accountant", "director"] },
+  { id: "R3", minAmountVnd: 50_000_000, approvers: ["chief_accountant", "director"] },
+  { id: "R4", minAmountVnd: 1_000_000_000, approvers: ["chief_accountant", "director", "cfo"] },
+];
+
+export function requiredApprovers(totalVnd: number, isNewSupplier: boolean): Role[] {
+  const needed = new Set(
+    APPROVAL_MATRIX.filter(
+      (r) => totalVnd >= r.minAmountVnd && (!r.newSupplierOnly || isNewSupplier),
+    ).flatMap((r) => r.approvers),
+  );
+  // Rules are cumulative; return approvers in signing order
+  return SIGNING_ORDER.filter((role) => needed.has(role));
+}
+```
+
+The "Source: ..." comment isn't decoration. When someone asks a year later "why is the limit 50 million?", the answer traces back to a decision and a person, not to "the dev back then wrote it that way".
+
+## Confirming understanding: playback and glossary
+
+### Playback
+
+Playback means playing back to stakeholders what you understood, **in their language**, and asking them to correct it. Not sending a 40-page specification and waiting for a signature — nobody reads that carefully.
+
+The format I use is a one-page summary after each round:
+
+- **What I understood:** the current process in 5–7 steps, with a simple diagram.
+- **What surprised me:** things that contradicted the initial assumptions.
+- **What I'm unsure about:** open questions, with who I think can answer them.
+- **What I propose to do next.**
+
+The question that goes with it is always "What did I get wrong?", never "Do you agree?". The first invites correction; the second invites a nod.
+
+### Glossary
+
+A glossary is a list of terms with a single definition for the project. It sounds bureaucratic, but I've never seen a business project without at least one word understood two ways.
+
+| Term | Definition in this project | Not to be confused with |
+| --- | --- | --- |
+| Incoming invoice | An e-invoice issued by a supplier to the company | Payment request (an internal document) |
+| Matched | Every invoice line agrees with the PO and goods receipt within tolerance | Approved |
+| Approved | All signatures required by the approval matrix collected; ready to pay | Paid |
+| New supplier | No completed transaction in the last 6 months | A supplier whose record was just created in the system |
+
+The glossary is also where names in code should come from. If the business says "matched", the state in code is `matched` — not `verified` here and `checked` there. Domain-Driven Design calls this the ubiquitous language, and it starts in the interview, not in the code.
+
+## Case study: approving incoming invoices at a distribution company
+
+This section puts everything together. Names and some details have been changed.
+
+### Context and the original request
+
+A medical-supplies distributor in Ho Chi Minh City, about 250 employees, three warehouses. Each month they receive roughly 1,500 incoming e-invoices from a few hundred suppliers, through a shared mailbox. The process: an accounts-payable (AP) accountant downloads the invoice, matches it against the PO in the accounting software and the goods receipt in Excel, prints a payment request, and collects signatures from the head of purchasing, the chief accountant, and then the director.
+
+The original request, from the CFO: "Build a mobile app so the director can approve on his phone — he travels a lot and the paperwork just sits there."
+
+### Interview notes
+
+These are raw notes (trimmed) from the first week, keeping quotes, observations and interpretations apart:
+
+```text
+[Hương — CFO — sponsor — 40 min]
+"Suppliers complain we pay late. Some big ones give 2% off if we pay within 10 days,
+ and we miss it almost every month."
+"Quang is always travelling; files pile up on his desk."
+Laddering: approve on phone → don't pay late → keep supplier relationships + get discounts.
+INTERPRETATION: real goal = pay on time + capture discounts, NOT "mobile approval".
+
+[Lan — AP accountant — 60 min, including "show me"]
+OBSERVED: opens mailbox, downloads XML + PDF, looks up the PO in the accounting software,
+ opens "Nhap kho T9.xlsx" and searches goods receipts by item name (no shared code).
+"When it doesn't match I email Minh in purchasing; sometimes it takes two or three days."
+OBSERVED: Lan's own tracking sheet has "received", "sent for signature", "signed" date columns.
+INTERPRETATION: we have data to measure each step — ask for the file.
+
+[Minh — Head of purchasing — 30 min]
+"Urgent stuff we order by phone, and do the PO afterwards — sometimes after the goods arrive."
+"Accounting sends so many emails, I can't tell which ones are urgent."
+INTERPRETATION: some invoices arrive before any PO exists → automatic matching impossible for them.
+
+[Quang — Director — 15 min, by phone]
+"I only need to look at the big ones and new suppliers. The small stuff I sign in a stack without reading."
+"I sign because the policy says I have to."
+INTERPRETATION: policy requires his signature on everything; he doesn't see it as real control.
+
+[Thảo — Chief accountant — 45 min]
+"Invoices must be checked on the tax authority's lookup portal before booking, in case they're invalid."
+"If an invoice gets replaced, we start over."
+"Unit price can't differ. Quantity can, if it's delivered in several shipments."
+
+[Tuấn — IT — 30 min]
+"The accounting software has no API; it only exports a file every night."
+"We're on Microsoft 365 and want sign-in with those accounts."
+```
+
+### What shadowing and the data showed
+
+I sat with Lan for three sessions, one of them on the last day of the month, and used her own tracking sheet to measure the 40 most recent invoices. The picture was very different from the original request:
+
+- **Most of the waiting happened while resolving mismatches** between invoice and PO — emails back and forth with purchasing, waiting for a PO to be created after the fact. Waiting for the director's signature was real, but much shorter.
+- **A significant share of invoices arrived before any PO existed**, because of urgent phone orders. Without a PO, nothing can be automated.
+- **Goods receipts and POs had no shared reference.** Lan matched them by item name and memory.
+- **The director signed everything, including items he never looked at.** That signature cost time and added no control.
+
+### From notes to requirements
+
+| ID | Type | Requirement | Traces to |
+| --- | --- | --- | --- |
+| BR-01 | Business | Pay on time and capture early-payment discounts where offered, measured by the share of invoices paid within terms | Hương |
+| BR-02 | Business | No loosening of control: nothing is paid until it's matched and approved per the limit matrix | Hương, Thảo |
+| SR-01 | Stakeholder | AP accountants see immediately which invoices mismatch, on which line, and who's handling it | Lan, observation |
+| SR-02 | Stakeholder | Purchasing gets the mismatches it must resolve in one place, ordered by urgency, without email | Minh |
+| SR-03 | Stakeholder | The director only approves large amounts or new suppliers, and can do it from a phone | Quang |
+| FR-01 | Functional | Ingest XML e-invoices from a dedicated mailbox, extracting seller, invoice number and series, line items, tax, total | Observation |
+| FR-02 | Functional | Check invoice status on the tax authority's lookup portal before allowing matching | Thảo |
+| FR-03 | Functional | Three-way match invoice, PO and goods receipt: unit price must match, quantity may vary across deliveries | Thảo, Q-01 |
+| FR-04 | Functional | Route approvals using a configurable limit matrix | Quang, A-04 |
+| FR-05 | Functional | A replacement invoice voids all previous approvals and returns to matching | Q-02 |
+| NFR-01 | Non-functional | Approval history is immutable; records who, when, previous and new state | Thảo |
+| NFR-02 | Non-functional | Sign-in with the company's Microsoft 365 accounts | Tuấn |
+| NFR-03 | Non-functional | Approval screen works well on phones, renders in under 2 seconds on 4G | Quang |
+| TR-01 | Transition | Sync POs from the nightly export file; import open POs before go-live | Tuấn, A-03 |
+| TR-02 | Transition | Run in parallel with the paper process for one month; train accounting and purchasing | Hương |
+
+The two most important changes **weren't in the software**:
+
+1. **The approval policy was revised** so the director only approves amounts of 50 million VND and above, or new suppliers. That was the CFO's and the board's decision; the engineering team only brought the data and a proposal.
+2. **Purchasing got an "urgent PO" procedure**: phone orders still require a PO created the same day. Without it, automatic matching would only ever work for part of the invoices.
+
+### How it ended
+
+We didn't build a native mobile app. The approval screen is a responsive web page, with email and Zalo notifications when something needs approval. Most of the effort went into automatic invoice ingestion, three-way matching, and a mismatch queue for purchasing.
+
+A few months in, the time from receiving an invoice to being ready to pay had dropped noticeably — from more than a week to a few days for most invoices — and the company started capturing early-payment discounts from its large suppliers. By the CFO's own assessment, most of the improvement came from the urgent-PO procedure and automatic matching. The phone approval screen, the thing originally requested, contributed the least.
+
+<Callout type="danger" title="What almost happened">
+  At the first meeting the team already had a quote for a mobile app, estimated at six weeks. Had we just followed the request, we'd have delivered on time, to spec, with a signed acceptance — and three months later invoices would still be stuck at matching. A project that "succeeds" contractually but fails to deliver value is the hardest kind of failure to notice.
+</Callout>
+
+## Mistakes I keep seeing
+
+**From engineers:**
+
+- **Jumping to solutions in the first session.** "We'll just use a queue" before understanding the problem. Once you propose a solution, stakeholders stop describing the problem.
+- **Only asking about data and screens.** Asking "which fields do you need" without asking "what happens when..." misses the entire state model and its exceptions.
+- **Treating the spec as an immutable contract.** A spec is a snapshot of understanding at one point in time. When code uncovers a new exception, go back and ask; don't guess.
+- **Deciding policy in code.** Limits, tolerances, delegation rules — those are business decisions. Make them configurable data and record where they came from.
+
+**From BAs:**
+
+- **Only talking to managers.** The process on paper and the real process are rarely the same.
+- **Over-specifying the UI and under-specifying business rules.** Engineers need to know what happens with a replacement invoice far more than whether a button sits left or right.
+- **Not writing down assumptions.** Unwritten assumptions become "requirements" in each person's head, each in a different way.
+
+**For both:**
+
+- **Nodding along to undefined terms.** Whenever you hear a business term for the first time, ask "what does that mean exactly?" and add it to the glossary.
+- **Interviewing once and stopping.** Elicitation is a loop; coming back after a prototype is when the most valuable information shows up.
+
+## Elicitation checklist
+
+<Checklist>
+
+- The stakeholder map includes the people doing the work, control functions, IT and the people on the other side of the process.
+- Every kind of requirement decision has exactly one Accountable person in the RACI.
+- Every interview has a goal, a list of assumptions to test and an interview guide.
+- You've asked "show me" and observed at least one hard day (month-end, peak season).
+- Notes separate verbatim quotes, observations and interpretations, and are rewritten within 24 hours.
+- Questions have been checked for leading phrasing; laddering is used to find business goals and concrete examples.
+- You've collected the Excel files, forms, policies and relevant regulations.
+- The assumption log and open questions log have owners and due dates and are reviewed weekly.
+- Requirements are classified as business, stakeholder, solution (functional and non-functional) and transition, each traceable to a source.
+- Non-functional requirements have a number or a testable condition.
+- You've played back your understanding in the stakeholders' language and asked "what did I get wrong?".
+- A glossary fixes the terms, and names in code follow it.
+- Business policy (limits, tolerances) lives as configurable data with its decision source recorded.
+
+</Checklist>

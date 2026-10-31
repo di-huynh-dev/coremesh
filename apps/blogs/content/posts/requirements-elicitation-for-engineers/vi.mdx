@@ -1,0 +1,520 @@
+---
+title: "Khai thác yêu cầu cho kỹ sư: hộp đồ nghề của business analyst, từ phỏng vấn tới assumption log"
+excerpt: "Yêu cầu được nói ra hiếm khi là nhu cầu thật. Bài này đi qua bộ công cụ của business analyst dành cho kỹ sư: bản đồ stakeholder, kỹ thuật phỏng vấn, shadowing, Jobs-to-be-Done, prototype, assumption log, phân loại yêu cầu kiểu BABOK, và một case study duyệt hoá đơn B2B ở công ty Việt Nam."
+---
+
+<Lead>"Làm cho bọn chị một app mobile để anh giám đốc duyệt hoá đơn trên điện thoại." Đó là toàn bộ yêu cầu mình nhận được trong buổi họp đầu tiên với phòng tài chính của một công ty phân phối. Nếu làm đúng như vậy, bọn mình sẽ giao một app đẹp, chạy tốt — và không giải quyết được gì, vì giám đốc chưa bao giờ là nút thắt. Mình mất hai tuần phỏng vấn, ngồi cạnh kế toán và đọc file Excel của họ mới hiểu vấn đề thật. Bài này là bộ đồ nghề mình học được từ các business analyst giỏi mà mình từng làm cùng, viết cho kỹ sư lẫn BA: vì sao yêu cầu được nói ra không phải nhu cầu thật, nghe ai, hỏi thế nào, ghi lại gì, phân loại ra sao, và xác nhận rằng mình hiểu đúng trước khi viết dòng code đầu tiên.</Lead>
+
+## Yêu cầu được nói ra không phải nhu cầu thật
+
+Không phải khách hàng nói dối, cũng không phải họ không biết mình muốn gì. Vấn đề là cách con người mô tả công việc của mình có những méo mó rất có hệ thống:
+
+- **Họ mô tả giải pháp thay vì vấn đề.** "Cần app mobile", "cần nút export Excel", "cần dashboard realtime" — đều là giải pháp mà họ tưởng tượng ra, dựa trên những gì họ từng thấy. Vấn đề phía sau thường hẹp hơn hoặc khác hẳn.
+- **Họ nhớ ngoại lệ đau nhất, không nhớ trường hợp phổ biến.** Lần sếp bị kẹt ở sân bay và không duyệt được một khoản chi gấp sẽ được kể lại sinh động hơn nhiều so với một nghìn lần quy trình chạy bình thường.
+- **Kiến thức ngầm.** Những quy tắc "ai cũng biết" — hoá đơn của nhà cung cấp X luôn phải gọi điện xác nhận, cuối tháng không nhận hoá đơn mới — không bao giờ được nói ra vì người nói không còn nhận ra đó là quy tắc.
+- **Họ nói bằng từ vựng của họ.** "Duyệt" với kế toán nghĩa là "đã đối chiếu xong", với giám đốc nghĩa là "đồng ý chi tiền". Cùng một từ, hai trạng thái khác nhau trong hệ thống.
+- **Chính trị.** Một yêu cầu đôi khi là cách để một phòng ban giữ quyền kiểm soát, hoặc chuyển trách nhiệm sang phòng khác. Bạn không cần phán xét, nhưng cần nhận ra.
+
+| Câu nghe được | Thường thực chất là | Câu hỏi tiếp theo |
+| --- | --- | --- |
+| "Cần app mobile để duyệt" | Có độ trễ ở bước duyệt, và người ta đoán nguyên nhân là thiết bị | "Lần gần nhất một khoản bị chậm duyệt, chuyện gì đã xảy ra?" |
+| "Cần export Excel" | Họ cần làm tiếp gì đó với dữ liệu mà hệ thống không hỗ trợ | "Sau khi có file Excel, anh chị làm gì tiếp với nó?" |
+| "Phải realtime" | Họ từng bị số liệu cũ làm sai một quyết định | "Nếu số liệu chậm một tiếng thì điều gì xảy ra?" |
+| "Giống hệt hệ thống cũ" | Họ sợ mất một thứ quan trọng nhưng không biết diễn đạt | "Phần nào của hệ thống cũ mà mất đi thì anh chị lo nhất?" |
+| "Cái này đơn giản thôi" | Người nói chưa nghĩ đến ngoại lệ | "Có trường hợp nào không đi theo cách này không?" |
+
+### Yêu cầu là giả thuyết, không phải đơn đặt hàng
+
+Cách nghĩ giúp mình nhiều nhất: **mỗi yêu cầu là một giả thuyết về điều sẽ tạo ra giá trị**, và việc của người khai thác yêu cầu là kiểm chứng giả thuyết đó trước khi nó trở thành code. "App mobile giúp duyệt nhanh hơn" là giả thuyết. Nó có thể đúng. Nhưng nó cần bằng chứng, và rẻ nhất là tìm bằng chứng khi mọi thứ còn là lời nói và giấy nháp.
+
+Đây cũng là lý do kỹ sư nên tham gia khai thác yêu cầu, không chỉ đợi BA đưa spec. Kỹ sư có một năng lực đặc biệt: hỏi "nếu... thì sao?". Nếu nhà cung cấp giao hàng làm hai đợt nhưng xuất một hoá đơn thì sao? Nếu hoá đơn bị thay thế sau khi đã duyệt thì sao? Những câu hỏi đó, hỏi ở buổi phỏng vấn, rẻ hơn hàng trăm lần so với hỏi ở sprint thứ năm.
+
+## Vòng lặp khai thác yêu cầu
+
+BABOK (Business Analysis Body of Knowledge, bộ kiến thức của IIBA) mô tả vùng kiến thức "Elicitation and Collaboration" với các task: chuẩn bị cho elicitation, thực hiện elicitation, xác nhận kết quả, truyền đạt thông tin, và quản lý cộng tác với stakeholder. Mình rút gọn lại thành một vòng lặp năm bước dùng hằng ngày:
+
+1. **Chuẩn bị:** mục tiêu của buổi này là gì, nói chuyện với ai, mình đang giả định điều gì cần kiểm chứng.
+2. **Khai thác:** hỏi, quan sát, đọc tài liệu — chọn kỹ thuật theo người mình đang nói chuyện.
+3. **Ghi lại:** ghi chú thô, assumption log, open questions log, mô hình quy trình.
+4. **Xác nhận:** phát lại cho stakeholder điều mình hiểu, bằng ngôn ngữ của họ.
+5. **Tinh chỉnh:** những chỗ sai và chỗ trống trở thành câu hỏi cho vòng tiếp theo.
+
+Chữ quan trọng là **vòng lặp**. Không có buổi phỏng vấn nào thu được "toàn bộ yêu cầu". Mình dừng vòng lặp khi các buổi mới không còn thay đổi mô hình của mình nữa — khi người thứ năm kể lại đúng quy trình mà bốn người trước đã kể, và không có ngoại lệ mới nào xuất hiện.
+
+<Figure src="/blog/requirements-elicitation-for-engineers-loop.svg" alt="Sơ đồ vòng lặp khai thác yêu cầu gồm năm bước: chuẩn bị (mục tiêu, người cần gặp, giả định), khai thác (hỏi, quan sát, đọc), ghi lại (ghi chú, log, mô hình), xác nhận (playback, glossary) và tinh chỉnh (chỗ trống, câu hỏi mới) quay về chuẩn bị; ở giữa ghi dừng vòng lặp khi các buổi mới không còn thay đổi mô hình; bên phải là bảng ghép loại stakeholder với kỹ thuật: sponsor dùng phỏng vấn ngắn và laddering, process owner dùng phỏng vấn kèm phân tích tài liệu, người dùng hằng ngày dùng shadowing và prototype, các bộ phận kiểm soát như tài chính, kiểm toán, IT dùng workshop và checklist yêu cầu phi chức năng, bên ngoài như nhà cung cấp dùng tài liệu mẫu và phỏng vấn JTBD" caption="Đi vòng lặp nhiều lần, và chọn kỹ thuật theo người bạn đang lắng nghe — không có kỹ thuật nào hợp với mọi stakeholder." />
+
+## Bản đồ stakeholder: nghe đúng người
+
+Sai lầm đầu tiên thường không phải hỏi sai câu, mà là hỏi sai người — hoặc thiếu người. Trước buổi phỏng vấn đầu tiên, mình luôn dành một giờ để vẽ bản đồ stakeholder.
+
+### Lưới quyền lực và mức quan tâm
+
+Lưới power/interest chia stakeholder theo hai trục: họ có bao nhiêu ảnh hưởng tới dự án, và họ quan tâm bao nhiêu tới kết quả.
+
+| | Mức quan tâm thấp | Mức quan tâm cao |
+| --- | --- | --- |
+| **Quyền lực cao** | **Giữ hài lòng:** cập nhật ngắn gọn, hỏi ý kiến ở các quyết định lớn | **Quản lý sát:** tham gia định kỳ, cùng ra quyết định |
+| **Quyền lực thấp** | **Theo dõi:** thông tin chung, không làm phiền | **Giữ thông tin:** cập nhật thường xuyên, mời tham gia kiểm thử |
+
+<Callout type="warning" title="Lưới này là chiến lược giao tiếp, không phải bảng xếp hạng giá trị thông tin">
+  Kế toán viên làm quy trình hằng ngày thường nằm ở ô "quyền lực thấp, quan tâm cao". Điều đó nói cách bạn *cập nhật* họ, không nói họ ít quan trọng khi *khai thác yêu cầu*. Ngược lại, họ thường là nguồn thông tin chính xác nhất về cách công việc thực sự diễn ra. Đừng để lưới quyền lực quyết định bạn nghe ai nhiều nhất.
+</Callout>
+
+### RACI cho quyết định về yêu cầu
+
+RACI (Responsible, Accountable, Consulted, Informed) thường được dùng cho task, nhưng mình thấy nó hữu ích nhất cho **quyết định**. Mỗi loại quyết định về yêu cầu có đúng một người Accountable — người có quyền nói "chốt". Khi không rõ ai chốt, yêu cầu sẽ bị đổi đi đổi lại mãi.
+
+| Quyết định | Giám đốc tài chính | Kế toán trưởng | Kế toán công nợ | Trưởng mua hàng | IT | BA / tech lead |
+| --- | --- | --- | --- | --- | --- | --- |
+| Mục tiêu và chỉ số thành công | A | C | I | C | I | R |
+| Ma trận hạn mức duyệt (chính sách) | A | R | I | C | I | C |
+| Dung sai khi đối chiếu PO | C | A | R | C | I | R |
+| Tích hợp với phần mềm kế toán | I | C | I | I | A | R |
+| Thiết kế màn hình duyệt | I | C | C | C | I | A |
+| Nghiệm thu | A | R | R | C | C | R |
+
+Bảng này lộ ra những điều thú vị ngay khi vẽ: ma trận hạn mức duyệt là **chính sách công ty**, không phải yêu cầu phần mềm. Đội kỹ thuật không được tự quyết, dù nó nằm trong code.
+
+### Những người hay bị quên
+
+- **Người làm việc thật**, không chỉ quản lý của họ. Trưởng phòng mô tả quy trình như nó *nên* diễn ra; nhân viên cho bạn thấy nó *thực sự* diễn ra.
+- **Bộ phận kiểm soát:** kế toán trưởng, kiểm toán nội bộ, pháp chế. Họ ít khi tham gia họp đầu nhưng có quyền phủ quyết lúc nghiệm thu.
+- **IT vận hành:** ai sẽ trực khi hệ thống lỗi lúc 7 giờ sáng ngày chốt sổ? Họ có yêu cầu về đăng nhập, sao lưu, phân quyền.
+- **Người ở phía bên kia quy trình:** nhà cung cấp, khách hàng, kho. Họ không dùng hệ thống nhưng tạo ra dữ liệu đầu vào cho nó.
+
+## Phỏng vấn: kỹ năng cốt lõi
+
+Phỏng vấn là kỹ thuật được dùng nhiều nhất và bị làm sai nhiều nhất. Phỏng vấn tốt không phải là đọc một danh sách câu hỏi; nó là một cuộc trò chuyện có chủ đích, nơi người được hỏi nói phần lớn thời gian.
+
+### Chuẩn bị: mục tiêu và giả định cần kiểm chứng
+
+Trước mỗi buổi, mình viết ra ba thứ: **mục tiêu** (sau buổi này mình cần biết điều gì), **giả định** (mình đang tin điều gì mà chưa có bằng chứng), và **tài liệu cần xin** (file, mẫu biểu, ảnh chụp màn hình). Nếu không có giả định nào cần kiểm chứng, có lẽ buổi đó không cần thiết.
+
+Một điều về văn hoá làm việc ở Việt Nam mà mình học được qua nhiều dự án: **phỏng vấn riêng từng người trước khi họp chung**. Trong một cuộc họp có sếp, nhân viên rất hiếm khi nói "thực ra quy trình không chạy như anh vừa nói". Và "dạ, vâng" trong cuộc họp thường có nghĩa là "em đã nghe", không phải "em đồng ý".
+
+### Câu hỏi mở và "cho mình xem bạn đang làm thế nào"
+
+Câu hỏi đóng (có hoặc không, chọn A hay B) xác nhận điều bạn đã nghĩ. Câu hỏi mở cho bạn thấy điều bạn chưa nghĩ tới. Đầu buổi hầu như chỉ dùng câu hỏi mở:
+
+- "Anh chị kể giúp mình một ngày làm việc bình thường, từ lúc nhận hoá đơn đến lúc xong."
+- "Lần gần nhất có chuyện gì đó không suôn sẻ, nó diễn ra thế nào?"
+- "Phần nào trong việc này chiếm nhiều thời gian nhất? Phần nào gây khó chịu nhất?"
+
+Nhưng câu mạnh nhất không phải là câu hỏi: **"Anh chị có thể cho mình xem cách mình đang làm hôm nay không?"** Khi người ta kể, họ kể phiên bản lý tưởng. Khi họ làm trước mặt bạn, bạn thấy cửa sổ Excel thứ ba, cuốn sổ tay ghi số điện thoại nhà cung cấp, và tờ giấy nhớ dán trên màn hình với quy tắc mà không tài liệu nào ghi lại.
+
+### Tránh câu hỏi dẫn dắt
+
+Câu hỏi dẫn dắt chứa sẵn câu trả lời mà người hỏi mong đợi. Người được hỏi — đặc biệt khi bạn là "bên làm phần mềm" — có xu hướng đồng ý cho lịch sự.
+
+| Câu dẫn dắt | Câu trung tính |
+| --- | --- |
+| "Anh có muốn duyệt trên điện thoại không?" | "Lần gần nhất anh cần duyệt một khoản khi không ở văn phòng, chuyện gì đã xảy ra?" |
+| "Chắc phần đối chiếu mất thời gian lắm nhỉ?" | "Phần nào trong quy trình chiếm nhiều thời gian nhất của chị?" |
+| "Có nút export Excel thì tiện hơn đúng không?" | "Sau khi có số liệu này, chị dùng nó để làm gì?" |
+| "Hệ thống cần realtime chứ?" | "Nếu số liệu chậm một tiếng thì có ảnh hưởng gì không?" |
+| "Vấn đề là do phòng mua hàng chậm phải không?" | "Khi hoá đơn bị lệch với đơn mua, ai xử lý và xử lý thế nào?" |
+
+### 5 Whys — và khi nào nó dẫn sai
+
+5 Whys — hỏi "tại sao" lặp lại để đi từ triệu chứng tới nguyên nhân gốc — có nguồn gốc từ hệ thống sản xuất của Toyota. Nó hữu ích, nhưng có hai cái bẫy:
+
+1. **Nó giả định một chuỗi nhân quả duy nhất.** Thực tế thường có nhiều nguyên nhân song song. Khi một câu "tại sao" có hai câu trả lời hợp lý, hãy đi theo cả hai nhánh.
+2. **"Tại sao" nghe như buộc tội.** "Tại sao chị không nhập PO trước?" khiến người nghe phòng thủ. Mình hay đổi thành "Điều gì dẫn đến việc...?" hoặc "Chuyện gì xảy ra trước đó?". Cùng mục đích, ít áp lực hơn nhiều.
+
+### Laddering: leo lên và đi xuống
+
+Laddering là kỹ thuật mình học từ nghiên cứu người dùng: từ một điều người ta nói, bạn leo **lên** để hiểu vì sao nó quan trọng, hoặc đi **xuống** để hiểu nó cụ thể là gì.
+
+- **Leo lên** ("Vì sao điều đó quan trọng với chị?"): từ tính năng, tới hệ quả, tới mục tiêu kinh doanh. "Duyệt trên điện thoại" → "để không chậm thanh toán" → "để nhà cung cấp không ngừng giao hàng và để được chiết khấu thanh toán sớm".
+- **Đi xuống** ("Cụ thể là như thế nào? Cho mình một ví dụ?"): từ khái niệm trừu tượng tới hành vi quan sát được. "Đối chiếu" → "so số lượng và đơn giá từng dòng hàng với đơn mua và phiếu nhập kho".
+
+Leo lên giúp bạn tìm ra yêu cầu kinh doanh thật. Đi xuống giúp bạn viết được acceptance criteria.
+
+### Template: interview guide
+
+Đây là khung mình dùng, chỉnh lại cho từng buổi. Nó là dàn ý, không phải kịch bản — mình hiếm khi đi đúng thứ tự.
+
+```text
+INTERVIEW GUIDE — [Tên người] / [Vai trò] / [Ngày] / [Thời lượng: 45–60 phút]
+
+Mục tiêu buổi này
+- Hiểu quy trình [X] từ góc nhìn của [vai trò]
+- Kiểm chứng giả định: A-03, A-07 (xem assumption log)
+
+Mở đầu (5 phút)
+- Giới thiệu mục đích: hiểu công việc, không đánh giá ai
+- Xin phép ghi âm / ghi chú; nói rõ ghi chú sẽ được gửi lại để xác nhận
+
+Bối cảnh (10 phút)
+- Anh/chị phụ trách những việc gì? Mỗi tuần mất bao nhiêu thời gian cho [X]?
+- Kể giúp mình lần gần nhất anh/chị làm [X], từ đầu đến cuối.
+
+Cho mình xem (15–20 phút)
+- Anh/chị có thể làm thử một trường hợp thật trước mặt mình không?
+- (Quan sát: công cụ nào, file nào, ai được liên lạc, chỗ nào chờ đợi)
+
+Ngoại lệ và nỗi đau (10 phút)
+- Trường hợp nào không đi theo cách này? Lần gần nhất là khi nào?
+- Phần nào mất thời gian nhất? Phần nào dễ sai nhất?
+- Nếu có một thứ thay đổi được ngay ngày mai, anh/chị chọn gì? Vì sao?
+
+Kết thúc (5 phút)
+- Mình tóm tắt lại điều mình hiểu: ... — có chỗ nào chưa đúng không?
+- Có tài liệu, file mẫu nào anh/chị chia sẻ được không?
+- Mình nên nói chuyện thêm với ai?
+```
+
+Câu cuối cùng — "mình nên nói chuyện thêm với ai?" — là cách rẻ nhất để phát hiện stakeholder bị thiếu trong bản đồ.
+
+### Ghi chép trong và sau buổi
+
+Mình tách rõ ba loại ghi chú, vì trộn lẫn chúng là nguồn của rất nhiều hiểu lầm sau này:
+
+- **Lời nói nguyên văn** (trong ngoặc kép): "Anh Quang ký hết, ký cả xấp."
+- **Quan sát** (điều mình thấy): chị Lan mở ba file Excel để tìm số phiếu nhập kho.
+- **Diễn giải** (điều mình suy ra, đánh dấu rõ): có vẻ nút thắt nằm ở đối chiếu, không phải ở bước ký.
+
+Viết lại ghi chú sạch **trong vòng 24 giờ**. Sau đó, bạn sẽ bắt đầu nhớ điều mình nghĩ thay vì điều người ta nói.
+
+## Workshop, quan sát và shadowing
+
+### Workshop có cấu trúc
+
+Workshop hợp khi cần **thống nhất** giữa nhiều bên — không hợp khi cần **khám phá** từng người. Mình chỉ tổ chức workshop sau khi đã phỏng vấn riêng, để vào phòng với một bản nháp quy trình cụ thể thay vì tờ giấy trắng.
+
+Vài nguyên tắc giúp workshop có ích:
+
+- **Một mục tiêu, một sản phẩm đầu ra.** Ví dụ: "Thống nhất các trạng thái của một hoá đơn và ai được chuyển trạng thái". Không phải "bàn về hệ thống mới".
+- **Viết im lặng trước, thảo luận sau.** Mỗi người tự viết lên giấy nhớ trong năm phút trước khi ai nói gì. Cách này giảm hẳn hiệu ứng "sếp nói trước, mọi người gật đầu".
+- **Ghi quyết định và người quyết định ngay trên bảng.** Kèm cả những điều chưa quyết được — chúng đi vào open questions log, có người phụ trách và hạn.
+
+### Contextual inquiry và shadowing
+
+Contextual inquiry (từ phương pháp Contextual Design của Beyer và Holtzblatt) dựa trên mô hình "thầy và học việc": bạn ngồi cạnh người làm việc tại chỗ làm của họ, xem họ làm việc thật, và hỏi trong lúc họ làm — như một người học việc muốn học nghề. Shadowing là phiên bản nhẹ hơn: đi theo và quan sát, ít ngắt lời hơn.
+
+Điều shadowing cho bạn mà phỏng vấn không cho được:
+
+- **Workaround**: file Excel phụ, nhóm Zalo nội bộ, sổ tay — mỗi workaround là một yêu cầu chưa được đáp ứng.
+- **Thời gian chờ thật**: không ai kể "tôi đợi trả lời email hai ngày", nhưng bạn thấy được nó trong hộp thư.
+- **Ngắt quãng**: số lần điện thoại reo, đồng nghiệp hỏi, chuyển màn hình — quan trọng khi thiết kế giao diện cho người làm nhiều việc cùng lúc.
+
+<Callout type="tip" title="Xin quan sát những ngày khó, không chỉ ngày bình thường">
+  Ngày chốt sổ cuối tháng, ngày trước kỳ nghỉ Tết, ngày hệ thống cũ chạy chậm — đó là lúc quy trình lộ ra giới hạn thật. Một buổi shadowing vào ngày 28 cho mình nhiều thông tin hơn ba buổi vào giữa tháng.
+</Callout>
+
+## Jobs-to-be-Done: hỏi về tiến triển, không hỏi về tính năng
+
+Jobs-to-be-Done (JTBD) đặt câu hỏi: người ta "thuê" sản phẩm này để hoàn thành công việc gì, trong hoàn cảnh nào? Nó dịch chuyển cuộc trò chuyện từ "anh muốn tính năng gì" sang "anh đang cố đạt được tiến triển gì".
+
+Mình hay viết kết quả dưới dạng **job story**:
+
+```text
+Khi [hoàn cảnh], tôi muốn [động lực], để [kết quả mong đợi].
+
+Khi một hoá đơn lệch với đơn mua hàng,
+tôi muốn biết ngay lệch ở dòng nào và ai cần xử lý,
+để không phải gửi email qua lại và hoá đơn không bị kẹt nhiều ngày.
+
+Khi tôi đi công tác và có khoản chi lớn cần duyệt,
+tôi muốn thấy đủ thông tin để quyết định trong vài phút,
+để nhà cung cấp quan trọng không bị thanh toán trễ vì tôi.
+```
+
+So với user story kiểu "Là một giám đốc, tôi muốn duyệt trên điện thoại", job story giữ lại **hoàn cảnh** — và hoàn cảnh là thứ giúp bạn thiết kế đúng. "Có khoản chi lớn cần duyệt" ngay lập tức đặt câu hỏi: lớn là bao nhiêu? Các khoản nhỏ thì sao?
+
+Các câu hỏi JTBD mình dùng nhiều nhất xoay quanh một sự kiện cụ thể trong quá khứ: "Lần cuối anh chị chuyển từ cách làm cũ sang cách làm hiện tại là khi nào? Điều gì khiến anh chị quyết định đổi? Có gì làm anh chị ngần ngại?" Câu trả lời về hành vi đã xảy ra đáng tin hơn nhiều so với dự đoán về hành vi tương lai.
+
+## Phân tích tài liệu và prototype
+
+### Tài liệu là nhân chứng im lặng
+
+Phân tích tài liệu thường bị coi là việc khô khan, nhưng tài liệu không quên, không lịch sự và không có chính trị. Những gì mình luôn xin:
+
+- **File Excel mà mọi người đang dùng.** Đây là mỏ vàng. Mỗi cột là một trường dữ liệu, mỗi màu tô là một trạng thái, mỗi sheet "tạm" là một quy trình chưa được hệ thống hoá.
+- **Quy chế, quy trình nội bộ, ma trận phân quyền.** So với cách làm thực tế để thấy chỗ lệch.
+- **Mẫu biểu và chứng từ thật** (đã che thông tin nhạy cảm): hoá đơn, phiếu đề nghị thanh toán, phiếu nhập kho.
+- **Email và ticket hỗ trợ.** Lỗi và khiếu nại cho thấy quy trình gãy ở đâu.
+- **Văn bản pháp lý liên quan.** Với hoá đơn ở Việt Nam, đó là các quy định về hoá đơn điện tử (Nghị định 123/2020/NĐ-CP và các văn bản sửa đổi, bổ sung) và Luật Kế toán về lưu trữ chứng từ. Bạn không cần thành chuyên gia, nhưng cần biết đủ để hỏi đúng người.
+
+### Prototype để hỏi, không phải để chốt
+
+Prototype là một trong những công cụ khai thác yêu cầu mạnh nhất, vì người ta phản ứng với thứ cụ thể tốt hơn nhiều so với mô tả trừu tượng. Nhưng mục đích phải rõ: **prototype để đặt câu hỏi, không phải để xin chữ ký**.
+
+- **Phác thảo giấy hoặc wireframe xám** ở giai đoạn đầu. Trông càng thô, người ta càng dám góp ý về cấu trúc thay vì màu nút.
+- **Prototype bấm được với dữ liệu thật của họ.** Một màn hình duyệt hiển thị đúng tên nhà cung cấp và số tiền của tuần trước khiến người dùng nói "à, nhưng trường hợp này thì..." — đó chính là ngoại lệ bạn đang tìm.
+- **Wizard of Oz:** giao diện trông như tự động, nhưng phía sau là người làm bằng tay. Rất hợp để kiểm chứng "đối chiếu tự động" có đáng làm không trước khi viết thuật toán.
+
+Rủi ro lớn nhất của prototype đẹp là stakeholder tưởng nó gần xong. Hãy nói rõ trước mỗi buổi: đây là bản phác để hỏi, phía sau chưa có gì cả.
+
+## Assumption log và open questions log
+
+Hai tài liệu này là thứ mình mang theo từ dự án này sang dự án khác. Chúng nhỏ, sống liên tục, và cứu dự án khỏi những bất ngờ muộn.
+
+### Assumption log
+
+Giả định là điều đội đang tin là đúng nhưng chưa có bằng chứng. Mỗi giả định có rủi ro nếu sai và có cách kiểm chứng.
+
+| ID | Giả định | Nguồn | Nếu sai thì | Cách kiểm chứng | Người phụ trách | Hạn | Trạng thái |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A-01 | Nút thắt chính là bước giám đốc ký | Họp kick-off | Xây sai thứ, không giảm thời gian xử lý | Đo thời gian từng bước trên 40 hoá đơn gần nhất | BA | Tuần 1 | Sai — xem case study |
+| A-02 | Mọi hoá đơn đều có PO trước khi hàng về | Quy chế mua hàng | Đối chiếu tự động không chạy được cho một phần hoá đơn | Hỏi mua hàng, đếm hoá đơn không có PO trong một tháng | Tech lead | Tuần 1 | Sai một phần |
+| A-03 | Phần mềm kế toán có API để lấy PO | Giả định của đội | Phải đồng bộ qua file, dữ liệu trễ | Hỏi IT, đọc tài liệu nhà cung cấp phần mềm | Tech lead | Tuần 1 | Sai — chỉ export file hằng đêm |
+| A-04 | Giám đốc chấp nhận chỉ duyệt khoản trên hạn mức | Phỏng vấn giám đốc | Vẫn phải duyệt mọi khoản, khối lượng không giảm | Giám đốc tài chính đề xuất sửa quy chế | Giám đốc tài chính | Tuần 3 | Đã xác nhận |
+
+### Open questions log
+
+Câu hỏi mở là điều đội biết mình chưa biết. Khác với giả định, ở đây không ai đang tin điều gì cả — chỉ cần một người trả lời.
+
+| ID | Câu hỏi | Hỏi ai | Chặn việc gì | Hạn | Trả lời |
+| --- | --- | --- | --- | --- | --- |
+| Q-01 | Dung sai đơn giá cho phép khi đối chiếu là bao nhiêu? | Kế toán trưởng | Quy tắc đối chiếu | Tuần 2 | Không lệch đơn giá; số lượng cho lệch khi giao nhiều đợt |
+| Q-02 | Hoá đơn thay thế sau khi đã duyệt thì xử lý thế nào? | Kế toán trưởng | Mô hình trạng thái | Tuần 2 | Huỷ duyệt cũ, duyệt lại từ đầu |
+| Q-03 | Ai được duyệt thay khi giám đốc tài chính nghỉ phép? | Giám đốc tài chính | Ma trận duyệt | Tuần 3 | Uỷ quyền có thời hạn, ghi nhận trong hệ thống |
+
+<Callout type="note" title="Một quy tắc nhỏ giữ cho log còn sống">
+  Mỗi buổi họp đứng hằng tuần, đội lướt qua những dòng chưa đóng. Giả định nào quá hạn mà chưa kiểm chứng sẽ được đánh dấu rủi ro trong báo cáo cho sponsor. Log không ai đọc thì cũng như không có log.
+</Callout>
+
+## Phân loại yêu cầu: business, stakeholder, solution, transition
+
+Khi đã có ghi chú, việc tiếp theo là phân loại. BABOK chia yêu cầu thành bốn nhóm, và việc phân loại giúp mỗi yêu cầu được hỏi đúng câu hỏi:
+
+| Loại | Trả lời câu hỏi | Ví dụ trong dự án hoá đơn | Ai chốt |
+| --- | --- | --- | --- |
+| Business requirement | Tổ chức muốn đạt được điều gì, vì sao? | Thanh toán đúng hạn và tận dụng chiết khấu thanh toán sớm, mà không nới lỏng kiểm soát chi | Sponsor |
+| Stakeholder requirement (user requirement) | Từng nhóm người cần làm được gì? | Kế toán công nợ cần thấy ngay hoá đơn lệch ở đâu và ai đang xử lý | Đại diện nhóm người dùng |
+| Solution requirement — functional | Hệ thống phải làm gì? | Hệ thống tự đối chiếu từng dòng hoá đơn với đơn mua và phiếu nhập kho | Product owner / BA |
+| Solution requirement — non-functional | Hệ thống phải làm tốt đến mức nào, trong ràng buộc nào? | Mọi thao tác duyệt được ghi lịch sử không sửa được; đăng nhập qua tài khoản công ty | Kiến trúc / IT / kiểm soát |
+| Transition requirement | Cần gì để chuyển từ hiện tại sang tương lai, rồi bỏ đi? | Nhập các đơn mua đang mở trước go-live; chạy song song với quy trình giấy một tháng | Sponsor + IT |
+
+<Callout type="note" title="Về tên gọi">
+  BABOK dùng "stakeholder requirements"; nhiều tài liệu khác (ví dụ sách của Karl Wiegers) gọi là "user requirements". Tên không quan trọng bằng việc tách được tầng: một yêu cầu kinh doanh có thể được đáp ứng bởi nhiều bộ yêu cầu giải pháp khác nhau, và đó chính là không gian để kỹ sư đề xuất phương án rẻ hơn.
+</Callout>
+
+### Yêu cầu phi chức năng phải đo được
+
+"Hệ thống phải nhanh" và "phải bảo mật" không phải yêu cầu, mà là mong muốn. Mỗi yêu cầu phi chức năng cần một con số hoặc một điều kiện kiểm tra được:
+
+- **Hiệu năng:** màn hình duyệt hiển thị đầy đủ trong dưới 2 giây trên mạng 4G với một hoá đơn 50 dòng.
+- **Khả dụng:** hệ thống sẵn sàng trong giờ làm việc; bảo trì chỉ diễn ra ngoài giờ và không vào ba ngày cuối tháng.
+- **Kiểm toán:** mọi chuyển trạng thái ghi lại người thực hiện, thời gian, giá trị trước và sau; không ai, kể cả admin, sửa được lịch sử.
+- **Lưu trữ:** chứng từ và lịch sử duyệt được lưu theo thời hạn mà Luật Kế toán yêu cầu, có thể xuất ra khi kiểm toán.
+
+### Từ yêu cầu tới thứ kỹ sư dùng được
+
+Với kỹ sư, phân loại xong mới đến phần thú vị: biến yêu cầu thành acceptance criteria và mô hình domain. Acceptance criteria dạng Given/When/Then buộc mọi người nói rõ điều kiện:
+
+```text
+Tính năng: Định tuyến duyệt theo hạn mức
+
+  Kịch bản: Hoá đơn nhỏ từ nhà cung cấp quen
+    Cho trước hoá đơn 18.000.000 đ đã đối chiếu khớp
+    Và nhà cung cấp đã giao dịch hơn 6 tháng
+    Khi kế toán công nợ gửi duyệt
+    Thì hoá đơn chỉ cần kế toán trưởng duyệt
+    Và giám đốc không nhận yêu cầu duyệt
+
+  Kịch bản: Nhà cung cấp mới, bất kể số tiền
+    Cho trước hoá đơn 5.000.000 đ từ nhà cung cấp lần đầu giao dịch
+    Khi kế toán công nợ gửi duyệt
+    Thì hoá đơn cần kế toán trưởng rồi giám đốc duyệt
+```
+
+Và ma trận hạn mức — vốn là chính sách — nên nằm ở dạng dữ liệu, không bị chôn trong `if/else`, vì nó sẽ thay đổi theo quyết định của người khác chứ không phải của đội kỹ thuật:
+
+```ts
+// domain/approval-policy.ts
+export type Role = "chief_accountant" | "director" | "cfo";
+
+// Thứ tự ký cố định, từ dưới lên
+const SIGNING_ORDER: Role[] = ["chief_accountant", "director", "cfo"];
+
+type ApprovalRule = {
+  id: string;
+  // Áp dụng khi tổng tiền (đã gồm thuế) lớn hơn hoặc bằng mức này, đơn vị VND
+  minAmountVnd: number;
+  newSupplierOnly?: boolean;
+  approvers: Role[];
+};
+
+// Nguồn: quy chế chi tiêu sửa đổi, giám đốc tài chính chốt (xem RACI)
+export const APPROVAL_MATRIX: ApprovalRule[] = [
+  { id: "R1", minAmountVnd: 0, approvers: ["chief_accountant"] },
+  { id: "R2", minAmountVnd: 0, newSupplierOnly: true, approvers: ["chief_accountant", "director"] },
+  { id: "R3", minAmountVnd: 50_000_000, approvers: ["chief_accountant", "director"] },
+  { id: "R4", minAmountVnd: 1_000_000_000, approvers: ["chief_accountant", "director", "cfo"] },
+];
+
+export function requiredApprovers(totalVnd: number, isNewSupplier: boolean): Role[] {
+  const needed = new Set(
+    APPROVAL_MATRIX.filter(
+      (r) => totalVnd >= r.minAmountVnd && (!r.newSupplierOnly || isNewSupplier),
+    ).flatMap((r) => r.approvers),
+  );
+  // Các quy tắc cộng dồn; trả về theo đúng thứ tự ký
+  return SIGNING_ORDER.filter((role) => needed.has(role));
+}
+```
+
+Comment "Nguồn: ..." không phải trang trí. Khi một năm sau có người hỏi "sao hạn mức là 50 triệu?", câu trả lời truy ngược được về một quyết định và một người, không phải về "dev hồi đó viết vậy".
+
+## Xác nhận hiểu đúng: playback và glossary
+
+### Playback
+
+Playback là phát lại cho stakeholder điều mình đã hiểu, **bằng ngôn ngữ của họ**, và hỏi họ sửa. Không phải gửi tài liệu đặc tả 40 trang rồi chờ chữ ký — không ai đọc kỹ tài liệu đó cả.
+
+Định dạng mình dùng là một trang tóm tắt sau mỗi vòng:
+
+- **Mình hiểu là:** quy trình hiện tại trong 5–7 bước, có sơ đồ đơn giản.
+- **Điều làm mình bất ngờ:** những thứ trái với giả định ban đầu.
+- **Điều mình chưa chắc:** câu hỏi mở, kèm người mình nghĩ có thể trả lời.
+- **Điều mình đề xuất làm tiếp.**
+
+Câu hỏi đi kèm luôn là "Chỗ nào chưa đúng?", không phải "Anh chị đồng ý không?". Câu đầu mời sửa; câu sau mời gật đầu.
+
+### Glossary
+
+Glossary là danh sách thuật ngữ với một định nghĩa duy nhất cho dự án. Nó nghe có vẻ hành chính, nhưng mình chưa gặp dự án nghiệp vụ nào mà không có ít nhất một từ bị hiểu theo hai nghĩa.
+
+| Thuật ngữ | Định nghĩa trong dự án | Không nhầm với |
+| --- | --- | --- |
+| Hoá đơn đầu vào | Hoá đơn điện tử do nhà cung cấp xuất cho công ty | Phiếu đề nghị thanh toán (chứng từ nội bộ) |
+| Đã đối chiếu | Mọi dòng hoá đơn khớp với đơn mua và phiếu nhập kho trong dung sai | Đã duyệt |
+| Đã duyệt | Đủ chữ ký theo ma trận hạn mức, sẵn sàng thanh toán | Đã thanh toán |
+| Nhà cung cấp mới | Chưa có giao dịch hoàn tất nào trong 6 tháng gần nhất | Nhà cung cấp mới tạo mã trong hệ thống |
+
+Glossary cũng là nơi tên trong code nên đến từ. Nếu nghiệp vụ nói "đã đối chiếu", trạng thái trong code là `matched`, không phải `verified` ở chỗ này và `checked` ở chỗ khác. Domain-Driven Design gọi đây là ngôn ngữ chung (ubiquitous language), và nó bắt đầu từ buổi phỏng vấn chứ không phải từ code.
+
+## Case study: duyệt hoá đơn đầu vào ở một công ty phân phối
+
+Phần này ghép mọi thứ lại. Tên người và vài chi tiết đã được thay đổi.
+
+### Bối cảnh và yêu cầu ban đầu
+
+Một công ty phân phối vật tư y tế ở TP.HCM, khoảng 250 nhân viên, ba kho. Mỗi tháng họ nhận khoảng 1.500 hoá đơn điện tử đầu vào từ vài trăm nhà cung cấp, qua một hộp thư chung. Quy trình: kế toán công nợ tải hoá đơn, đối chiếu với đơn mua trong phần mềm kế toán và phiếu nhập kho trong Excel, in phiếu đề nghị thanh toán, lấy chữ ký trưởng phòng mua hàng, kế toán trưởng, rồi giám đốc.
+
+Yêu cầu ban đầu, từ giám đốc tài chính: "Làm app mobile để anh giám đốc duyệt trên điện thoại, vì anh ấy hay đi công tác, hồ sơ cứ nằm chờ."
+
+### Ghi chú phỏng vấn
+
+Đây là ghi chú thô (đã rút gọn) từ tuần đầu tiên, giữ nguyên cách tách lời nói, quan sát và diễn giải:
+
+```text
+[Chị Hương — Giám đốc tài chính — sponsor — 40 phút]
+"Nhà cung cấp than phiền mình trả chậm. Vài bên lớn cho chiết khấu 2% nếu trả trong 10 ngày,
+ mà gần như tháng nào mình cũng lỡ."
+"Anh Quang đi công tác suốt, hồ sơ chất trên bàn."
+Laddering: duyệt trên điện thoại → không trả chậm → giữ quan hệ NCC + lấy chiết khấu.
+DIỄN GIẢI: mục tiêu thật = thanh toán đúng hạn + chiết khấu, KHÔNG phải "duyệt di động".
+
+[Chị Lan — Kế toán công nợ — 60 phút, có phần "cho mình xem"]
+QUAN SÁT: mở hộp thư, tải XML + PDF, tra đơn mua trong phần mềm kế toán,
+ mở file "Nhap kho T9.xlsx" tìm phiếu nhập theo tên hàng (không có mã chung).
+"Lệch là em email anh Minh bên mua hàng, có khi hai ba ngày mới trả lời."
+QUAN SÁT: file theo dõi riêng của chị Lan có cột "ngày nhận", "ngày gửi ký", "ngày ký xong".
+DIỄN GIẢI: có dữ liệu để đo thời gian từng bước — xin file.
+
+[Anh Minh — Trưởng phòng mua hàng — 30 phút]
+"Hàng gấp thì gọi điện đặt luôn, PO làm bù sau, có khi hàng về rồi mới có PO."
+"Email của kế toán nhiều quá, không biết cái nào gấp."
+DIỄN GIẢI: một phần hoá đơn đến khi chưa có PO → đối chiếu không thể tự động cho nhóm này.
+
+[Anh Quang — Giám đốc — 15 phút, qua điện thoại]
+"Tôi chỉ cần xem mấy khoản lớn với nhà cung cấp mới. Mấy cái lặt vặt tôi ký cả xấp, có đọc đâu."
+"Ký vì quy chế bắt ký."
+DIỄN GIẢI: quy chế yêu cầu giám đốc ký mọi khoản; giám đốc không coi đó là kiểm soát thật.
+
+[Chị Thảo — Kế toán trưởng — 45 phút]
+"Hoá đơn phải tra trên cổng của cơ quan thuế trước khi hạch toán, phòng hoá đơn không hợp lệ."
+"Hoá đơn bị thay thế thì phải làm lại từ đầu."
+"Đơn giá thì không được lệch. Số lượng lệch được nếu giao nhiều đợt."
+
+[Anh Tuấn — IT — 30 phút]
+"Phần mềm kế toán không có API, chỉ export file mỗi đêm."
+"Công ty dùng tài khoản Microsoft 365, muốn đăng nhập bằng tài khoản đó."
+```
+
+### Những gì shadowing và dữ liệu cho thấy
+
+Mình ngồi cạnh chị Lan ba buổi, trong đó có một buổi ngày cuối tháng, và dùng chính file theo dõi của chị để đo 40 hoá đơn gần nhất. Bức tranh khác hẳn yêu cầu ban đầu:
+
+- **Phần lớn thời gian chờ nằm ở bước xử lý chênh lệch** giữa hoá đơn và đơn mua — email qua lại với mua hàng, chờ PO được tạo bù. Bước chờ giám đốc ký có tồn tại, nhưng ngắn hơn nhiều.
+- **Một phần đáng kể hoá đơn đến khi chưa có PO**, do mua hàng gấp qua điện thoại. Không có PO thì không gì tự động được.
+- **Phiếu nhập kho và đơn mua không có mã liên kết.** Chị Lan khớp bằng tên hàng và trí nhớ.
+- **Giám đốc ký mọi thứ, kể cả những khoản ông không xem.** Chữ ký đó tốn thời gian mà không thêm kiểm soát.
+
+### Từ ghi chú tới yêu cầu
+
+| ID | Loại | Yêu cầu | Truy về |
+| --- | --- | --- | --- |
+| BR-01 | Business | Thanh toán đúng hạn và tận dụng chiết khấu thanh toán sớm khi có, đo bằng tỷ lệ hoá đơn được thanh toán trong hạn | Chị Hương |
+| BR-02 | Business | Không nới lỏng kiểm soát: không khoản nào được thanh toán khi chưa đối chiếu và chưa đủ duyệt theo hạn mức | Chị Hương, chị Thảo |
+| SR-01 | Stakeholder | Kế toán công nợ thấy ngay hoá đơn nào lệch, lệch dòng nào, ai đang xử lý | Chị Lan, quan sát |
+| SR-02 | Stakeholder | Mua hàng nhận các chênh lệch cần xử lý ở một chỗ, theo độ gấp, không qua email | Anh Minh |
+| SR-03 | Stakeholder | Giám đốc chỉ duyệt khoản lớn hoặc nhà cung cấp mới, xem được từ điện thoại | Anh Quang |
+| FR-01 | Functional | Nhập hoá đơn điện tử XML từ hộp thư chuyên dụng, trích xuất người bán, số và ký hiệu hoá đơn, các dòng hàng, thuế, tổng tiền | Quan sát |
+| FR-02 | Functional | Kiểm tra trạng thái hoá đơn trên cổng tra cứu của cơ quan thuế trước khi cho phép đối chiếu | Chị Thảo |
+| FR-03 | Functional | Đối chiếu ba chiều hoá đơn, đơn mua, phiếu nhập: đơn giá phải khớp, số lượng cho phép lệch theo các đợt giao | Chị Thảo, Q-01 |
+| FR-04 | Functional | Định tuyến duyệt theo ma trận hạn mức cấu hình được | Anh Quang, A-04 |
+| FR-05 | Functional | Hoá đơn thay thế huỷ toàn bộ duyệt trước đó và quay về bước đối chiếu | Q-02 |
+| NFR-01 | Non-functional | Lịch sử duyệt không sửa được; ghi người, thời gian, trạng thái trước và sau | Chị Thảo |
+| NFR-02 | Non-functional | Đăng nhập bằng tài khoản Microsoft 365 của công ty | Anh Tuấn |
+| NFR-03 | Non-functional | Màn hình duyệt dùng tốt trên điện thoại, hiển thị dưới 2 giây trên 4G | Anh Quang |
+| TR-01 | Transition | Đồng bộ đơn mua từ file export hằng đêm; nhập các đơn đang mở trước go-live | Anh Tuấn, A-03 |
+| TR-02 | Transition | Chạy song song với quy trình giấy một tháng; đào tạo kế toán và mua hàng | Chị Hương |
+
+Hai thay đổi quan trọng nhất **không nằm trong phần mềm**:
+
+1. **Quy chế duyệt được sửa** để giám đốc chỉ duyệt khoản từ 50 triệu đồng trở lên hoặc nhà cung cấp mới. Đây là quyết định của giám đốc tài chính và ban giám đốc; đội kỹ thuật chỉ mang dữ liệu đến và đề xuất.
+2. **Phòng mua hàng có quy trình "PO khẩn"**: đặt hàng gấp qua điện thoại vẫn phải tạo PO trong ngày. Không có thay đổi này, đối chiếu tự động chỉ chạy được cho một phần hoá đơn.
+
+### Kết cục
+
+Bọn mình không làm app mobile native. Màn hình duyệt là một trang web responsive, gửi thông báo qua email và Zalo khi có khoản cần duyệt. Phần lớn công sức đi vào nhập hoá đơn tự động, đối chiếu ba chiều, và một hàng đợi chênh lệch cho phòng mua hàng.
+
+Sau vài tháng, thời gian từ lúc nhận hoá đơn đến lúc sẵn sàng thanh toán giảm rõ rệt — từ hơn một tuần xuống còn vài ngày với phần lớn hoá đơn — và công ty bắt đầu lấy được chiết khấu thanh toán sớm từ các nhà cung cấp lớn. Theo chính đánh giá của giám đốc tài chính, cải thiện đến chủ yếu từ quy trình PO khẩn và đối chiếu tự động. Màn hình duyệt trên điện thoại, thứ được yêu cầu ban đầu, là phần đóng góp ít nhất.
+
+<Callout type="danger" title="Điều suýt xảy ra">
+  Ở buổi họp đầu, đội đã có báo giá cho một app mobile với ước lượng sáu tuần. Nếu chỉ làm theo yêu cầu, bọn mình sẽ giao đúng hạn, đúng spec, khách hàng ký nghiệm thu — và ba tháng sau hoá đơn vẫn nằm chờ ở bước đối chiếu. Dự án "thành công" về mặt hợp đồng nhưng thất bại về mặt giá trị là loại thất bại khó nhận ra nhất.
+</Callout>
+
+## Những sai lầm mình hay gặp
+
+**Từ phía kỹ sư:**
+
+- **Nhảy vào giải pháp ngay buổi đầu.** "Cái này dùng queue là được" trước khi hiểu vấn đề. Khi bạn đề xuất giải pháp, stakeholder ngừng mô tả vấn đề.
+- **Chỉ hỏi về dữ liệu và màn hình.** Hỏi "cần những trường gì" mà không hỏi "chuyện gì xảy ra khi..." sẽ bỏ sót toàn bộ mô hình trạng thái và ngoại lệ.
+- **Coi spec là hợp đồng bất biến.** Spec là ảnh chụp sự hiểu biết tại một thời điểm. Khi code lộ ra một ngoại lệ mới, quay lại hỏi, đừng tự đoán.
+- **Tự quyết chính sách trong code.** Hạn mức, dung sai, quy tắc uỷ quyền — đó là quyết định của nghiệp vụ. Viết chúng thành dữ liệu cấu hình được, ghi nguồn gốc.
+
+**Từ phía BA:**
+
+- **Chỉ nói chuyện với quản lý.** Quy trình trên giấy và quy trình thật hiếm khi giống nhau.
+- **Đặc tả quá chi tiết về giao diện, quá sơ sài về quy tắc nghiệp vụ.** Kỹ sư cần biết hoá đơn thay thế thì sao, hơn là biết nút nằm bên trái hay bên phải.
+- **Không ghi lại giả định.** Giả định không được viết ra sẽ trở thành "yêu cầu" trong đầu mỗi người theo một cách khác nhau.
+
+**Chung cho cả hai:**
+
+- **Gật đầu với từ ngữ chưa thống nhất.** Mỗi khi nghe một từ nghiệp vụ lần đầu, hỏi "cụ thể là như thế nào?" và đưa vào glossary.
+- **Phỏng vấn một lần rồi thôi.** Elicitation là vòng lặp; quay lại sau khi có prototype là lúc thông tin quý nhất xuất hiện.
+
+## Checklist khai thác yêu cầu
+
+<Checklist>
+
+- Đã vẽ bản đồ stakeholder, có cả người làm việc thật, bộ phận kiểm soát, IT và người ở phía bên kia quy trình.
+- Mỗi loại quyết định về yêu cầu có đúng một người Accountable trong RACI.
+- Mỗi buổi phỏng vấn có mục tiêu, danh sách giả định cần kiểm chứng và interview guide.
+- Đã xin "cho mình xem" và quan sát ít nhất một ngày khó (cuối tháng, cao điểm).
+- Ghi chú tách rõ lời nói nguyên văn, quan sát và diễn giải; viết lại trong 24 giờ.
+- Câu hỏi đã được rà để bỏ câu dẫn dắt; dùng laddering để tìm mục tiêu kinh doanh và ví dụ cụ thể.
+- Đã thu thập file Excel, mẫu biểu, quy chế và văn bản pháp lý liên quan.
+- Assumption log và open questions log có người phụ trách, hạn, và được xem lại hằng tuần.
+- Yêu cầu được phân loại business, stakeholder, solution (chức năng và phi chức năng), transition; mỗi yêu cầu truy về được nguồn.
+- Yêu cầu phi chức năng có con số hoặc điều kiện kiểm tra được.
+- Đã playback bằng ngôn ngữ của stakeholder và hỏi "chỗ nào chưa đúng?".
+- Glossary thống nhất thuật ngữ, và tên trong code đi theo glossary.
+- Chính sách nghiệp vụ (hạn mức, dung sai) nằm ở dạng dữ liệu cấu hình, có ghi nguồn quyết định.
+
+</Checklist>

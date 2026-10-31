@@ -1,0 +1,654 @@
+---
+title: "JWT chuyên sâu: những cái bẫy khi verify, các đòn tấn công kinh điển và xoay khoá với JWKS"
+excerpt: "JWS khác JWE thế nào, những claim bắt buộc phải kiểm tra, alg: none, nhầm lẫn RS256/HS256, kid injection, lạm dụng jku — và cách pin thuật toán với jose, xoay khoá JWKS không làm ai bị logout, thu hồi token và test verifier bằng chính những token độc."
+---
+
+<Lead>Mình từng review một API mà toàn bộ phần "xác thực" là một dòng: `const user = jwt.decode(token)`. Không verify chữ ký. Nó chạy production gần một năm, vì frontend luôn gửi token hợp lệ và chẳng ai thử gửi token khác. JWT có tiếng xấu trong giới bảo mật không phải vì định dạng tệ, mà vì nó **trông** đơn giản: ba chuỗi base64 nối bằng dấu chấm, decode ra là thấy JSON. Sự đơn giản đó khiến người ta quên rằng mọi thứ trong token — kể cả phần header nói "hãy verify tôi bằng thuật toán này, với khoá này" — đều do người gửi kiểm soát. Bài này đi qua cấu trúc JWT, những claim bạn bắt buộc phải kiểm tra, các đòn tấn công kinh điển kèm code lỗi thật, cách verify đúng với thư viện `jose` trong Node, xoay khoá qua JWKS mà không làm ai bị logout, các chiến lược thu hồi, và cách test verifier bằng chính những token độc mà kẻ tấn công sẽ gửi.</Lead>
+
+## JWT là gì, và không phải là gì
+
+JWT (RFC 7519) chỉ là một **tập claim dạng JSON**. Nó không tự định nghĩa cách bảo vệ; việc đó thuộc về hai định dạng khác:
+
+- **JWS** (JSON Web Signature, RFC 7515): claim được **ký**. Ai cũng đọc được, không ai sửa được mà không làm hỏng chữ ký.
+- **JWE** (JSON Web Encryption, RFC 7516): claim được **mã hoá**. Chỉ người có khoá mới đọc được.
+
+Khi người ta nói "JWT", 99% trường hợp là JWS ở dạng compact. Điều đầu tiên cần khắc sâu: **payload của JWS không được mã hoá**. Base64url là encoding, không phải encryption. Mọi thứ bạn đặt vào token, người dùng (và mọi proxy, mọi log) đều đọc được.
+
+### Ba phần của một JWS
+
+```text
+eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYtMTAtYSIsInR5cCI6ImF0K2p3dCJ9
+.eyJpc3MiOiJodHRwczovL2lkLmV4YW1wbGUuY29tIiwic3ViIjoidXNyXzQyIn0
+.MEUCIQDx3...  (chữ ký)
+```
+
+Decode phần đầu ra được protected header:
+
+```json
+{ "alg": "ES256", "kid": "2026-10-a", "typ": "at+jwt" }
+```
+
+Phần thứ hai là payload, tức tập claim:
+
+```json
+{
+  "iss": "https://id.example.com",
+  "sub": "usr_42",
+  "aud": "https://api.example.com",
+  "exp": 1792000600,
+  "iat": 1792000000,
+  "jti": "5f0c1a7e-8f3b-4c49-9d0e-2d1f3c7a9b11",
+  "scope": "orders:read orders:write"
+}
+```
+
+Chữ ký được tính trên chuỗi `BASE64URL(header) + "." + BASE64URL(payload)` — tức là header cũng được ký. Nhưng hãy để ý thứ tự: để biết **verify bằng thuật toán nào và khoá nào**, verifier phải đọc header *trước khi* verify. Đó chính là gốc rễ của gần như mọi đòn tấn công ở phần sau.
+
+### JWE: khi nào thực sự cần
+
+JWE có năm phần: header, encrypted key, IV, ciphertext, authentication tag. Mình chỉ thấy nó hợp lý khi token buộc phải đi qua một bên không được phép đọc nội dung — ví dụ ID token chứa PII đi qua một hệ thống trung gian. Một vài lưu ý nếu bạn dùng:
+
+- Muốn vừa ký vừa mã hoá thì dùng **nested JWT**: ký trước (JWS), rồi mã hoá cả chuỗi JWS đó (JWE với `cty: "JWT"`).
+- Tránh `RSA1_5` cho key management (dễ bị padding oracle kiểu Bleichenbacher); dùng `RSA-OAEP-256`, `ECDH-ES` hoặc `dir` với `A256GCM`.
+- Trong phần lớn trường hợp, câu trả lời tốt hơn JWE là **đừng đặt dữ liệu nhạy cảm vào token** — dùng opaque token và để server tra cứu.
+
+### Chọn thuật toán
+
+| `alg` | Loại | Khoá | Chữ ký | Khi nào dùng |
+| --- | --- | --- | --- | --- |
+| `HS256` | HMAC-SHA256 | Một secret dùng chung | 32 byte | Một service vừa phát vừa verify; không bao giờ chia secret cho bên thứ ba |
+| `RS256` | RSA PKCS#1 v1.5 | RSA 2048+ bit | 256 byte (với 2048 bit) | Tương thích rộng nhất; mặc định của nhiều IdP |
+| `PS256` | RSA-PSS | RSA 2048+ bit | 256 byte | Như RS256 nhưng padding hiện đại hơn |
+| `ES256` | ECDSA P-256 | EC P-256 | 64 byte | Lựa chọn mặc định của mình cho hệ thống mới |
+| `EdDSA` | Ed25519 | OKP Ed25519 | 64 byte | Tốt, nhưng kiểm tra mọi verifier của bạn có hỗ trợ không |
+
+Quy tắc của mình: **bất đối xứng** (ES256/RS256) bất cứ khi nào bên verify khác bên phát. Với HS256, mọi service verify được cũng *phát* được token — một service bị chiếm là toàn bộ hệ thống bị chiếm.
+
+<Callout type="note" title="Chữ ký ES256 không phải định dạng DER">
+  JWS dùng chữ ký ECDSA dạng thô `R || S` (64 byte cho P-256), trong khi `crypto.sign` của Node và các dịch vụ như AWS KMS mặc định trả về DER. Nếu bạn tự ký (ví dụ ký qua KMS để private key không rời khỏi HSM), phải chuyển đổi — với Node là tuỳ chọn `dsaEncoding: "ieee-p1363"`. Quên bước này thì token "hợp lệ" của bạn bị mọi thư viện chuẩn từ chối, hoặc tệ hơn, bạn viết thêm code "chữa cháy" ở phía verify.
+</Callout>
+
+## Chữ ký hợp lệ mới chỉ là bước một: validate claims
+
+Một chữ ký hợp lệ chỉ chứng minh: "token này do người giữ khoá phát ra, và chưa bị sửa". Nó không nói token có dành cho bạn không, còn hạn không, có phải loại token bạn đang chờ không. Đây là những gì mình kiểm tra cho mọi access token:
+
+| Kiểm tra | Ý nghĩa | Lỗi mình từng thấy |
+| --- | --- | --- |
+| `alg` nằm trong danh sách pin | Chỉ chấp nhận đúng thuật toán bạn phát ra | Để thư viện tự chọn theo header |
+| `typ` (header) | Đúng loại token, ví dụ `at+jwt` (RFC 9068) | ID token được dùng như access token |
+| `iss` | So khớp **chính xác** với issuer tin cậy | So bằng `startsWith` hoặc `includes` |
+| `aud` | Chứa định danh của **chính API này** | Không kiểm tra, token của app khác cũng qua |
+| `exp` | Chưa hết hạn, cho phép lệch đồng hồ nhỏ (30–60 giây) | Tolerance 1 ngày "cho chắc" |
+| `nbf` | Đã tới thời điểm có hiệu lực | Bỏ qua hoàn toàn |
+| `iat` | Không nằm ở tương lai, tuổi token không vượt quá mức tối đa | Không giới hạn tuổi token khi `exp` quá xa |
+| `sub` | Có mặt, đúng kiểu, là định danh ổn định | Dùng `email` làm định danh |
+| Claim nghiệp vụ | `scope`, `tenant`, `azp`... | Kiểm tra `scope` bằng `includes("admin")` trên chuỗi |
+
+Hai lỗi cuối bảng nghe ngớ ngẩn nhưng mình gặp thật: `scope.includes("admin")` trả `true` cho `"not-admin"`; phải tách theo dấu cách rồi so từng phần tử. Và `aud` có thể là chuỗi **hoặc** mảng — code chỉ xử lý chuỗi sẽ hoặc crash hoặc bỏ qua kiểm tra.
+
+### Explicit typing và token confusion
+
+Một hệ thống thường có nhiều loại JWT ký bằng **cùng một khoá**: ID token, access token, logout token, token xác minh email, token mời vào workspace. Nếu verifier của API chỉ kiểm tra chữ ký, `iss` và `exp`, kẻ tấn công có thể lấy một token *hợp lệ* thuộc loại khác (ví dụ token "mời vào workspace" gửi qua email, sống 7 ngày) và dùng nó làm access token.
+
+RFC 8725 (JWT Best Current Practices) khuyến nghị **explicit typing**: mỗi loại token có `typ` riêng trong header, và verifier từ chối `typ` khác. RFC 9068 định nghĩa `at+jwt` cho access token. Kèm theo đó: mỗi loại token có `aud` riêng, và tốt nhất là **khoá ký riêng** cho những loại token có vòng đời khác nhau.
+
+## Những đòn tấn công kinh điển
+
+### Decode thay vì verify
+
+Không phải đòn tấn công tinh vi gì, nhưng là lỗi phổ biến nhất mình gặp, nên đứng đầu danh sách:
+
+```ts
+// ❌ Không verify gì cả — ai cũng tự tạo được token này
+const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+const userId = payload.sub;
+```
+
+Biến thể hay gặp: middleware verify ở API gateway, rồi service phía sau "tin" header `Authorization` và chỉ decode. Ngày nào đó có một đường vào service đó không qua gateway (một port nội bộ, một job, một Lambda URL), và nó chấp nhận mọi thứ. Mình thích mỗi service tự verify — chi phí là vài micro giây và một bản JWKS cache.
+
+### alg: none
+
+JWS cho phép `"alg": "none"` — token không có chữ ký, phần thứ ba rỗng. Nó tồn tại cho những ngữ cảnh mà tính toàn vẹn đã được đảm bảo bằng cách khác. Thư viện ngây thơ đọc `alg` từ header, thấy `none`, và... không cần verify gì:
+
+```text
+eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.
+```
+
+Header `{"alg":"none","typ":"JWT"}`, payload `{"sub":"admin"}`, chữ ký rỗng. Các biến thể `"None"`, `"NONE"`, `"nOnE"` từng lọt qua những thư viện chỉ so chuỗi chữ thường. Thư viện hiện đại đã chặn mặc định, nhưng verifier tự viết thì không.
+
+### RS256 → HS256 key confusion
+
+Đây là đòn đẹp nhất. Server phát token bằng RS256, và verify bằng một hàm kiểu:
+
+```ts
+// ❌ Thuật toán lấy từ header, "khoá" là cùng một biến cho mọi loại
+const payload = verify(token, PUBLIC_KEY_PEM);
+```
+
+Public key thì công khai — có trong JWKS, có trong tài liệu. Kẻ tấn công tạo token với header `"alg": "HS256"` và ký HMAC bằng **chính chuỗi PEM của public key** làm secret. Thư viện đọc header, thấy HS256, lấy "khoá" được truyền vào (chuỗi PEM) làm HMAC secret, tính lại — và chữ ký khớp. Kẻ tấn công vừa tự phát được token hợp lệ mà không cần private key.
+
+Lỗi này từng có thật trong các thư viện JWT phổ biến ở nhiều ngôn ngữ, kể cả `jsonwebtoken` bản cũ của Node. Hai cách phòng thủ, nên dùng cả hai:
+
+1. **Pin thuật toán** ở verifier: danh sách cố định do server quyết định, không phải từ header.
+2. **Ràng buộc kiểu khoá với thuật toán**: một public key RSA không bao giờ được dùng làm HMAC secret. `jose` làm điều này theo thiết kế — truyền `KeyObject` hay `CryptoKey` kiểu RSA cho HS256 sẽ bị từ chối.
+
+### kid injection
+
+`kid` (key ID) là gợi ý để verifier chọn khoá trong số nhiều khoá. Nó cũng do người gửi kiểm soát. Mình đã thấy cả hai phiên bản này:
+
+```ts
+// ❌ kid đi vào đường dẫn file
+const secret = fs.readFileSync(path.join("/etc/jwt-keys", header.kid));
+// kid = "../../../../dev/null" → secret rỗng → kẻ tấn công ký HMAC bằng chuỗi rỗng
+
+// ❌ kid đi vào câu SQL
+const { rows } = await db.query(`SELECT secret FROM jwt_keys WHERE kid = '${header.kid}'`);
+// kid = "x' UNION SELECT 'attacker-chosen-secret' --" → secret do kẻ tấn công chọn
+```
+
+Biến thể còn có command injection (kid đi vào shell) và cache poisoning. Cách đúng: `kid` chỉ là **khoá tra cứu trong một tập khoá cố định đã nạp sẵn** — một `Map` hoặc JWKS — và không tìm thấy là từ chối. Không bao giờ để `kid` chạm tới filesystem, SQL hay URL.
+
+### jku, x5u, jwk: token tự chỉ chỗ lấy khoá
+
+JWS định nghĩa vài header cho phép token tự mang thông tin về khoá:
+
+- **`jku`**: URL của JWKS chứa khoá để verify.
+- **`x5u`**: URL của chứng chỉ X.509.
+- **`jwk`**: nhúng thẳng public key vào header.
+- **`x5c`**: nhúng chuỗi chứng chỉ.
+
+Nếu verifier làm theo những header này, kẻ tấn công chỉ cần host JWKS của mình (hoặc nhúng public key của mình), ký token bằng private key của mình, và verifier sẽ ngoan ngoãn dùng khoá của kẻ tấn công để xác nhận token của kẻ tấn công. Kiểm tra "`jku` phải bắt đầu bằng domain của mình" cũng không đủ — một open redirect hay một chỗ upload file trên domain đó là đủ để bypass.
+
+Quy tắc: **nguồn khoá được cấu hình phía server, không bao giờ đến từ token**. `jose` bỏ qua `jku`/`x5u`, và chỉ dùng `jwk` nhúng nếu bạn chủ động truyền hàm `EmbeddedJWK` — thứ mình chưa từng cần cho access token.
+
+### Secret HMAC yếu và brute-force offline
+
+Với HS256, chỉ cần **một** token hợp lệ (lấy từ chính tài khoản của kẻ tấn công) là đủ để brute-force secret offline — không có rate limit nào, không có log nào phía bạn:
+
+```bash
+# hashcat có mode riêng cho JWT; một token là đủ
+hashcat -m 16500 -a 0 captured.jwt wordlist.txt
+```
+
+Secret kiểu `"secret"`, `"changeme"`, tên công ty, hay giá trị mặc định trong file `.env.example` mà không ai đổi sẽ rơi trong vài giây. Một khi có secret, kẻ tấn công phát được token cho bất kỳ ai. Nếu buộc phải dùng HMAC, secret phải là **ít nhất 256 bit ngẫu nhiên** (RFC 7518 yêu cầu khoá có kích thước ít nhất bằng output của hash):
+
+```bash
+openssl rand -base64 48
+```
+
+### Lỗi trong chính thư viện crypto
+
+Kể cả khi code của bạn đúng, tầng bên dưới vẫn có thể sai. Năm 2022, "psychic signatures" (CVE-2022-21449) khiến Java 15–18 chấp nhận chữ ký ECDSA với `r = s = 0` cho **mọi** message — tức là mọi JWT ES256 đều "hợp lệ". Bài học không phải "đừng dùng ECDSA", mà là: **verifier phải có test với token độc**, chạy trong CI, trên đúng runtime production. Phần cuối bài có bộ test đó.
+
+## Verify đúng cách với jose
+
+`jose` (của Filip Skokan, tác giả `openid-client`) là thư viện mình dùng cho mọi thứ JOSE trong Node, Bun, Deno và edge runtime. Không dependency, dùng Web Crypto, và các mặc định an toàn: không hỗ trợ `alg: none` trong `jwtVerify`, ràng buộc kiểu khoá với thuật toán, không đi theo `jku`.
+
+### Verifier dùng chung
+
+```ts
+// src/auth/access-token-verifier.ts
+import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
+
+export type AccessTokenClaims = JWTPayload & {
+  sub: string;
+  jti: string;
+  scope?: string;
+  ver?: number;
+};
+
+export type VerifierConfig = {
+  issuer: string;
+  audience: string;
+  keys: JWTVerifyGetKey; // tiêm vào để test được bằng JWKS cục bộ
+};
+
+export class InvalidTokenError extends Error {}
+
+export function createAccessTokenVerifier({ issuer, audience, keys }: VerifierConfig) {
+  return async function verifyAccessToken(token: string): Promise<AccessTokenClaims> {
+    const { payload, protectedHeader } = await jwtVerify(token, keys, {
+      algorithms: ["ES256"], // pin: đúng thuật toán mình phát ra, không hơn
+      issuer, // so khớp chính xác
+      audience, // chuỗi hoặc mảng, jose xử lý cả hai
+      typ: "at+jwt", // explicit typing — chặn ID token và các loại token khác
+      clockTolerance: 30, // giây
+      maxTokenAge: "15m", // giới hạn tuổi theo iat, kể cả khi exp bị đặt quá xa
+      requiredClaims: ["sub", "jti", "iat", "exp"],
+    });
+
+    if (typeof payload.sub !== "string" || payload.sub === "") {
+      throw new InvalidTokenError("sub must be a non-empty string");
+    }
+    if (!protectedHeader.kid) throw new InvalidTokenError("kid is required");
+
+    return payload as AccessTokenClaims;
+  };
+}
+
+export function remoteKeys(jwksUri: string) {
+  return createRemoteJWKSet(new URL(jwksUri), {
+    timeoutDuration: 5_000, // đừng để IdP chậm kéo sập API
+    cooldownDuration: 30_000, // kid lạ không kích hoạt refetch liên tục
+    cacheMaxAge: 10 * 60_000, // JWKS được coi là cũ sau 10 phút
+  });
+}
+
+export function hasScope(claims: AccessTokenClaims, required: string): boolean {
+  // Tách theo khoảng trắng — includes() trên chuỗi sẽ khớp "not-admin" với "admin"
+  return (claims.scope ?? "").split(" ").includes(required);
+}
+```
+
+`createRemoteJWKSet` tải JWKS lần đầu khi cần, cache lại, và **tự refetch khi gặp `kid` chưa biết** — đó là thứ làm cho xoay khoá hoạt động mà không cần restart. `cooldownDuration` ngăn kẻ tấn công spam token với `kid` ngẫu nhiên để biến API của bạn thành công cụ DDoS vào IdP.
+
+### Guard trong NestJS
+
+```ts
+// src/auth/access-token.guard.ts
+import {
+  CanActivate,
+  ExecutionContext,
+  Inject,
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from "@nestjs/common";
+import type { Request, Response } from "express";
+import { errors } from "jose";
+import type { AccessTokenClaims } from "./access-token-verifier";
+
+export const ACCESS_TOKEN_VERIFIER = Symbol("ACCESS_TOKEN_VERIFIER");
+type Verify = (token: string) => Promise<AccessTokenClaims>;
+
+@Injectable()
+export class AccessTokenGuard implements CanActivate {
+  constructor(@Inject(ACCESS_TOKEN_VERIFIER) private readonly verify: Verify) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const http = ctx.switchToHttp();
+    const req = http.getRequest<Request & { auth?: AccessTokenClaims }>();
+    const res = http.getResponse<Response>();
+
+    const [scheme, token] = (req.headers.authorization ?? "").split(" ");
+    if (scheme?.toLowerCase() !== "bearer" || !token) {
+      res.setHeader("WWW-Authenticate", 'Bearer realm="api"');
+      throw new UnauthorizedException();
+    }
+
+    try {
+      req.auth = await this.verify(token);
+      return true;
+    } catch (err) {
+      // IdP hoặc JWKS không truy cập được: đó là sự cố của mình, không phải token sai
+      if (err instanceof errors.JWKSTimeout || isNetworkError(err)) {
+        throw new ServiceUnavailableException();
+      }
+      res.setHeader("WWW-Authenticate", 'Bearer realm="api", error="invalid_token"');
+      throw new UnauthorizedException();
+    }
+  }
+}
+
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError && err.message.includes("fetch failed");
+}
+```
+
+Chi tiết `503` thay vì `401` nghe nhỏ nhưng mình học được qua sự cố: khi IdP chập chờn, API trả `401` hàng loạt, mọi client đồng loạt cho rằng token hỏng và chạy luồng đăng nhập lại — đúng lúc IdP đang yếu nhất. `503` khiến client retry có backoff thay vì đá người dùng ra ngoài. Và đừng bao giờ trả lý do chi tiết ("signature invalid", "kid not found") cho client; log nó phía server.
+
+### Phía phát token
+
+```ts
+// src/auth/token-issuer.ts
+import { randomUUID } from "node:crypto";
+import { SignJWT } from "jose";
+import { getActiveSigningKey } from "./signing-keys";
+
+export async function issueAccessToken(user: { id: string; tokenVersion: number }, scopes: string[]) {
+  const key = await getActiveSigningKey(); // cache trong process tối đa 60 giây
+
+  return new SignJWT({ scope: scopes.join(" "), ver: user.tokenVersion })
+    .setProtectedHeader({ alg: "ES256", kid: key.kid, typ: "at+jwt" })
+    .setIssuer("https://id.example.com")
+    .setAudience("https://api.example.com")
+    .setSubject(user.id)
+    .setIssuedAt()
+    .setExpirationTime("10m")
+    .setJti(randomUUID())
+    .sign(key.privateKey);
+}
+```
+
+Access token 10 phút, chỉ chứa thứ API cần để phân quyền. Không email, không tên, không danh sách 200 permission.
+
+## JWKS và xoay khoá mà không làm ai bị logout
+
+Khoá ký cần được xoay định kỳ: giới hạn lượng dữ liệu bị ảnh hưởng nếu một khoá lộ, và — quan trọng không kém — để quy trình xoay được **luyện tập thường xuyên**, đến ngày khoá thật sự lộ thì bạn không phải làm lần đầu trong hoảng loạn.
+
+Cái khó là có hai loại cache nằm ngoài tầm kiểm soát của bạn: **verifier cache JWKS** (vài phút tới vài giờ, tuỳ thư viện và CDN), và **token đã phát vẫn đang sống** (tới hết `exp`). Xoay khoá đúng là xoay sao cho hai cửa sổ này luôn được che phủ.
+
+<Figure src="/blog/jwt-pitfalls-and-key-rotation-timeline.svg" alt="Dòng thời gian xoay khoá với ba khoá K1, K2, K3. K2 được công bố trong JWKS trước khi dùng để ký một khoảng ít nhất bằng thời gian cache JWKS tối đa; sau đó K2 bắt đầu ký và K1 chuyển sang trạng thái retiring, vẫn nằm trong JWKS thêm ít nhất bằng tuổi token tối đa cộng độ lệch đồng hồ rồi mới bị gỡ. K3 lặp lại chu kỳ tương tự. Hàng dưới cùng cho thấy nội dung JWKS ở từng giai đoạn: K1, rồi K1 và K2, rồi K2, rồi K2 và K3" caption="Mỗi khoá đi qua ba pha: công bố (chỉ verify), active (ký), retiring (chỉ verify). Hai cửa sổ chồng lấn che phủ cache JWKS của verifier và token đã phát còn hạn." />
+
+### Bốn bước của một lần xoay
+
+1. **Publish:** sinh khoá mới K2, thêm vào JWKS nhưng **chưa ký** bằng nó. Chờ ít nhất bằng thời gian cache JWKS tối đa của mọi verifier (cộng cache CDN nếu JWKS đi qua CDN).
+2. **Activate:** chuyển việc ký sang K2. K1 chuyển sang `retiring` — vẫn nằm trong JWKS.
+3. **Drain:** chờ ít nhất bằng tuổi token tối đa + độ lệch đồng hồ + thời gian signer cache khoá active. Sau mốc này không còn token K1 nào còn hạn.
+4. **Remove:** gỡ K1 khỏi JWKS và huỷ private key.
+
+Tại sao bước 1 cần thiết, khi `createRemoteJWKSet` tự refetch với `kid` lạ? Vì không phải verifier nào cũng làm vậy (gateway, service viết bằng ngôn ngữ khác, thư viện cũ), và vì cooldown: verifier vừa refetch 10 giây trước sẽ chờ thêm 20 giây nữa — 20 giây `401` cho mọi token mới. Publish trước loại bỏ hoàn toàn khoảng trống đó.
+
+### Bảng khoá và job xoay khoá
+
+```sql
+CREATE TABLE signing_keys (
+  kid            text PRIMARY KEY,           -- JWK thumbprint (RFC 7638)
+  alg            text NOT NULL DEFAULT 'ES256',
+  public_jwk     jsonb NOT NULL,
+  private_key    bytea NOT NULL,             -- PKCS#8 đã mã hoá bằng KMS (envelope encryption)
+  status         text NOT NULL CHECK (status IN ('pending', 'active', 'retiring')),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  activated_at   timestamptz,
+  retired_at     timestamptz
+);
+
+-- Không bao giờ có hai khoá active cùng lúc
+CREATE UNIQUE INDEX signing_keys_one_active ON signing_keys (status) WHERE status = 'active';
+```
+
+```ts
+// src/auth/rotate-signing-keys.ts
+import { calculateJwkThumbprint, exportJWK, exportPKCS8, generateKeyPair } from "jose";
+import { sql } from "../db";
+import { kmsEncrypt } from "../kms";
+
+const MINUTE = 60_000;
+const JWKS_MAX_CACHE = 30 * MINUTE; // max(cacheMaxAge của verifier, Cache-Control, CDN) + biên
+const MAX_TOKEN_AGE = 15 * MINUTE; // >= exp dài nhất + clock tolerance
+const SIGNER_CACHE = 1 * MINUTE; // signer cache khoá active
+const ROTATE_EVERY = 30 * 24 * 60 * MINUTE;
+
+export async function rotateSigningKeys(now = Date.now()) {
+  await sql.begin(async (tx) => {
+    // 4. Remove: retiring đủ lâu thì gỡ khỏi JWKS
+    await tx`
+      DELETE FROM signing_keys
+      WHERE status = 'retiring'
+        AND retired_at < ${new Date(now - MAX_TOKEN_AGE - SIGNER_CACHE)}`;
+
+    // 2. Activate: pending đã được publish đủ lâu thì lên active, active cũ thành retiring
+    const [ready] = await tx`
+      SELECT kid FROM signing_keys
+      WHERE status = 'pending' AND created_at < ${new Date(now - JWKS_MAX_CACHE)}
+      ORDER BY created_at LIMIT 1`;
+    if (ready) {
+      await tx`UPDATE signing_keys SET status = 'retiring', retired_at = now() WHERE status = 'active'`;
+      await tx`UPDATE signing_keys SET status = 'active', activated_at = now() WHERE kid = ${ready.kid}`;
+    }
+
+    // 1. Publish: active quá cũ và chưa có pending nào thì sinh khoá mới
+    const [{ due }] = await tx`
+      SELECT
+        NOT EXISTS (SELECT 1 FROM signing_keys WHERE status = 'pending')
+        AND COALESCE((SELECT activated_at FROM signing_keys WHERE status = 'active')
+                     < ${new Date(now - ROTATE_EVERY)}, true) AS due`;
+    if (due) {
+      const { publicKey, privateKey } = await generateKeyPair("ES256", { extractable: true });
+      const jwk = await exportJWK(publicKey);
+      const kid = await calculateJwkThumbprint(jwk);
+      const sealed = await kmsEncrypt(Buffer.from(await exportPKCS8(privateKey)));
+      await tx`
+        INSERT INTO signing_keys (kid, public_jwk, private_key, status)
+        VALUES (${kid}, ${tx.json(jwk)}, ${sealed}, 'pending')`;
+    }
+  });
+}
+```
+
+Job chạy mỗi vài phút (cron, BullMQ repeatable job, hay scheduler của nền tảng), idempotent, và mọi bước đều dựa trên thời gian — chạy lại bao nhiêu lần cũng không sao. Lần đầu triển khai, nếu bảng rỗng, job sẽ sinh khoá `pending`; bạn có thể kích hoạt nó ngay bằng tay vì chưa có verifier nào cache JWKS cũ. Dùng JWK thumbprint làm `kid` giúp `kid` xác định duy nhất theo khoá, không ai phải đặt tên.
+
+Nếu bạn muốn private key không bao giờ rời HSM, ký trực tiếp qua KMS (ECC P-256) thay vì giải mã PKCS#8 — nhớ chuyển chữ ký DER sang `R || S` như đã nói ở trên.
+
+### Endpoint JWKS và cache
+
+```ts
+// src/auth/jwks.controller.ts
+import { Controller, Get, Header } from "@nestjs/common";
+import { sql } from "../db";
+
+@Controller(".well-known")
+export class JwksController {
+  @Get("jwks.json")
+  @Header("Cache-Control", "public, max-age=300, stale-while-revalidate=60")
+  async jwks() {
+    const rows = await sql`
+      SELECT kid, alg, public_jwk FROM signing_keys
+      WHERE status IN ('pending', 'active', 'retiring')`;
+    return {
+      keys: rows.map((r) => ({ ...r.public_jwk, kid: r.kid, alg: r.alg, use: "sig" })),
+    };
+  }
+}
+```
+
+Hai lưu ý: JWKS **chỉ chứa public key** — mình từng thấy một endpoint serialize nguyên object khoá, kèm luôn tham số `d` (private key). Và `JWKS_MAX_CACHE` trong job phải lớn hơn **tổng** mọi tầng cache: `max-age` ở đây, CDN, và `cacheMaxAge` của verifier.
+
+<Callout type="danger" title="Xoay khẩn cấp khi khoá bị lộ">
+  Quy trình chồng lấn ở trên dành cho xoay định kỳ. Khi private key bị lộ, mọi token ký bằng nó — kể cả token do kẻ tấn công tự phát — đều hợp lệ cho tới khi khoá bị gỡ khỏi JWKS. Lúc đó bạn gỡ ngay, chấp nhận mọi người dùng bị buộc đăng nhập lại, và chủ động đẩy verifier refetch (restart, hoặc endpoint nội bộ xoá cache). Hãy diễn tập kịch bản này trên staging ít nhất một lần, và đo xem bao lâu thì verifier chậm nhất ngừng chấp nhận khoá cũ.
+</Callout>
+
+## Thu hồi: JWT không thể "logout" — trừ khi bạn chấp nhận state
+
+Điểm mạnh của JWT là verify không cần tra cứu. Đó cũng là điểm yếu: không có tra cứu thì không có chỗ để nói "token này đã bị thu hồi". Mọi chiến lược thu hồi đều là thêm lại một chút state:
+
+| Chiến lược | Độ trễ thu hồi | Chi phí mỗi request | Phù hợp cho |
+| --- | --- | --- | --- |
+| TTL ngắn + refresh token | Tối đa bằng TTL access token | Không | Mặc định cho mọi hệ thống |
+| Denylist theo `jti` | Gần như ngay lập tức | Một lần tra Redis | Logout một phiên, thu hồi một token cụ thể |
+| Token version theo user | Ngay lập tức, hoặc bằng TTL cache | Một lần tra (cache được) | "Đăng xuất mọi thiết bị", đổi mật khẩu, khoá tài khoản |
+| Kiểm tra session (`sid`) | Ngay lập tức | Một lần tra | Lúc này bạn đang dùng session rồi |
+| Xoay khoá khẩn cấp | Ngay lập tức, cho tất cả | Không | Khoá bị lộ |
+
+Lựa chọn của mình: access token 5–10 phút, refresh token opaque có rotation (chi tiết trong bài [NestJS auth với passkey và session](/blog/nestjs-auth-passkeys-sessions)), cộng với token version cho các sự kiện bảo mật. Denylist theo `jti` chỉ khi có yêu cầu thu hồi tức thì cho từng token.
+
+```ts
+// src/auth/revocation.ts
+import { redis } from "../redis";
+import type { AccessTokenClaims } from "./access-token-verifier";
+import { InvalidTokenError } from "./access-token-verifier";
+
+export async function assertNotRevoked(claims: AccessTokenClaims) {
+  // Một round-trip cho cả hai kiểm tra
+  const [denied, currentVersion] = await redis.mget(`deny:jti:${claims.jti}`, `tokver:${claims.sub}`);
+  if (denied) throw new InvalidTokenError("token revoked");
+  if (currentVersion !== null && (claims.ver ?? 0) < Number(currentVersion)) {
+    throw new InvalidTokenError("token version outdated");
+  }
+}
+
+export async function revokeToken(claims: AccessTokenClaims) {
+  // Chỉ cần giữ tới khi token tự hết hạn — denylist không phình mãi
+  await redis.set(`deny:jti:${claims.jti}`, "1", "EXAT", claims.exp!);
+}
+
+export async function revokeAllForUser(userId: string, newVersion: number) {
+  // Gọi sau khi đã tăng users.token_version trong DB
+  await redis.set(`tokver:${userId}`, String(newVersion));
+}
+```
+
+Để ý `EXAT`: entry trong denylist tự biến mất đúng lúc token hết hạn, nên kích thước denylist bị chặn trên bởi số token bị thu hồi trong một khoảng TTL — nhỏ. Và một khi bạn đã thêm `assertNotRevoked` vào mọi request, hãy thành thật với chính mình: bạn đã có một lookup mỗi request, giống session. Không có gì sai — chỉ là đừng chọn JWT vì lý do "stateless" rồi lặng lẽ thêm state lại.
+
+## JWT, opaque token hay session?
+
+Bảng mình dùng khi được hỏi "nên dùng JWT không":
+
+| Tình huống | Lựa chọn | Lý do |
+| --- | --- | --- |
+| Web app cùng origin (monolith, Next.js, BFF) | Session cookie | Thu hồi tức thì, cookie `HttpOnly`, không cần JWT |
+| Nhiều service nội bộ verify độc lập, nhạy về độ trễ | JWT access token TTL ngắn | Verify cục bộ, không gọi về IdP mỗi request |
+| API mở cho bên thứ ba, cần thu hồi tức thì | Opaque token + introspection (RFC 7662), có cache | Bên thứ ba không đọc được nội dung, server toàn quyền thu hồi |
+| Mobile app gọi API của chính mình | JWT ngắn + refresh token opaque có rotation | Không có cookie same-origin tự nhiên |
+| Service-to-service | JWT từ client credentials, hoặc mTLS | Không có người dùng, cần audience rõ ràng |
+| Link trong email (xác minh, reset mật khẩu) | Token ngẫu nhiên lưu hash trong DB | Dùng một lần, thu hồi được, không cần claim |
+
+Dòng cuối đáng nhấn mạnh: token reset mật khẩu dạng JWT là một lựa chọn tệ phổ biến. Nó không dùng một lần được nếu không có state, và nếu ký bằng cùng khoá với access token thì nó là ứng viên hoàn hảo cho token confusion.
+
+## Lưu JWT ở trình duyệt
+
+Mình đã viết riêng về chuyện này trong bài [bảo mật frontend thực chiến](/blog/frontend-security-in-practice), nên chỉ tóm tắt: `localStorage` biến mọi XSS thành một vụ lộ token có thể mang đi dùng ở nơi khác; bộ nhớ JS tốt hơn nhưng XSS vẫn tự chạy được luồng đăng nhập mới; cookie `HttpOnly` không cho JavaScript đọc token nhưng kéo CSRF quay lại. Câu trả lời mình chọn cho web app là **không để JWT xuống trình duyệt** — dùng Backend-for-Frontend, như mình trình bày trong bài [OAuth 2.0 và OIDC với PKCE và BFF](/blog/oauth2-oidc-pkce-bff).
+
+## Kích thước và hiệu năng
+
+Token đi kèm **mọi** request, nên kích thước đáng để ý:
+
+- Header + payload gọn (khoảng 10 claim) đã vào khoảng 300–400 ký tự sau base64url.
+- Chữ ký ES256 64 byte thành 86 ký tự; RS256 2048 bit 256 byte thành 342 ký tự.
+- Mỗi claim thêm vào đều phình lên khoảng 4/3 do base64url.
+
+Vấn đề thật xuất hiện khi người ta nhét danh sách permission, danh sách tenant, hay cả object profile vào token. Một cookie chỉ được đảm bảo khoảng 4 KB. Nginx mặc định giới hạn mỗi dòng header ở 8 KB (`large_client_header_buffers 4 8k`), Node mặc định giới hạn tổng header 16 KB. Vượt ngưỡng là nhận `431` hoặc `400` khó hiểu, thường chỉ với *một số* người dùng có nhiều quyền — loại bug mất cả ngày mới tìm ra.
+
+Về CPU: verify RSA rất rẻ (public exponent nhỏ), ký RSA đắt; ECDSA thì ngược lại một phần — ký nhanh hơn RSA nhiều, verify chậm hơn verify RSA một chút. Trong thực tế cả hai đều không phải nút thắt so với một query DB. Nếu bạn muốn số liệu cho chính phần cứng của mình, đo trực tiếp:
+
+```ts
+// bench/verify.ts — chạy bằng: bun bench/verify.ts
+import { SignJWT, generateKeyPair, jwtVerify } from "jose";
+
+for (const alg of ["ES256", "RS256", "EdDSA"] as const) {
+  const { publicKey, privateKey } = await generateKeyPair(alg);
+  const token = await new SignJWT({ sub: "u1" }).setProtectedHeader({ alg }).setExpirationTime("1h").sign(privateKey);
+
+  const N = 5_000;
+  const start = performance.now();
+  for (let i = 0; i < N; i++) await jwtVerify(token, publicKey, { algorithms: [alg] });
+  const perOp = (performance.now() - start) / N;
+  console.log(`${alg}: ${(perOp * 1000).toFixed(1)} µs/verify`);
+}
+```
+
+Chi phí thật thường nằm ở chỗ khác: tải JWKS mỗi request vì quên cache (mình đã thấy, `new` một JWKS client trong mỗi lần gọi middleware), hoặc import khoá PEM lại mỗi lần verify.
+
+## Test verifier bằng token độc
+
+Verifier là code bảo mật; nó cần test với **chính những token kẻ tấn công sẽ gửi**, không chỉ một token hợp lệ. Nhờ verifier nhận `keys` qua tham số, test chạy hoàn toàn cục bộ:
+
+```ts
+// src/auth/access-token-verifier.spec.ts
+import { beforeAll, describe, expect, it } from "vitest";
+import { base64url, createLocalJWKSet, exportJWK, exportSPKI, generateKeyPair, SignJWT } from "jose";
+import { createAccessTokenVerifier } from "./access-token-verifier";
+
+const ISS = "https://id.example.com";
+const AUD = "https://api.example.com";
+
+let signingKey: CryptoKey;
+let attackerKey: CryptoKey;
+let attackerJwk: Record<string, unknown>;
+let publicPem: string;
+let verify: (token: string) => Promise<unknown>;
+
+beforeAll(async () => {
+  const good = await generateKeyPair("ES256", { extractable: true });
+  const evil = await generateKeyPair("ES256", { extractable: true });
+  signingKey = good.privateKey;
+  attackerKey = evil.privateKey;
+  attackerJwk = await exportJWK(evil.publicKey);
+  publicPem = await exportSPKI(good.publicKey);
+
+  const jwk = { ...(await exportJWK(good.publicKey)), kid: "k1", alg: "ES256", use: "sig" };
+  verify = createAccessTokenVerifier({ issuer: ISS, audience: AUD, keys: createLocalJWKSet({ keys: [jwk] }) });
+});
+
+type Mint = { header?: Record<string, unknown>; claims?: Record<string, unknown>; key?: CryptoKey | Uint8Array };
+
+async function mint({ header = {}, claims = {}, key = signingKey }: Mint = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ iss: ISS, aud: AUD, sub: "usr_42", iat: now, exp: now + 300, jti: crypto.randomUUID(), ...claims })
+    .setProtectedHeader({ alg: "ES256", kid: "k1", typ: "at+jwt", ...header })
+    .sign(key);
+}
+
+const enc = (o: object) => base64url.encode(JSON.stringify(o));
+const now = () => Math.floor(Date.now() / 1000);
+
+describe("access token verifier", () => {
+  it("accepts a well-formed token", async () => {
+    await expect(verify(await mint())).resolves.toMatchObject({ sub: "usr_42" });
+  });
+
+  const attacks: Array<[string, () => Promise<string>]> = [
+    ["alg: none", async () => `${enc({ alg: "none", typ: "at+jwt", kid: "k1" })}.${enc({ iss: ISS, aud: AUD, sub: "admin", exp: now() + 300 })}.`],
+    ["HS256 signed with the public key PEM", () => mint({ header: { alg: "HS256" }, key: new TextEncoder().encode(publicPem) })],
+    ["signed by an attacker key, real kid", () => mint({ key: attackerKey })],
+    ["unknown kid", () => mint({ header: { kid: "k999" } })],
+    ["kid path traversal", () => mint({ header: { kid: "../../../../dev/null" } })],
+    ["jku pointing at attacker JWKS", () => mint({ header: { jku: "https://evil.example/jwks.json" }, key: attackerKey })],
+    ["embedded attacker jwk", () => mint({ header: { jwk: attackerJwk }, key: attackerKey })],
+    ["wrong issuer", () => mint({ claims: { iss: "https://id.example.com.evil.example" } })],
+    ["wrong audience", () => mint({ claims: { aud: "https://other-api.example.com" } })],
+    ["audience array without us", () => mint({ claims: { aud: ["https://a.example", "https://b.example"] } })],
+    ["expired", () => mint({ claims: { exp: now() - 120 } })],
+    ["not yet valid", () => mint({ claims: { nbf: now() + 600 } })],
+    ["issued in the future", () => mint({ claims: { iat: now() + 600 } })],
+    ["too old even though exp is far away", () => mint({ claims: { iat: now() - 7200, exp: now() + 86400 } })],
+    ["exp as a string", () => mint({ claims: { exp: String(now() + 300) } })],
+    ["ID token presented as access token", () => mint({ header: { typ: "JWT" } })],
+    ["missing jti", () => mint({ claims: { jti: undefined } })],
+  ];
+
+  it.each(attacks)("rejects: %s", async (_name, makeToken) => {
+    await expect(verify(await makeToken())).rejects.toThrow();
+  });
+
+  it("rejects a tampered payload with the original signature", async () => {
+    const [h, , s] = (await mint()).split(".");
+    const forged = `${h}.${enc({ iss: ISS, aud: AUD, sub: "admin", iat: now(), exp: now() + 300, jti: "x" })}.${s}`;
+    await expect(verify(forged)).rejects.toThrow();
+  });
+});
+```
+
+Bộ test này đã bắt được bug thật cho mình: một lần refactor làm option `typ` rơi khỏi cấu hình verifier, và test "ID token presented as access token" đỏ ngay trong CI. Vài gợi ý để nó có ích hơn:
+
+- **Kiểm tra lý do từ chối**, không chỉ "có ném lỗi". Một test "wrong audience" có thể pass vì lý do sai (ví dụ do chữ ký hỏng), che mất việc `aud` không được kiểm tra. Với `jose`, assert theo `code` của lỗi như `ERR_JWT_CLAIM_VALIDATION_FAILED` kèm `claim`.
+- **Chạy trên đúng runtime production.** Nếu production là Bun hoặc một edge runtime, CI cũng phải chạy test ở đó — psychic signatures là lỗi của runtime, không phải của code bạn.
+- **Thêm một test end-to-end** gọi endpoint thật với token độc và assert `401` kèm header `WWW-Authenticate`, để chắc guard được gắn ở mọi route chứ không chỉ verifier đúng.
+
+## Những sai lầm mình hay gặp
+
+- **`decode` thay vì `verify`**, hoặc chỉ verify ở gateway rồi các service phía sau tin tưởng mù quáng.
+- **Không pin thuật toán**, để thư viện đọc `alg` từ header.
+- **Bỏ qua `aud` và `typ`**, nên token của app khác hay token loại khác đều dùng được.
+- **HS256 với secret yếu hoặc chia sẻ giữa nhiều service** — một service lộ, mọi service lộ.
+- **`kid`, `jku` hay `x5u` chạm tới filesystem, SQL hoặc mạng.**
+- **Xoay khoá bằng cách thay khoá cũ ngay lập tức**, và cả hệ thống nhận `401` cho tới khi cache JWKS hết hạn.
+- **Tạo JWKS client mới cho mỗi request**, tải lại JWKS liên tục và tự DDoS IdP.
+- **Access token sống 7 ngày** vì "refresh token phức tạp quá" — rồi không thu hồi được khi cần.
+- **Nhét quá nhiều vào token**: PII (đọc được bởi bất kỳ ai), hoặc hàng trăm permission làm vượt giới hạn header.
+- **Trả `401` khi JWKS không tải được**, biến sự cố của IdP thành một cơn bão đăng nhập lại.
+
+## Đọc thêm
+
+- [RFC 8725 — JSON Web Token Best Current Practices](https://www.rfc-editor.org/rfc/rfc8725.html): ngắn, đọc hết trong một buổi chiều.
+- [RFC 7519 — JWT](https://www.rfc-editor.org/rfc/rfc7519.html), [RFC 7515 — JWS](https://www.rfc-editor.org/rfc/rfc7515.html), [RFC 7516 — JWE](https://www.rfc-editor.org/rfc/rfc7516.html), [RFC 7517 — JWK](https://www.rfc-editor.org/rfc/rfc7517.html), [RFC 7518 — JWA](https://www.rfc-editor.org/rfc/rfc7518.html).
+- [RFC 9068 — JWT Profile for OAuth 2.0 Access Tokens](https://www.rfc-editor.org/rfc/rfc9068.html) và [RFC 7638 — JWK Thumbprint](https://www.rfc-editor.org/rfc/rfc7638.html).
+- [RFC 7662 — OAuth 2.0 Token Introspection](https://www.rfc-editor.org/rfc/rfc7662.html) cho opaque token.
+- [jose](https://github.com/panva/jose) — tài liệu API của `jwtVerify`, `createRemoteJWKSet`, `SignJWT`.
+
+## Tóm tắt
+
+<Checklist>
+
+- Nhớ rằng payload JWS ai cũng đọc được; không đặt PII hay bí mật vào token, và chỉ dùng JWE khi thực sự cần.
+- Verify, đừng decode; mỗi service tự verify thay vì tin gateway.
+- Pin `algorithms` ở verifier; dùng ES256 hoặc RS256 khi bên verify khác bên phát; HS256 chỉ với secret ngẫu nhiên từ 256 bit trở lên.
+- Kiểm tra `iss` chính xác, `aud` của chính API, `exp`/`nbf` với tolerance nhỏ, tuổi token theo `iat`, `typ` là `at+jwt`, và các claim bắt buộc.
+- `kid` chỉ tra cứu trong tập khoá đã nạp sẵn; bỏ qua `jku`, `x5u`, `jwk` nhúng.
+- Dùng `createRemoteJWKSet` một lần cho cả process, có timeout và cooldown; trả `503` thay vì `401` khi JWKS không tải được.
+- Xoay khoá theo bốn bước publish → activate → drain → remove, với cửa sổ chồng lấn lớn hơn cache JWKS và tuổi token tối đa; diễn tập xoay khẩn cấp.
+- Access token 5–10 phút, refresh token opaque có rotation, token version cho "đăng xuất mọi thiết bị", denylist `jti` có TTL khi cần thu hồi tức thì.
+- Với web app, ưu tiên session hoặc BFF thay vì đưa JWT xuống trình duyệt.
+- Giữ token nhỏ, và test verifier trong CI bằng bộ token độc: `alg: none`, nhầm HS256, `kid` lạ, `jku`, sai `iss`/`aud`/`typ`, hết hạn, payload bị sửa.
+
+</Checklist>

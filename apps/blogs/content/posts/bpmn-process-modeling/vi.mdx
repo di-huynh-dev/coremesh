@@ -1,0 +1,474 @@
+---
+title: "Mô hình hoá quy trình với BPMN 2.0: từ bản vẽ as-is tới phần mềm chạy được"
+excerpt: "BPMN không phải để vẽ cho đẹp hồ sơ dự án mà để tìm ra chỗ quy trình đang lãng phí: handoff, vòng làm lại, thời gian chờ. Bài này đi qua tập con ký hiệu đủ dùng, các lỗi mô hình hoá hay gặp, một ví dụ as-is/to-be về phê duyệt mua hàng có số đo, và cách đi từ mô hình tới state machine, workflow engine và user story."
+---
+
+<Lead>Ở một dự án cách đây vài năm, ban giám đốc của một công ty khoảng 300 người than rằng mua một cái máy in cũng mất hai tuần. Ai cũng có câu trả lời sẵn: "tại giám đốc hay đi công tác, ký chậm". Kế hoạch ban đầu là làm app để giám đốc duyệt trên điện thoại. Trước khi viết dòng code nào, mình và một bạn BA ngồi vẽ lại quy trình thật — không phải quy trình trong sổ tay ISO, mà quy trình người ta thực sự làm, với timestamp lấy từ email. Kết quả: phần của giám đốc chưa tới một phần mười tổng thời gian chờ. Những khoảng chờ lớn hơn nằm ở chỗ không ai để ý: một vòng làm lại giữa kế toán và người đề nghị, thói quen kiểm tra ngân sách theo lô hai lần một tuần, và những email chuyển tiếp bị quên. Cái app duyệt trên điện thoại sẽ giải quyết sai vấn đề. Bài này là cách mình dùng BPMN 2.0 để nhìn ra những thứ như vậy: tập con ký hiệu đủ cho phần lớn công việc, các lỗi mô hình hoá hay gặp, ví dụ as-is và to-be có số đo, và cách đi từ mô hình to-be tới state machine, workflow engine và backlog.</Lead>
+
+## Vì sao phải mô hình hoá quy trình
+
+Trong code, một quy trình nghiệp vụ thường chỉ còn là một cột `status` và vài câu `if`. Bạn thấy được trạng thái, nhưng không thấy **khoảng thời gian giữa các trạng thái**, không thấy ai đang cầm việc, và càng không thấy những bước diễn ra ngoài hệ thống — email, Zalo, file Excel, chữ ký tay. Mà chính những chỗ đó là nơi thời gian biến mất.
+
+Một mô hình quy trình tốt làm lộ ra ba loại lãng phí mà mình gặp ở gần như mọi tổ chức:
+
+- **Handoff:** mỗi lần công việc đổi người cầm, nó vào một hàng đợi mới. Người nhận đang bận việc khác, có khi không biết là có việc mới. Năm lần đổi tay là năm hàng đợi.
+- **Vòng làm lại (rework loop):** hồ sơ thiếu thông tin bị trả về, rồi phải đi lại từ đầu — kể cả những bước đã ổn. Trên bản vẽ, đó là mũi tên quay ngược lại, và nó luôn đáng để hỏi "vì sao lỗi không được bắt sớm hơn?".
+- **Chờ và gom lô:** "kế toán kiểm vào thứ Ba và thứ Năm", "giám đốc ký vào cuối ngày". Mỗi quy ước nghe hợp lý một mình, nhưng cộng lại thành nhiều ngày chờ cho một việc chỉ mất mười phút làm.
+
+Có một lý do nữa ít được nói ra: **mô hình là ngôn ngữ chung**. Một sơ đồ BPMN treo trên tường được trưởng phòng mua hàng, kế toán trưởng và dev cùng đọc, cùng chỉ tay vào và nói "chỗ này sai". Không đặc tả dạng văn bản nào làm được vậy.
+
+<Callout type="tip" title="Mô hình hoá để trả lời một câu hỏi">
+Đừng vẽ quy trình "cho đầy đủ". Trước khi mở công cụ, viết ra câu hỏi mà mô hình phải trả lời: "Vì sao mua hàng mất hai tuần?", "Hệ thống mới cần tự động hoá bước nào?", "Ai chịu trách nhiệm khi đơn bị treo?". Câu hỏi quyết định mức chi tiết, và giúp bạn biết khi nào nên dừng vẽ.
+</Callout>
+
+## Tập con BPMN 2.0 đủ cho 90% công việc
+
+Đặc tả BPMN 2.0 của OMG (cũng được chuẩn hoá thành ISO/IEC 19510) có hơn trăm phần tử. Bạn không cần phần lớn chúng. Mình gần như chỉ dùng những thứ dưới đây, và khi một mô hình cần nhiều hơn, thường đó là dấu hiệu nó đang quá chi tiết.
+
+### Pool và lane
+
+**Pool** là một bên tham gia độc lập — thường là một tổ chức hoặc một hệ thống bên ngoài mà bạn không kiểm soát luồng bên trong. Trong ví dụ mua hàng, công ty là một pool, nhà cung cấp là một pool khác. Pool của bên ngoài thường được vẽ **thu gọn** (collapsed, một dải trống) vì bạn không biết và không cần biết họ làm gì bên trong.
+
+**Lane** chia pool theo **vai trò hoặc trách nhiệm**: người đề nghị, người duyệt, kế toán, mua hàng. Lane trả lời câu hỏi "ai làm việc này?". Nó không phải là phòng ban trên sơ đồ tổ chức và càng không phải là hệ thống phần mềm — phần lỗi bên dưới sẽ quay lại chuyện này.
+
+### Task và sub-process
+
+**Task** là một đơn vị công việc, đặt tên theo dạng **động từ + danh từ**: "Duyệt yêu cầu", "Kiểm tra ngân sách". Hai loại mình phân biệt thường xuyên nhất:
+
+- **User task:** người làm, thường qua một màn hình. Mỗi user task là một ứng viên cho một user story.
+- **Service task:** hệ thống tự làm — gọi API, tính toán, ghi dữ liệu.
+
+Ngoài ra có **send/receive task** (gửi, nhận thông điệp), **business rule task** (áp dụng một bảng quyết định) và **manual task** (việc tay ngoài hệ thống, như ký giấy). **Sub-process** gom một cụm task thành một khối có thể thu gọn, giúp mô hình cấp cao gọn gàng mà vẫn mở ra xem chi tiết được.
+
+### Event
+
+Event là thứ **xảy ra**, vẽ bằng hình tròn:
+
+- **Start event** (viền mảnh): quy trình bắt đầu từ đâu. Có thể là không loại (ai đó bắt đầu), message (nhận được email, webhook), hoặc timer (mỗi đầu tháng).
+- **End event** (viền đậm): một **kết cục** của quy trình. Một quy trình nghiêm túc hầu như luôn có nhiều hơn một: "Đã gửi PO", "Bị từ chối", "Đã huỷ".
+- **Intermediate event** (viền đôi): xảy ra giữa chừng — chờ một thông điệp, chờ đến một thời điểm, hoặc phát ra một thông điệp.
+- **Timer:** "sau 48 giờ", "lúc 9 giờ thứ Hai". Có biểu tượng đồng hồ.
+- **Message:** nhận hoặc gửi thông điệp với bên khác. Biểu tượng phong bì.
+- **Error:** một lỗi nghiệp vụ được đặt tên, thường gắn trên viền một task hoặc sub-process.
+
+Event gắn trên viền task gọi là **boundary event**, và nó có hai dạng mà người mới hay bỏ qua: **interrupting** (viền liền — khi xảy ra, task bị huỷ và luồng đi theo nhánh mới) và **non-interrupting** (viền đứt — nhánh mới chạy song song, task vẫn tiếp tục). "Sau 48 giờ chưa duyệt thì gửi nhắc nhở" là non-interrupting; "sau 5 ngày chưa duyệt thì chuyển cho người duyệt thay thế" là interrupting.
+
+### Gateway
+
+Gateway là hình thoi, điều khiển luồng **tách và gộp**. Đây là nơi mô hình hay sai nhất, nên đáng nhớ kỹ ngữ nghĩa của từng loại:
+
+| Gateway | Ký hiệu | Khi tách | Khi gộp | Dùng khi |
+| --- | --- | --- | --- | --- |
+| Exclusive (XOR) | Thoi có dấu X (hoặc để trống) | Đúng một nhánh được chọn theo điều kiện | Đi tiếp ngay khi một nhánh tới | Quyết định có/không, theo mức tiền |
+| Parallel (AND) | Thoi có dấu + | Tất cả nhánh chạy đồng thời | Chờ **tất cả** nhánh tới | Các việc độc lập có thể làm cùng lúc |
+| Inclusive (OR) | Thoi có hình tròn | Một hoặc nhiều nhánh có điều kiện đúng | Chờ mọi nhánh **đã được kích hoạt** | Kết hợp tuỳ chọn: cần duyệt pháp lý và/hoặc IT |
+| Event-based | Thoi có ngũ giác trong vòng tròn | Nhánh nào có event xảy ra trước thì đi nhánh đó | Không dùng để gộp | Chờ nhà cung cấp xác nhận **hoặc** hết 3 ngày |
+
+Event-based gateway đáng nhắc riêng vì nó giải quyết một tình huống rất phổ biến mà XOR không làm được: quyết định không dựa trên dữ liệu có sẵn, mà dựa trên **cái gì xảy ra trước**. Sau khi gửi PO, quy trình chờ: nếu nhà cung cấp xác nhận thì đi tiếp, nếu ba ngày trôi qua mà im lặng thì mua hàng gọi điện hỏi.
+
+### Sequence flow và message flow
+
+- **Sequence flow** (mũi tên liền): thứ tự các bước **bên trong một pool**.
+- **Message flow** (mũi tên đứt, đầu tròn rỗng ở gốc, đầu mũi tên rỗng): thông điệp **giữa các pool**.
+
+Quy tắc không có ngoại lệ: sequence flow không bao giờ vượt ranh giới pool, message flow không bao giờ nối hai phần tử trong cùng một pool. Nếu bạn muốn vẽ message flow giữa hai lane, thì hoặc hai lane đó thực ra là hai pool (hai bên độc lập), hoặc bạn chỉ cần sequence flow.
+
+## Ví dụ: phê duyệt mua hàng ở một công ty 300 người
+
+Quay lại câu chuyện ở đầu bài. Công ty phân phối thiết bị, khoảng 300 nhân sự, mỗi tháng vài chục yêu cầu mua hàng nội bộ: từ văn phòng phẩm đến máy móc giá trị lớn. Số liệu dưới đây đã được làm tròn và đơn giản hoá, nhưng hình dạng của vấn đề là thật.
+
+### Thu thập as-is: đừng tin vào quy trình trên giấy
+
+Công ty có một quy trình mua hàng trong bộ tài liệu ISO. Nó gọn gàng, năm bước, và gần như không ai làm đúng như vậy. Mình thu thập as-is bằng ba nguồn, theo thứ tự tin cậy tăng dần:
+
+1. **Phỏng vấn từng vai trò, riêng rẽ.** Hỏi "lần gần nhất anh/chị làm việc này, chuyện gì đã xảy ra?" thay vì "quy trình là gì?". Câu đầu cho ra sự thật, câu sau cho ra tài liệu ISO.
+2. **Đi theo một hồ sơ thật** từ đầu đến cuối (process walk), xem nó nằm ở đâu, chờ ai.
+3. **Timestamp từ hệ thống và email:** thời điểm gửi email đề nghị, thời điểm trả lời duyệt, thời điểm tạo PO trên ERP. Đây là nguồn duy nhất cho ra thời gian chờ thật, không phải thời gian người ta *nhớ* là đã chờ.
+
+### Mô hình as-is
+
+Ở dạng văn bản, quy trình as-is trông như sau:
+
+| # | Lane | Bước | Công cụ | Ghi chú |
+| --- | --- | --- | --- | --- |
+| 1 | Người đề nghị | Điền phiếu đề nghị mua | File Excel mẫu, gửi email | Mã ngân sách gõ tay |
+| 2 | Trưởng phòng | Duyệt đề nghị | Trả lời email "OK" | Không có nhắc nhở |
+| 3 | Người đề nghị | Chuyển tiếp email đã duyệt cho kế toán | Email | Hay bị quên |
+| 4 | Kế toán | Kiểm tra ngân sách | File tổng hợp ngân sách | Làm theo lô thứ Ba và thứ Năm |
+| 5 | Kế toán | XOR: hồ sơ hợp lệ? | — | Không hợp lệ thì trả về bước 1 |
+| 6 | Giám đốc | Duyệt nếu trên 50 triệu | Bản in, ký tay | Chờ khi đi công tác |
+| 7 | Mua hàng | Xin báo giá, chọn nhà cung cấp | Email, điện thoại | Ba báo giá cho mọi đơn |
+| 8 | Mua hàng | Lập PO và gửi nhà cung cấp | ERP, email | — |
+| 9 | Kế toán | Nhập lại đơn để giữ ngân sách | ERP | Nhập trùng dữ liệu bước 8 |
+
+Khi vẽ ra BPMN, chi tiết đáng giá nhất hiện lên ngay: mũi tên từ bước 5 **quay về bước 1**, không phải bước 4. Hồ sơ sai mã ngân sách bị trả về, người đề nghị sửa, và vì là phiếu mới nên phải xin trưởng phòng duyệt lại từ đầu. Một lỗi đánh máy tốn thêm vài ngày.
+
+### Đo: cycle time, touch time, wait time
+
+Bốn con số mình luôn đo cho một quy trình:
+
+- **Cycle time (lead time):** từ lúc bắt đầu tới lúc kết thúc, theo đồng hồ treo tường. Đây là cái người dùng cảm nhận.
+- **Touch time (process time):** tổng thời gian có người thực sự làm việc trên hồ sơ.
+- **Wait time:** phần còn lại — hồ sơ nằm trong hộp thư, trên bàn, trong hàng đợi.
+- **Tỉ lệ làm lại:** bao nhiêu phần trăm hồ sơ đi qua vòng quay ngược ít nhất một lần.
+
+| Bước | Touch time | Chờ trước bước (trung vị) |
+| --- | --- | --- |
+| Trưởng phòng duyệt | ~5 phút | ~1,5 ngày |
+| Chuyển cho kế toán | ~2 phút | ~0,5 ngày |
+| Kế toán kiểm tra | ~10 phút | ~1,5 ngày (chờ tới lô kế tiếp) |
+| Vòng làm lại (khoảng 1/4 hồ sơ) | ~20 phút | ~3 ngày cho mỗi vòng |
+| Giám đốc duyệt (đơn trên 50 triệu) | ~2 phút | ~2 ngày |
+| Xin báo giá, lập PO | ~1 giờ | ~2 ngày (chờ báo giá) |
+
+Cycle time trung vị khoảng 9 ngày làm việc, touch time khoảng một tiếng rưỡi. Tỉ lệ touch time trên cycle time — có nơi gọi là **process cycle efficiency** — chỉ khoảng 2%. Con số đó không có gì bất thường với quy trình hành chính; điều quan trọng là nó cho thấy **tăng tốc người làm không giúp gì**, phải giảm thời gian chờ.
+
+## Tìm waste và bottleneck
+
+Có số đo rồi, câu hỏi tiếp theo là: thời gian chờ nằm ở đâu, và vì sao.
+
+### Bottleneck thật thường không phải cái mọi người nghĩ
+
+Giám đốc ký chậm là chuyện ai cũng thấy, vì nó gắn với một người cụ thể và cảm giác bất lực. Nhưng chỉ khoảng một phần ba số đơn cần giám đốc duyệt, và với các đơn đó, ông chiếm khoảng hai ngày. Trong khi đó vòng làm lại ảnh hưởng một phần tư số đơn và mỗi vòng tốn ba ngày; còn việc gom lô của kế toán chạm vào **mọi** đơn. Tính bình quân trên mọi đơn, phần của giám đốc chỉ khoảng hai phần ba ngày. Trong khi đó gom lô của kế toán, vòng làm lại và bước chuyển tiếp email cộng lại gần ba ngày — gấp bốn lần — mà không ai nhắc tới, vì không có "người" nào để đổ lỗi, chỉ có một quy ước và một file Excel.
+
+Nếu dữ liệu có ở dạng log (bảng lịch sử, email export, audit log của ERP), bạn có thể tính trực tiếp thay vì ước lượng:
+
+```sql
+-- Thời gian chờ và thời gian làm trung vị cho từng bước, từ log sự kiện
+WITH steps AS (
+  SELECT
+    request_id,
+    step,
+    started_at,
+    completed_at,
+    LAG(completed_at) OVER (PARTITION BY request_id ORDER BY started_at) AS prev_completed_at
+  FROM request_events
+)
+SELECT
+  step,
+  COUNT(*) AS occurrences,
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY started_at - prev_completed_at) AS median_wait,
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY completed_at - started_at)      AS median_touch
+FROM steps
+WHERE prev_completed_at IS NOT NULL
+GROUP BY step
+ORDER BY median_wait DESC;
+```
+
+Một lời thật: với các bước diễn ra qua email, bạn thường chỉ có "lúc nhận" và "lúc trả lời", không biết người duyệt *bắt đầu đọc* lúc nào. Khi đó wait và touch dính vào nhau, và mình ước lượng touch time bằng phỏng vấn rồi trừ đi. Không hoàn hảo, nhưng tốt hơn rất nhiều so với cảm giác.
+
+Muốn biết tỉ lệ làm lại, đếm số hồ sơ đi qua cùng một bước nhiều hơn một lần:
+
+```sql
+SELECT
+  COUNT(*) FILTER (WHERE checks > 1)::numeric / COUNT(*) AS rework_rate
+FROM (
+  SELECT request_id, COUNT(*) AS checks
+  FROM request_events
+  WHERE step = 'finance_check'
+  GROUP BY request_id
+) t;
+```
+
+### Little's Law giải thích "hộp thư lúc nào cũng đầy"
+
+Định luật Little nói rằng, ở trạng thái ổn định, **số việc đang dở dang = tốc độ vào × cycle time trung bình**. Ba đơn mới mỗi ngày làm việc, cycle time 9 ngày, nghĩa là lúc nào cũng có khoảng 27 đơn đang lơ lửng đâu đó trong công ty. Kế toán than "hộp thư lúc nào cũng có hai mươi mấy email mua hàng" không phải vì họ chậm — đó là hệ quả toán học của cycle time dài. Giảm cycle time thì hàng đợi tự nhỏ lại, không cần thêm người.
+
+### Các câu hỏi mình đặt cho từng chỗ chờ
+
+- **Vì sao bước này không bắt đầu ngay?** Người nhận không biết có việc (thiếu thông báo), đang gom lô, hay đang chờ thông tin?
+- **Vì sao hồ sơ bị trả về?** Có kiểm tra nào làm được *lúc nhập* thay vì ba bước sau không?
+- **Hai bước này có thực sự phải tuần tự?** Giữ ngân sách và lập PO có phụ thuộc nhau không?
+- **Ai được phép quyết định?** Đơn 3 triệu mua giấy in có cần cùng mức phê duyệt như đơn 300 triệu mua máy không?
+
+## Thiết kế quy trình to-be
+
+### Nguyên tắc
+
+Mình không bắt đầu to-be bằng công nghệ. Mình bắt đầu bằng năm nguyên tắc rút ra từ phân tích ở trên:
+
+1. **Kiểm tra sớm:** mọi thứ có thể validate lúc nhập thì validate lúc nhập — mã ngân sách chọn từ danh sách, trường bắt buộc, hàng trong danh mục.
+2. **Tự động hoá rule, không tự động hoá phán đoán:** kiểm tra ngân sách là phép so sánh số, để máy làm. Quyết định có nên mua hay không là phán đoán, để người làm.
+3. **Song song hoá việc độc lập:** giữ ngân sách và lập PO không phụ thuộc nhau.
+4. **Mọi chỗ chờ người đều có timer:** chờ không có hạn là chờ mãi mãi.
+5. **Mọi kết cục đều được đặt tên:** bị từ chối, đã gửi PO, đã huỷ — không có hồ sơ nào "biến mất".
+
+### Mô hình to-be
+
+<Figure src="/blog/bpmn-process-modeling-to-be.svg" alt="Sơ đồ BPMN của quy trình mua hàng to-be. Một pool với bốn lane: người đề nghị, người duyệt, kế toán, mua hàng. Người đề nghị gửi yêu cầu; kế toán kiểm tra ngân sách tự động; gateway exclusive hỏi còn ngân sách không, nếu không thì kết thúc ở end event bị từ chối. Nếu có, người duyệt duyệt yêu cầu; trên viền task duyệt có timer boundary event không ngắt 48 giờ dẫn tới task gửi nhắc nhở rồi kết thúc. Gateway exclusive thứ hai hỏi đã được duyệt chưa, nếu không thì về end event bị từ chối. Nếu có, gateway parallel tách thành hai nhánh: kế toán giữ ngân sách tự động và mua hàng lập PO, rồi gateway parallel gộp lại và kết thúc bằng message end event gửi PO, có message flow đứt nét tới pool nhà cung cấp được thu gọn ở dưới cùng." caption="To-be: ngân sách được kiểm tra trước khi ai phải duyệt, timer không ngắt nhắc người duyệt sau 48 giờ, giữ ngân sách và lập PO chạy song song. Mọi nhánh đều kết thúc ở một end event có tên." />
+
+Đọc mô hình bằng chữ, từng phần tử:
+
+| Phần tử | Loại BPMN | Lane | Ghi chú |
+| --- | --- | --- | --- |
+| Cần mua hàng | Start event | Người đề nghị | — |
+| Gửi yêu cầu | User task | Người đề nghị | Form có danh mục, mã ngân sách chọn từ danh sách |
+| Kiểm tra ngân sách | Service task | Kế toán | Tự động, nhưng kế toán sở hữu rule và dữ liệu |
+| Còn ngân sách? | Exclusive gateway | Kế toán | Không: kết thúc "Bị từ chối" kèm lý do |
+| Duyệt yêu cầu | User task | Người duyệt | Người duyệt do bảng quyết định chọn theo số tiền |
+| 48h | Timer boundary, không ngắt | Người duyệt | Kích hoạt "Gửi nhắc nhở", task duyệt vẫn mở |
+| Đã duyệt? | Exclusive gateway | Người duyệt | Không: kết thúc "Bị từ chối" |
+| Tách song song | Parallel gateway | Kế toán | Hai nhánh độc lập |
+| Giữ ngân sách | Service task | Kế toán | Thay cho việc nhập tay lại vào ERP |
+| Lập PO | User task | Mua hàng | Đơn trong danh mục có hợp đồng khung: không cần ba báo giá |
+| Gộp song song | Parallel gateway | Mua hàng | Chờ cả hai nhánh |
+| Đã gửi PO | Message end event | Mua hàng | Gửi PO tới pool nhà cung cấp |
+
+Vài quyết định mô hình hoá đáng nói:
+
+- **"Kiểm tra ngân sách" nằm trong lane kế toán dù là service task.** Lane là trách nhiệm: khi rule ngân sách sai, người phải sửa là kế toán, không phải "hệ thống".
+- **Một end event "Bị từ chối" nhận hai luồng vào.** BPMN cho phép, và nó nói đúng nghiệp vụ: từ chối vì hết ngân sách hay vì người duyệt nói không, kết cục với người đề nghị là như nhau (lý do khác nhau nằm trong dữ liệu).
+- **Không có vòng quay về bước đầu.** Bị từ chối thì người đề nghị tạo yêu cầu mới, có sẵn dữ liệu cũ để sửa. Điều này nghe có vẻ khắt khe, nhưng nó giữ mô hình đơn giản và mỗi yêu cầu có một lịch sử sạch.
+
+### Rule duyệt tách ra thành bảng quyết định
+
+Phiên bản đầu của to-be có một chuỗi gateway: dưới 20 triệu thì trưởng phòng, dưới 100 triệu thì thêm trưởng khối, trên nữa thì giám đốc, hàng IT thì thêm trưởng IT. Sơ đồ biến thành mạng nhện. Cách tốt hơn: giữ một task "Duyệt yêu cầu" trên sơ đồ, và đưa logic chọn người duyệt vào một **bảng quyết định** (DMN là chuẩn của OMG cho việc này, nhưng một bảng đơn giản cũng đủ):
+
+| Số tiền (triệu đồng) | Loại hàng | Người duyệt |
+| --- | --- | --- |
+| Đến 20 | Bất kỳ | Trưởng phòng |
+| Trên 20 đến 100 | Bất kỳ | Trưởng phòng, rồi trưởng khối |
+| Trên 100 | Bất kỳ | Trưởng phòng, trưởng khối, rồi giám đốc |
+| Bất kỳ | Thiết bị IT | Thêm trưởng IT vào cuối chuỗi |
+
+Sơ đồ nói **có** bước duyệt và nó được canh giờ; bảng nói **ai** duyệt. Khi công ty đổi ngưỡng tiền — và họ sẽ đổi — bạn sửa một dòng trong bảng, không vẽ lại quy trình.
+
+### Sau khi gửi PO: event-based gateway
+
+Sơ đồ to-be kết thúc ở "Đã gửi PO", nhưng trong buổi review, trưởng mua hàng hỏi ngay: "thế nhà cung cấp không xác nhận thì sao?". Đó là một quy trình con riêng, và nó là ví dụ kinh điển cho event-based gateway. Ở dạng văn bản:
+
+| # | Phần tử | Loại BPMN | Ghi chú |
+| --- | --- | --- | --- |
+| 1 | Đã gửi PO | Intermediate message throw event | Thay cho end event ở phiên bản đầy đủ |
+| 2 | Chờ phản hồi | Event-based gateway | Nhánh nào xảy ra trước thì thắng |
+| 3a | Nhà cung cấp xác nhận | Intermediate message catch event | Đi tiếp tới "Theo dõi giao hàng" |
+| 3b | Nhà cung cấp từ chối | Intermediate message catch event | Về "Chọn nhà cung cấp khác" |
+| 3c | 3 ngày làm việc | Intermediate timer catch event | Tới user task "Gọi điện nhắc nhà cung cấp" |
+| 4 | Gọi điện nhắc | User task | Sau đó quay lại gateway chờ, tối đa hai lần |
+
+Hai chi tiết đáng giá ở đây. Một: không thể vẽ cái này bằng XOR gateway, vì lúc rẽ nhánh chưa có dữ liệu nào để so sánh — quyết định nằm ở *cái gì xảy ra trước*. Hai: vòng "gọi điện rồi chờ tiếp" phải có giới hạn, nếu không sơ đồ đang mô tả một vòng lặp vô hạn. Giới hạn đó ("tối đa hai lần, sau đó báo trưởng mua hàng") là một rule nghiệp vụ, và nó sẽ thành acceptance criteria khi đi xuống backlog.
+
+Trong code, event-based gateway gần như luôn là một cuộc đua giữa vài nguồn sự kiện và một timer: với Temporal là `condition` có timeout; với state machine tự viết là một trạng thái `awaiting_supplier` cùng một job kiểm tra các đơn quá hạn, và handler nào tới trước thì chuyển trạng thái — handler tới sau phải thấy trạng thái đã đổi và bỏ qua.
+
+### Kỳ vọng và cách đo lại
+
+To-be là giả thuyết, không phải lời hứa. Mình viết ra kỳ vọng cụ thể để sau ba tháng đo lại bằng chính câu SQL ở trên: vòng làm lại gần như biến mất nhờ validate lúc nhập; chờ kế toán từ hơn một ngày còn vài giây; đơn nhỏ không phải chờ giám đốc; cycle time trung vị cho đơn dưới 20 triệu kỳ vọng còn khoảng hai đến ba ngày. Nếu sau ba tháng số đo không đổi, mô hình to-be sai ở đâu đó — và đó cũng là thông tin đáng giá.
+
+<Callout type="warning" title="Đừng số hoá nguyên trạng một quy trình tệ">
+Cám dỗ lớn nhất của một dự án phần mềm là lấy as-is và làm mỗi bước thành một màn hình. Bạn sẽ có một hệ thống rất đẹp cho phép hồ sơ đi vòng làm lại nhanh hơn một chút. Đổi quy trình trước, rồi mới viết phần mềm cho quy trình mới — và nếu có thể, chạy thử to-be bằng tay (form đơn giản, quy ước mới) trước khi đầu tư code.
+</Callout>
+
+## Chạy một buổi workshop vẽ quy trình
+
+Sơ đồ đẹp nhất mình từng vẽ một mình trong phòng cũng là sơ đồ sai nhất. Mô hình as-is phải được vẽ **cùng** người làm thật, và cách tổ chức buổi đó quyết định chất lượng của nó.
+
+### Ai cần có mặt
+
+Ít nhất một người thực sự làm việc trong mỗi lane — không phải trưởng bộ phận nói thay. Trưởng phòng kế toán mô tả quy trình như nó *nên* diễn ra; bạn nhân viên kế toán kể chuyện chị ấy phải gọi điện hỏi lại mã ngân sách ba lần một tuần. Mời cả hai nếu được, nhưng nếu chỉ chọn một, chọn người làm. Thêm một người ra quyết định (để to-be không chết ở bước phê duyệt) và một dev (để biết cái gì tự động hoá được).
+
+### Trình tự mình hay dùng
+
+1. **Năm phút đầu: câu hỏi và phạm vi.** Quy trình bắt đầu từ đâu, kết thúc ở đâu, ta đang tìm cái gì.
+2. **Kể theo một hồ sơ thật.** "Lấy đơn mua máy chiếu tháng trước. Ai làm gì đầu tiên?" Đi từng bước, vẽ trên bảng bằng sticky note — chưa cần ký hiệu BPMN chuẩn, chỉ cần hộp, mũi tên và lane.
+3. **Hỏi về ngoại lệ ở mỗi bước.** "Lúc nào thì bước này không suôn sẻ?" Đây là nơi vòng làm lại và các end state bị thiếu xuất hiện.
+4. **Đánh dấu chỗ chờ.** Mỗi khi công việc đổi tay, hỏi "thường mất bao lâu tới khi người tiếp theo bắt đầu?". Ghi lại, dù chỉ là ước lượng; sau đó kiểm chứng bằng timestamp.
+5. **Kết thúc bằng các câu hỏi mở**, mỗi câu có owner — y như thẻ đỏ trong Example Mapping.
+
+Sau buổi workshop, mình mới chuyển sticky note sang BPMN chuẩn trong một công cụ như bpmn.io hoặc Camunda Modeler, rồi gửi lại cho người tham gia sửa. Vòng thứ hai luôn tìm ra thêm vài thứ.
+
+<Callout type="note" title="Không đổ lỗi trong phòng">
+Một buổi vẽ as-is mà biến thành buổi tìm người có lỗi thì từ phút thứ mười người ta sẽ chỉ kể quy trình trên giấy. Mình luôn nói trước: "chúng ta tìm chỗ quy trình làm khó mọi người, không tìm ai làm sai". Vòng làm lại ở kế toán không phải lỗi của kế toán — đó là lỗi của một form cho phép gõ tay mã ngân sách.
+</Callout>
+
+## Những lỗi mô hình hoá mình hay gặp
+
+### Dùng gateway sai
+
+- **Tách bằng AND, gộp bằng XOR.** Hai nhánh song song cùng tới một XOR merge, và mọi thứ sau đó chạy **hai lần** — trong hệ thống thật, đó là hai PO gửi cho nhà cung cấp. Ngược lại, tách bằng XOR rồi gộp bằng AND thì quy trình treo mãi, vì AND chờ một nhánh không bao giờ tới.
+- **Điều kiện chồng lấn hoặc bỏ sót.** "Dưới 20 triệu" và "trên 20 triệu" — còn đúng 20 triệu thì sao? Mỗi XOR split nên có điều kiện loại trừ nhau và phủ kín, hoặc có một **default flow**.
+- **Gateway tự ra quyết định.** Gateway không làm gì cả; nó chỉ rẽ nhánh dựa trên kết quả của task trước đó. Hình thoi tên "Kiểm tra hồ sơ" là sai — cần một task "Kiểm tra hồ sơ" rồi một gateway "Hồ sơ hợp lệ?". Đặt tên gateway bằng câu hỏi, đặt tên nhánh bằng câu trả lời.
+- **Inclusive gateway khi không chắc.** OR gateway khó hiểu và khó thực thi đúng, nhất là phần gộp. Nếu bạn dùng nó chỉ vì không chắc nên dùng loại nào, hãy làm rõ nghiệp vụ trước.
+
+### Thiếu end state
+
+Mô hình chỉ có một end event "Hoàn thành" là mô hình mới vẽ happy path. Hỏi từng chỗ: nếu người duyệt từ chối thì sao? Nếu người đề nghị huỷ? Nếu nhà cung cấp không phản hồi? Mỗi câu trả lời là một kết cục cần tên, và mỗi kết cục sẽ thành một trạng thái cuối trong phần mềm. Hồ sơ không có kết cục rõ ràng là hồ sơ nằm "đang xử lý" vĩnh viễn trong báo cáo.
+
+### Lane là hệ thống
+
+Lane "ERP", lane "Email", lane "Microservice thanh toán" biến sơ đồ quy trình thành sơ đồ kiến trúc — và làm mất câu trả lời cho "ai chịu trách nhiệm?". Lane là vai trò. Hệ thống xuất hiện dưới dạng service task trong lane của người sở hữu kết quả, hoặc là một pool riêng nếu đó là bên ngoài và giao tiếp bằng thông điệp. Có những đội vẫn dùng một lane "Hệ thống" cho các bước tự động hoàn toàn, và mình chấp nhận được điều đó; điều mình phản đối là một lane cho mỗi service.
+
+### Quá nhiều chi tiết
+
+"Mở email", "Bấm nút Duyệt", "Nhập mã ngân sách vào ô thứ ba". Mô hình như vậy dài ba trang và không ai đọc. Quy tắc của mình: một task là **một đơn vị công việc do một vai trò làm trong một lần**, có kết quả có ý nghĩa nghiệp vụ. Chi tiết thao tác thuộc về user story và thiết kế giao diện, không thuộc về BPMN. Nếu sơ đồ có hơn khoảng 15–20 phần tử, cân nhắc gom thành sub-process.
+
+### Lẫn sequence flow và message flow
+
+Vẽ sequence flow từ lane mua hàng sang pool nhà cung cấp, hay message flow giữa hai lane trong cùng công ty. Lỗi này nghe có vẻ chỉ là chuyện ký hiệu, nhưng nó che giấu một câu hỏi thật: bên kia có phải là một bên độc lập, với tiến trình riêng và có thể không trả lời không? Nếu có, bạn cần pool riêng, message flow, và một timer hay event-based gateway để xử lý khi họ im lặng.
+
+## Từ BPMN tới phần mềm
+
+Mô hình to-be không chỉ để treo tường. Nó là đặc tả hành vi của phần mềm, và mình dùng nó theo ba hướng.
+
+### Quy trình là một state machine
+
+Mỗi yêu cầu mua hàng là một thực thể sống lâu, đi qua các trạng thái có tên, và chỉ có một số chuyển đổi hợp lệ. Đó chính là state machine — cùng ý tưởng với bài [state machine cho UI](/blog/state-machines-for-ui), chỉ là ở tầng nghiệp vụ và sống hàng ngày thay vì vài giây. Các end event của BPMN thành trạng thái cuối; các điểm chờ (user task, timer, message) thành trạng thái trung gian.
+
+```ts
+// src/purchasing/purchase-request.state.ts
+export type RejectReason = "NO_BUDGET" | "DECLINED";
+
+export type PurchaseRequestState =
+  | { status: "awaiting_approval"; approverIds: string[]; step: number; remindedAt?: string }
+  | { status: "ordering"; budgetReserved: boolean; poDraftId?: string }
+  | { status: "ordered"; poNumber: string; sentAt: string }
+  | { status: "rejected"; reason: RejectReason; by?: string; at: string }
+  | { status: "cancelled"; by: string; at: string };
+
+export type PurchaseRequestEvent =
+  | { type: "BUDGET_CHECKED"; ok: boolean; approverIds: string[] }
+  | { type: "APPROVED"; by: string }
+  | { type: "DECLINED"; by: string }
+  | { type: "BUDGET_RESERVED" }
+  | { type: "PO_DRAFTED"; poDraftId: string }
+  | { type: "PO_SENT"; poNumber: string }
+  | { type: "CANCELLED"; by: string };
+```
+
+Bảng chuyển đổi rút trực tiếp từ sơ đồ. Mỗi dòng ứng với một sequence flow hoặc gateway trên BPMN, nên khi ai đó hỏi "vì sao không huỷ được đơn đã gửi PO?", câu trả lời nằm ở cả hai nơi và chúng khớp nhau:
+
+| Từ trạng thái | Event | Sang trạng thái | Từ phần tử BPMN |
+| --- | --- | --- | --- |
+| (mới) | `BUDGET_CHECKED` ok = false | `rejected` (NO_BUDGET) | Gateway "Còn ngân sách?" nhánh Không |
+| (mới) | `BUDGET_CHECKED` ok = true | `awaiting_approval` | Gateway "Còn ngân sách?" nhánh Có |
+| `awaiting_approval` | `APPROVED`, còn người duyệt | `awaiting_approval` (step + 1) | Chuỗi người duyệt từ bảng quyết định |
+| `awaiting_approval` | `APPROVED`, người cuối | `ordering` | Gateway "Đã duyệt?" nhánh Có, tách song song |
+| `awaiting_approval` | `DECLINED` | `rejected` (DECLINED) | Gateway "Đã duyệt?" nhánh Không |
+| `ordering` | `BUDGET_RESERVED` hoặc `PO_DRAFTED` | `ordering` | Hai nhánh song song |
+| `ordering` (cả hai đã xong) | `PO_SENT` | `ordered` | Gộp song song, message end event |
+| `awaiting_approval` | `CANCELLED` | `cancelled` | Kết cục "Đã huỷ" |
+
+Để ý dòng `ordering`: parallel gateway trong BPMN thành **hai cờ độc lập** trong state (`budgetReserved`, `poDraftId`), và chuyển sang `ordered` chỉ hợp lệ khi cả hai đã có. Đó là AND join viết bằng code.
+
+### Tự viết hay dùng workflow engine
+
+Với một quy trình như trên, có ba cách hiện thực hoá phổ biến:
+
+| | State machine tự viết + job | Camunda 8 (BPMN engine) | Temporal (durable execution) |
+| --- | --- | --- | --- |
+| Mô hình nằm ở đâu | Code + bảng chuyển đổi | File BPMN chạy trực tiếp | Code workflow (TypeScript, Go, Java...) |
+| Timer, chờ nhiều ngày | Tự làm bằng cron hoặc delayed job | Có sẵn (timer event) | Có sẵn (`sleep`, `condition` có timeout) |
+| Người nghiệp vụ đọc được | Qua tài liệu riêng | Đọc thẳng sơ đồ đang chạy | Qua tài liệu riêng |
+| Quan sát hồ sơ đang ở đâu | Tự dựng | Có công cụ vận hành (Operate) | Có Web UI xem lịch sử từng workflow |
+| Chi phí vận hành | Thấp nhất | Cụm engine riêng, cần xem điều khoản license | Cụm server riêng hoặc dịch vụ cloud |
+| Hợp khi | Vài quy trình đơn giản, ít thay đổi | Nhiều quy trình, nghiệp vụ muốn sở hữu mô hình | Quy trình dài, nhiều tích hợp, team mạnh về code |
+
+Lời khuyên của mình: một hai quy trình kiểu duyệt đơn thì state machine tự viết cộng một job queue là đủ — bảng `purchase_requests` có cột `status`, một bảng lịch sử chuyển đổi, và một job kiểm tra các đơn quá hạn duyệt. Khi tổ chức có hàng chục quy trình, thay đổi thường xuyên, và người nghiệp vụ muốn tự đọc hoặc sửa mô hình, một BPMN engine như Camunda bắt đầu đáng tiền. Temporal nằm ở hướng khác: nó không chạy BPMN, nhưng làm cho "một hàm chạy hàng tuần, chờ người, chờ timer, sống sót qua mọi lần deploy" trở nên bình thường.
+
+### Phác thảo to-be với Temporal
+
+Để thấy mô hình ánh xạ sang code tự nhiên đến mức nào, đây là phác thảo workflow to-be bằng Temporal TypeScript SDK. Mỗi phần tử BPMN có một dòng code tương ứng:
+
+```ts
+// src/workflows/purchase-request.workflow.ts
+import { condition, defineSignal, proxyActivities, setHandler } from "@temporalio/workflow";
+import type * as acts from "../activities";
+
+const { checkBudget, resolveApprovers, notify, reserveBudget, sendPurchaseOrder } = proxyActivities<typeof acts>({
+  startToCloseTimeout: "1 minute",
+  retry: { maximumAttempts: 5 },
+});
+
+export const decide = defineSignal<[{ approverId: string; approved: boolean }]>("decide");
+export const poReady = defineSignal<[{ poDraftId: string }]>("poReady");
+
+export async function purchaseRequest(req: acts.PurchaseRequest): Promise<acts.Outcome> {
+  let decision: { approverId: string; approved: boolean } | undefined;
+  let poDraftId: string | undefined;
+  setHandler(decide, (d) => void (decision = d));
+  setHandler(poReady, (p) => void (poDraftId = p.poDraftId));
+
+  // Service task + exclusive gateway "Còn ngân sách?"
+  if (!(await checkBudget(req))) return { status: "rejected", reason: "NO_BUDGET" };
+
+  // User task "Duyệt yêu cầu", người duyệt từ bảng quyết định
+  for (const approverId of await resolveApprovers(req)) {
+    decision = undefined;
+    await notify(approverId, "approval_requested", req.id);
+    // Timer boundary không ngắt: mỗi 48h chưa có quyết định thì nhắc, task vẫn mở
+    while (!(await condition(() => decision?.approverId === approverId, "48h"))) {
+      await notify(approverId, "approval_reminder", req.id);
+    }
+    // Exclusive gateway "Đã duyệt?"
+    if (!decision!.approved) return { status: "rejected", reason: "DECLINED" };
+  }
+
+  // Parallel gateway: giữ ngân sách (service) và lập PO (user task, báo về qua signal)
+  await Promise.all([reserveBudget(req), condition(() => poDraftId !== undefined)]);
+
+  // Message end event: gửi PO cho nhà cung cấp
+  const poNumber = await sendPurchaseOrder(poDraftId!);
+  return { status: "ordered", poNumber };
+}
+```
+
+Vài điều đáng chú ý: user task trong Temporal là **signal** từ UI gửi vào (ứng dụng của bạn vẫn phải có màn hình duyệt và màn hình lập PO); điều kiện `decision?.approverId === approverId` bỏ qua quyết định của người không đúng lượt; và workflow này có thể chờ hai tuần mà không giữ thread nào, vì Temporal lưu lịch sử sự kiện và replay khi cần. Đổi lại, code workflow phải deterministic — mọi I/O đi qua activity — và thay đổi logic khi đang có workflow chạy dở cần versioning cẩn thận.
+
+### Rút user story và requirement từ mô hình to-be
+
+Đây là phần mình thấy BPMN đáng giá nhất với dev: mô hình to-be là **nguồn của backlog**. Mỗi loại phần tử cho ra một loại hạng mục:
+
+| Phần tử BPMN | Thành gì trong backlog |
+| --- | --- |
+| User task | User story cho vai trò của lane: màn hình, form, quyền thao tác |
+| Service task | Requirement hệ thống: API, job, tích hợp; kèm AC về lỗi và retry |
+| Gateway, bảng quyết định | Rule kèm ví dụ — chính là acceptance criteria |
+| Timer event | Job định kỳ hoặc SLA; AC có thời gian cụ thể |
+| Message event, message flow | Hợp đồng tích hợp: payload, kênh, xác nhận, idempotency |
+| End event | Trạng thái cuối, thông báo cho người liên quan, dòng trong báo cáo |
+| Lane | Vai trò và phân quyền |
+| Boundary error, nhánh "Không" | Story cho unhappy path |
+
+Áp dụng cho mô hình to-be, backlog đầu tiên trông như sau:
+
+```text
+US-1  Người đề nghị gửi yêu cầu mua hàng từ danh mục, chọn mã ngân sách từ danh sách
+      Rule: không gửi được nếu thiếu trường bắt buộc hoặc mã ngân sách không thuộc phòng ban
+SR-2  Kiểm tra ngân sách tự động khi yêu cầu được gửi
+      Rule: số tiền > ngân sách còn lại (đã trừ khoản đang giữ) → từ chối, lý do NO_BUDGET
+SR-3  Chọn chuỗi người duyệt theo bảng quyết định
+      Ví dụ: 20 triệu → trưởng phòng; 20,1 triệu → trưởng phòng + trưởng khối; thiết bị IT → thêm trưởng IT
+US-4  Người duyệt xem và duyệt/từ chối yêu cầu đang chờ mình, kèm lý do khi từ chối
+SR-5  Nhắc người duyệt mỗi 48 giờ khi yêu cầu chưa được quyết định
+      AC: không nhắc người đã quyết định; giờ tính theo giờ làm việc? (câu hỏi mở cho PO)
+SR-6  Giữ ngân sách khi yêu cầu được duyệt xong
+US-7  Mua hàng lập PO từ yêu cầu đã duyệt; hàng có hợp đồng khung không cần ba báo giá
+SR-8  Gửi PO cho nhà cung cấp qua email; gửi lại không tạo PO trùng
+US-9  Người đề nghị nhận thông báo khi yêu cầu bị từ chối, kèm lý do, và tạo lại yêu cầu từ dữ liệu cũ
+```
+
+Để ý SR-5 đã lòi ra một câu hỏi mà sơ đồ không trả lời: 48 giờ là giờ đồng hồ hay giờ làm việc? Một yêu cầu gửi chiều thứ Sáu sẽ bị nhắc vào Chủ nhật? Đây chính là lúc chuyển từ BPMN sang làm rõ từng story bằng rule và ví dụ — phần mình đã viết chi tiết trong bài [user story và acceptance criteria](/blog/user-stories-acceptance-criteria).
+
+## Đọc thêm
+
+- [BPMN 2.0.2](https://www.omg.org/spec/BPMN/2.0.2/) và [DMN](https://www.omg.org/spec/DMN/) — đặc tả gốc của OMG; dài, nhưng phần mô tả ngữ nghĩa gateway đáng đọc.
+- [bpmn.io](https://bpmn.io/) — bộ công cụ vẽ BPMN và DMN mã nguồn mở chạy trên trình duyệt, cũng là nền của Camunda Modeler.
+- [Tài liệu Camunda 8](https://docs.camunda.io/) — phần BPMN reference giải thích từng phần tử kèm hành vi khi thực thi.
+- [Tài liệu Temporal](https://docs.temporal.io/) — workflow, activity, signal, timer và versioning.
+- Bài [state machine cho UI](/blog/state-machines-for-ui) và [user story và acceptance criteria](/blog/user-stories-acceptance-criteria) trên blog này.
+
+## Tóm tắt
+
+<Checklist>
+
+- Mô hình hoá để trả lời một câu hỏi cụ thể; câu hỏi quyết định mức chi tiết và khi nào dừng vẽ.
+- Thu thập as-is từ phỏng vấn từng vai trò, đi theo hồ sơ thật và timestamp hệ thống — không từ tài liệu quy trình trên giấy.
+- Dùng tập con BPMN: pool/lane, user và service task, start/end/timer/message/error event, gateway XOR/AND/OR/event-based, sequence flow trong pool và message flow giữa pool.
+- Phân biệt boundary event ngắt và không ngắt; gộp đúng loại gateway đã tách; mỗi XOR có điều kiện loại trừ nhau và phủ kín hoặc có default flow.
+- Đo cycle time, touch time, wait time và tỉ lệ làm lại; tìm handoff, vòng làm lại và gom lô trước khi đổ lỗi cho một người.
+- Thiết kế to-be bằng nguyên tắc: kiểm tra sớm, tự động hoá rule, song song hoá việc độc lập, timer cho mọi chỗ chờ người, đặt tên mọi kết cục.
+- Đưa logic phân nhánh phức tạp (ai duyệt) vào bảng quyết định thay vì chuỗi gateway.
+- Lane là vai trò, không phải hệ thống; task là đơn vị công việc có ý nghĩa nghiệp vụ, không phải cú click.
+- Hiện thực hoá quy trình như một state machine có trạng thái cuối khớp với end event; cân nhắc Camunda khi có nhiều quy trình nghiệp vụ muốn sở hữu, Temporal khi quy trình dài và nặng tích hợp.
+- Rút backlog từ mô hình to-be: user task thành user story, service task thành requirement hệ thống, gateway thành rule và AC, timer thành job có SLA, message thành hợp đồng tích hợp.
+
+</Checklist>

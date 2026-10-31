@@ -1,0 +1,719 @@
+---
+title: "Server state là cache, không phải state: TanStack Query v5 chuyên sâu"
+excerpt: "Dữ liệu từ server không thuộc về bạn — bạn chỉ giữ một bản sao có hạn dùng. Bài này đi sâu TanStack Query v5 theo góc nhìn cache: thiết kế query key, staleTime và gcTime, invalidation, optimistic update có rollback, Suspense, hydration với Next.js App Router, infinite query và khi nào không nên dùng nó."
+---
+
+<Lead>Nhiều codebase React mình từng tiếp quản có cùng một triệu chứng: Redux hoặc Zustand chứa danh sách đơn hàng, profile người dùng, giỏ hàng — tất cả được fetch trong `useEffect`, copy vào store, rồi cả team mất hàng tuần để đồng bộ chúng sau mỗi lần ghi. Vấn đề không nằm ở thư viện state. Vấn đề là chúng ta đang coi dữ liệu của server như state của client. Dữ liệu đó không thuộc về bạn: server mới là chủ, thứ bạn có chỉ là một bản sao kèm thời điểm chụp. Nói cách khác, đó là một **cache**. Khi chấp nhận điều này, câu hỏi đổi từ "lưu nó ở đâu" sang "bản sao này còn tin được không, ai đang dùng nó, khi nào thì bỏ". TanStack Query v5 là công cụ trả lời đúng những câu hỏi đó — và bài này là cách mình dùng nó trên production, kể cả với Next.js App Router.</Lead>
+
+## Server state là cache, không phải state
+
+### Hai loại dữ liệu, hai bộ quy tắc
+
+| | Client state | Server state |
+| --- | --- | --- |
+| Ai là chủ | Trình duyệt, component của bạn | Server, database |
+| Ví dụ | Modal đang mở, tab đang chọn, input đang gõ | Danh sách sản phẩm, profile, đơn hàng |
+| Có thể cũ đi? | Không — nó *là* sự thật | Có — người khác có thể đã sửa nó |
+| Đọc là đồng bộ? | Có | Không, phải chờ mạng |
+| Câu hỏi cần trả lời | Giá trị hiện tại là gì | Còn tươi không, ai đang dùng, khi nào refetch, khi nào xoá |
+| Công cụ hợp | `useState`, `useReducer`, Zustand, URL | Một cache: TanStack Query, SWR, RSC |
+
+Khi bỏ server state vào store của client, bạn phải tự viết lại mọi thứ một cache cần: chống request trùng, xử lý race condition khi người dùng đổi filter nhanh, loading và error, refetch khi quay lại tab, xoá dữ liệu không ai dùng, cập nhật lạc quan và rollback. Hầu hết các team viết được ba trên bảy thứ đó, và ba thứ đó có bug.
+
+### Vì sao useEffect + useState không đủ
+
+Đoạn code này có trong gần như mọi codebase React cũ:
+
+```tsx
+function ProductList({ category }: { category: string }) {
+  const [data, setData] = useState<Product[]>([]);
+  useEffect(() => {
+    fetch(`/api/products?category=${category}`).then((r) => r.json()).then(setData);
+  }, [category]);
+  // ...
+}
+```
+
+Đếm lỗi: đổi `category` nhanh thì response cũ có thể về sau và ghi đè response mới (race condition). Không xử lý lỗi, không kiểm tra `res.ok`. Hai component cùng cần danh sách thì gọi hai request. Quay lại trang thì thấy spinner lần nữa dù vừa xem 5 giây trước. Không có cách nào để một mutation ở chỗ khác báo "danh sách này cũ rồi".
+
+Với TanStack Query:
+
+```tsx
+function ProductList({ category }: { category: string }) {
+  const { data, isPending, error } = useQuery(productQueries.list({ category }));
+  // ...
+}
+```
+
+Một dòng, và mọi vấn đề trên đều được xử lý — không phải vì phép màu, mà vì thư viện được thiết kế quanh một mô hình cache rõ ràng. Phần còn lại của bài là về mô hình đó.
+
+## Query key là địa chỉ cache: thiết kế như một factory
+
+Mỗi entry trong cache được định danh bằng **query key** — một array được hash một cách tất định. Thứ tự key trong object không quan trọng (`{ a: 1, b: 2 }` và `{ b: 2, a: 1 }` cho cùng hash), nhưng thứ tự phần tử trong array thì có. Key làm ba việc cùng lúc:
+
+1. **Định danh dữ liệu**: hai component dùng cùng key thì dùng chung một entry, chung một request.
+2. **Dependency array của queryFn**: key thay đổi thì query mới được fetch. Mọi biến `queryFn` dùng phải nằm trong key.
+3. **Phạm vi invalidation**: `invalidateQueries` khớp theo tiền tố, nên cấu trúc key quyết định bạn có thể làm mới "một nhóm" dữ liệu dễ đến đâu.
+
+### Từ tổng quát đến cụ thể
+
+Mình luôn xếp key từ tổng quát đến cụ thể, và gom tất cả vào một factory — không bao giờ viết key bằng tay rải rác trong component:
+
+```ts
+// lib/queries/products.ts
+import { queryOptions, infiniteQueryOptions } from "@tanstack/react-query";
+import { api } from "@/lib/api";
+
+export type ProductFilters = {
+  category?: string;
+  sort?: "price" | "newest";
+  q?: string;
+};
+
+export const productKeys = {
+  all: ["products"] as const,
+  lists: () => [...productKeys.all, "list"] as const,
+  list: (filters: ProductFilters) => [...productKeys.lists(), filters] as const,
+  feeds: () => [...productKeys.all, "feed"] as const,
+  feed: (filters: ProductFilters) => [...productKeys.feeds(), filters] as const,
+  details: () => [...productKeys.all, "detail"] as const,
+  detail: (id: string) => [...productKeys.details(), id] as const,
+};
+
+export const productQueries = {
+  list: (filters: ProductFilters) =>
+    queryOptions({
+      queryKey: productKeys.list(filters),
+      queryFn: ({ signal }) => api.products.list(filters, { signal }),
+      staleTime: 30_000,
+    }),
+
+  detail: (id: string) =>
+    queryOptions({
+      queryKey: productKeys.detail(id),
+      queryFn: ({ signal }) => api.products.get(id, { signal }),
+      staleTime: 5 * 60_000,
+    }),
+
+  feed: (filters: ProductFilters) =>
+    infiniteQueryOptions({
+      queryKey: productKeys.feed(filters),
+      queryFn: ({ pageParam, signal }) =>
+        api.products.page({ ...filters, cursor: pageParam }, { signal }),
+      initialPageParam: null as string | null,
+      getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+      getPreviousPageParam: (firstPage) => firstPage.prevCursor ?? undefined,
+      maxPages: 10,
+    }),
+};
+```
+
+Cấu trúc này cho phép invalidate ở mọi độ chi tiết:
+
+```ts
+queryClient.invalidateQueries({ queryKey: productKeys.all });          // mọi thứ về products
+queryClient.invalidateQueries({ queryKey: productKeys.lists() });      // mọi danh sách, mọi filter
+queryClient.invalidateQueries({ queryKey: productKeys.detail("p_42") }); // một sản phẩm
+```
+
+### queryOptions: một nguồn sự thật cho key, hàm và kiểu
+
+`queryOptions` của v5 trông như một hàm identity, nhưng nó làm hai việc quý giá. Thứ nhất, cùng một object dùng được ở mọi nơi: `useQuery`, `useSuspenseQuery`, `prefetchQuery`, `ensureQueryData`. Thứ hai, nó "gắn kiểu" vào key, nên `getQueryData` và `setQueryData` tự biết kiểu dữ liệu:
+
+```ts
+const product = queryClient.getQueryData(productQueries.detail(id).queryKey);
+//    ^? Product | undefined — không cần generic thủ công
+```
+
+Lưu ý `feed` dùng nhánh key riêng (`"feed"`) chứ không dùng chung với `list`. Infinite query lưu dữ liệu dạng `{ pages, pageParams }`, khác hẳn query thường; dùng chung một key cho `useQuery` và `useInfiniteQuery` là cách nhanh nhất để nhận lỗi runtime khó hiểu.
+
+<Callout type="tip" title="Để máy kiểm tra key">
+  Plugin `@tanstack/eslint-plugin-query` có rule `exhaustive-deps`, báo lỗi khi `queryFn` dùng một biến không có trong `queryKey`. Đây là lỗi cache sai dữ liệu phổ biến nhất mình gặp — filter đổi nhưng key không đổi, người dùng thấy kết quả của filter cũ — và một rule lint bắt được nó trước khi lên review.
+</Callout>
+
+### API client phải ném lỗi
+
+Một chi tiết hay bị bỏ qua: TanStack Query coi query là lỗi **khi và chỉ khi queryFn ném lỗi hoặc trả về Promise bị reject**. `fetch` không reject khi server trả 404 hay 500. Nếu không kiểm tra `res.ok`, trang lỗi của server được cache như dữ liệu thành công.
+
+```ts
+// lib/api/http.ts
+export class HttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+export async function http<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init); // init chứa signal từ queryFn
+  if (!res.ok) throw new HttpError(res.status, `${res.status} for ${url}`);
+  return (await res.json()) as T;
+}
+```
+
+## staleTime và gcTime: hai đồng hồ khác nhau
+
+Đây là phần mình phải giải thích lại nhiều nhất, vì tên gọi cũ (`cacheTime` trước v5) làm mọi người nghĩ chúng là cùng một thứ. Chúng đo hai trục hoàn toàn độc lập:
+
+- **`staleTime`** trả lời: *bản sao này còn tin được bao lâu?* Trong khoảng đó query là **fresh**: được phục vụ từ cache và không refetch, dù component mount lại hay cửa sổ được focus. Hết `staleTime`, query thành **stale**: vẫn được phục vụ ngay từ cache, nhưng sẽ refetch ngầm khi có trigger. Mặc định là `0` — nghĩa là dữ liệu stale ngay khi về.
+- **`gcTime`** trả lời: *khi không còn ai dùng, giữ bản sao bao lâu?* Khi observer cuối cùng (component dùng query) unmount, query thành **inactive**. Sau `gcTime` (mặc định 5 phút) mà không ai dùng lại, entry bị xoá khỏi cache.
+
+<Figure src="/blog/tanstack-query-server-state-lifecycle.svg" alt="Sơ đồ vòng đời một query trong TanStack Query v5. Hàng giữa gồm bốn trạng thái: fresh (được phục vụ, không refetch), stale (được phục vụ rồi refetch), inactive (không còn observer nhưng vẫn trong cache) và removed (bị garbage collect). Mũi tên fresh sang stale ghi staleTime mặc định 0; stale sang inactive khi observer cuối cùng unmount; inactive sang removed sau gcTime mặc định 5 phút. Từ stale, một trigger đưa query vào trạng thái fetching, nơi queryFn nhận signal, được dedup theo key và retry 3 lần với backoff; thành công thì quay lại fresh với dataUpdatedAt mới. Hộp bên phải liệt kê các trigger refetch: observer mới mount, focus lại cửa sổ hoặc có mạng lại, refetchInterval, và invalidateQueries. Mũi tên đứt nét từ inactive quay về stale: mount lại trước gcTime thì dữ liệu cache hiện ngay và refetch nếu stale. Ghi chú dưới cùng: fresh/stale và active/inactive là hai trục độc lập; invalidateQueries đánh dấu stale ngay, query active refetch liền, query inactive refetch khi mount lại; setQueryData ghi thẳng vào cache, là nền tảng của optimistic update." caption="Hai đồng hồ độc lập: staleTime quyết định khi nào refetch, gcTime quyết định entry sống bao lâu sau khi không còn ai dùng. Query fresh cũng có thể thành inactive." />
+
+### Hệ quả của staleTime mặc định bằng 0
+
+Với `staleTime: 0`, mọi lần một component dùng query được mount, mọi lần người dùng alt-tab quay lại, mọi lần mạng có lại — đều sinh một request ngầm. Đây là lựa chọn an toàn của thư viện (không bao giờ hiển thị dữ liệu cũ lâu), nhưng với phần lớn ứng dụng thì quá hung hăng. Mình luôn đặt mặc định toàn cục, rồi chỉnh theo từng loại dữ liệu:
+
+| Loại dữ liệu | `staleTime` gợi ý | Ghi chú |
+| --- | --- | --- |
+| Cấu hình, danh mục, feature flag | 10 phút đến `Infinity` | Invalidate khi biết chắc có thay đổi |
+| Profile người dùng hiện tại | 5 phút | Invalidate sau khi người dùng tự sửa |
+| Danh sách có filter, trang quản trị | 30 giây đến 1 phút | Kèm `placeholderData: keepPreviousData` khi đổi filter |
+| Giá, tồn kho, thông báo | 0 đến 10 giây | Thêm `refetchInterval` nếu cần gần real-time |
+| Dữ liệu chỉ đổi khi chính người dùng sửa | `Infinity` | Mọi thay đổi đi qua mutation của bạn, cứ invalidate ở đó |
+
+`gcTime` thì mình hiếm khi đổi. Hai trường hợp ngoại lệ: tăng lên cho dữ liệu người dùng hay quay lại (chi tiết sản phẩm trong một phiên mua sắm dài), và giảm xuống cho query nặng bộ nhớ (kết quả search lớn, ảnh dạng blob).
+
+### Đọc đúng các cờ trạng thái
+
+v5 tách rõ hai trục: `status` mô tả *có dữ liệu chưa*, `fetchStatus` mô tả *có request đang chạy không*.
+
+| Cờ | Nghĩa | Dùng khi |
+| --- | --- | --- |
+| `isPending` | Chưa có dữ liệu nào (`status === "pending"`) | Hiển thị skeleton lần đầu |
+| `isFetching` | Có request đang chạy, kể cả refetch ngầm | Spinner nhỏ ở góc, không phải skeleton |
+| `isLoading` | `isPending && isFetching` — lần tải đầu đang diễn ra | Phân biệt "đang tải" với "query bị tắt" |
+| `isError` | queryFn đã ném lỗi sau khi hết retry | Hiển thị lỗi; lưu ý `data` cũ có thể vẫn còn |
+| `isPlaceholderData` | Đang hiển thị placeholder, ví dụ trang trước | Làm mờ danh sách khi đổi trang |
+| `fetchStatus === "paused"` | Muốn fetch nhưng đang offline | Báo "đang chờ có mạng" |
+
+Lỗi phổ biến: hiển thị skeleton toàn trang theo `isFetching`. Kết quả là mỗi lần focus lại cửa sổ, cả trang nhấp nháy — đúng thứ cache sinh ra để tránh.
+
+## Invalidation: nói với cache rằng nó đã cũ
+
+Cache chỉ có giá trị khi bạn làm mới nó đúng lúc. TanStack Query cho bạn vài công cụ, mỗi cái cho một tình huống:
+
+| API | Làm gì | Khi nào dùng |
+| --- | --- | --- |
+| `invalidateQueries` | Đánh dấu stale; query active refetch ngay, inactive refetch khi mount lại | Mặc định sau mutation |
+| `setQueryData` | Ghi thẳng vào cache, không request | Server trả về entity đã cập nhật; optimistic update |
+| `refetchQueries` | Refetch ngay, bất kể stale hay không | Nút "Làm mới" thủ công |
+| `resetQueries` | Đưa về trạng thái ban đầu (hoặc `initialData`) rồi refetch active | Đăng xuất, đổi workspace |
+| `removeQueries` | Xoá khỏi cache, không refetch | Dữ liệu không còn hợp lệ, ví dụ entity đã bị xoá |
+| `cancelQueries` | Huỷ request đang chạy | Trước optimistic update, để response cũ không ghi đè |
+
+### Kết hợp setQueryData và invalidate
+
+Pattern mình dùng nhiều nhất sau một mutation cập nhật: ghi thẳng entity server trả về vào cache chi tiết (người dùng thấy ngay, không thêm request), và invalidate các danh sách (vì thứ tự, bộ lọc, số lượng có thể đã đổi — tự tính lại phía client rất dễ sai).
+
+```ts
+export function useUpdateProduct() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: { id: string; patch: ProductPatch }) =>
+      api.products.update(input.id, input.patch),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(productQueries.detail(updated.id).queryKey, updated);
+      return queryClient.invalidateQueries({ queryKey: productKeys.lists() });
+    },
+  });
+}
+```
+
+Trả về Promise của `invalidateQueries` từ `onSuccess` khiến mutation giữ trạng thái `isPending` cho đến khi danh sách refetch xong. Nút "Lưu" không trở lại bình thường trước khi UI thực sự cập nhật.
+
+### Đừng invalidate cả thế giới
+
+`queryClient.invalidateQueries()` không tham số làm mới mọi query. Nó "đúng" theo nghĩa không bao giờ hiển thị dữ liệu cũ, nhưng trên một dashboard có hai mươi widget, mỗi lần bấm "Lưu" là hai mươi request. Key factory phân cấp tồn tại chính để bạn invalidate đúng phạm vi.
+
+## Dependent và parallel queries
+
+### Query phụ thuộc: enabled hoặc skipToken
+
+Khi query B cần kết quả của query A, cách cổ điển là `enabled`:
+
+```ts
+const { data: me } = useQuery(userQueries.me());
+
+const { data: projects } = useQuery({
+  ...projectQueries.byOrg(me?.orgId ?? ""),
+  enabled: Boolean(me?.orgId),
+});
+```
+
+Cách này chạy được, nhưng cái `?? ""` là mùi: key chứa một giá trị giả, và TypeScript không biết `orgId` chắc chắn có trong `queryFn`. v5 có `skipToken` cho trường hợp này, an toàn kiểu hơn:
+
+```ts
+import { skipToken, useQuery } from "@tanstack/react-query";
+
+const orgId = me?.orgId;
+
+const { data: projects } = useQuery({
+  queryKey: projectKeys.byOrg(orgId),
+  queryFn: orgId ? ({ signal }) => api.projects.byOrg(orgId, { signal }) : skipToken,
+});
+```
+
+Một lưu ý: dependent query **là** waterfall theo định nghĩa. Nếu bạn sở hữu API, cân nhắc một endpoint trả cả hai, hoặc đưa `orgId` vào session để biết ngay từ đầu.
+
+### Nhiều query song song: useQueries và combine
+
+Nhiều `useQuery` cạnh nhau trong một component đã chạy song song. Khi số lượng động — chi tiết của N sản phẩm trong giỏ — dùng `useQueries`, và `combine` để gộp kết quả thành đúng hình dạng UI cần:
+
+```ts
+const cart = useQueries({
+  queries: productIds.map((id) => productQueries.detail(id)),
+  combine: (results) => ({
+    products: results.flatMap((r) => (r.data ? [r.data] : [])),
+    isPending: results.some((r) => r.isPending),
+    hasError: results.some((r) => r.isError),
+  }),
+});
+```
+
+Mỗi sản phẩm vẫn là một entry riêng trong cache, nên trang chi tiết sản phẩm sau đó dùng lại được ngay.
+
+## Mutations và optimistic update có rollback
+
+Có hai cách làm optimistic update trong v5, và mình chọn theo một câu hỏi: **dữ liệu lạc quan cần hiện ở một chỗ hay nhiều chỗ?**
+
+### Cách đơn giản: hiển thị từ variables
+
+Nếu chỉ một component cần thấy thay đổi lạc quan — ví dụ thêm một bình luận vào danh sách ngay dưới ô nhập — đừng đụng vào cache. Render tạm từ `variables` của mutation:
+
+```tsx
+function Comments({ postId }: { postId: string }) {
+  const queryClient = useQueryClient();
+  const { data: comments = [] } = useQuery(commentQueries.list(postId));
+
+  const addComment = useMutation({
+    mutationFn: (body: string) => api.comments.create(postId, body),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: commentKeys.list(postId) }),
+  });
+
+  return (
+    <ul>
+      {comments.map((c) => (
+        <li key={c.id}>{c.body}</li>
+      ))}
+      {addComment.isPending && <li className="opacity-50">{addComment.variables}</li>}
+      {addComment.isError && (
+        <li className="text-red-600">
+          Không gửi được.{" "}
+          <button onClick={() => addComment.mutate(addComment.variables)}>Thử lại</button>
+        </li>
+      )}
+    </ul>
+  );
+}
+```
+
+Không có rollback vì không có gì để rollback: nếu lỗi, phần tử tạm biến mất (hoặc hiện nút thử lại). Mình thích cách này vì nó không thể làm hỏng cache.
+
+### Cách đầy đủ: ghi vào cache, chụp snapshot, rollback
+
+Khi thay đổi phải hiện ở nhiều nơi — đánh dấu hoàn thành một task hiện ở danh sách, ở sidebar đếm số task, ở trang chi tiết — ghi thẳng vào cache:
+
+```ts
+// features/todos/use-toggle-todo.ts
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
+import { todoKeys, todoQueries } from "./queries";
+
+const TOGGLE_KEY = ["todos", "toggle"] as const;
+
+export function useToggleTodo(listId: string) {
+  const queryClient = useQueryClient();
+  const listKey = todoQueries.list(listId).queryKey;
+
+  return useMutation({
+    mutationKey: TOGGLE_KEY,
+    mutationFn: (input: { id: string; done: boolean }) =>
+      api.todos.update(input.id, { done: input.done }),
+
+    onMutate: async (input) => {
+      // 1. Huỷ refetch đang chạy để response cũ không ghi đè bản lạc quan
+      await queryClient.cancelQueries({ queryKey: listKey });
+      // 2. Chụp snapshot để rollback
+      const previous = queryClient.getQueryData(listKey);
+      // 3. Ghi bản lạc quan
+      queryClient.setQueryData(listKey, (old) =>
+        old?.map((t) => (t.id === input.id ? { ...t, done: input.done } : t)),
+      );
+      return { previous };
+    },
+
+    onError: (_error, _input, snapshot) => {
+      // 4. Lỗi thì trả lại đúng như cũ
+      if (snapshot?.previous) queryClient.setQueryData(listKey, snapshot.previous);
+      toast.error("Không cập nhật được, đã hoàn tác.");
+    },
+
+    onSettled: () => {
+      // 5. Chỉ đồng bộ lại khi đây là mutation cuối cùng đang chạy
+      if (queryClient.isMutating({ mutationKey: TOGGLE_KEY }) === 1) {
+        return queryClient.invalidateQueries({ queryKey: todoKeys.all });
+      }
+    },
+  });
+}
+```
+
+Bước 5 đáng giải thích vì nó đến từ một bug thật. Người dùng tick năm task liên tục. Mutation đầu tiên xong, `onSettled` invalidate, refetch về — nhưng lúc đó server mới xử lý xong mutation thứ nhất, nên danh sách refetch về cho thấy bốn task kia *chưa* tick. UI nhấp nháy: tick, bỏ tick, rồi tick lại khi các mutation sau xong. Kiểm tra `isMutating` (đếm cả mutation hiện tại, nên bằng 1 nghĩa là chỉ còn nó) để chỉ refetch một lần, khi mọi thứ đã lắng xuống.
+
+<Callout type="warning" title="Optimistic update là một lời hứa với người dùng">
+  Chỉ làm lạc quan những thao tác gần như chắc chắn thành công và dễ đảo ngược: tick, like, đổi tên, sắp xếp. Thanh toán, xoá vĩnh viễn, thao tác có kiểm tra nghiệp vụ phức tạp phía server — hãy hiển thị trạng thái đang xử lý trung thực. Một nút "Đã thanh toán" bật lên rồi biến mất tệ hơn nhiều so với một spinner hai giây.
+</Callout>
+
+### mutate hay mutateAsync, callback ở đâu
+
+- Callback khai báo trong `useMutation` (`onMutate`, `onSuccess`...) **luôn chạy**, kể cả khi component đã unmount. Đặt logic cache ở đây.
+- Callback truyền vào `mutate(vars, { onSuccess })` **không chạy** nếu component unmount trước khi mutation xong. Đặt logic UI ở đây: đóng modal, điều hướng, toast.
+- `mutateAsync` trả về Promise và ném lỗi khi mutation lỗi — bạn phải tự `try/catch`. Mình chỉ dùng nó khi cần chờ nhiều mutation tuần tự; còn lại dùng `mutate`.
+
+## Request dedup, retry và huỷ request
+
+### Dedup miễn phí
+
+Mười component cùng gọi `useQuery(productQueries.detail("p_42"))` trong cùng một lần render chỉ sinh **một** request: query đã có request đang chạy thì các observer sau gắn vào Promise đó. Đây là lý do mình không ngại để mỗi component tự lấy dữ liệu nó cần thay vì truyền props qua nhiều tầng — tư duy y hệt với `cache` của React ở phía server.
+
+### Retry thông minh
+
+Mặc định trên client, query lỗi được thử lại 3 lần với backoff tăng theo cấp số nhân (khoảng 1 giây, 2 giây, 4 giây, tối đa 30 giây). Hợp lý cho lỗi mạng, vô nghĩa cho lỗi 404 hay 403 — thử lại bao nhiêu lần thì vẫn 404, và người dùng phải chờ thêm vài giây mới thấy thông báo lỗi.
+
+```ts
+// lib/query-defaults.ts
+import type { DefaultOptions } from "@tanstack/react-query";
+import { HttpError } from "@/lib/api/http";
+
+const NO_RETRY = new Set([400, 401, 403, 404, 409, 422]);
+
+export const queryDefaults = {
+  queries: {
+    staleTime: 60_000,
+    retry: (failureCount: number, error: Error) => {
+      if (error instanceof HttpError && NO_RETRY.has(error.status)) return false;
+      return failureCount < 3;
+    },
+    // Thêm jitter để hàng nghìn client không retry cùng lúc sau sự cố
+    retryDelay: (attempt: number) =>
+      Math.min(1000 * 2 ** attempt, 30_000) * (0.5 + Math.random() / 2),
+  },
+  mutations: {
+    retry: false, // mutation không idempotent thì đừng tự retry
+  },
+} satisfies DefaultOptions;
+```
+
+Mutation mặc định không retry, và mình giữ nguyên trừ khi endpoint có idempotency key. Gửi lại một lệnh "tạo đơn hàng" vì timeout là cách nhanh nhất để có hai đơn hàng.
+
+### Huỷ request bằng AbortSignal
+
+`queryFn` nhận một `signal`. Nếu bạn truyền nó vào `fetch`, TanStack Query sẽ huỷ request khi không còn ai cần kết quả — component unmount, hoặc key đổi trước khi response về. Với ô tìm kiếm gõ nhanh, điều này cắt bớt hẳn số request thừa đang chạy dở. Không truyền `signal` thì request vẫn chạy hết, chỉ là kết quả được lưu vào cache cho key cũ.
+
+## Suspense: useSuspenseQuery
+
+`useSuspenseQuery` thay đổi hợp đồng của component: thay vì tự xử lý `isPending` và `isError`, component **giả định dữ liệu đã có**, và để `Suspense` lo trạng thái chờ, Error Boundary lo lỗi.
+
+```tsx
+function ProductHeader({ id }: { id: string }) {
+  const { data: product } = useSuspenseQuery(productQueries.detail(id));
+  // data luôn được định nghĩa, không cần kiểm tra undefined
+  return <h1>{product.name}</h1>;
+}
+
+export function ProductPanel({ id }: { id: string }) {
+  return (
+    <QueryErrorResetBoundary>
+      {({ reset }) => (
+        <ErrorBoundary
+          onReset={reset}
+          fallbackRender={({ resetErrorBoundary }) => (
+            <button onClick={resetErrorBoundary}>Tải lại</button>
+          )}
+        >
+          <Suspense fallback={<HeaderSkeleton />}>
+            <ProductHeader id={id} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+    </QueryErrorResetBoundary>
+  );
+}
+```
+
+Ba điều cần biết:
+
+- `useSuspenseQuery` không có `enabled` hay `placeholderData`. Muốn query có điều kiện, render có điều kiện chính component đó.
+- `QueryErrorResetBoundary` cần thiết để khi người dùng bấm "Tải lại", query bị lỗi được reset và fetch lại thay vì ném lỗi cũ ngay lập tức.
+- **Waterfall**: hai `useSuspenseQuery` liên tiếp trong cùng một component chạy **tuần tự** — cái đầu suspend, cái thứ hai chưa được gọi. Dùng `useSuspenseQueries`, tách thành hai component anh em, hoặc prefetch cả hai từ trước.
+
+## Prefetch và hydration với Next.js App Router
+
+Đây là chỗ hai thế giới gặp nhau, và cũng là chỗ dễ sai nhất. Mục tiêu: Server Component prefetch dữ liệu vào một QueryClient, serialize cache đó xuống client, và client component dùng `useQuery` nhận dữ liệu ngay — không spinner, không request lặp — rồi từ đó TanStack Query tiếp quản: refetch, invalidate, optimistic.
+
+### QueryClient: mới mỗi request trên server, singleton trên trình duyệt
+
+```ts
+// lib/query-client.ts
+import { QueryClient, defaultShouldDehydrateQuery, isServer } from "@tanstack/react-query";
+import { queryDefaults } from "./query-defaults";
+
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      ...queryDefaults,
+      dehydrate: {
+        // Gửi cả query đang pending để stream dữ liệu xuống client
+        shouldDehydrateQuery: (query) =>
+          defaultShouldDehydrateQuery(query) || query.state.status === "pending",
+      },
+    },
+  });
+}
+
+let browserQueryClient: QueryClient | undefined;
+
+export function getQueryClient() {
+  // Server: luôn tạo mới — không bao giờ chia sẻ cache giữa các người dùng
+  if (isServer) return makeQueryClient();
+  // Trình duyệt: một instance duy nhất, sống qua mọi lần điều hướng
+  browserQueryClient ??= makeQueryClient();
+  return browserQueryClient;
+}
+```
+
+```tsx
+// app/query-provider.tsx
+"use client";
+
+import { QueryClientProvider } from "@tanstack/react-query";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+import type { ReactNode } from "react";
+import { getQueryClient } from "@/lib/query-client";
+
+export function QueryProvider({ children }: { children: ReactNode }) {
+  const queryClient = getQueryClient();
+  return (
+    <QueryClientProvider client={queryClient}>
+      {children}
+      <ReactQueryDevtools />
+    </QueryClientProvider>
+  );
+}
+```
+
+Hai chi tiết đáng giá cả một sự cố:
+
+- **Không bao giờ dùng một QueryClient ở module scope trên server.** Server Node.js phục vụ nhiều người dùng trong cùng một process; một client dùng chung nghĩa là dữ liệu của người A nằm trong cache khi render trang cho người B. Mình từng thấy đúng lỗi này ở một dự án: thỉnh thoảng có người dùng thấy tên người khác ở header, chỉ dưới tải cao, không tái hiện được ở local.
+- **`staleTime` phải lớn hơn 0.** Nếu bằng 0, dữ liệu vừa hydrate đã stale, và client refetch ngay khi mount — bạn trả tiền prefetch mà vẫn nhận một request thừa.
+
+### Prefetch trong Server Component
+
+```tsx
+// app/products/page.tsx
+import { HydrationBoundary, dehydrate } from "@tanstack/react-query";
+import { getQueryClient } from "@/lib/query-client";
+import { productQueries, type ProductFilters } from "@/lib/queries/products";
+import { listProducts } from "@/lib/data/products"; // data layer server-only
+import { ProductList } from "./product-list";
+
+export default async function ProductsPage({
+  searchParams,
+}: {
+  searchParams: Promise<ProductFilters>;
+}) {
+  const filters = await searchParams;
+  const queryClient = getQueryClient();
+
+  await queryClient.prefetchQuery({
+    ...productQueries.list(filters),
+    // Trên server gọi thẳng data layer thay vì HTTP tới chính mình
+    queryFn: () => listProducts(filters),
+  });
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <ProductList filters={filters} />
+    </HydrationBoundary>
+  );
+}
+```
+
+```tsx
+// app/products/product-list.tsx
+"use client";
+
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { productQueries, type ProductFilters } from "@/lib/queries/products";
+
+export function ProductList({ filters }: { filters: ProductFilters }) {
+  const { data, isPlaceholderData } = useQuery({
+    ...productQueries.list(filters),
+    placeholderData: keepPreviousData,
+  });
+
+  return (
+    <ul className={isPlaceholderData ? "opacity-60" : undefined}>
+      {data?.items.map((p) => (
+        <li key={p.id}>{p.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Ghi đè `queryFn` trên server là chi tiết mình học được sau khi thấy log báo lỗi "Failed to parse URL" lúc build: `api.products.list` gọi URL tương đối `/api/products`, chạy tốt ở trình duyệt nhưng không có nghĩa trên server. Điều kiện duy nhất là hai hàm phải trả về **cùng một hình dạng dữ liệu** — mình đặt chung một type và test cho cả hai.
+
+`prefetchQuery` không bao giờ ném lỗi; query lỗi trên server không được dehydrate theo mặc định, và client sẽ tự fetch lại. Nếu lỗi đó nên thành trang 404, dùng `fetchQuery` (có ném lỗi) và gọi `notFound()`.
+
+### Stream thay vì chờ
+
+Với `shouldDehydrateQuery` đã cho phép query pending, bạn có thể **không await** prefetch. Server bắt đầu request, gửi shell ngay, Promise được stream xuống và client component dùng `useSuspenseQuery` nhận kết quả khi nó tới:
+
+```tsx
+// app/products/[id]/page.tsx
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const queryClient = getQueryClient();
+
+  void queryClient.prefetchQuery(productQueries.detail(id)); // không await
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <Suspense fallback={<ProductSkeleton />}>
+        <ProductDetail id={id} />
+      </Suspense>
+    </HydrationBoundary>
+  );
+}
+```
+
+### Một dữ liệu, một chủ
+
+Quy tắc quan trọng nhất khi trộn RSC và TanStack Query: **mỗi mẩu dữ liệu chỉ có một chủ**. Nếu Server Component prefetch danh sách vào cache để client component render, thì đừng *đồng thời* render số lượng sản phẩm đó trực tiếp trong Server Component. Khi client refetch hoặc optimistic update, phần client đổi còn phần server đứng yên — hai con số trên cùng một trang lệch nhau. Dữ liệu nào đi vào query cache thì chỉ được render bởi client component đọc từ cache.
+
+## Infinite queries
+
+Infinite query lưu một chuỗi trang dưới một key. Với `infiniteQueryOptions` ở factory phía trên, component trở nên đơn giản:
+
+```tsx
+"use client";
+
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { productQueries, type ProductFilters } from "@/lib/queries/products";
+
+export function ProductFeed({ filters }: { filters: ProductFilters }) {
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, status } = useInfiniteQuery(
+    productQueries.feed(filters),
+  );
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasNextPage) return;
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && !isFetchingNextPage) fetchNextPage();
+      },
+      { rootMargin: "600px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  if (status === "pending") return <FeedSkeleton />;
+  const items = data?.pages.flatMap((page) => page.items) ?? [];
+
+  return (
+    <>
+      <ul>
+        {items.map((p) => (
+          <li key={p.id}>{p.name}</li>
+        ))}
+      </ul>
+      <div ref={sentinelRef} aria-hidden />
+      {isFetchingNextPage && <p>Đang tải thêm…</p>}
+    </>
+  );
+}
+```
+
+Những điều mình đã trả giá để biết:
+
+- **`initialPageParam` là bắt buộc trong v5**, và `getNextPageParam` trả về `undefined` hoặc `null` nghĩa là hết trang.
+- **Dùng cursor, không dùng offset.** Với offset, một sản phẩm mới được thêm vào đầu danh sách khiến trang sau lặp lại phần tử cuối của trang trước.
+- **Refetch một infinite query là refetch tuần tự mọi trang đã tải**, bắt đầu từ trang đầu — vì cursor của trang sau phụ thuộc trang trước. Người dùng đã cuộn qua 30 trang thì một lần focus lại cửa sổ là 30 request nối đuôi. `maxPages` giới hạn số trang giữ trong cache (khi đó cần cả `getPreviousPageParam` để cuộn ngược), và `staleTime` hợp lý giảm số lần refetch.
+- **Danh sách dài cần virtualization**: infinite query giải quyết chuyện dữ liệu, không giải quyết chuyện DOM có mười nghìn node.
+
+## Khi nào KHÔNG dùng TanStack Query
+
+Mình dùng TanStack Query ở rất nhiều dự án, nhưng với App Router, phạm vi của nó hẹp lại đáng kể. Server Component đọc dữ liệu lúc request đã giải quyết phần lớn những gì ngày xưa mình cần một client cache.
+
+| Tình huống | Nên dùng | Lý do |
+| --- | --- | --- |
+| Trang đọc dữ liệu lúc request, ít tương tác (blog, trang sản phẩm, trang tài khoản) | Fetch trong Server Component | Không bundle thêm, không hydrate cache, HTML có dữ liệu sẵn |
+| Form ghi dữ liệu rồi hiển thị lại trang | Server Function + revalidate | Router tự lấy RSC payload mới |
+| Filter, phân trang đơn giản | `searchParams` + Server Component | URL là state, chia sẻ được, back/forward đúng |
+| Dashboard tự làm mới, polling | TanStack Query | `refetchInterval`, refetch khi focus |
+| Optimistic update hiện ở nhiều nơi | TanStack Query | Cache theo key, snapshot, rollback |
+| Infinite scroll, danh sách lớn tương tác nhiều | TanStack Query | `useInfiniteQuery`, giữ trang đã tải khi quay lại |
+| Ứng dụng client-heavy (editor, công cụ nội bộ dạng SPA) | TanStack Query | Phần lớn dữ liệu sống và đổi ở client |
+| State thuần UI (modal, tab, input) | `useState`, URL, Zustand | Đây không phải server state |
+
+Dấu hiệu bạn đang dùng thừa: mọi `useQuery` trong app đều có `staleTime: Infinity`, không có mutation nào, và dữ liệu luôn được prefetch từ server. Khi đó bạn đang dùng một client cache để làm việc của Server Component, trả giá bằng bundle và độ phức tạp của hydration mà không nhận lại gì.
+
+Ngược lại, đừng cố bẻ RSC để làm việc của một client cache: gọi `router.refresh()` mỗi 5 giây để giả lập polling, hay giữ danh sách trong `useState` rồi tự vá sau mỗi Server Function. Mỗi công cụ có vùng của nó.
+
+## Những lỗi mình gặp nhiều nhất
+
+### Copy dữ liệu query vào useState
+
+```tsx
+const { data } = useQuery(userQueries.me());
+const [user, setUser] = useState(data);
+useEffect(() => setUser(data), [data]); // ❌
+```
+
+Bạn vừa tạo lại chính vấn đề TanStack Query giải quyết: hai bản sao, một cái không bao giờ được refetch cập nhật đúng lúc. Ngoại lệ hợp lệ duy nhất là giá trị ban đầu của form — và khi đó hãy render form sau khi có dữ liệu, truyền `defaultValues` một lần, dùng `key` để reset form khi entity đổi.
+
+### Tạo QueryClient trong thân component
+
+Viết `const queryClient = new QueryClient()` thẳng trong thân component nghĩa là mỗi lần component đó render lại, toàn bộ cache biến mất. Dùng `getQueryClient()` như trên, hoặc `useState(() => new QueryClient())` trong ứng dụng không có SSR.
+
+### Key thiếu biến
+
+`queryFn` dùng `page` nhưng key chỉ có `["orders"]`: đổi trang, key không đổi, cache trả về trang 1. Bật rule `exhaustive-deps` và lỗi này biến mất.
+
+### Coi isFetching là loading
+
+Skeleton toàn trang theo `isFetching` làm UI nhấp nháy mỗi lần refetch ngầm. Skeleton theo `isPending`, chỉ báo nhỏ theo `isFetching`.
+
+### Không truyền signal, không kiểm tra res.ok
+
+Hai dòng code nhỏ trong API client, nhưng thiếu chúng thì cache lưu trang lỗi như dữ liệu thành công, và request thừa vẫn chạy khi người dùng đã rời trang.
+
+<Callout type="note" title="Devtools là công cụ học tốt nhất">
+  Mở `ReactQueryDevtools` trong vài ngày đầu làm việc với một codebase. Nhìn các query chuyển từ fresh sang stale, thấy query nào refetch khi bạn alt-tab, query nào nằm inactive chờ bị dọn — bạn sẽ hiểu mô hình cache nhanh hơn đọc bất kỳ bài viết nào, kể cả bài này.
+</Callout>
+
+## Tóm tắt
+
+<Checklist>
+
+- Server state là bản sao có hạn dùng của dữ liệu người khác sở hữu — quản lý nó như cache, không copy vào store client.
+- Gom query key và `queryOptions` vào factory theo thứ tự tổng quát đến cụ thể; mọi biến `queryFn` dùng phải có trong key; bật `exhaustive-deps` của ESLint plugin.
+- API client phải ném lỗi khi `res.ok` sai và truyền `signal` vào `fetch`.
+- `staleTime` quyết định khi nào refetch, `gcTime` quyết định entry sống bao lâu sau khi không còn ai dùng. Đặt `staleTime` mặc định toàn cục lớn hơn 0 và chỉnh theo loại dữ liệu.
+- Sau mutation: `setQueryData` với entity server trả về, `invalidateQueries` cho danh sách theo đúng phạm vi key, trả về Promise để giữ `isPending`.
+- Optimistic update: dùng `variables` khi chỉ một chỗ cần thấy; dùng `cancelQueries` + snapshot + rollback khi nhiều chỗ cần thấy; chỉ invalidate khi mutation cuối cùng xong.
+- Retry có chọn lọc: không retry 4xx, thêm jitter, không retry mutation không idempotent.
+- `useSuspenseQuery` cần `Suspense`, Error Boundary và `QueryErrorResetBoundary`; tránh hai suspense query tuần tự trong một component.
+- Với Next.js: QueryClient mới mỗi request trên server, singleton trên trình duyệt; `staleTime` lớn hơn 0; prefetch + `HydrationBoundary`; mỗi mẩu dữ liệu chỉ có một chủ.
+- Infinite query dùng cursor, đặt `maxPages`, kết hợp virtualization cho danh sách dài.
+- Nếu trang chỉ đọc dữ liệu lúc request và ít tương tác, Server Component là đủ — đừng thêm client cache chỉ vì quen tay.
+
+</Checklist>

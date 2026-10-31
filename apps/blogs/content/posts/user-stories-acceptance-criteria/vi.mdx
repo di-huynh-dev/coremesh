@@ -1,0 +1,621 @@
+---
+title: "User story và acceptance criteria: viết sao cho dev làm được, tester kiểm được"
+excerpt: "Một user story tốt không nằm ở câu chữ “As a… I want… so that…” mà ở cuộc trò chuyện và các ví dụ đi kèm. Bài này đi qua 3C, INVEST với ví dụ xấu và tốt, story mapping, các pattern chia nhỏ story, acceptance criteria dạng rule và example, Gherkin viết đúng cách, Example Mapping và cách biến AC thành test tự động."
+---
+
+<Lead>Mình từng nhận một story trông rất chuẩn: "Là khách hàng, tôi muốn trả hàng online để không phải ra cửa hàng". Đủ ba vế, có giá trị nghiệp vụ, PO gật đầu, team ước lượng 5 điểm. Ba sprint sau nó vẫn chưa xong. Không phải vì code khó, mà vì mỗi lần demo lại lòi ra một câu hỏi chưa ai trả lời: hàng giảm giá có được trả không, đơn COD hoàn tiền vào đâu, ngày thứ 30 tính theo giờ nào, trả một nửa số lượng thì sao. Story không sai format — nó sai ở chỗ không ai thực sự hiểu giống nhau. Bài này là cách mình viết và làm rõ user story sau nhiều năm đứng ở giữa PO, dev và tester: 3C, INVEST kiểm bằng ví dụ thật, story mapping, các pattern chia nhỏ, acceptance criteria dạng rule cộng example, Gherkin viết cho đúng, Example Mapping, Definition of Ready và Done, và cuối cùng là cách AC đi thẳng vào test tự động.</Lead>
+
+## Vì sao story đúng format vẫn hỏng
+
+Template `As a [vai trò], I want [hành động], so that [giá trị]` hữu ích, nhưng nó chỉ là cái vỏ. Mình thấy story hỏng theo ba kiểu lặp đi lặp lại:
+
+- **Hiểu ngầm khác nhau.** PO nghĩ "trả hàng" nghĩa là hoàn tiền tự động, dev nghĩ là tạo một ticket cho bộ phận vận hành xử lý, tester nghĩ phải hỗ trợ cả đổi size. Ai cũng đọc cùng một câu và tự lấp chỗ trống bằng kinh nghiệm của mình.
+- **Quá to mà không ai nhận ra.** Story nhìn gọn trên một tấm thẻ, nhưng bên dưới là sáu bước workflow, bốn phương thức hoàn tiền và một tích hợp với hãng vận chuyển. Ước lượng 5 điểm chỉ là con số trấn an.
+- **Không có cách nói "xong".** Không có acceptance criteria, hoặc AC kiểu "hệ thống hoạt động đúng", "giao diện thân thiện". Tester không có gì để kiểm, nên mỗi người kiểm theo trí nhớ của mình về cuộc họp hôm trước.
+
+Cả ba đều không giải quyết được bằng cách viết template cẩn thận hơn. Chúng được giải quyết bằng **cuộc trò chuyện có cấu trúc** và **ví dụ cụ thể**. Phần còn lại của bài xoay quanh một epic xuyên suốt: tính năng trả hàng online cho một shop thương mại điện tử bán quần áo và đồ điện tử, có cả đơn thanh toán thẻ lẫn COD.
+
+## 3C: Card, Conversation, Confirmation
+
+Ron Jeffries mô tả user story bằng ba chữ C, và đến giờ mình vẫn thấy đây là định nghĩa hữu ích nhất.
+
+### Card: lời hứa sẽ nói chuyện
+
+Tấm thẻ (hay ticket trên Jira, Linear) cố ý ngắn. Nó không phải đặc tả, nó là **lời nhắc rằng có một nhu cầu cần được bàn**. Khi ticket bắt đầu dài ba trang với mockup, luồng dữ liệu và mười lăm bullet, đó thường là dấu hiệu ai đó đang cố thay cuộc trò chuyện bằng tài liệu — và tài liệu thì không trả lời được câu hỏi tiếp theo.
+
+Thẻ tốt có: một tiêu đề động từ rõ ràng, câu "ai — muốn gì — để làm gì", và đường link tới chỗ chứa phần còn lại (story map, Example Map, thiết kế).
+
+```text
+Trả một sản phẩm từ đơn đã giao
+
+Là khách hàng đã nhận hàng,
+tôi muốn tạo yêu cầu trả một sản phẩm trong đơn,
+để được hoàn tiền mà không phải gọi tổng đài.
+
+Story map: Returns / Release 1
+Example map: (link)
+```
+
+### Conversation: nơi requirement thật xuất hiện
+
+Phần giá trị nhất của story không nằm trên thẻ. Nó nằm trong cuộc trò chuyện giữa người hiểu nghiệp vụ (PO, BA, đôi khi là người vận hành thật), người sẽ xây (dev) và người sẽ phá (tester). Mình hay gọi đây là "three amigos", và quy tắc của mình là: **không story nào vào sprint nếu ba vai này chưa cùng ngồi với nó ít nhất một lần**, dù chỉ 20 phút.
+
+Cuộc trò chuyện cho ra những thứ mà không template nào ép ra được: "à, hàng final sale thì không trả", "đơn COD mình chưa có số tài khoản khách", "kho chỉ nhận hàng trả vào thứ Hai đến thứ Sáu". Những câu đó phải được ghi lại — và chỗ ghi lại chính là C thứ ba.
+
+### Confirmation: acceptance criteria
+
+Confirmation là cách cả nhóm biết story đã xong. Nó là acceptance criteria, và tốt nhất là ở dạng **rule kèm ví dụ cụ thể** — phần lớn bài này sẽ nói về nó. Nếu cuộc trò chuyện là nơi phát hiện ra hiểu biết, thì AC là nơi **đóng băng** hiểu biết đó thành thứ kiểm chứng được.
+
+<Callout type="tip" title="Ghi lại quyết định, không ghi lại biên bản">
+Sau buổi three amigos, đừng chép biên bản ai nói gì. Chỉ cập nhật ba thứ: các rule đã thống nhất, các ví dụ minh hoạ từng rule, và các câu hỏi còn mở kèm tên người chịu trách nhiệm trả lời. Ai đọc ticket một tháng sau cũng hiểu được, kể cả người không dự họp.
+</Callout>
+
+## INVEST, kiểm bằng ví dụ thật
+
+INVEST (Bill Wake) là checklist sáu chữ cái để kiểm tra một story có "khoẻ" không. Ai cũng thuộc, nhưng ít ai dùng nó để **sửa** story. Bảng dưới đây là các ví dụ mình gặp thật (đã đổi tên miền nghiệp vụ), kèm phiên bản sau khi sửa.
+
+| Tiêu chí | Câu hỏi kiểm tra | Story xấu | Story tốt hơn |
+| --- | --- | --- | --- |
+| **I**ndependent | Có làm và release riêng được không? | "Làm API trả hàng" rồi "Làm UI trả hàng" | "Khách trả một sản phẩm, hoàn về thẻ gốc" — cắt dọc qua UI, API, DB |
+| **N**egotiable | Có còn chỗ để bàn cách làm không? | "Thêm nút màu cam 48px ở góc phải, gọi POST /returns" | "Khách bắt đầu trả hàng ngay từ trang chi tiết đơn" |
+| **V**aluable | Ai nhận được giá trị khi nó release? | "Tạo bảng return_requests" | "Vận hành thấy danh sách yêu cầu trả hàng mới mỗi sáng" |
+| **E**stimable | Team có đủ hiểu để ước lượng? | "Tích hợp hãng vận chuyển cho trả hàng" (chưa ai đọc API) | Spike 2 ngày đọc API lấy hàng, rồi mới viết story |
+| **S**mall | Có xong trong vài ngày không? | "Khách trả hàng online" (cả epic) | Chia theo workflow và rule, mỗi story 1–3 ngày |
+| **T**estable | Có cách khách quan để nói "xong"? | "Quy trình trả hàng phải dễ dùng" | "Khách tạo được yêu cầu trong tối đa 3 bước; hàng final sale bị từ chối kèm lý do" |
+
+### Independent không có nghĩa là không có phụ thuộc
+
+Người mới hay hiểu "independent" là story không phụ thuộc gì cả. Không thể có chuyện đó — "hoàn tiền vào ví" rõ ràng cần "tạo yêu cầu trả hàng" có trước. Ý của chữ I là **tránh phụ thuộc cứng giữa các story cùng mức**, nhất là kiểu cắt ngang theo tầng kỹ thuật (story backend, story frontend), vì khi đó không story nào tự nó mang lại giá trị và không story nào test được từ đầu đến cuối.
+
+Khi gặp phụ thuộc thật, mình xử lý theo thứ tự: gộp hai story nếu chúng quá nhỏ; đổi thứ tự trong backlog cho rõ; hoặc chấp nhận phụ thuộc và ghi rõ ra. Điều mình không làm là giả vờ nó không tồn tại.
+
+### Small và Estimable đi cùng nhau
+
+Story không ước lượng được thường là vì nó quá to (nhiều thứ chưa biết dồn vào một chỗ) hoặc vì có một vùng kỹ thuật hoàn toàn mù. Trường hợp đầu thì chia nhỏ. Trường hợp sau thì dùng **spike** — một nhiệm vụ có hạn thời gian để học, đầu ra là kiến thức chứ không phải tính năng. Phần chia nhỏ bên dưới sẽ quay lại spike.
+
+Còn kích thước bao nhiêu là "small"? Quy tắc thực dụng của mình: một story nên xong — code, review, test, merge — trong **khoảng 1 đến 3 ngày** của một hoặc hai người. Nhiều hơn thế thì rủi ro "90% xong" kéo dài cả tuần.
+
+<Callout type="warning" title="Technical story không phải là tội, nhưng đừng giả làm user story">
+"Là developer, tôi muốn nâng cấp ORM để..." là một câu dối. Developer không phải người dùng cuối, và viết như vậy không làm công việc đó có giá trị hơn. Công việc kỹ thuật cần làm thì cứ để là technical task hoặc enabler, ghi rõ lý do nghiệp vụ (giảm thời gian build, mở đường cho tính năng X), và để PO ưu tiên nó công khai. Ngụy trang chỉ làm backlog khó đọc hơn.
+</Callout>
+
+## Story mapping: nhìn cả hành trình trước khi chia nhỏ
+
+Backlog phẳng — một danh sách dài sắp theo độ ưu tiên — rất tệ ở việc cho thấy bức tranh tổng. Bạn nhìn vào story thứ 37 và không biết nó nằm ở đâu trong hành trình của người dùng. Story mapping (Jeff Patton) giải quyết bằng cách thêm một chiều thứ hai: **chiều ngang là hành trình, chiều dọc là độ ưu tiên**.
+
+<Figure src="/blog/user-stories-acceptance-criteria-story-map.svg" alt="Story map cho tính năng trả hàng online. Hàng trên cùng là backbone gồm sáu hoạt động theo thứ tự: tìm đơn, chọn sản phẩm, nêu lý do, chọn cách hoàn tiền, gửi trả hàng, nhận tiền. Bên dưới là ba lát ngang: walking skeleton (release 1) gồm chọn từ danh sách đơn, tick sản phẩm, lý do từ danh sách cố định, hoàn về thẻ gốc, in nhãn và tự gửi, vận hành hoàn tiền thủ công; release 2 gồm tìm theo mã đơn, trả một phần số lượng, tải ảnh, store credit có thưởng, hãng vận chuyển đến lấy, tự hoàn tiền khi quét mã; release 3 gồm tra cứu cho khách vãng lai, đổi size, luồng khiếu nại hàng hỏng, chuyển khoản cho đơn COD, theo dõi hàng trả, email trạng thái. Mũi tên ngang chỉ luồng hành trình từ trái sang phải, mũi tên dọc chỉ độ ưu tiên từ trên xuống." caption="Đọc ngang để hiểu hành trình, đọc dọc để ưu tiên. Mỗi lát là một bản release đi trọn hành trình, dù còn thô." />
+
+### Backbone: các hoạt động lớn của người dùng
+
+Hàng trên cùng là **backbone**: các hoạt động người dùng làm theo thứ tự thời gian, viết bằng động từ, ở góc nhìn của họ chứ không phải của hệ thống. Với trả hàng: tìm đơn, chọn sản phẩm, nêu lý do, chọn cách hoàn tiền, gửi hàng về, nhận tiền.
+
+Cách mình dựng backbone trong workshop: mỗi người tự viết lên sticky note "một ngày của khách khi muốn trả hàng", rồi cả nhóm xếp lại theo thời gian và gom nhóm. Chỉ việc xếp hàng này thôi đã lộ ra những bước không ai nghĩ tới — ví dụ "gửi hàng về" hoá ra có hai đường hoàn toàn khác nhau (tự mang ra bưu cục và hãng vận chuyển đến lấy).
+
+### Walking skeleton: lát mỏng nhất đi trọn hành trình
+
+Lát đầu tiên dưới backbone là **walking skeleton**: phiên bản thô nhất nhưng đi từ đầu đến cuối. Trong ví dụ, khách chỉ chọn được từ danh sách đơn, lý do là danh sách cố định, hoàn tiền chỉ về thẻ gốc, tự in nhãn và mang hàng ra bưu cục, và — quan trọng — **bước hoàn tiền do vận hành làm thủ công** trên trang admin.
+
+Nghe có vẻ "chưa xong", nhưng walking skeleton cho bạn ba thứ mà làm hoàn hảo từng bước một không cho: hệ thống chạy được end-to-end từ sớm (lộ ra rủi ro tích hợp), có dữ liệu thật để quyết định đầu tư tiếp vào đâu, và người dùng có giá trị thật ngay release đầu. Bước thủ công không phải nợ kỹ thuật đáng xấu hổ — nó là cách rẻ nhất để học xem tự động hoá cái gì trước.
+
+### Release slices: mỗi lát là một bản release trọn vẹn
+
+Các lát tiếp theo làm cho hành trình mượt hơn (release 2) rồi phủ các trường hợp biên (release 3). Quy tắc vàng: **ship cả một hàng ngang, không bao giờ ship một cột dọc**. Làm hoàn hảo "tìm đơn" với tìm kiếm, bộ lọc, tra cứu cho khách vãng lai, trong khi chưa ai hoàn được tiền, là cách nhanh nhất để đốt ba sprint mà không có gì đưa cho người dùng.
+
+Một lợi ích ít được nhắc: story map là công cụ **nói "chưa"** rất hiệu quả. Khi stakeholder hỏi "thế còn đổi size?", bạn chỉ vào ô ở release 3 — nó không bị quên, chỉ là chưa tới lượt. Cuộc tranh luận chuyển từ "có hay không" sang "ở lát nào", dễ chịu hơn nhiều.
+
+## Chia nhỏ story: các pattern dùng được
+
+Biết story phải nhỏ là một chuyện, biết **cắt ở đâu** là chuyện khác. Nguyên tắc nền tảng: cắt **dọc** — mỗi phần vẫn đi qua mọi tầng cần thiết và mang lại giá trị quan sát được. Dưới đây là các pattern mình dùng nhiều nhất, theo thứ tự mình thường thử.
+
+### Theo bước của workflow
+
+Nếu story là một hành trình nhiều bước, mỗi bước (hoặc vài bước gộp lại) có thể thành một story — với điều kiện vẫn có cách đi hết luồng, dù thủ công. Đây chính là cách walking skeleton được tạo ra: "tạo yêu cầu trả hàng" là một story, "vận hành duyệt yêu cầu" là một story khác, "hoàn tiền" là story thứ ba.
+
+### Theo biến thể của business rule
+
+Khi một story có nhiều rule, hãy làm rule đơn giản nhất trước, các rule khác thành story riêng. Trả hàng có: hạn 30 ngày cho hàng thường, 15 ngày cho đồ điện tử, hàng final sale không được trả, mỗi sản phẩm chỉ trả một lần. Story đầu chỉ cần hạn 30 ngày; điện tử và final sale là các story sau. Mỗi rule có AC riêng, test riêng, và PO có thể quyết định rule nào thực sự cần cho release đầu.
+
+### Happy path trước, unhappy path sau
+
+Làm luồng thành công trước, các luồng lỗi thành story riêng: hết hạn trả, đơn chưa giao, sản phẩm đã có yêu cầu trả, hãng vận chuyển không phản hồi. Cẩn thận một điều: **unhappy path tối thiểu để không mất dữ liệu hay gây sai tiền phải đi cùng happy path**, không được tách ra. Một story "tạo yêu cầu trả hàng" mà cho phép tạo hai yêu cầu cho cùng một sản phẩm thì không phải là happy path, đó là bug.
+
+### Theo biến thể dữ liệu hoặc kênh
+
+Cùng một hành động nhưng khác loại dữ liệu: hoàn về thẻ, hoàn bằng store credit, chuyển khoản cho đơn COD. Mỗi phương thức có rủi ro và tích hợp riêng, nên mỗi cái là một story. Tương tự với kênh: web trước, app sau; tiếng Việt trước, đa ngôn ngữ sau.
+
+### Theo thao tác (CRUD)
+
+"Quản lý yêu cầu trả hàng" là một từ khoá che giấu bốn story: tạo, xem, sửa (đổi lý do, đổi số lượng), huỷ. Thường thì tạo và xem là cần cho release đầu, sửa có thể không bao giờ cần (huỷ rồi tạo lại là đủ), và huỷ có rule riêng (không huỷ được khi hàng đã gửi đi).
+
+### Spike khi chưa đủ biết để ước lượng
+
+Khi cả nhóm không biết API hãng vận chuyển có hỗ trợ tạo lệnh lấy hàng hay không, đừng ước lượng mò. Tạo một spike có **hạn thời gian cố định** (một đến hai ngày) và **câu hỏi cụ thể cần trả lời**: API có endpoint tạo lệnh lấy hàng không? Webhook trạng thái có đáng tin không? Sandbox có dùng được không? Đầu ra là một ghi chú ngắn và các story mới ước lượng được — không phải code production.
+
+### Ví dụ: chia epic "Trả hàng online"
+
+Đây là kết quả thật sau một buổi chia nhỏ, đã rút gọn. Cột cuối cho biết pattern dùng ở bước đó.
+
+| # | Story | Lát | Pattern |
+| --- | --- | --- | --- |
+| 1 | Khách tạo yêu cầu trả một sản phẩm trong hạn 30 ngày, hoàn về thẻ gốc | Release 1 | Workflow + rule đơn giản nhất |
+| 2 | Vận hành xem danh sách yêu cầu mới và đánh dấu đã hoàn tiền thủ công | Release 1 | Workflow (bước thủ công) |
+| 3 | Khách in nhãn trả hàng và nhận hướng dẫn gửi tại bưu cục | Release 1 | Workflow |
+| 4 | Hàng final sale bị từ chối kèm lý do | Release 1 | Rule (rủi ro tiền nên kéo lên sớm) |
+| 5 | Đồ điện tử có hạn trả 15 ngày | Release 2 | Biến thể rule |
+| 6 | Khách trả một phần số lượng của một dòng | Release 2 | Biến thể dữ liệu |
+| 7 | Hoàn tiền bằng store credit có thưởng | Release 2 | Biến thể dữ liệu |
+| 8 | Spike: API lấy hàng của hãng vận chuyển | Trước release 2 | Spike |
+| 9 | Hãng vận chuyển đến lấy hàng tại nhà | Release 2 | Workflow (sau spike) |
+| 10 | Khách huỷ yêu cầu trước khi gửi hàng | Release 2 | CRUD |
+| 11 | Đơn COD hoàn bằng chuyển khoản ngân hàng | Release 3 | Biến thể dữ liệu |
+| 12 | Khách vãng lai tra cứu đơn bằng email và mã đơn | Release 3 | Biến thể kênh |
+
+Để ý story 4: theo logic "rule đơn giản trước" thì nó có thể để sau, nhưng nếu thiếu nó, khách trả được hàng final sale và công ty mất tiền thật. Pattern là công cụ, còn quyết định thứ tự vẫn dựa trên rủi ro và giá trị.
+
+<Callout type="danger" title="Chia theo tầng kỹ thuật không phải là chia story">
+"Story 1: database. Story 2: API. Story 3: UI." trông giống chia nhỏ, nhưng không story nào tự nó có giá trị, không story nào demo được cho PO, và rủi ro tích hợp bị dồn hết về cuối. Nếu team bạn cần chia việc theo người, hãy chia thành **task** bên trong một story dọc, đừng nâng task lên thành story.
+</Callout>
+
+## Acceptance criteria là rule cộng example
+
+Có hai phong cách viết AC phổ biến: danh sách rule ("hàng final sale không được trả") và kịch bản ("Given... When... Then..."). Mình dùng **cả hai, theo thứ tự**: rule trước để nói lên chính sách, example sau để làm rule không thể hiểu sai.
+
+### Rule: chính sách nghiệp vụ, viết ngắn
+
+Rule là phát biểu tổng quát, không phụ thuộc giao diện:
+
+```text
+Story 1 — Trả một sản phẩm, hoàn về thẻ gốc
+
+R1. Sản phẩm thường được trả trong vòng 30 ngày kể từ ngày giao thành công.
+R2. Mỗi dòng sản phẩm chỉ có tối đa một yêu cầu trả hàng đang mở.
+R3. Số tiền hoàn bằng giá đã trả của sản phẩm, không gồm phí vận chuyển ban đầu.
+R4. Yêu cầu tạo thành công thì khách nhận được mã yêu cầu và email xác nhận.
+```
+
+Rule tốt có ba đặc điểm: kiểm chứng được (có đúng/sai rõ ràng), không mô tả cách làm (không có "bấm nút", "gọi API"), và đủ nhỏ để một ví dụ minh hoạ được nó.
+
+### Example: làm rule không thể hiểu sai
+
+Rule R1 nghe rất rõ cho đến khi bạn hỏi "ngày thứ 30 có được không?". Ví dụ cụ thể với ngày tháng thật buộc cả nhóm trả lời:
+
+| Ngày giao | Ngày yêu cầu | Kết quả | Ghi chú |
+| --- | --- | --- | --- |
+| 01/09 | 15/09 | Chấp nhận | Giữa hạn |
+| 01/09 | 01/10 | Chấp nhận | Ngày thứ 30, vẫn trong hạn |
+| 01/09 | 02/10 | Từ chối: hết hạn | Ngày thứ 31 |
+| 01/09 lúc 06:30 | 01/10 | Chấp nhận | Ngày tính theo giờ Việt Nam, không theo UTC |
+| Chưa giao | bất kỳ | Từ chối: chưa giao | Đơn đang vận chuyển |
+
+Hai dòng cuối là những thứ chỉ xuất hiện khi có người ngồi nghĩ ví dụ. Dòng "06:30" đến từ một câu hỏi của tester: hệ thống lưu thời điểm giao bằng UTC, và 06:30 sáng 01/09 giờ Việt Nam là 23:30 UTC ngày 31/08. Nếu code lấy ngày từ timestamp UTC, ngày giao thành 31/08, và yêu cầu ngày 01/10 thành ngày thứ 31 — khách bị từ chối oan ở đúng ngày cuối cùng. Không ai nghĩ tới chuyện này cho tới khi phải viết ra một ví dụ có giờ cụ thể.
+
+Ví dụ tốt thường nằm ở **biên**: ngay trước, đúng tại và ngay sau ngưỡng; giá trị rỗng; trạng thái chưa tới.
+
+## Gherkin: Given/When/Then viết tốt và viết dở
+
+Gherkin là cú pháp Given/When/Then mà Cucumber và nhiều công cụ BDD dùng. Nó hữu ích khi bạn muốn ví dụ vừa đọc được bởi người nghiệp vụ, vừa chạy được thành test. Nhưng Gherkin viết dở thì tệ hơn không có: dài, giòn, và không ai ngoài QA đọc.
+
+### Kiểu UI-scripted: mô tả cách bấm
+
+```text
+# features/returns-bad.feature
+Scenario: Return item
+  Given I open "https://shop.example/login"
+  And I type "an@example.com" into "#email"
+  And I type "secret123" into "#password"
+  And I click the button "Đăng nhập"
+  And I click "Đơn hàng của tôi"
+  And I click the first row in the orders table
+  And I click "Trả hàng" next to "Áo thun basic"
+  And I select "Không vừa size" from "#reason"
+  And I click "Gửi yêu cầu"
+  Then I should see "Yêu cầu của bạn đã được ghi nhận"
+```
+
+Vấn đề của kịch bản này:
+
+- **Không nói lên rule nào.** Đọc xong không biết nó kiểm cái gì — hạn 30 ngày? hoàn về thẻ? Ngày giao là bao giờ? Không ai biết.
+- **Giòn.** Đổi ID của ô input, đổi chữ trên nút, chuyển "Trả hàng" vào menu ba chấm — kịch bản đỏ, dù nghiệp vụ không đổi.
+- **Lặp lại.** Mười kịch bản có mười lần đăng nhập, mười lần mở đơn hàng.
+
+### Kiểu declarative: mô tả hành vi
+
+```text
+# features/returns/eligibility.feature
+Feature: Return eligibility
+
+  Rule: General items can be returned within 30 days of delivery
+
+    Background:
+      Given today is 2026-10-01 in the store's time zone
+
+    Scenario: Return on the last day of the window
+      Given a customer received a T-shirt on 2026-09-01
+      When she requests a return for the T-shirt
+      Then the return request is accepted
+      And the refund amount equals the price she paid
+
+    Scenario: Return one day after the window closes
+      Given a customer received a T-shirt on 2026-08-31
+      When she requests a return for the T-shirt
+      Then the return request is rejected because the return window has closed
+
+  Rule: Final-sale items cannot be returned
+
+    Scenario: Final-sale item is rejected even inside the window
+      Given a customer received a final-sale jacket on 2026-09-25
+      When she requests a return for the jacket
+      Then the return request is rejected because the item is final sale
+```
+
+Kịch bản này nói lên **cái gì**, không nói **bằng cách nào**. Đăng nhập, điều hướng, ID của nút đều nằm trong step definition — một chỗ duy nhất phải sửa khi giao diện đổi. PO đọc được và chỉ ra chỗ sai. Từ khoá `Rule:` (có từ Gherkin 6) gom các kịch bản theo đúng rule chúng minh hoạ, nên cấu trúc file phản chiếu đúng cấu trúc AC.
+
+### Scenario Outline cho bảng ví dụ
+
+Khi một rule có nhiều ví dụ cùng hình dạng, dùng `Scenario Outline` với bảng `Examples` thay vì chép kịch bản:
+
+```text
+# features/returns/window.feature
+Feature: Return window
+
+Rule: The return window depends on the product category
+
+  Scenario Outline: Window for <category>
+    Given a customer received a <category> item on <delivered>
+    And today is <today> in the store's time zone
+    When she requests a return for the item
+    Then the return request is <outcome>
+
+    Examples:
+      | category    | delivered  | today      | outcome  |
+      | general     | 2026-09-01 | 2026-10-01 | accepted |
+      | general     | 2026-09-01 | 2026-10-02 | rejected |
+      | electronics | 2026-09-01 | 2026-09-16 | accepted |
+      | electronics | 2026-09-01 | 2026-09-17 | rejected |
+```
+
+Đừng lạm dụng: bảng hai mươi dòng với mười cột là dấu hiệu bạn đang test một bảng tra cứu, và nó thuộc về unit test chứ không phải file feature mà PO phải đọc.
+
+### Vài quy tắc mình áp dụng
+
+- **Một kịch bản, một hành vi.** Chỉ một `When`. Có hai `When` thường là hai kịch bản bị dính vào nhau.
+- **Given là trạng thái, không phải hành động.** "Given a customer received a T-shirt on 2026-09-01", không phải "Given I place an order and the courier delivers it".
+- **Then kiểm kết quả quan sát được bởi nghiệp vụ**, không kiểm hàng trong database hay status code.
+- **Viết ở ngôi thứ ba hoặc dùng persona** ("she", "Lan — khách quen") thay vì "I" mơ hồ — khi có nhiều vai (khách, vận hành), "I" là ai?
+- **Dưới 10 dòng.** Dài hơn thì có quá nhiều chi tiết không liên quan đến rule.
+- **Giữ ngôn ngữ nghiệp vụ** — từ trong kịch bản nên là từ PO và vận hành dùng hằng ngày. Nếu team nói "final sale" thì đừng viết "non-refundable SKU flag".
+
+## Example Mapping: 25 phút trước khi code
+
+Example Mapping (Matt Wynne, Cucumber) là kỹ thuật mình dùng cho hầu hết story có rule nghiệp vụ không tầm thường. Nó biến buổi three amigos từ "nói chuyện chung chung" thành một bản đồ có cấu trúc, và cho bạn biết story đã sẵn sàng hay chưa.
+
+### Bốn màu thẻ
+
+- **Vàng — story:** một thẻ duy nhất ở trên cùng.
+- **Xanh dương — rule:** mỗi rule một thẻ, xếp ngang dưới story.
+- **Xanh lá — example:** các ví dụ cụ thể, xếp dọc dưới rule mà chúng minh hoạ. Viết ngắn kiểu "Giao 01/09, yêu cầu 01/10 → OK", chưa cần Gherkin.
+- **Đỏ — question:** những gì chưa ai trả lời được. Ghi lại rồi đi tiếp, không tranh luận cho tới khi ra kết quả.
+
+Đặt timebox khoảng 25 phút. Nếu hết giờ mà bản đồ vẫn rối, đó chính là thông tin: story chưa sẵn sàng.
+
+### Một buổi thực tế
+
+Đây là bản đồ của story 1 sau buổi đầu tiên, viết lại ở dạng text (trên bảng thật là sticky note hoặc một board trên Miro/FigJam):
+
+```text
+[STORY] Khách trả một sản phẩm, hoàn về thẻ gốc
+
+[RULE] Hạn 30 ngày từ ngày giao
+  [EX] Giao 01/09, yêu cầu 15/09 → chấp nhận
+  [EX] Giao 01/09, yêu cầu 01/10 → chấp nhận (ngày thứ 30)
+  [EX] Giao 01/09, yêu cầu 02/10 → từ chối, hết hạn
+  [EX] Đơn đang vận chuyển → từ chối, chưa giao
+
+[RULE] Mỗi dòng chỉ một yêu cầu đang mở
+  [EX] Đã có yêu cầu đang mở → nút trả hàng ẩn, báo đã có yêu cầu
+  [EX] Yêu cầu trước đã bị huỷ → được tạo yêu cầu mới
+
+[RULE] Hoàn bằng giá đã trả, không gồm phí ship
+  [EX] Giá niêm yết 300k, mua bằng mã giảm 20% → hoàn 240k
+  [EX] Đơn 2 sản phẩm dùng mã giảm 50k cho cả đơn → ?
+
+[RULE] Hàng final sale không được trả
+  [EX] Áo khoác final sale, giao hôm qua → từ chối
+
+[Q] "Ngày" tính theo múi giờ nào? (Owner: PO, hỏi vận hành)
+[Q] Mã giảm giá cho cả đơn thì chia cho từng dòng thế nào? (Owner: BA + kế toán)
+[Q] Final sale có phải là rule của story này hay story riêng? (Owner: PO)
+```
+
+### Đọc tín hiệu từ bản đồ
+
+Bản đồ cho bạn biết nhiều hơn nội dung của nó:
+
+- **Nhiều thẻ đỏ:** story chưa sẵn sàng. Đưa vào sprint là mang câu hỏi vào code, và dev sẽ tự trả lời bằng phỏng đoán.
+- **Nhiều thẻ xanh dương:** story quá to. Mỗi rule (hoặc nhóm rule) là một ứng viên để tách story — chính là pattern "chia theo business rule" ở trên. Ở ví dụ, rule final sale được tách thành story 4.
+- **Một rule có quá nhiều ví dụ:** rule đó có thể đang là hai rule. "Hoàn bằng giá đã trả" với cả chục ví dụ về mã giảm giá thường nên tách thành "phân bổ giảm giá theo dòng" — một rule đủ phức tạp để có story riêng.
+- **Rule không có ví dụ:** chưa ai thực sự hiểu nó.
+
+Câu hỏi về mã giảm giá cho cả đơn ở trên là loại câu hỏi đáng tiền nhất: nó hỏi về **tiền**, nó không có câu trả lời hiển nhiên, và nếu dev tự quyết thì sai sẽ thành sai số trên sổ sách kế toán. Hai mươi lăm phút để tìm ra nó trước khi code rẻ hơn nhiều so với một đợt đối soát sau khi go-live.
+
+<Callout type="note" title="Example Mapping không phải buổi viết Gherkin">
+Đừng viết Given/When/Then trong buổi họp — nó chậm và kéo cả nhóm vào tranh luận câu chữ. Ví dụ dạng ngắn là đủ. Sau buổi họp, một người (thường là tester hoặc dev) chuyển các thẻ xanh lá thành kịch bản, rồi gửi lại cho PO xem lướt.
+</Callout>
+
+## Definition of Ready và Definition of Done
+
+Hai khái niệm này hay bị nhầm, hoặc bị dùng sai mục đích. Definition of Ready (DoR) là điều kiện để một story **bắt đầu được làm**; Definition of Done (DoD) là điều kiện để **mọi story** được coi là xong. Acceptance criteria thì khác: chúng là riêng của từng story.
+
+| | Definition of Ready | Acceptance criteria | Definition of Done |
+| --- | --- | --- | --- |
+| Áp dụng cho | Từng story, trước sprint | Từng story, riêng biệt | Mọi story, như nhau |
+| Ai sở hữu | Cả team, PO dẫn dắt | PO cùng three amigos | Cả team (dev dẫn dắt phần kỹ thuật) |
+| Trả lời câu hỏi | Đã đủ hiểu để bắt đầu chưa? | Story này làm đúng chưa? | Đủ chất lượng để release chưa? |
+| Ví dụ | Có AC và ví dụ; không còn thẻ đỏ chặn; đã ước lượng; phụ thuộc đã rõ | Hàng final sale bị từ chối kèm lý do | Code đã review; test tự động xanh; không giảm accessibility; đã có log và metric; tài liệu vận hành cập nhật |
+
+DoR của team mình hiện tại chỉ có năm dòng:
+
+```text
+Definition of Ready
+- Story có người hưởng giá trị rõ ràng và nằm trên story map
+- Đã qua three amigos; rule và ví dụ được ghi trên ticket
+- Không còn câu hỏi mở nào chặn việc bắt đầu (câu hỏi không chặn thì ghi owner)
+- Ước lượng được và vừa trong 1–3 ngày; nếu không, đã chia hoặc đã có spike
+- Phụ thuộc bên ngoài (API, thiết kế, dữ liệu) đã có hoặc có ngày cụ thể
+```
+
+<Callout type="warning" title="DoR là checklist, không phải cổng kiểm duyệt">
+Mình từng thấy team biến DoR thành một bức tường: story phải có đủ mockup, đặc tả API, sơ đồ dữ liệu, chữ ký của ba người mới được kéo vào sprint. Kết quả là một quy trình waterfall nhỏ chạy trước mỗi sprint, và mọi người viết tài liệu để qua cổng chứ không phải để hiểu nhau. DoR tốt chỉ hỏi một câu: "Có điều gì ta biết sẽ làm ta dừng lại giữa chừng không?". Nếu không, bắt đầu thôi.
+</Callout>
+
+## Edge case và yêu cầu phi chức năng
+
+Phần lớn bug mình gặp sau release không nằm ở happy path — nó nằm ở những trường hợp không ai viết ví dụ. Mình có một danh sách heuristic để rà mỗi story, và nó tìm ra thứ gì đó gần như mỗi lần.
+
+### Danh sách rà edge case
+
+- **Biên:** ngay trước, đúng tại, ngay sau mọi ngưỡng (ngày, số tiền, số lượng). Số lượng 0? Số lượng lớn hơn số đã mua?
+- **Rỗng và thiếu:** đơn không có sản phẩm nào đủ điều kiện, khách không có email, lý do để trống.
+- **Thời gian:** múi giờ, nửa đêm, cuối tháng, đơn giao đúng lúc chuyển ngày. Ai định nghĩa "hôm nay"?
+- **Lặp lại và đồng thời:** bấm gửi hai lần, mở hai tab cùng tạo yêu cầu, vận hành và khách cùng huỷ một lúc. Đây là nơi idempotency phải được nói thành AC.
+- **Quyền:** khách A có tạo được yêu cầu cho đơn của khách B bằng cách đổi ID trên URL không? AC nên nói rõ, đừng để mặc định.
+- **Trạng thái trung gian:** đơn đang được hoàn tiền một phần, sản phẩm đang có yêu cầu bị từ chối.
+- **Dữ liệu cũ:** đơn tạo trước khi tính năng ra mắt có đủ dữ liệu không (ví dụ thiếu ngày giao)?
+
+### Yêu cầu phi chức năng phải đo được
+
+NFR hay bị viết như ước mơ. Cách sửa là biến nó thành con số hoặc hành vi kiểm chứng được, và gắn vào story hoặc vào DoD tuỳ phạm vi.
+
+| NFR viết dở | NFR kiểm chứng được |
+| --- | --- |
+| Trang trả hàng phải nhanh | Màn chọn sản phẩm có LCP dưới 2,5s ở p75 trên mobile, đo bằng dữ liệu người dùng thật |
+| Phải bảo mật | Khách chỉ tạo được yêu cầu cho đơn của chính mình; truy cập đơn người khác trả 404 và ghi audit log |
+| Phải dễ truy cập | Toàn bộ luồng dùng được bằng bàn phím; mỗi ô có label; thông báo lỗi được đọc bởi screen reader |
+| Không được tạo trùng | Gửi lại cùng một yêu cầu trong 24 giờ trả về đúng yêu cầu đã tạo, không tạo bản ghi mới |
+| Phải có log | Mọi thay đổi trạng thái của yêu cầu trả hàng ghi lại ai, lúc nào, từ trạng thái nào sang trạng thái nào |
+
+NFR áp dụng cho mọi tính năng (accessibility, audit log, ngưỡng hiệu năng) nên nằm trong DoD; NFR riêng của một story (chống tạo trùng cho luồng trả hàng) nằm trong AC của story đó.
+
+## Từ acceptance criteria tới test tự động
+
+Ví dụ đã viết ra là test đã được thiết kế xong một nửa. Câu hỏi còn lại là chạy chúng **ở tầng nào**.
+
+### Không phải mọi ví dụ đều là E2E
+
+Sai lầm phổ biến nhất khi team bắt đầu BDD là biến mọi kịch bản Gherkin thành test trình duyệt. Hai trăm kịch bản E2E, mỗi cái 20 giây, đỏ ngẫu nhiên vì mạng — và cả team bắt đầu bỏ qua chúng. Mình chọn tầng theo bản chất của ví dụ:
+
+| Loại ví dụ | Tầng test | Lý do |
+| --- | --- | --- |
+| Rule tính toán (hạn trả, số tiền hoàn, phân bổ giảm giá) | Unit test cho domain | Nhanh, chạy hàng trăm ví dụ trong vài giây |
+| Rule cần dữ liệu và quyền (không trả đơn người khác, không tạo trùng) | Integration test qua API | Kiểm cả auth, database, ràng buộc |
+| Hành trình chính của người dùng (walking skeleton) | E2E bằng Playwright | Một vài kịch bản chứng minh các mảnh ghép nối đúng |
+| Accessibility, hiển thị lỗi | Component test + kiểm tra a11y tự động | Bắt lỗi giao diện mà không cần dựng cả hệ thống |
+
+### Rule thành unit test
+
+Rule hạn trả là logic thuần, nên nó sống trong domain và được test bằng bảng ví dụ — đúng bảng đã viết trong buổi Example Mapping:
+
+```ts
+// src/returns/eligibility.ts
+export type Category = "general" | "electronics";
+
+export interface ReturnableLine {
+  category: Category;
+  finalSale: boolean;
+  /** Ngày giao theo lịch của cửa hàng (Asia/Ho_Chi_Minh), dạng YYYY-MM-DD */
+  deliveredOn: string | null;
+  hasOpenReturn: boolean;
+}
+
+export type Rejection = "NOT_DELIVERED" | "FINAL_SALE" | "WINDOW_CLOSED" | "ALREADY_REQUESTED";
+export type Eligibility = { ok: true } | { ok: false; reason: Rejection };
+
+const WINDOW_DAYS: Record<Category, number> = { general: 30, electronics: 15 };
+
+function daysBetween(from: string, to: string): number {
+  const [y1, m1, d1] = from.split("-").map(Number);
+  const [y2, m2, d2] = to.split("-").map(Number);
+  return (Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000;
+}
+
+export function checkEligibility(line: ReturnableLine, today: string): Eligibility {
+  if (!line.deliveredOn) return { ok: false, reason: "NOT_DELIVERED" };
+  if (line.finalSale) return { ok: false, reason: "FINAL_SALE" };
+  if (line.hasOpenReturn) return { ok: false, reason: "ALREADY_REQUESTED" };
+  if (daysBetween(line.deliveredOn, today) > WINDOW_DAYS[line.category]) {
+    return { ok: false, reason: "WINDOW_CLOSED" };
+  }
+  return { ok: true };
+}
+```
+
+Để ý hàm nhận `today` dạng ngày lịch thay vì tự gọi `new Date()`. Câu hỏi "ngày tính theo múi giờ nào" từ buổi Example Mapping đã được trả lời (giờ Việt Nam), và câu trả lời đó nằm ở **một chỗ** — nơi chuyển timestamp thành ngày lịch của cửa hàng — chứ không rải khắp nơi.
+
+```ts
+// src/returns/eligibility.test.ts
+import { describe, expect, it } from "vitest";
+import { checkEligibility, type ReturnableLine } from "./eligibility";
+
+const line = (overrides: Partial<ReturnableLine> = {}): ReturnableLine => ({
+  category: "general",
+  finalSale: false,
+  deliveredOn: "2026-09-01",
+  hasOpenReturn: false,
+  ...overrides,
+});
+
+describe("Rule: return window depends on category", () => {
+  it.each([
+    ["general", "2026-10-01", true],
+    ["general", "2026-10-02", false],
+    ["electronics", "2026-09-16", true],
+    ["electronics", "2026-09-17", false],
+  ] as const)("%s item, requested on %s → ok=%s", (category, today, ok) => {
+    expect(checkEligibility(line({ category }), today).ok).toBe(ok);
+  });
+});
+
+describe("Rule: final-sale items cannot be returned", () => {
+  it("rejects even inside the window", () => {
+    expect(checkEligibility(line({ finalSale: true }), "2026-09-02")).toEqual({
+      ok: false,
+      reason: "FINAL_SALE",
+    });
+  });
+});
+```
+
+Tên `describe` dùng đúng câu rule. Khi test đỏ, thông báo lỗi nói bằng ngôn ngữ nghiệp vụ, và PO hiểu được cái gì đang vỡ.
+
+### Feature file chạy bằng Playwright
+
+Với hành trình chính, mình dùng `playwright-bdd`: nó sinh test Playwright từ file `.feature`, nên bạn có Gherkin cho người đọc mà vẫn giữ runner, fixture, trace và báo cáo của Playwright. (Cucumber.js thuần cộng Playwright cũng được, nhưng bạn phải tự quản lý browser và song song hoá.)
+
+Các file feature ở phần Gherkin phía trên dùng ngày cố định và câu "today is ...", nên chúng chạy ở tầng domain hoặc API, nơi đồng hồ được inject. Kịch bản E2E chạy trên môi trường thật với đồng hồ thật, nên mình viết ngày giao **tương đối**:
+
+```text
+# features/journeys/return-an-item.feature
+Feature: Return an item from a delivered order
+
+  Scenario: Customer returns a T-shirt inside the window
+    Given a customer received a "T-shirt" 10 days ago
+    When she requests a return for the "T-shirt"
+    Then the return request is accepted
+
+  Scenario: Customer is told the window has closed
+    Given a customer received a "T-shirt" 31 days ago
+    When she requests a return for the "T-shirt"
+    Then the return request is rejected because the return window has closed
+```
+
+```ts
+// playwright.config.ts
+import { defineConfig } from "@playwright/test";
+import { defineBddConfig } from "playwright-bdd";
+
+const testDir = defineBddConfig({
+  features: "features/journeys/*.feature",
+  steps: ["features/fixtures.ts", "features/steps/*.ts"],
+});
+
+export default defineConfig({
+  testDir,
+  use: { baseURL: process.env.BASE_URL ?? "http://localhost:3000", trace: "retain-on-failure" },
+});
+```
+
+Fixture lo phần "Given": tạo dữ liệu qua một API chỉ bật ở môi trường test, đăng nhập bằng storage state — không ai click qua form đăng nhập trong mỗi kịch bản. Trạng thái giữa các step (mã đơn vừa tạo) nằm trong fixture `ctx` riêng của từng test, nên các kịch bản chạy song song không giẫm lên nhau.
+
+```ts
+// features/fixtures.ts
+import { test as base, createBdd } from "playwright-bdd";
+import { ReturnsPage } from "./pages/returns-page";
+
+type Seed = {
+  deliveredOrder(input: { product: string; daysAgo: number; finalSale?: boolean }): Promise<string>;
+};
+
+export const test = base.extend<{ seed: Seed; returnsPage: ReturnsPage; ctx: { orderId?: string } }>({
+  seed: async ({ request }, use) => {
+    await use({
+      async deliveredOrder(input) {
+        const res = await request.post("/test-api/orders/delivered", { data: input });
+        return (await res.json()).orderId as string;
+      },
+    });
+  },
+  returnsPage: async ({ page }, use) => use(new ReturnsPage(page)),
+  ctx: async ({}, use) => use({}),
+});
+
+export const { Given, When, Then } = createBdd(test);
+```
+
+```ts
+// features/steps/returns.steps.ts
+import { expect } from "@playwright/test";
+import { Given, When, Then } from "../fixtures";
+
+Given("a customer received a {string} {int} days ago", async ({ seed, ctx }, product: string, daysAgo: number) => {
+  ctx.orderId = await seed.deliveredOrder({ product, daysAgo });
+});
+
+When("she requests a return for the {string}", async ({ returnsPage, ctx }, product: string) => {
+  await returnsPage.open(ctx.orderId!);
+  await returnsPage.requestReturn(product, { reason: "Không vừa size" });
+});
+
+Then("the return request is accepted", async ({ returnsPage }) => {
+  await expect(returnsPage.confirmation).toContainText(/Mã yêu cầu/);
+});
+
+Then("the return request is rejected because the return window has closed", async ({ returnsPage }) => {
+  await expect(returnsPage.error).toContainText("đã hết hạn trả hàng");
+});
+```
+
+Bộ chọn phần tử (`getByRole`, `getByLabel`) nằm trong `ReturnsPage` — đổi giao diện thì sửa một file, feature file không đụng tới. Và để ý: E2E chỉ có hai kịch bản. Bốn ví dụ về hạn trả theo loại hàng đã nằm ở unit test, chạy trong vài mili giây; ở đây ta chỉ cần chứng minh các mảnh ghép nối đúng và thông báo lỗi tới được tay người dùng.
+
+### Giữ thư viện step declarative
+
+Thư viện step là thứ quyết định Gherkin của bạn sống hay chết sau sáu tháng. Vài nguyên tắc:
+
+- Step nói về **nghiệp vụ** ("a customer received a ... on ..."), không nói về giao diện ("I click ...").
+- Không có step chung chung kiểu `I click {string}` — nó mời mọi người quay lại viết kịch bản UI-scripted.
+- Một step, một ý nghĩa. Hai câu gần giống nhau cho cùng hành vi thì gộp lại.
+- Nếu một kịch bản cần step mới cho mỗi lần viết, có thể ví dụ đó thuộc tầng unit chứ không phải E2E.
+
+## Những lỗi mình hay gặp
+
+**Story là việc của hệ thống, không phải của người dùng.** "Hệ thống gửi email xác nhận" không có người hưởng giá trị. Hỏi "ai cần email đó, để làm gì?" thường dẫn tới AC của một story khác.
+
+**AC viết sau khi code xong.** Lúc đó AC chỉ mô tả lại những gì đã làm, không còn là confirmation nữa. AC phải có trước khi story vào sprint, dù chưa hoàn hảo.
+
+**AC chứa thiết kế giao diện chi tiết.** "Nút màu cam, cách lề 16px" thuộc về file thiết kế. Khi nó nằm trong AC, mọi điều chỉnh thiết kế nhỏ lại thành "story chưa đạt AC".
+
+**Chia theo tầng kỹ thuật** — đã nói ở trên, nhưng mình vẫn gặp nó ở gần như mọi team mới chuyển sang Scrum.
+
+**Gherkin cho mọi thứ.** Feature file cho một form CRUD đơn giản không có rule nào là chi phí không mang lại gì. Gherkin đáng giá khi có rule nghiệp vụ mà người không viết code cần đọc và xác nhận.
+
+**Không ai là người trả lời thẻ đỏ.** Câu hỏi được ghi lại nhưng không có owner, không có hạn. Ba tuần sau dev tự trả lời bằng phỏng đoán.
+
+**Story không bao giờ đóng vì "còn vài thứ nhỏ".** Khi phát hiện việc mới trong lúc làm, tạo story mới. Story hiện tại đóng khi AC của nó đạt — đó là lý do AC phải có trước.
+
+**Ước lượng thay cho làm rõ.** Story tranh cãi giữa 3 và 13 điểm không cần thêm một vòng planning poker; nó cần một buổi Example Mapping. Khoảng cách lớn giữa các ước lượng gần như luôn là khoảng cách trong hiểu biết.
+
+## Tóm tắt
+
+<Checklist>
+
+- Coi thẻ story là lời hứa sẽ nói chuyện; requirement thật xuất hiện trong buổi three amigos, và kết quả của nó được ghi thành rule, ví dụ và câu hỏi có owner.
+- Kiểm story bằng INVEST để **sửa** chứ không chỉ để chấm điểm; cắt dọc qua mọi tầng, mỗi story xong trong 1–3 ngày.
+- Dựng story map trước khi chia nhỏ: backbone theo hành trình người dùng, walking skeleton đi trọn hành trình, ship cả lát ngang chứ không ship một cột.
+- Chia nhỏ bằng pattern: bước workflow, biến thể rule, happy rồi unhappy path (phần chống mất tiền đi cùng happy path), biến thể dữ liệu, CRUD, spike có hạn thời gian.
+- Viết AC là rule cộng ví dụ cụ thể ở biên; thống nhất các khái niệm như "ngày" và "giá đã trả" ngay từ AC.
+- Gherkin declarative: một hành vi mỗi kịch bản, Given là trạng thái, Then là kết quả nghiệp vụ, gom theo `Rule:`, chi tiết giao diện nằm trong step definition.
+- Dùng Example Mapping 25 phút cho story có rule; nhiều thẻ đỏ là chưa sẵn sàng, nhiều thẻ xanh dương là quá to.
+- DoR là checklist ngắn để không bị chặn giữa chừng, DoD là chuẩn chất lượng chung, AC là riêng của từng story — đừng trộn ba thứ.
+- Rà edge case (biên, rỗng, thời gian, đồng thời, quyền, dữ liệu cũ) và viết NFR thành con số hoặc hành vi kiểm chứng được.
+- Đưa ví dụ vào đúng tầng test: rule tính toán ở unit, quyền và dữ liệu ở integration, vài hành trình chính ở E2E bằng Playwright.
+
+</Checklist>

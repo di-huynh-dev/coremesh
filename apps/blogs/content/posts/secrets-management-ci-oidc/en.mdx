@@ -1,0 +1,558 @@
+---
+title: "Secrets Management for Small Teams: From .env Files to GitHub Actions OIDC and Short-Lived Credentials"
+excerpt: "What counts as a secret, how .env files and long-lived CI tokens actually leak, what to do in the first hour after a leak, secret stores compared, GitHub Actions OIDC to AWS and GCP instead of static keys, rotation without downtime, and typed env validation in a Turborepo monorepo."
+---
+
+<Lead>Most teams I've joined didn't have a secrets *problem* — they had a secrets *habit*. A `.env` file passed around on Slack, an AWS access key created in 2021 sitting in GitHub Actions secrets with admin rights, a Stripe key that "we'll rotate after the launch". Nothing goes wrong for a long time, which is exactly why nothing changes. Then a laptop gets stolen, a dependency gets compromised, or someone runs `console.log(process.env)` while debugging production, and the team learns how many places that one key had spread to. This post is the setup I now push for on small-to-mid teams: what to treat as a secret, how they really leak, what to do after a leak, where to keep them, and how to get rid of the most dangerous category entirely — long-lived cloud keys in CI — with OIDC.</Lead>
+
+## What actually counts as a secret
+
+A secret is anything that **grants access or proves identity** if someone else gets it. The practical test I use: "if this value showed up in a public GitHub repo tomorrow, would we need to change it?" If yes, it's a secret.
+
+| Secret (rotate if leaked) | Sensitive config (don't publish, but not a credential) | Public by design |
+| --- | --- | --- |
+| Database URLs with passwords | Internal hostnames, VPC IDs | Stripe publishable key `pk_...` |
+| Cloud access keys, service account JSON | Feature flag rules | Analytics write keys meant for browsers |
+| Session / cookie signing secrets, JWT private keys | Rate limit thresholds | OAuth client IDs |
+| OAuth client secrets, webhook signing secrets | Third-party account IDs | Sentry DSN (rate-limited, write-only) |
+| Third-party API keys (Stripe `sk_`, OpenAI, Resend) | Customer-specific settings | Supabase anon key *with* RLS enforced |
+| npm / registry publish tokens, GitHub PATs | | Firebase web config |
+| Encryption keys, TLS private keys, SSH keys | | |
+
+Two categories trip people up. First, **"public" keys are only safe if the backend enforces something**: a Supabase anon key is fine with row-level security on, and a data breach with it off. Second, **connection strings hide passwords**: `DATABASE_URL`, `REDIS_URL` and `SENTRY_AUTH_TOKEN` get treated as config because they look like URLs or IDs.
+
+<Callout type="tip" title="Make your own tokens greppable">
+
+If you issue tokens (API keys for your customers, internal service tokens), give them a recognizable prefix like `acme_live_` plus enough random characters. GitHub's `ghp_` and Stripe's `sk_live_` work this way, and it's why scanners can find them with near-zero false positives. A random 32-character hex string is invisible to every scanner you'll ever run.
+
+</Callout>
+
+## The lifecycle, and where teams skip steps
+
+Every secret goes through the same stages. Incidents almost always come from a stage nobody owns.
+
+1. **Create.** Generated with enough entropy (`openssl rand -base64 32`, not a password someone typed), with the narrowest scope the provider allows.
+2. **Store.** In one authoritative place — a secret manager — not in five `.env` files on five laptops.
+3. **Distribute.** To the runtime that needs it, ideally pulled by that runtime with its own identity, not pushed by a human copy-pasting.
+4. **Use.** Read once at startup, kept out of logs, error reports, URLs and client bundles.
+5. **Rotate.** On a schedule for things that can't be short-lived, and immediately on suspicion. Rotation must be routine, or you won't do it during an incident.
+6. **Revoke.** When a person leaves, a service is decommissioned, or a value leaks.
+7. **Audit.** Who read what, when. Without this, "was the leaked key used?" has no answer.
+
+Small teams usually do 1 and 2 badly, 3 and 4 by accident, and 5 to 7 never. The goal of this post is to make 5 to 7 cheap enough that they actually happen — and to shrink the problem by replacing as many long-lived secrets as possible with short-lived credentials that are issued on demand.
+
+## How secrets actually leak
+
+In the leaks I've cleaned up or read postmortems for, the cause is rarely sophisticated. It's one of these.
+
+### .env files and git history
+
+- `.env` committed before `.gitignore` was set up, then removed in a later commit. **It's still in history.** Anyone with a clone has it.
+- `.env.example` filled with real values "so new devs can start quickly".
+- `.env.production` committed because "it's only used by the build".
+- A secret pasted into a test fixture, a Postman collection, a `docker-compose.yml`, or a Jupyter notebook output cell.
+
+### Logs and error trackers
+
+- `console.log(process.env)` or `console.log(config)` at startup, left in.
+- HTTP client errors serialized whole: an axios error includes `config.headers.Authorization`. Ship that to your logger and every 401 writes your API key to log storage.
+- Error trackers capturing request headers and bodies by default. Scrub `authorization`, `cookie`, `x-api-key`, and anything named like `*token*` or `*secret*` before sending.
+- CI logs with `set -x` echoing commands that contain tokens. GitHub Actions masks registered secrets, but only exact strings — a base64-encoded or URL-encoded secret goes through unmasked.
+
+### Build artifacts and images
+
+- `ARG` and `ENV` in a Dockerfile end up in image metadata; `docker history` shows them. `COPY . .` with no `.dockerignore` puts your local `.env` in a layer.
+- Source maps uploaded publicly with server code in them.
+- Build outputs in a **remote cache**. If a server secret got inlined into `.next` or `dist`, it's now in your Turborepo remote cache too, readable by anyone with cache access.
+
+### Client bundles: `NEXT_PUBLIC_` and friends
+
+This is the frontend-specific one, and I've seen it in every framework. Next.js inlines every `process.env.NEXT_PUBLIC_*` reference into the JavaScript sent to browsers at build time. Vite does the same with `VITE_`. The failure mode is always the same story: a developer's server-only variable "didn't work" in a client component, so they renamed it with the public prefix. Now it's in a `.js` file on your CDN.
+
+The quieter variant in the App Router: a Server Component reads `process.env.SECRET` and passes it as a prop to a Client Component. Props crossing that boundary are serialized into the RSC payload — the secret ends up in the HTML response.
+
+```tsx
+// app/settings/page.tsx  (Server Component)
+import { BillingWidget } from "./billing-widget"; // "use client"
+
+export default function Page() {
+  // ❌ This value is serialized and sent to the browser.
+  return <BillingWidget stripeKey={process.env.STRIPE_SECRET_KEY!} />;
+}
+```
+
+The fix is structural: keep secret-reading code in modules that *can't* be imported from the client. In a Next.js app, `import "server-only"` at the top of your server env module makes any client import fail the build.
+
+### Long-lived CI tokens
+
+The highest-value target in most organizations is not a developer laptop; it's CI. A CI system holds deploy keys for every environment, runs third-party code (actions, npm packages, build plugins) on every push, and its secrets rarely get rotated because "it works". The wave of npm supply-chain attacks in 2025–2026 was built on exactly this: malicious install scripts harvesting tokens from CI environments and developer machines, then using them to publish more malware. I wrote about that chain in detail in [npm supply chain attacks](/blog/npm-supply-chain-security).
+
+A static `AWS_SECRET_ACCESS_KEY` in GitHub secrets is the worst kind of secret: it's long-lived, often over-privileged, usable from anywhere on the internet, and readable by any step in any workflow that references it. The best rotation strategy for it is to make it not exist — that's the OIDC section below.
+
+## Detection: catch it before it's pushed
+
+Detection has three layers, and you want all three, because each catches what the others miss.
+
+### Pre-commit with gitleaks
+
+`gitleaks` scans for known token formats plus generic high-entropy patterns. Run it on staged changes so the secret never makes it into a commit. In a JS monorepo I wire it through lefthook, which installs with the rest of the dev dependencies:
+
+```yaml
+# lefthook.yml
+pre-commit:
+  commands:
+    gitleaks:
+      run: gitleaks git --pre-commit --staged --redact --no-banner
+```
+
+Add your own token formats so internal secrets are covered too:
+
+```toml
+# .gitleaks.toml
+title = "acme gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "acme-service-token"
+description = "Acme internal service token"
+regex = '''acme_(live|test)_[A-Za-z0-9]{32}'''
+keywords = ["acme_live_", "acme_test_"]
+```
+
+A pre-commit hook is a seatbelt people can unbuckle (`--no-verify`, or simply not installing hooks), so it's a convenience, not a control.
+
+### CI as the control
+
+The same scan runs in CI as a required check on every pull request, over the full history of the branch:
+
+```yaml
+# .github/workflows/secrets-scan.yml
+name: secrets-scan
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for secrets
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.2 \
+            git /repo --redact --verbose
+```
+
+Pin the image (better: by digest) — a secret scanner is a privileged tool reading your whole repository. TruffleHog is a good complement: its `--only-verified` mode checks candidate credentials against the provider's API, which turns "this looks like a key" into "this key is live", and that's what decides whether you're having an incident.
+
+### GitHub push protection
+
+GitHub secret scanning with **push protection** blocks a push server-side when it detects a supported provider's token format, before it lands on the remote. It's free on public repositories; for private repositories it's part of GitHub Secret Protection. It only knows partner formats and custom patterns you define, so it doesn't replace gitleaks — but it's the one layer a developer can't skip by forgetting to install a hook.
+
+For the bigger picture of what runs in CI and how it's wired, see [CI for a frontend monorepo](/blog/ci-for-frontend-monorepo).
+
+## After a leak: rotate first, clean history second
+
+When a secret leaks, the order of operations matters more than anything else. I've watched teams spend the first two hours rewriting git history while the key was still valid.
+
+1. **Revoke or rotate the credential now.** Bots scrape public GitHub continuously and try new AWS keys within minutes. Assume it's already been copied. If rotation needs a deploy, deploy — this is what a rotation runbook is for.
+2. **Check whether it was used.** For AWS keys, query CloudTrail by access key ID from the moment it was exposed. For SaaS APIs, check the provider's audit or usage log. Look for unfamiliar IPs, regions you don't use, unusual calls like `iam:CreateUser`, `ec2:RunInstances` in odd regions, or new API keys being minted.
+3. **Find every copy.** Forks, CI logs, build artifacts, the Slack thread where someone pasted it, the ticket that quotes the error message. Each is a separate leak.
+4. **Then clean history**, if the repository will stay around: `git filter-repo --replace-text` with the leaked values, force-push, ask everyone to re-clone, and contact GitHub support to clear cached views if the repo is public.
+5. **Write the short postmortem**: how did it get there, why didn't detection catch it, which layer do we add.
+
+### Why cleaning history is not enough
+
+Rewriting history removes the secret from *your* copy of the branch. It doesn't touch:
+
+- Every existing clone on laptops, CI runners and backup systems.
+- Forks, which have their own copy of the objects.
+- Pull request refs (`refs/pull/123/head`) on GitHub, which you can't rewrite yourself.
+- Caches, mirrors, archive services, and any scraper that already fetched it.
+
+So the secret is burned the moment it's pushed. History cleaning is hygiene to stop the *next* scanner flagging it — the actual remediation is step 1.
+
+<Callout type="danger" title="Deleting the file is not a fix">
+
+A commit that deletes `.env` leaves the secret in the previous commit, one `git log -p` away. I still see this as the entire response in pull requests. If a credential reached a remote, rotate it.
+
+</Callout>
+
+## Where secrets should live
+
+There's no single right store; there's a right store for your team size, cloud footprint and tolerance for operating infrastructure.
+
+| Option | Strengths | Watch out for | Fits when |
+| --- | --- | --- | --- |
+| **Cloud secret managers** (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault) | IAM-native access control, audit logs out of the box, managed rotation for some databases, no servers to run | Per-secret cost adds up, ties you to one cloud, local dev needs a story | You're mostly on one cloud — the default for most teams |
+| **AWS SSM Parameter Store** (SecureString) | Very cheap, simple, KMS-encrypted, IAM and CloudTrail | Fewer rotation features, API throughput limits at scale | Small AWS teams, config plus a few secrets |
+| **HashiCorp Vault / OpenBao** | Dynamic secrets (per-lease DB users), PKI, multi-cloud, fine-grained policies | Real operational burden: HA, unsealing, upgrades, backups; Vault's license changed to BSL in 2023, OpenBao is the open-source fork | Multi-cloud or on-prem with a platform team to run it |
+| **Doppler / Infisical** | Great developer experience, one place for all environments, syncs to cloud and CI targets, `doppler run` / `infisical run` locally | Another vendor holding every secret you have; check their audit, SSO and access model | Small teams on several platforms (Vercel, Fly, AWS) wanting one source of truth; Infisical can be self-hosted |
+| **SOPS + age** (encrypted files in git) | Secrets versioned and reviewed with code, no server, works offline, diffs show which keys changed | Key distribution is on you; revoking a person means re-encrypting *and* rotating values, since old ciphertext stays in history | Infrastructure repos, GitOps, small teams that want zero extra services |
+
+My usual recommendation for a team of 5–30 engineers on one cloud: **the cloud's secret manager as the source of truth**, runtime identities (IAM roles, workload identity) to read it, and **OIDC for CI** so CI holds no cloud keys at all. Add Doppler or Infisical if you span several platforms that don't share an identity system. Use SOPS for infrastructure repositories where you want secrets reviewed alongside the Terraform that uses them.
+
+```yaml
+# .sops.yaml — which age keys can decrypt which files
+creation_rules:
+  - path_regex: secrets/prod/.*\.yaml$
+    age: age1prodci0000000000000000000000000000000000000000000000000000
+  - path_regex: secrets/staging/.*\.yaml$
+    age: age1stagingci000000000000000000000000000000000000000000000000,age1devteam0000000000000000000000000000000000000000000000000
+```
+
+```bash
+sops --encrypt --in-place secrets/staging/api.yaml   # values encrypted, keys stay readable
+sops exec-env secrets/staging/api.yaml 'bun run start' # decrypt into env for one process only
+```
+
+## GitHub Actions OIDC instead of static keys
+
+This is the change with the best ratio of effort to risk removed. Instead of storing an AWS access key in GitHub, each workflow run asks GitHub for a **signed identity token** describing exactly what's running (which repo, which branch, which environment, which workflow) and exchanges it with the cloud for credentials that expire in about an hour. Nothing long-lived is stored in GitHub. A stolen token is useless after it expires, and it can only be exchanged for a role whose trust policy matches its claims.
+
+### How the exchange works
+
+<Figure src="/blog/secrets-management-ci-oidc-oidc-flow.svg" alt="Diagram of GitHub Actions OIDC federation: a job in acme/web running deploy.yml in the production environment with id-token write permission requests a JWT from GitHub's OIDC provider; the provider returns a signed token; the job sends the token and a role ARN to AWS STS AssumeRoleWithWebIdentity; STS verifies the signature with GitHub's published keys and checks the role's trust policy conditions on issuer, audience and the sub claim repo:acme/web:environment:production; if they match, STS returns credentials valid for about an hour that the job uses to deploy to S3 and CloudFront; any other repo, branch, fork or environment gets AccessDenied" caption="CI stores no cloud keys. Each run proves who it is with a short-lived signed token, and the role's trust policy decides whether that exact repo, branch and environment may assume it." />
+
+1. The job has `permissions: id-token: write`, which lets it request a token from GitHub's OIDC provider.
+2. GitHub returns a JWT signed with its keys. Claims include `iss` (`https://token.actions.githubusercontent.com`), `aud`, `sub`, `repository`, `repository_owner`, `ref`, `environment`, `workflow_ref`, `job_workflow_ref`, `event_name` and `run_id`, plus a short expiry.
+3. The job calls `AssumeRoleWithWebIdentity` (AWS) or the STS token exchange (GCP) with that JWT.
+4. The cloud fetches GitHub's public signing keys (JWKS), verifies the signature, and evaluates your **trust conditions** against the claims.
+5. If everything matches, it returns temporary credentials scoped to that role.
+
+The security of the whole scheme lives in step 4. Get the conditions wrong and you've built a door that opens for the wrong people.
+
+### AWS: role trust policy
+
+First, create an IAM OIDC identity provider for `token.actions.githubusercontent.com` with audience `sts.amazonaws.com` (once per account, usually in Terraform). Then a role per purpose, with a trust policy pinned to the exact workflow context:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:acme/web:environment:production"
+        }
+      }
+    }
+  ]
+}
+```
+
+The `sub` claim's format depends on the trigger:
+
+| Context | `sub` value |
+| --- | --- |
+| Job with an environment | `repo:acme/web:environment:production` |
+| Push to a branch, no environment | `repo:acme/web:ref:refs/heads/main` |
+| Tag | `repo:acme/web:ref:refs/tags/v1.4.0` |
+| Pull request | `repo:acme/web:pull_request` |
+
+Note the first row: **when a job declares an `environment`, `sub` uses the environment form, not the branch.** That's a feature — GitHub environments can restrict which branches may deploy to them and require reviewers — but only if you configure those protection rules. A `production` environment with no branch restriction can be targeted from any branch whose workflow says `environment: production`.
+
+And the workflow:
+
+```yaml
+# .github/workflows/deploy.yml
+name: deploy
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production   # protected: main only, required reviewers
+    permissions:
+      id-token: write          # only this job can request an OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx turbo run build --filter=web
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/gha-web-deploy-prod
+          aws-region: ap-southeast-1
+          role-session-name: gha-web-${{ github.run_id }}
+      - run: aws s3 sync apps/web/out s3://acme-web-prod --delete
+      - run: aws cloudfront create-invalidation --distribution-id E123EXAMPLE --paths "/*"
+```
+
+Notice that credentials are requested **after** the install and build steps. Anything that runs before `configure-aws-credentials` — including every `postinstall` script in your dependency tree — never sees cloud credentials. That ordering is a cheap supply-chain mitigation in its own right. In real workflows, also pin third-party actions to a full commit SHA rather than a tag.
+
+### GCP: Workload Identity Federation
+
+Same idea, different nouns. A workload identity pool trusts GitHub's issuer; a provider maps claims to attributes and applies a condition; a service account grants impersonation to principals matching an attribute.
+
+```bash
+gcloud iam workload-identity-pools create github \
+  --location=global --display-name="GitHub Actions"
+
+gcloud iam workload-identity-pools providers create-oidc github \
+  --location=global --workload-identity-pool=github \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
+  --attribute-condition="assertion.repository_owner == 'acme'"
+
+gcloud iam service-accounts add-iam-policy-binding web-deploy@acme-prod.iam.gserviceaccount.com \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/github/attribute.repository/acme/web"
+```
+
+```yaml
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/github
+          service_account: web-deploy@acme-prod.iam.gserviceaccount.com
+```
+
+The `attribute-condition` on the provider is the GCP equivalent of the AWS `sub` condition: without it, any GitHub repository in the world can at least present a token to your pool. Keep it, and tighten it per provider when different repos need different access.
+
+### Trust condition mistakes that undo everything
+
+- **No `sub` condition, or `StringLike` with `repo:*`.** That trusts every repository on GitHub. This is the catastrophic one.
+- **`repo:acme/*`** when only one repository deploys. Every repo in the org, including the intern's experiment with a sketchy action, can now assume the production role.
+- **One role for everything.** PR checks, staging deploys and production deploys share a role, so a pull request workflow can do what production can.
+- **Trusting `pull_request` for anything writable.** Use a separate read-only role (for plans and previews) for PR contexts. Fork pull requests don't get an OIDC token by default, and `pull_request_target` runs with base-repository privileges — be very careful granting `id-token: write` in workflows it triggers.
+- **Renamed or recreated repositories.** `sub` uses names. If an org or repo name is freed and reclaimed, the name matches again. GitHub lets you customize the `sub` claim template to include immutable IDs like `repository_id` and `repository_owner_id`; for high-value roles it's worth doing.
+
+## Runtime injection vs build-time
+
+The rule I follow: **secrets enter at runtime, from the platform's identity; builds receive only public configuration.**
+
+Build time is the wrong moment for secrets because builds produce artifacts that get copied, cached and shared: images in a registry, bundles on a CDN, outputs in a remote cache. Anything present at build time is at risk of ending up in one of them.
+
+| | Build-time | Runtime |
+| --- | --- | --- |
+| **Where the value lives afterwards** | Inside the artifact (bundle, image layer, cache) | In the running process only |
+| **Rotation** | Rebuild and redeploy | Restart, or reload without restart |
+| **Same artifact across environments** | No — staging and prod builds differ | Yes — promote one image through environments |
+| **Appropriate for** | `NEXT_PUBLIC_*`, public API URLs, release version | Database credentials, API keys, signing secrets |
+
+When a build genuinely needs a secret — installing from a private registry, uploading source maps — use mechanisms that don't persist it:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM oven/bun:1 AS deps
+WORKDIR /app
+COPY package.json bun.lock ./
+# The token is mounted for this RUN only; it never lands in a layer.
+RUN --mount=type=secret,id=npm_token \
+    NPM_TOKEN="$(cat /run/secrets/npm_token)" bun install --frozen-lockfile
+```
+
+```bash
+docker build --secret id=npm_token,env=NPM_TOKEN -t acme/api .
+```
+
+At runtime, let the platform inject secrets from the secret manager using the workload's own identity: ECS task definitions with `secrets` entries pointing at Secrets Manager ARNs, Kubernetes with External Secrets Operator syncing from the cloud store, Cloud Run with secret references. The app reads environment variables (or mounted files) and doesn't need SDK credentials of its own.
+
+Environment variables aren't perfect: they're inherited by child processes, visible to the same user through `/proc`, and occasionally dumped into crash reports. Mounted files on a `tmpfs` are slightly better. But the jump from "secret baked into an image" to "secret injected at runtime" is far bigger than the jump from env vars to files.
+
+## Rotation without downtime
+
+Teams don't rotate because rotation causes outages: the moment you change the value, everything still holding the old one breaks. The fix is the same everywhere — **for a while, two secrets are valid at once**.
+
+The general sequence:
+
+1. **Add** a new secret alongside the old one. Both are valid.
+2. **Deploy consumers** that accept both (verifiers try the new one, then the old).
+3. **Switch producers** to the new secret (signers sign with new, clients send new).
+4. **Wait** for the longest lifetime of anything signed with the old one: session TTL, token expiry, queued webhook retries.
+5. **Remove** the old secret and revoke it at the provider.
+6. **Confirm** in audit logs that nothing still uses the old one.
+
+For secrets you verify yourself — webhook signatures, HMAC tokens — support a list from day one:
+
+```ts
+// lib/hmac.ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { env } from "@/env/server";
+
+// env.WEBHOOK_SECRETS is ["new", "old"]: sign with the first, accept any.
+export function sign(payload: string): string {
+  return createHmac("sha256", env.WEBHOOK_SECRETS[0]).update(payload).digest("hex");
+}
+
+export function verify(payload: string, signatureHex: string): boolean {
+  const given = Buffer.from(signatureHex, "hex");
+  return env.WEBHOOK_SECRETS.some((secret) => {
+    const expected = createHmac("sha256", secret).update(payload).digest();
+    return expected.length === given.length && timingSafeEqual(expected, given);
+  });
+}
+```
+
+The same pattern elsewhere:
+
+- **JWT signing keys**: publish a JWKS with both keys under different `kid`s; sign with the new one; drop the old key after the longest token lifetime.
+- **Database passwords**: two database users that alternate. AWS Secrets Manager's "alternating users" rotation does exactly this, so the app always has one working credential.
+- **Third-party API keys**: most providers allow two active keys. Create the new one, deploy, verify traffic moved, then delete the old.
+- **Session secrets**: many session libraries accept an array of secrets for exactly this reason.
+
+<Callout type="note" title="Rotate on a schedule so the runbook stays warm">
+
+The first time you rotate a secret shouldn't be during an incident. I schedule the boring ones quarterly. The point isn't that a 90-day-old key is much riskier than a 30-day-old one; it's that the team knows the steps work and how long they take.
+
+</Callout>
+
+## Least privilege, practically
+
+Least privilege sounds like a principle; in practice it's a handful of concrete decisions:
+
+- **One role per workflow purpose and environment.** `gha-web-deploy-prod` can write to one bucket and invalidate one distribution. It can't read secrets, touch IAM, or reach other services.
+- **Separate accounts or projects for production.** The blast radius of a staging credential should be staging.
+- **No IAM users with access keys for humans.** SSO (`aws sso login`, `gcloud auth login`) gives developers short-lived credentials too.
+- **Read paths scoped per service.** The API reads `prod/api/*` in the secret manager; the worker reads `prod/worker/*`. Neither can list the other's.
+- **Review with data.** IAM Access Analyzer (or the equivalent) shows which permissions a role actually used; trim the rest after a few weeks.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::acme-web-prod", "arn:aws:s3:::acme-web-prod/*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudfront:CreateInvalidation",
+      "Resource": "arn:aws:cloudfront::123456789012:distribution/E123EXAMPLE"
+    }
+  ]
+}
+```
+
+## Validate env at startup with a typed schema
+
+The last piece is less about attackers and more about the 2 a.m. incident where production boots with `DATABASE_URL` missing and fails on the first request instead of at deploy time. A typed env module turns "undefined at runtime" into "refuses to start, with a clear message", and gives every other file a typed, documented `env` object instead of scattered `process.env.X!`.
+
+### Server env, in the app
+
+```ts
+// apps/web/src/env/server.ts
+import "server-only"; // any import from a Client Component now fails the build
+import { z } from "zod";
+
+const csv = z
+  .string()
+  .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean));
+
+const ServerEnv = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  DATABASE_URL: z.url(),
+  SESSION_SECRET: z.string().min(32, "SESSION_SECRET must be at least 32 characters"),
+  WEBHOOK_SECRETS: csv.pipe(z.array(z.string().min(32)).min(1)),
+  STRIPE_SECRET_KEY: z.string().startsWith("sk_"),
+  S3_UPLOAD_BUCKET: z.string().min(1),
+});
+
+const parsed = ServerEnv.safeParse(process.env);
+
+if (!parsed.success) {
+  // Print which variables are wrong, never their values.
+  console.error("Invalid server environment:\n" + z.prettifyError(parsed.error));
+  throw new Error("Invalid server environment");
+}
+
+export const env = parsed.data;
+```
+
+### Client env, explicitly listed
+
+```ts
+// apps/web/src/env/client.ts
+import { z } from "zod";
+
+const ClientEnv = z.object({
+  NEXT_PUBLIC_API_URL: z.url(),
+  NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+});
+
+// Each variable must be referenced literally: Next.js inlines only static
+// `process.env.NEXT_PUBLIC_X` expressions, not a spread of process.env.
+export const clientEnv = ClientEnv.parse({
+  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+  NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+});
+```
+
+A few monorepo-specific notes:
+
+- **Keep `server-only` in the Next.js app, not a shared package.** The `server-only` package throws when imported outside React's server environment, so a shared `@repo/env` used by a NestJS service or a script would crash on import. Share the *schemas* from a package; let each app own the module that reads `process.env`.
+- **`next build` evaluates server modules.** If your build runs where runtime secrets don't exist (and it should), validation will fail at build. Either validate lazily on first access, or allow an explicit `SKIP_ENV_VALIDATION=1` in the build step only. `@t3-oss/env-nextjs` packages this pattern if you'd rather not hand-roll it.
+- **Never log values.** `z.prettifyError` reports paths and messages; make sure custom messages don't echo the input.
+
+### Declaring env in turbo.json
+
+Turborepo 2 runs tasks in strict env mode: a task only sees environment variables that are declared, and declared variables are part of the task's cache key. That's useful for secrets hygiene, not just caching:
+
+```json
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalEnv": ["NODE_ENV"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": ["NEXT_PUBLIC_*", "SKIP_ENV_VALIDATION"],
+      "passThroughEnv": ["SENTRY_AUTH_TOKEN"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "start": {
+      "cache": false,
+      "passThroughEnv": ["DATABASE_URL", "SESSION_SECRET", "WEBHOOK_SECRETS", "STRIPE_SECRET_KEY"]
+    }
+  }
+}
+```
+
+- **`env`** lists variables that change build output — public config. If `build` needs a server secret in this list, ask why: either it's being inlined somewhere (a leak) or that code should run at startup instead.
+- **`passThroughEnv`** makes a variable available without hashing it into the cache key — right for tokens a build step *uses* (uploading source maps) but that don't change outputs.
+- **The remote cache stores outputs, not env.** That's only safe if outputs contain no secrets — which is the whole point of keeping secrets out of build time.
+
+## Mistakes I see
+
+- **"It's a private repo."** Private repositories get cloned onto laptops, mirrored to CI caches, shared with contractors, and occasionally made public by accident. Treat them as if they'll leak.
+- **Deleting the file instead of rotating the key.** Covered above, still the most common response.
+- **One `AWS_ACCESS_KEY_ID` shared by CI, three developers and a cron job.** When it leaks, you can't tell who used it, and you can't rotate it without breaking all of them.
+- **Secrets in URLs**: `?api_key=...` ends up in access logs, proxies, browser history and `Referer` headers.
+- **Renaming a server variable with `NEXT_PUBLIC_` to "make it work".** If a client component needs it, it needs a server endpoint, not the secret.
+- **`pull_request_target` workflows that check out the PR's code and run it with secrets available.** That's handing secrets to anyone who can open a pull request.
+- **No owner for rotation.** Every secret in the manager should have an owner and a "how to rotate" note. A secret nobody knows how to rotate is a secret that won't be rotated during an incident.
+- **Validating env only in development.** Production is where a missing variable costs the most.
+
+## Takeaways
+
+<Checklist>
+
+- Every secret has one authoritative home (a secret manager), an owner, and a written rotation procedure.
+- `.env*` files are gitignored and dockerignored; `.env.example` contains only placeholders.
+- gitleaks runs pre-commit and as a required CI check over full history; push protection is on; our own tokens have greppable prefixes.
+- The leak runbook says: rotate first, check audit logs for use, find all copies, then clean history.
+- CI has no static cloud keys: GitHub Actions uses OIDC, with trust conditions on `aud` and an exact `sub` (repo plus environment or branch), one role per purpose.
+- Production environments in GitHub restrict branches and require reviewers, since `sub` conditions rely on them.
+- Cloud credentials are requested after install and build steps, and third-party actions are pinned by SHA.
+- Builds receive only public config; secrets are injected at runtime from the platform identity; Docker builds use secret mounts.
+- Secrets we verify ourselves support two values at once, so rotation needs no downtime.
+- Server env is validated with a typed schema at startup and guarded by `server-only`; client env is listed explicitly.
+- `turbo.json` declares `env` and `passThroughEnv` deliberately, and no build output contains a server secret.
+
+</Checklist>

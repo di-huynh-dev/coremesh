@@ -1,0 +1,663 @@
+---
+title: "SSRF và bảo mật upload file: fetch URL và upload sao cho không giao chìa khoá mạng nội bộ"
+excerpt: "Link preview, webhook, import ảnh từ URL và upload file trông như tính năng nhàm chán, nhưng cứ xuất hiện trong báo cáo sự cố. Vì sao blocklist SSRF thất bại, fetch an toàn trong Node với undici và pin IP, IMDSv2, và pipeline upload: presigned S3, magic bytes, sharp, domain riêng, quét bất đồng bộ."
+---
+
+<Lead>Có hai tính năng mình gặp đi gặp lại trong các báo cáo sự cố — cả những vụ mình đọc lẫn những vụ mình trực tiếp xử lý: "đưa URL đây, server sẽ fetch giúp" (link preview, webhook, import ảnh từ link) và "upload file". Cả hai đều trông như một ticket làm xong trong một buổi chiều. Và cả hai đều biến server của bạn thành công cụ trong tay người khác — cái thứ nhất gửi request thay kẻ tấn công từ *bên trong* mạng của bạn, cái thứ hai lưu và phục vụ nội dung do kẻ tấn công viết ngay trên *domain* của bạn. Bài này giải thích các kiểu tấn công ở mức khái niệm, vừa đủ chi tiết để bạn tự kiểm thử hệ thống của mình, và dành phần lớn thời lượng cho code và hạ tầng mình thực sự đưa lên production để chặn chúng.</Lead>
+
+## Vì sao hai tính năng này cứ gây sự cố
+
+Hai tính năng có chung một hình dạng: **input không đáng tin vượt qua ranh giới tin cậy, và server hành động dựa trên nó bằng chính quyền hạn của mình**.
+
+- Với "fetch URL", input là một địa chỉ. Server của bạn có quyền truy cập mạng mà kẻ tấn công không có: VPC, dịch vụ metadata của cloud, trang admin bind vào `localhost`, con Redis không đặt mật khẩu vì "nó là nội bộ mà". Server-Side Request Forgery (SSRF) đơn giản là kẻ tấn công mượn vị trí đó.
+- Với upload, input là các byte cộng thêm vài cái nhãn (tên file, MIME type) do client tự đặt. Nếu bạn tin nhãn, lưu byte vào đường dẫn ghép từ tên file, hoặc phục vụ chúng từ origin chính, thì những byte đó có thể trở thành HTML chạy trong session của người dùng, ghi đè file, hoặc vắt kiệt worker.
+
+Điều khiến chúng dai dẳng là chúng thường được team sản phẩm làm dưới áp lực tính năng, happy path chạy ngon ngay ngày đầu, còn input nguy hiểm thì không bao giờ xuất hiện trong buổi demo. Chẳng ai dán `http://169.254.169.254/` vào ô link preview lúc QA cả.
+
+<Callout type="warning" title="Phạm vi">
+
+Mọi thứ trong bài đều mang tính phòng thủ. Mình mô tả kỹ thuật tấn công ở mức bạn cần để viết test và nhận ra rủi ro khi review code. Chỉ kiểm thử trên hệ thống bạn sở hữu hoặc được cho phép rõ ràng.
+
+</Callout>
+
+## SSRF: kẻ tấn công thực sự lấy được gì
+
+SSRF có hai dạng, và khác biệt giữa chúng quyết định mức độ nghiêm trọng:
+
+| | Full-read SSRF | Blind SSRF |
+| --- | --- | --- |
+| **Tính năng điển hình** | Link preview, "import từ URL", dịch vụ render PDF/screenshot | Webhook, "ping URL này", callback bất đồng bộ |
+| **Kẻ tấn công thấy** | Nội dung response (title, ảnh, trang đã render) | Chỉ có tác dụng phụ: thời gian, status, thành công/thất bại |
+| **Tệ nhất** | Đọc credential cloud từ metadata, đọc API nội bộ | Gọi endpoint nội bộ có thay đổi trạng thái, quét port trong VPC |
+| **Biện pháp chính** | Cô lập mạng + kiểm tra IP, không trả body thô | Như bên trái, thêm việc không lộ status code và thời gian |
+
+Phần thưởng kinh điển là **dịch vụ metadata của cloud**. Trên AWS, `169.254.169.254` phục vụ instance metadata — bao gồm credential tạm thời của IAM role gắn với instance. Trên GCP là `metadata.google.internal` (cùng IP link-local), trên Azure là cùng địa chỉ dưới đường dẫn `/metadata`. Nếu link previewer của bạn có thể bị trỏ vào địa chỉ đó và trả lại những gì nhận được, kẻ tấn công ra về với credential hành động y như server của bạn.
+
+Những mục tiêu khác mình thấy có ý nghĩa thực tế:
+
+- **Endpoint admin và debug** bind vào localhost: trang health kiểu actuator, Prometheus exporter, trang quản trị nội bộ của CMS.
+- **Dịch vụ nội bộ không xác thực**: Elasticsearch, các service nội bộ tin mọi thứ đến từ trong VPC.
+- **Kubernetes**: kubelet API, API server qua địa chỉ in-cluster, các pod khác qua tên DNS của service.
+- **Metadata của container**: ECS phơi credential của task tại `169.254.170.2`, khác địa chỉ của EC2.
+
+### Metadata của cloud và IMDSv2
+
+Trên AWS, cải thiện lớn nhất từ một thay đổi duy nhất là bắt buộc **IMDSv2**. IMDSv1 trả lời một `GET` đơn giản, đúng thứ mà một SSRF ngây thơ gửi được. IMDSv2 dựa trên session:
+
+```http
+PUT /latest/api/token HTTP/1.1
+Host: 169.254.169.254
+X-aws-ec2-metadata-token-ttl-seconds: 300
+
+GET /latest/meta-data/iam/security-credentials/my-role HTTP/1.1
+Host: 169.254.169.254
+X-aws-ec2-metadata-token: AQAEAN...
+```
+
+Phần lớn lỗ SSRF cho kẻ tấn công chọn URL nhưng không chọn được method hay header, nên yêu cầu bắt buộc `PUT` kèm header tuỳ biến chặn được chúng. Thêm nữa, IMDSv2 từ chối request lấy token có `X-Forwarded-For` (dấu hiệu request đi qua proxy), và response token có giới hạn số hop IP. Đặt `HttpPutResponseHopLimit` bằng 1 cho EC2 thường; container trên bridge network cần 2, và đó là trade-off có chủ đích.
+
+```bash
+aws ec2 modify-instance-metadata-options \
+  --instance-id i-0123456789abcdef0 \
+  --http-tokens required \
+  --http-put-response-hop-limit 1
+```
+
+Hãy áp dụng ở cấp tổ chức thay vì từng instance: launch template với `HttpTokens: required`, mặc định cấp account cho instance mới, và một policy hoặc config rule cảnh báo bất cứ thứ gì còn cho phép v1. GCP và Azure có ý tưởng tương tự sẵn có — dịch vụ metadata của họ yêu cầu header `Metadata-Flavor: Google` hoặc `Metadata: true`.
+
+<Callout type="note" title="IMDSv2 là dây an toàn, không phải cách sửa">
+
+Nó chặn con đường SSRF phổ biến nhất tới credential. Nó không làm gì cho trang admin nội bộ, Redis hay kubelet. Và nếu tính năng fetch của bạn cho người dùng đặt header hoặc method tuỳ ý (một số UI webhook có), thì ngay cả IMDSv2 cũng quay lại tầm ngắm. Coi nó là một lớp.
+
+</Callout>
+
+## Vì sao blocklist thất bại
+
+Cách sửa đầu tiên ai cũng viết là kiểm tra chuỗi URL: chặn `localhost`, `127.0.0.1`, `169.254.169.254`, `10.`, `192.168.`. Mình đã review đúng cái hàm này ở ít nhất bốn codebase. Nó thua vì nhiều lý do độc lập với nhau.
+
+### Một IP có rất nhiều cách viết
+
+Địa chỉ IPv4 là một số 32-bit, và URL parser chấp nhận rất nhiều cách viết nó:
+
+```text
+http://127.0.0.1/          dạng thập phân có dấu chấm
+http://2130706433/         một số thập phân 32-bit
+http://0x7f000001/         hex
+http://0177.0.0.1/         octet đầu viết bát phân
+http://127.1/              dạng rút gọn (octet thiếu được tự điền)
+http://[::1]/              loopback IPv6
+http://[::ffff:127.0.0.1]/ IPv6 ánh xạ từ IPv4
+http://[::ffff:7f00:1]/    giống trên, viết hex
+http://0.0.0.0/            "máy này" — trên nhiều hệ thống tới được service local
+```
+
+WHATWG URL parser mà `new URL()` trong Node dùng sẽ chuẩn hoá các dạng IPv4 về dạng có dấu chấm, điều đó có ích — nhưng thư viện khác, proxy, hay HTTP client bạn dùng cuối cùng có thể không đồng ý với validator của bạn về việc host thực sự là gì. Chính sự bất đồng đó là bug. Và tất cả những thứ trên còn chưa đụng tới hostname.
+
+### Hostname resolve ra bất cứ thứ gì kẻ tấn công muốn
+
+Kẻ tấn công kiểm soát DNS của domain họ. `internal.attacker.example` có thể resolve ra `10.0.0.5`. Có cả dịch vụ wildcard DNS công khai biến `10.0.0.5.something.example` thành `10.0.0.5` mà không cần cấu hình gì. Kiểm tra chuỗi hostname không cho bạn biết gì cả; chỉ **IP sau khi resolve** mới quan trọng.
+
+### DNS rebinding: đã kiểm tra không có nghĩa là đã kết nối tới đúng chỗ
+
+Vậy bạn resolve hostname, kiểm tra IP, rồi gọi `fetch(url)`. Race condition ở đây: `fetch` resolve tên đó **thêm một lần nữa**. Một DNS server rebinding trả lời lần đầu bằng IP public (qua được kiểm tra) và lần hai bằng `127.0.0.1`, với TTL bằng 0 để không ai cache. Đây là time-of-check versus time-of-use, chỉ là với DNS. Cách sửa vững chắc duy nhất: **IP bạn kiểm tra phải chính là IP mà socket kết nối tới**.
+
+### Redirect dời mục tiêu sau khi bạn đã kiểm tra
+
+Validator duyệt `https://harmless.example/img.png`. Server đó trả `302 Location: http://169.254.169.254/latest/meta-data/`. Nếu HTTP client tự động theo redirect — mà `fetch` mặc định là có — thì bạn đã kiểm tra một URL không phải đích cuối cùng. Mỗi bước redirect phải được kiểm tra như thể nó là input gốc.
+
+### Danh sách không bao giờ đủ
+
+Dải địa chỉ private không chỉ có RFC 1918. Còn `100.64.0.0/10` (carrier-grade NAT, một số cloud và VPN dùng), `169.254.0.0/16` link-local, `fc00::/7` unique local IPv6, `fe80::/10` link-local IPv6, NAT64 `64:ff9b::/96` nhúng địa chỉ IPv4 bên trong, 6to4 `2002::/16`, endpoint metadata IPv6 của AWS `fd00:ec2::254`, và bất cứ thứ gì cloud của bạn dùng nội bộ vào năm sau. Một **allowlist "public unicast"** bền hơn nhiều so với blocklist những dải bạn nhớ ra được.
+
+## Fetch an toàn trong Node
+
+Đây là fetcher mình dùng cho link preview và import ảnh. Ý tưởng quan trọng hơn code chính xác:
+
+1. Parse bằng `new URL()`, chỉ cho `http:` và `https:`, chỉ port 80 và 443, không có credential trong URL.
+2. **Kiểm tra ngay bên trong bước DNS lookup mà socket thực sự dùng.** undici cho phép truyền `lookup` tuỳ biến vào `Agent`. Ta resolve, từ chối nếu *bất kỳ* địa chỉ trả về nào không phải public unicast, và đưa thẳng các địa chỉ đã kiểm tra cho kết nối. Kiểm tra và sử dụng trở thành cùng một bước, DNS rebinding hết đường.
+3. Tắt tự động theo redirect, tự theo bằng tay và kiểm tra lại mỗi bước, có giới hạn số bước.
+4. Timeout cứng cho connect, header và body; giới hạn cứng số byte đọc.
+
+### Phân loại địa chỉ IP
+
+Mình dùng `ipaddr.js` thay vì tự tính CIDR. `ipaddr.process()` gỡ địa chỉ IPv6 ánh xạ IPv4 thành IPv4 thường, đóng mánh `::ffff:127.0.0.1`, còn `range()` gắn nhãn cho địa chỉ. Chính sách là allowlist: chỉ `unicast` được qua.
+
+```ts
+// lib/ssrf/ip-policy.ts
+import ipaddr from "ipaddr.js";
+
+export class SsrfBlockedError extends Error {
+  constructor(public readonly reason: string) {
+    super(`Blocked outbound request: ${reason}`);
+    this.name = "SsrfBlockedError";
+  }
+}
+
+// Những dải ipaddr.js gắn nhãn "unicast" nhưng ta vẫn không bao giờ muốn chạm tới.
+const EXTRA_BLOCKED: Array<[ipaddr.IPv4 | ipaddr.IPv6, number]> = [
+  ipaddr.parseCIDR("100.64.0.0/10"), // carrier-grade NAT, một số cloud dùng nội bộ
+  ipaddr.parseCIDR("198.18.0.0/15"), // benchmarking
+  ipaddr.parseCIDR("fd00:ec2::/32"), // metadata IPv6 của AWS nằm ở đây
+];
+
+export function assertPublicAddress(address: string): void {
+  if (!ipaddr.isValid(address)) throw new SsrfBlockedError(`invalid address ${address}`);
+
+  // Gỡ ::ffff:a.b.c.d thành object IPv4
+  const ip = ipaddr.process(address);
+  const range = ip.range();
+
+  if (range !== "unicast") {
+    throw new SsrfBlockedError(`${address} is in range "${range}"`);
+  }
+  for (const [net, bits] of EXTRA_BLOCKED) {
+    if (ip.kind() === net.kind() && ip.match(net, bits)) {
+      throw new SsrfBlockedError(`${address} is in a blocked range`);
+    }
+  }
+}
+```
+
+`range()` trả về các nhãn như `private`, `loopback`, `linkLocal`, `uniqueLocal`, `unspecified`, `carrierGradeNat`, `6to4`, `rfc6052`...; bất cứ thứ gì không phải `unicast` đều bị từ chối mà mình không cần liệt kê. Viết một unit test cho mỗi cách viết trong danh sách ở trên — file test là nơi các giả định kiểu blocklist bị lật tẩy.
+
+### Pin IP bằng lookup tuỳ biến
+
+```ts
+// lib/ssrf/safe-agent.ts
+import dns from "node:dns";
+import type { LookupFunction } from "node:net";
+import { Agent } from "undici";
+import { assertPublicAddress, SsrfBlockedError } from "./ip-policy";
+
+const safeLookup: LookupFunction = (hostname, options, callback) => {
+  dns.lookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
+    if (err) return callback(err, "", 0);
+    try {
+      if (addresses.length === 0) throw new SsrfBlockedError(`no addresses for ${hostname}`);
+      // Từ chối nếu BẤT KỲ câu trả lời nào là nội bộ: kẻ tấn công trộn bản ghi public và private.
+      for (const a of addresses) assertPublicAddress(a.address);
+    } catch (e) {
+      return callback(e as NodeJS.ErrnoException, "", 0);
+    }
+    // Socket kết nối tới đúng những gì ta vừa kiểm tra.
+    if (options.all) return (callback as any)(null, addresses);
+    callback(null, addresses[0].address, addresses[0].family);
+  });
+};
+
+export const safeAgent = new Agent({
+  connect: { lookup: safeLookup, timeout: 3_000 },
+  headersTimeout: 5_000,
+  bodyTimeout: 10_000,
+  // Một request mỗi socket cho dễ suy luận với fetcher lưu lượng thấp
+  pipelining: 0,
+  keepAliveTimeout: 1_000,
+});
+```
+
+Vì sao cách này hiệu quả: undici truyền các option `connect` xuống `net.connect`/`tls.connect`, và Node gọi `lookup` của ta để biến hostname thành địa chỉ **cho chính socket đó**. Không có lần resolve thứ hai nào để kẻ tấn công rebind. TLS vẫn xác minh certificate theo hostname gốc, vì SNI và kiểm tra certificate dùng tên chứ không dùng IP.
+
+Hai chi tiết từng làm mình vấp:
+
+- Happy-eyeballs của Node (`autoSelectFamily`, bật mặc định ở các bản gần đây) gọi `lookup` với `all: true`. Một hàm lookup chỉ xử lý dạng callback một địa chỉ sẽ làm hỏng các host có IPv6 theo những cách rất khó hiểu — hãy xử lý cả hai dạng.
+- Khi host trong URL đã là IP literal, Node bỏ qua `lookup` hoàn toàn. Vì vậy phải tự kiểm tra IP literal trong URL trước khi kết nối (code bên dưới có làm).
+
+### Redirect, giới hạn và hàm fetch bọc ngoài
+
+```ts
+// lib/ssrf/safe-fetch.ts
+import net from "node:net";
+import { fetch } from "undici";
+import { assertPublicAddress, SsrfBlockedError } from "./ip-policy";
+import { safeAgent } from "./safe-agent";
+
+type SafeFetchOptions = {
+  maxBytes?: number;
+  maxRedirects?: number;
+  accept?: string;
+  timeoutMs?: number;
+};
+
+function checkUrl(raw: string | URL): URL {
+  const url = new URL(raw);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new SsrfBlockedError(`scheme ${url.protocol}`);
+  }
+  if (url.username || url.password) throw new SsrfBlockedError("credentials in URL");
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  if (port !== "80" && port !== "443") throw new SsrfBlockedError(`port ${port}`);
+
+  // IP literal không bao giờ đi qua hook lookup, nên kiểm tra ở đây.
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(host)) assertPublicAddress(host);
+  return url;
+}
+
+export async function safeFetch(input: string, opts: SafeFetchOptions = {}) {
+  const { maxBytes = 5 * 1024 * 1024, maxRedirects = 3, accept = "*/*", timeoutMs = 10_000 } = opts;
+  const signal = AbortSignal.timeout(timeoutMs); // ngân sách tổng, cho mọi bước redirect
+  let url = checkUrl(input);
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const res = await fetch(url, {
+      dispatcher: safeAgent,
+      redirect: "manual",
+      signal,
+      headers: { accept, "user-agent": "AcmePreviewBot/1.0 (+https://acme.example/bot)" },
+    });
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      await res.body?.cancel();
+      if (!location) throw new SsrfBlockedError("redirect without location");
+      url = checkUrl(new URL(location, url)); // mỗi bước là một input mới, không đáng tin
+      continue;
+    }
+
+    const declared = Number(res.headers.get("content-length") ?? 0);
+    if (declared > maxBytes) {
+      await res.body?.cancel();
+      throw new SsrfBlockedError(`body too large (${declared} bytes)`);
+    }
+
+    // Đừng chỉ tin content-length: đếm trong lúc đọc.
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for await (const chunk of res.body ?? []) {
+      received += chunk.byteLength;
+      if (received > maxBytes) throw new SsrfBlockedError("body exceeded limit");
+      chunks.push(chunk);
+    }
+    return { url: url.href, status: res.status, headers: res.headers, body: Buffer.concat(chunks) };
+  }
+  throw new SsrfBlockedError("too many redirects");
+}
+```
+
+Vài lựa chọn cần nói rõ:
+
+- **Mình import `fetch` từ `undici`, không dùng global.** `fetch` global của Node được xây trên một bản undici đóng gói sẵn, và truyền `dispatcher` từ một phiên bản undici khác vào nó là nguồn gốc quen thuộc của những lỗi kỳ quặc. Giữ agent và fetch từ cùng một package.
+- **Timeout bao toàn bộ thao tác.** Timeout theo từng bước cho phép một chuỗi redirect chậm giữ worker hàng phút. `AbortSignal.timeout()` ở lời gọi ngoài cùng chặn trần.
+- **Lỗi trả cho người dùng phải chung chung.** "Không lấy được URL này" — không phải "connection refused on port 6379". Lỗi chi tiết biến blind SSRF thành công cụ quét port. Ghi chi tiết vào log phía server.
+- **Proxy làm mất tác dụng của việc pin.** Nếu bạn đi qua HTTP proxy, proxy làm DNS chứ không phải bạn. Khi đó proxy phải thực thi chính sách — và đó thực ra là thiết kế tốt hơn, như phần sau sẽ nói.
+
+### Link preview và webhook cần thêm gì
+
+Với **link preview**, đừng trả body thô. Parse ở server, lấy `og:title`, `og:description`, `og:image`, giới hạn độ dài, và fetch `og:image` qua chính `safeFetch` (nó lại là một URL do kẻ tấn công kiểm soát). Cache kết quả theo URL để một link nổi tiếng không biến bạn thành bộ khuếch đại.
+
+Với **webhook**, kiểm tra lúc đăng ký URL (UX tốt: báo lỗi sớm) *và* ở mỗi lần gửi (DNS có thể đổi sau khi đăng ký). Đừng hiển thị body response trong UI log gửi webhook; status code và khoảng latency là đủ. Ký payload để bên nhận xác minh được, và chạy worker gửi webhook trong đường egress cô lập mô tả ngay sau đây.
+
+## Cách sửa thật sự: kiểm soát egress ở tầng mạng
+
+Mọi thứ ở trên là code ứng dụng, mà code ứng dụng thì có bug, bị copy đi mà quên mang theo agent, hoặc bị bỏ qua bởi một thư viện tự gửi request (bộ render HTML sang PDF, thư viện ảnh tự theo URL, XML parser resolve external entity). Cách sửa bền vững là làm cho những đích nguy hiểm **không thể tới được** từ process đi fetch URL của người dùng.
+
+Trong thực tế, từ rẻ nhất đến mạnh nhất:
+
+| Lớp | Làm gì | Chặn được | Chi phí |
+| --- | --- | --- | --- |
+| `safeFetch` với lookup đã pin | Allowlist IP public ở tầng app | Phần lớn SSRF trong code bạn viết | Thấp, nhưng theo từng chỗ gọi |
+| Bắt buộc IMDSv2, hop limit 1 | Metadata cần PUT + header | Trộm credential qua GET đơn giản | Rất thấp |
+| Kubernetes NetworkPolicy / security group | Pod fetcher không tới được CIDR của cluster hay metadata | Đường vòng qua thư viện khác | Trung bình |
+| Egress proxy riêng (ví dụ Smokescreen của Stripe) | Mọi traffic ra ngoài theo URL người dùng đi qua một điểm áp chính sách, resolve và kiểm tra IP | Mọi thứ, tập trung, có log | Trung bình – cao |
+| Mạng / account riêng cho fetcher | Worker hoàn toàn không có route tới hệ thống nội bộ | Mọi thứ, theo thiết kế | Cao hơn |
+
+Mặc định của mình cho team có tính năng "fetch URL bất kỳ" thực sự: **một service fetcher nhỏ** (link preview, import ảnh, gửi webhook) chạy trong subnet hoặc namespace riêng, egress duy nhất là ra internet qua egress proxy, với network policy mặc định từ chối mọi thứ nội bộ. Code ứng dụng vẫn dùng `safeFetch` — phòng thủ nhiều lớp — nhưng một bug ở đó không còn chạm được tới Redis.
+
+```yaml
+# k8s: fetcher tới được DNS và internet công khai, không gì nội bộ
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fetcher-egress
+  namespace: fetcher
+spec:
+  podSelector:
+    matchLabels:
+      app: fetcher
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }
+```
+
+Network policy do CNI thực thi; hãy chắc chắn CNI của bạn thực sự hỗ trợ nó, và thêm các dải IPv6 tương ứng nếu cluster chạy dual-stack. Đây đúng là loại kiểm soát nên được xác minh bằng một pod test, chứ đừng tin vào YAML.
+
+## Upload file: mô hình mối đe doạ
+
+Giờ tới tính năng còn lại. Một endpoint upload nhận ba thứ từ client: các byte, tên file và MIME type khai báo. **Cả ba đều do kẻ tấn công kiểm soát.** Những gì có thể sai:
+
+- **Stored XSS do nhầm lẫn content type.** Một "ảnh" thực chất là HTML hoặc SVG có script, được phục vụ từ origin của bạn, sẽ chạy với cookie của người dùng khi ai đó mở URL của nó.
+- **Path traversal.** Tên file kiểu `../../app/config.json` được dùng để ghép đường dẫn lưu trữ sẽ ghi đè lên thứ gì đó.
+- **Vắt kiệt tài nguyên.** Upload 50 MB thì dễ thấy; một file PNG 40 KB giải nén ra 50.000 × 50.000 pixel là quả bom giải nén ăn sạch RAM của worker.
+- **Tấn công qua file nén.** Zip slip (entry tên `../../...`) và zip bomb khi giải nén.
+- **Phát tán malware.** Bucket của bạn trở thành hosting miễn phí, uy tín cho payload của người khác, và domain của bạn lọt vào blocklist.
+- **Lộ metadata.** Toạ độ GPS trong EXIF của ảnh đại diện, công khai cho cả thế giới.
+
+Nguyên tắc thiết kế giống hệt SSRF: đừng cố nhận diện input xấu bằng kiểm tra chuỗi. **Tự sinh tên, xác định kiểu từ byte, encode lại những gì có thể, cô lập nơi phục vụ, và xử lý bất đồng bộ.**
+
+## Presigned upload làm cho đúng
+
+Upload thẳng từ trình duyệt lên S3 (hoặc R2, GCS) bằng presigned request là mặc định đúng: API không phải proxy body lớn, còn dịch vụ lưu trữ lo chuyện truyền tải. Nhưng presigned URL là một capability — những điều kiện bạn ký là kiểm soát duy nhất còn lại khi nó rời khỏi server.
+
+Presigned `PUT` không biểu diễn được một *khoảng* kích thước; presigned `POST` với policy thì được. Đó là lý do mình dùng POST cho upload của người dùng:
+
+```ts
+// app/api/uploads/route.ts
+import { randomUUID } from "node:crypto";
+import { S3Client } from "@aws-sdk/client-s3";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import { z } from "zod";
+import { requireUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+
+const s3 = new S3Client({});
+const ALLOWED = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" } as const;
+
+const Body = z.object({
+  contentType: z.enum(Object.keys(ALLOWED) as [keyof typeof ALLOWED]),
+  size: z.number().int().positive().max(10 * 1024 * 1024),
+});
+
+export async function POST(req: Request) {
+  const user = await requireUser(req);
+  const { contentType, size } = Body.parse(await req.json());
+
+  // Ta chọn key. Tên file của client không bao giờ chạm vào đường dẫn lưu trữ.
+  const id = randomUUID();
+  const key = `incoming/${user.id}/${id}`;
+
+  await db.upload.create({ data: { id, userId: user.id, key, status: "pending", declaredSize: size } });
+
+  const presigned = await createPresignedPost(s3, {
+    Bucket: process.env.QUARANTINE_BUCKET!,
+    Key: key,
+    Conditions: [
+      ["content-length-range", 1, 10 * 1024 * 1024],
+      ["eq", "$Content-Type", contentType],
+      ["eq", "$key", key],
+    ],
+    Fields: { "Content-Type": contentType },
+    Expires: 120, // giây
+  });
+
+  return Response.json({ uploadId: id, ...presigned });
+}
+```
+
+Các điều kiện cho bạn gì, và không cho gì:
+
+- **`content-length-range`** do S3 thực thi. Client nói dối `size` khi gọi API của bạn vẫn không upload quá giới hạn đã ký được.
+- **`eq $Content-Type`** cố định header mà S3 lưu. Nó **không** kiểm tra byte. Client vẫn upload được HTML với `Content-Type: image/png` — đó là lý do các bước tiếp theo tồn tại.
+- **Key cố định** và nằm trong bucket cách ly mà không ai đọc ngoại trừ worker xử lý.
+- **Hết hạn nhanh** hạn chế việc dùng lại. Hai phút là thừa để trình duyệt bắt đầu upload.
+
+Thêm cấu hình trên bucket: bật Block Public Access, không ACL public, CORS chỉ cho origin của app với method `POST`, và lifecycle rule xoá mọi thứ trong `incoming/` sau một ngày. Upload bị bỏ dở hoặc bị từ chối tự dọn dẹp.
+
+## Đừng bao giờ tin đuôi file hay MIME type của client
+
+Khi object đã tới nơi, worker quyết định nó thực sự là gì bằng cách nhìn vào **những byte đầu tiên** — magic number:
+
+| Định dạng | Chữ ký (hex / ASCII) |
+| --- | --- |
+| PNG | `89 50 4E 47 0D 0A 1A 0A` |
+| JPEG | `FF D8 FF` |
+| GIF | `GIF87a` / `GIF89a` |
+| WebP | `RIFF` …4 byte… `WEBP` |
+| PDF | `%PDF-` |
+| ZIP (cả docx, xlsx, jar) | `50 4B 03 04` |
+
+Mình dùng package `file-type` thay vì tự duy trì bảng này, và coi câu trả lời của nó là bộ lọc chứ không phải phán quyết:
+
+```ts
+// worker/sniff.ts
+import { fileTypeFromBuffer } from "file-type";
+
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+export async function sniffImage(head: Uint8Array, declared: string) {
+  const detected = await fileTypeFromBuffer(head);
+  if (!detected || !IMAGE_TYPES.has(detected.mime)) {
+    return { ok: false as const, reason: `not an allowed image (detected ${detected?.mime ?? "unknown"})` };
+  }
+  if (detected.mime !== declared) {
+    // Chưa chắc là độc hại (một số client gắn nhãn sai), nhưng ghi log và tin vào byte.
+    console.warn("upload type mismatch", { declared, detected: detected.mime });
+  }
+  return { ok: true as const, mime: detected.mime };
+}
+```
+
+Magic bytes là cần, nhưng chưa đủ. **File polyglot** hợp lệ ở hai định dạng cùng lúc — một file là JPEG thật trong mắt bộ giải mã ảnh, đồng thời chứa HTML mà trình duyệt sẵn sàng render nếu nó bị phục vụ sai kiểu. Sniff cho biết "file này bắt đầu giống JPEG"; nó không nói được "file này không chứa gì khác". Việc đó là của bước encode lại.
+
+### Encode lại ảnh với sharp
+
+Với ảnh, kiểm soát mạnh nhất là **không bao giờ phục vụ chính những byte người dùng upload**. Giải mã, rồi encode một ảnh mới. Mọi thứ không phải pixel — HTML gắn đuôi, chunk lạ, EXIF, thumbnail nhúng — đều biến mất.
+
+```ts
+// worker/reencode.ts
+import sharp from "sharp";
+
+const MAX_PIXELS = 40_000_000; // ~ 8000 x 5000; thấp hơn nhiều so với trần mặc định của sharp
+const MAX_EDGE = 2560;
+
+export async function reencodeImage(input: Buffer) {
+  // Chỉ đọc header: rẻ, chưa giải mã toàn bộ.
+  const meta = await sharp(input, { limitInputPixels: MAX_PIXELS }).metadata();
+  if (!meta.width || !meta.height) throw new Error("unreadable image");
+  if ((meta.pages ?? 1) > 1) throw new Error("animated images not accepted here");
+
+  const output = await sharp(input, {
+    limitInputPixels: MAX_PIXELS, // chặn bom giải nén
+    failOn: "error",              // từ chối input hỏng thay vì đoán
+    sequentialRead: true,
+  })
+    .rotate() // áp dụng hướng xoay EXIF trước khi metadata bị bỏ
+    .resize({ width: MAX_EDGE, height: MAX_EDGE, fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 82 })
+    .toBuffer({ resolveWithObject: true });
+
+  // sharp mặc định bỏ EXIF/XMP/GPS trừ khi bạn chủ động bật withMetadata()/keepMetadata().
+  return { buffer: output.data, width: output.info.width, height: output.info.height, mime: "image/webp" };
+}
+```
+
+Ghi chú từ việc chạy thứ này trên production:
+
+- **`limitInputPixels` là thứ chặn bom giải nén.** Kích thước nén không nói lên gì; số pixel mới là thứ tốn bộ nhớ. Giới hạn mặc định của sharp rất lớn (khoảng 268 megapixel), nên hãy tự đặt.
+- **Giới hạn cả concurrency.** Ngay cả ảnh 40 MP hợp lệ cũng tốn nhiều bộ nhớ khi giải mã. Mình chạy worker ảnh với `sharp.concurrency(1)` mỗi process và scale ngang bằng nhiều process, cộng với memory limit cho container để một file xấu chỉ giết một worker chứ không kéo sập cả node.
+- **`rotate()` trước khi bỏ metadata**, nếu không ảnh dọc chụp từ điện thoại sẽ bị nằm ngang — bug report bạn chắc chắn nhận ngay ngày đầu.
+- **Bộ giải mã là bề mặt tấn công.** sharp dùng libvips cùng các thư viện định dạng đi kèm; CVE ở bộ giải mã ảnh vẫn xảy ra. Cập nhật sharp thường xuyên và chạy worker không có credential nào ngoài hai bucket nó cần.
+
+<Callout type="danger" title="Ở đây, SVG không phải là định dạng ảnh">
+
+SVG là XML, có thể chứa phần tử `script`, attribute event handler và `foreignObject` chứa HTML. Trong thẻ `img`, trình duyệt không chạy script của nó, nhưng ngay khi ai đó mở trực tiếp URL của file, nó là một document thuộc origin đang phục vụ nó. Thứ tự ưu tiên của mình: từ chối SVG từ người dùng; hoặc rasterize thành PNG trong worker; hoặc, nếu thực sự cần vector, sanitize bằng sanitizer allow-list hiểu SVG *và* phục vụ từ domain cô lập với CSP có `sandbox`.
+
+</Callout>
+
+## Phục vụ nội dung người dùng từ domain riêng
+
+Kể cả khi đã encode lại, mình vẫn giả định sớm muộn sẽ có thứ lọt qua — một định dạng mới ai đó thêm vào, một tính năng của PDF, một bug trong sanitizer. Vì vậy nội dung người dùng không bao giờ chung origin, thậm chí không chung site, với app.
+
+- **Dùng một registrable domain khác**, không phải subdomain. `files.acme.com` là same-site với `app.acme.com`: cookie scope theo `.acme.com` được gửi tới nó, và `SameSite` không bảo vệ bạn. Kiểu `acme-usercontent.net` là pattern các nền tảng lớn dùng chính vì lý do này.
+- **Đặt `Content-Type` rõ ràng và đúng** — kiểu bạn tự xác định, không phải kiểu client gửi.
+- **`X-Content-Type-Options: nosniff`** để trình duyệt không đoán lại kiểu và render một file "text/plain" thành HTML.
+- **`Content-Disposition: attachment`** cho mọi thứ không phải ảnh đã encode lại (PDF, tài liệu, file nén). Trình duyệt tải xuống thay vì render.
+- **CSP chặt trên domain nội dung**: `default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox`. Nếu một file dạng HTML lỡ được render, nó không có script và có một origin opaque riêng.
+
+Trên AWS, mình đặt CloudFront trước bucket public với response headers policy mang các header trên, và đặt `Content-Type`, `Content-Disposition` làm metadata của object khi worker ghi file đã xử lý:
+
+```ts
+// worker/publish.ts
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({});
+
+function contentDisposition(originalName: string, inline: boolean) {
+  // Giữ một bản ASCII an toàn làm fallback và một bản UTF-8 encode theo RFC 5987.
+  const ascii = originalName.replace(/[^\x20-\x7e]|["\\]/g, "_").slice(0, 100) || "file";
+  const utf8 = encodeURIComponent(originalName.slice(0, 100));
+  return `${inline ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+
+export async function publish(id: string, body: Buffer, mime: string, originalName: string) {
+  const inline = mime.startsWith("image/");
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: process.env.PUBLIC_BUCKET!,
+      Key: `u/${id}`,
+      Body: body,
+      ContentType: mime,
+      ContentDisposition: contentDisposition(originalName, inline),
+      CacheControl: "public, max-age=31536000, immutable",
+    }),
+  );
+  return `https://acme-usercontent.net/u/${id}`;
+}
+```
+
+Với file private, ý tưởng y hệt với signed URL của CloudFront hoặc presigned `GET` trên domain riêng đó — và bạn có thể override `ResponseContentDisposition`, `ResponseContentType` trên presigned `GET`, nên cả những object cũ cũng được phục vụ an toàn.
+
+## Pipeline bất đồng bộ: cách ly, quét, công khai
+
+Ghép lại, luồng upload là một state machine nhỏ chứ không phải một request duy nhất:
+
+<Figure src="/blog/ssrf-and-file-upload-security-upload-pipeline.svg" alt="Sơ đồ pipeline upload an toàn: trình duyệt xin API một presigned POST; API tạo bản ghi upload trạng thái pending và ký các điều kiện về kích thước, content type và key do server sinh; trình duyệt upload thẳng vào bucket cách ly private; sự kiện S3 đi vào hàng đợi; worker kiểm tra magic bytes, quét malware, encode lại ảnh bằng sharp và bỏ metadata; file sạch được ghi vào bucket public phục vụ qua CDN trên domain riêng với nosniff, Content-Disposition và CSP sandbox; file bị từ chối bị xoá và bản ghi được đánh dấu rejected" caption="Không gì người dùng upload được phục vụ trực tiếp. Byte vào vùng cách ly, worker quyết định chúng là gì, và chỉ output đã encode lại mới tới bucket public trên một domain không chia sẻ gì với app." />
+
+1. **Presign.** API tạo một dòng `uploads` với `status = pending`, trả về presigned POST cho bucket cách ly.
+2. **Upload.** Trình duyệt upload thẳng vào vùng cách ly. UI hiển thị "đang xử lý".
+3. **Sự kiện.** S3 phát sự kiện `ObjectCreated` vào SQS (hoặc EventBridge). Đừng dùng lời gọi "xong rồi" từ client làm trigger.
+4. **Xử lý.** Worker có quyền đọc bucket cách ly và ghi bucket public: kiểm tra kích thước, sniff kiểu, quét, encode lại, công khai.
+5. **Chốt.** Dòng chuyển sang `ready` (kèm URL public, chiều rộng, chiều cao) hoặc `rejected` (kèm lý do nội bộ). Object trong vùng cách ly bị xoá trong mọi trường hợp.
+6. **Thông báo.** Client poll hoặc nhận push; ảnh xuất hiện.
+
+```ts
+// worker/process-upload.ts
+import { GetObjectCommand, DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { db } from "@/lib/db";
+import { sniffImage } from "./sniff";
+import { reencodeImage } from "./reencode";
+import { scanBuffer } from "./scan";
+import { publish } from "./publish";
+
+const s3 = new S3Client({});
+const MAX = 10 * 1024 * 1024;
+
+export async function processUpload(bucket: string, key: string) {
+  const upload = await db.upload.findUnique({ where: { key } });
+  if (!upload || upload.status !== "pending") return; // idempotent: sự kiện có thể tới hai lần
+
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if ((obj.ContentLength ?? 0) > MAX) throw new Error("too large");
+    const input = Buffer.from(await obj.Body!.transformToByteArray());
+
+    const sniffed = await sniffImage(input.subarray(0, 4100), obj.ContentType ?? "");
+    if (!sniffed.ok) throw new Error(sniffed.reason);
+
+    const scan = await scanBuffer(input);
+    if (!scan.clean) throw new Error(`malware: ${scan.signature}`);
+
+    const image = await reencodeImage(input);
+    const url = await publish(upload.id, image.buffer, image.mime, upload.originalName ?? "image");
+
+    await db.upload.update({
+      where: { id: upload.id },
+      data: { status: "ready", url, width: image.width, height: image.height },
+    });
+  } catch (err) {
+    await db.upload.update({ where: { id: upload.id }, data: { status: "rejected", reason: String(err) } });
+  } finally {
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  }
+}
+```
+
+### Quét malware
+
+Với ảnh đã encode lại, quét AV ít quan trọng hơn — output là pixel do chính bạn tạo ra. Nó rất quan trọng với mọi thứ bạn cho đi qua nguyên vẹn: PDF, tài liệu Office, file nén. Những lựa chọn mình đã dùng hoặc đánh giá:
+
+- **ClamAV** chạy dạng sidecar (`clamd`), stream qua giao thức socket của nó. Miễn phí và ổn với signature đã biết; giữ `freshclam` cập nhật liên tục và cảnh báo khi nó ngừng.
+- **Quét được quản lý** trên cloud. AWS có GuardDuty Malware Protection for S3, quét object mới và gắn tag kết quả; bạn chỉ cho phép chuyển sang public dựa trên tag đó.
+- **Scanner thương mại** nhiều engine khi người dùng của bạn trao đổi tài liệu với nhau, nơi cái giá về uy tín khi trở thành nơi chứa malware là rất cao.
+
+Dù chọn gì, hãy thiết kế **bất đồng bộ và fail-closed**: file không hiển thị cho người khác cho tới khi `ready`. Và quét chỉ là so khớp signature, không phải bảo đảm — nó bổ sung cho `Content-Disposition: attachment` và domain riêng, không thay thế chúng.
+
+## Tên file, path traversal và zip slip
+
+Cách xử lý tên file an toàn nhất là không dùng tên file. Key lưu trữ là UUID; tên gốc nằm trong một cột database, chỉ dùng để hiển thị và cho `Content-Disposition` (đã encode, như ở trên).
+
+Nếu bắt buộc phải ghi ra filesystem — một NFS share cũ, một công cụ đòi file local — hãy resolve rồi kiểm tra:
+
+```ts
+// lib/safe-path.ts
+import path from "node:path";
+
+export function resolveInside(baseDir: string, untrusted: string): string {
+  const base = path.resolve(baseDir);
+  // Bỏ ký tự NUL và chuẩn hoá dấu phân cách: "..\\" vẫn quan trọng dù chạy Linux, nếu sau này file chuyển sang Windows.
+  const cleaned = untrusted.replace(/\0/g, "").replace(/\\/g, "/");
+  const target = path.resolve(base, cleaned);
+  if (target !== base && !target.startsWith(base + path.sep)) {
+    throw new Error(`path escapes base directory: ${untrusted}`);
+  }
+  return target;
+}
+```
+
+Điểm quan trọng là `path.resolve` cộng kiểm tra prefix **có thêm dấu phân cách**: một phép `startsWith(base)` trơn sẽ chấp nhận `/srv/uploads-evil/...` khi base là `/srv/uploads`.
+
+**Zip slip** là đúng bug đó bên trong file nén: tên entry là tên file do kẻ tấn công chọn, gồm cả `../../.bashrc` hay đường dẫn tuyệt đối, cộng thêm các entry symlink trỏ ra ngoài thư mục đích. Khi giải nén:
+
+- Cho mọi tên entry đi qua `resolveInside` trước khi ghi.
+- Bỏ qua hoàn toàn symlink và các entry đặc biệt khác.
+- Áp giới hạn **trong lúc giải nén**, không dựa vào header của file nén (vốn có thể nói dối): số entry tối đa, tổng số byte giải nén tối đa, và tỉ lệ nén tối đa. Đó là phòng thủ trước zip bomb.
+- Tốt hơn nữa, hỏi lại xem bạn có cần giải nén không. Nhiều khi bạn chỉ cần liệt kê entry hoặc chuyển nguyên file đi.
+
+## Những sai lầm mình cứ gặp lại
+
+- **Kiểm tra URL bằng một client, rồi fetch bằng client khác.** Validator dùng một parser và một lần resolve DNS; thư viện HTTP dùng cái khác. Hãy pin IP vào kết nối, hoặc đi qua một proxy làm việc đó.
+- **Để nguyên `redirect: "follow"`** ở đúng một lời gọi fetch nhận input người dùng — thường nằm trong một helper được viết cho mục đích khác.
+- **Headless browser để chụp screenshot hoặc xuất PDF** mà không hạn chế mạng. Chromium theo redirect, tải subresource, chạy JavaScript có thể fetch URL nội bộ. Service đó thuộc về mạng cô lập nhất bạn có.
+- **Tin `file.type` ở trình duyệt hay `mimetype` từ multer.** Cả hai đều đến từ client.
+- **Phục vụ upload từ `/uploads/` trên origin chính của app** "tạm thời". Đường dẫn tạm thời đó ba năm sau vẫn còn.
+- **Dùng subdomain cho nội dung người dùng** rồi tưởng là đã cô lập. Same-site nghĩa là dùng chung cookie scope theo domain cha.
+- **Tạo thumbnail đồng bộ ngay trong request API.** Một ảnh được chế tác kỹ và tất cả pod API cùng chạm memory limit.
+- **Giữ lại EXIF.** Toạ độ GPS trên ảnh đại diện là sự cố quyền riêng tư kể cả khi không có kẻ tấn công nào.
+- **Upload bị từ chối nhưng không bao giờ bị xoá**, dần dần thành một bucket đầy đúng những file bạn đã kết luận là nguy hiểm.
+
+## Tổng kết
+
+<Checklist>
+
+- Mọi tính năng "fetch URL" đi qua một fetcher dùng chung, không có lời gọi `fetch` tuỳ tiện.
+- Kiểm tra là allowlist IP public unicast, áp lên **mọi địa chỉ đã resolve** ngay trong lookup mà socket dùng (undici `Agent` với `lookup` tuỳ biến), IP literal được kiểm tra riêng.
+- Redirect được xử lý thủ công, có giới hạn, kiểm tra lại từng bước; có timeout tổng và giới hạn byte áp trong lúc đọc.
+- Thông báo lỗi cho người dùng không lộ status code nội bộ, port hay thời gian.
+- IMDSv2 bắt buộc ở mọi nơi với hop limit 1 (chỉ 2 nơi container cần), áp dụng làm mặc định chứ không phải từng instance.
+- Fetcher chạy trong phân đoạn mạng cô lập hoặc sau egress proxy từ chối dải nội bộ và metadata; mình đã test từ một pod, không chỉ đọc YAML.
+- Upload dùng presigned POST với `content-length-range`, key cố định do server sinh và thời hạn ngắn, vào bucket cách ly private có lifecycle rule.
+- Kiểu file lấy từ magic bytes; ảnh được encode lại bằng sharp với `limitInputPixels`, bỏ metadata, giới hạn concurrency và bộ nhớ.
+- SVG từ người dùng bị từ chối hoặc rasterize.
+- Nội dung người dùng được phục vụ từ một registrable domain riêng với `Content-Type` rõ ràng, `nosniff`, `Content-Disposition` và CSP sandbox.
+- File không phải ảnh được quét bất đồng bộ và ẩn cho tới khi `ready`; pipeline fail-closed.
+- Tên file không bao giờ dùng để ghép đường dẫn lưu trữ; mọi thao tác filesystem hay giải nén đều resolve-rồi-kiểm-tra, kèm giới hạn số entry, kích thước và tỉ lệ nén.
+
+</Checklist>

@@ -1,0 +1,671 @@
+---
+title: "OWASP API Security Top 10 trong NestJS: code có lỗ hổng, code đã sửa, và những test giữ cho nó không quay lại"
+excerpt: "Đi qua cả mười rủi ro của OWASP API Security Top 10 (2023) bằng NestJS: kiểm tra quyền sở hữu trong scoped repository, DTO whitelist, định hình response, policy kiểu CASL, rate limit theo chi phí, business flow idempotent, fetch chống SSRF và ma trận phân quyền trong e2e test."
+---
+
+<Lead>Lỗ hổng API nghiêm trọng đầu tiên mình từng báo cáo chẳng có gì thông minh. Đổi con số cuối của `/api/invoices/10432` thành `10431` là đọc được hoá đơn của người khác — tên, địa chỉ, từng dòng hàng. Endpoint có xác thực, JWT được verify đàng hoàng, code sạch và có test. Chỉ là nó chưa bao giờ hỏi "hoá đơn này có thuộc về người đang hỏi không?". Kiểu lỗi đó — không phải mật mã cao siêu, không phải zero-day, chỉ là thiếu một câu hỏi — chính là phần lớn nội dung của OWASP API Security Top 10. Bài này đi qua cả mười rủi ro trong bản 2023 theo cách mình giải thích cho một team đang xây API bằng NestJS: code có lỗ hổng, bản đã sửa, control nằm ở đâu trong request lifecycle, và những test ngăn nó lặng lẽ quay lại.</Lead>
+
+## Vì sao API có danh sách riêng
+
+OWASP Top 10 kinh điển lớn lên cùng các app render phía server, nơi câu hỏi "bạn có vào được trang này không" ngầm quyết định rất nhiều chuyện phân quyền. API bỏ đi lớp lọc đó. Client chỉ là một lớp vỏ mỏng — hoặc một script, hoặc scraper của đối thủ — và mọi object, mọi field, mọi chức năng đều gọi thẳng được. Thứ API chấp nhận mới là bề mặt tấn công thật.
+
+Vì thế ba trong mười mục là về phân quyền ở các mức khác nhau (object, property, function), và vài mục là về việc lạm dụng những thứ chạy *đúng như thiết kế*. Đây là danh sách 2023, kèm chỗ mình đặt control chính trong một app NestJS:
+
+| ID | Rủi ro | Một dòng | Control chính trong NestJS |
+| --- | --- | --- | --- |
+| API1 | Broken Object Level Authorization | Đổi ID là thấy object của người khác | Scoped repository, quyền sở hữu trong mọi query |
+| API2 | Broken Authentication | Luồng login, token, reset yếu | Auth guard toàn cục, verify token chặt |
+| API3 | Broken Object Property Level Authorization | Mass assignment chiều vào, lộ dữ liệu chiều ra | `ValidationPipe` whitelist, response DTO |
+| API4 | Unrestricted Resource Consumption | Không giới hạn tần suất, kích thước, chi phí | Throttler, giới hạn theo chi phí, trần page và body |
+| API5 | Broken Function Level Authorization | User thường gọi được chức năng admin | Policies guard mặc định từ chối (CASL) |
+| API6 | Unrestricted Access to Sensitive Business Flows | Luồng hợp lệ bị tự động hoá hàng loạt | Giới hạn theo nghiệp vụ, idempotency, tạo ma sát |
+| API7 | Server Side Request Forgery | Server fetch URL do kẻ tấn công chọn | Fetch kiểm tra IP, kiểm soát egress |
+| API8 | Security Misconfiguration | Mặc định, lỗi lộ nội tình, docs mở, CORS sai | Bootstrap được siết, exception filter |
+| API9 | Improper Inventory Management | Version bị quên, API "bóng", staging | Versioning, diff OpenAPI, test kiểm kê route |
+| API10 | Unsafe Consumption of APIs | Tin những gì bên thứ ba gửi về | Schema, timeout, chữ ký webhook |
+
+Request lifecycle của NestJS cho mỗi control một chỗ ở tự nhiên. Muốn hiểu kỹ middleware, guard, interceptor, pipe và filter, bạn đọc [bài về request lifecycle và kiến trúc NestJS](/blog/nestjs-request-lifecycle-architecture); ở đây mình chỉ dùng phần liên quan đến bảo mật. Code nhắm tới NestJS 11 trở lên với Express, `class-validator`, Prisma và Postgres.
+
+<Figure src="/blog/owasp-api-security-top-10-nestjs-layers.svg" alt="Sơ đồ một request đi từ trên xuống qua các tầng NestJS. Edge hoặc gateway: TLS, WAF, giới hạn kích thước body, chỉ cho route đã biết, gắn nhãn API4, API8, API9. Middleware: helmet, CORS allowlist, trust proxy, nhãn API8. Guards: xác thực mặc định từ chối, giới hạn tần suất và chi phí, policy CASL, nhãn API2, API4, API5. Interceptors: phát lại theo Idempotency-Key và timeout, nhãn API4 và API6. Pipes: ValidationPipe whitelist và trần kích thước trang, nhãn API3 và API4. Service: giới hạn theo luồng, fetch an toàn trước SSRF, dữ liệu bên thứ ba được kiểm schema, nhãn API6, API7, API10. Scoped repository: tenant và chủ sở hữu trong mọi WHERE cộng Postgres RLS, nhãn API1. Response trên đường ra: response DTO và error filter che nội tình, nhãn API3 và API8." caption="Mỗi rủi ro có một tầng tự nhiên. Hai rủi ro gây đau nhất, API1 và API3, nằm sát dữ liệu chứ không nằm ở edge." />
+
+## API1 — BOLA: đặt quyền sở hữu vào tầng dữ liệu
+
+BOLA là lỗi API nghiêm trọng mình gặp nhiều nhất, và gần như lúc nào cũng trông thế này:
+
+```ts
+// orders.controller.ts — có lỗ hổng
+@Get(":id")
+findOne(@Param("id") id: string) {
+  // Đã xác thực? Rồi, guard toàn cục đã kiểm JWT.
+  // Có quyền xem ĐƠN NÀY không? Không ai hỏi.
+  return this.prisma.order.findUnique({ where: { id } });
+}
+```
+
+Cách sửa thường thấy là một câu `if` trong controller: load đơn, so `order.customerId` với `req.user.id`, khác thì ném lỗi. Endpoint đó ổn. Rồi ai đó thêm `GET /orders/:id/invoice`, endpoint huỷ đơn, export CSV, một resolver GraphQL — và một trong số đó quên câu `if`. Vấn đề không nằm ở phép kiểm tra, mà ở chỗ phép kiểm tra là **tuỳ chọn**.
+
+### Scoped repository: không thể quên thứ không thể bỏ qua
+
+Cách hiệu quả với mình là làm cho query không có scope trở nên khó viết. Service không được cầm Prisma client cho dữ liệu của tenant; nó nhận một repository bắt buộc phải có actor và tự đưa scope vào mọi `where`:
+
+```ts
+// orders/orders.repository.ts
+@Injectable()
+export class OrdersRepository {
+  constructor(private readonly prisma: PrismaService) {}
+  forActor(actor: Actor) {
+    return new ScopedOrders(this.prisma, actor);
+  }
+}
+
+export class ScopedOrders {
+  constructor(private readonly prisma: PrismaService, private readonly actor: Actor) {}
+
+  // Nơi duy nhất quyết định "actor này được thấy gì".
+  private scope(): Prisma.OrderWhereInput {
+    const tenant = { tenantId: this.actor.tenantId };
+    const tenantWide = this.actor.roles.some((r) => r === "support" || r === "admin");
+    return tenantWide ? tenant : { ...tenant, customerId: this.actor.id };
+  }
+
+  async findById(id: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { AND: [this.scope(), { id }] },
+      select: orderResponseSelect, // chỉ những cột response cần
+    });
+    if (!order) throw new NotFoundException();
+    return order;
+  }
+
+  async cancel(id: string) {
+    // Ghi cũng có scope: scope nằm trong WHERE, không có khe hở load-kiểm tra-update.
+    const { count } = await this.prisma.order.updateMany({
+      where: { AND: [this.scope(), { id, status: "pending" }] },
+      data: { status: "cancelled" },
+    });
+    if (count === 0) throw new NotFoundException();
+  }
+}
+```
+
+Controller trở nên nhàm chán, và đó chính là mục đích: `return this.orders.forActor(actor).findById(id)`. Vài lựa chọn có chủ đích:
+
+- **404 chứ không phải 403 khi nằm ngoài scope.** 403 xác nhận object tồn tại — bản thân điều đó đã là rò rỉ khi ID đoán được hoặc khi sự tồn tại là thông tin nhạy cảm.
+- **Ghi bằng `updateMany`/`deleteMany` với scope trong WHERE.** "Load, kiểm tra, rồi update theo ID" có cửa sổ race và hai chỗ phải giữ đồng bộ.
+- **UUID không phải là phân quyền.** ID lọt ra qua URL, log, email, ảnh chụp màn hình. ID khó đoán là lớp phòng thủ bổ sung, không bao giờ là control chính.
+
+<Callout type="warning" title="Cái bẫy của resource lồng nhau">
+  `GET /orders/:orderId/items/:itemId` là chỗ code có scope vẫn vỡ. Kiểm tra order là của bạn rồi load item chỉ bằng `itemId` nghĩa là ai cũng đọc được mọi item, chỉ cần ghép với order của chính họ. Query item phải có `orderId`, và order phải nằm trong scope. Tương tự với endpoint batch nhận mảng ID và lookup `node(id:)` của GraphQL.
+</Callout>
+
+### Lưới thứ hai: row-level security
+
+Với dữ liệu multi-tenant, mình thêm row-level security của Postgres cho ranh giới tenant:
+
+```sql
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON orders
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+```
+
+App chạy `SELECT set_config('app.tenant_id', $1, true)` ở đầu mỗi transaction — tham số `true` làm giá trị chỉ sống trong transaction, rất quan trọng khi dùng connection pool. Không có `FORCE` thì owner của bảng bỏ qua policy, còn role có `BYPASSRLS` thì luôn bỏ qua, nên app phải kết nối bằng một role riêng không phải owner. Quyền sở hữu theo từng user mình vẫn để ở repository; nhồi mọi luật nghiệp vụ vào policy SQL sẽ nhanh chóng thành cực hình.
+
+## API2 — Broken Authentication
+
+Lỗi xác thực ở API hiếm khi là "so mật khẩu sai". Chúng nằm ở rìa: token được verify nhưng không đúng audience, endpoint login không giới hạn tần suất, token reset không bao giờ hết hạn, một endpoint cũ bỏ qua MFA. Mình đã viết riêng về session, JWT và passkey trong [bài auth với NestJS](/blog/nestjs-auth-passkeys-sessions); ở đây là những gì gắn trực tiếp với rủi ro này.
+
+Guard là toàn cục, và route phải chủ động **xin ra ngoài** bằng `@Public()` (một decorator `SetMetadata(IS_PUBLIC, true)`):
+
+```ts
+// auth/jwt-auth.guard.ts
+@Injectable()
+export class JwtAuthGuard implements CanActivate {
+  constructor(private jwt: JwtService, private reflector: Reflector, private config: AuthConfig) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()])) return true;
+
+    const req = ctx.switchToHttp().getRequest<Request & { user?: Actor }>();
+    const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+    if (!token) throw new UnauthorizedException();
+    try {
+      const claims = await this.jwt.verifyAsync<AccessClaims>(token, {
+        publicKey: this.config.publicKey,
+        algorithms: ["RS256"], // cố định: token không được tự chọn
+        issuer: this.config.issuer,
+        audience: this.config.audience, // token cấp cho service khác không hợp lệ ở đây
+      });
+      req.user = toActor(claims);
+      return true;
+    } catch {
+      throw new UnauthorizedException();
+    }
+  }
+}
+```
+
+Những thứ đã cắn các hệ thống thật: không cố định `algorithms`, không kiểm `audience` (token cấp cho service báo cáo nội bộ dùng được trên API thanh toán), nhận token qua query string (rơi vào access log), và access token sống lâu mà không có cách thu hồi. Quanh luồng login:
+
+- **Giới hạn login, reset và xác minh OTP theo tài khoản *và* theo IP.** Chỉ theo IP thì thua credential stuffing qua proxy dân dụng; chỉ theo tài khoản thì kẻ tấn công khoá được người dùng. Với chiều tài khoản, mình làm chậm dần thay vì khoá cứng.
+- **Phản hồi chung chung:** cùng thông báo, cùng status, độ trễ xấp xỉ nhau dù tài khoản có tồn tại hay không.
+- **Token reset và magic link:** dùng một lần, sống ngắn, lưu dạng hash. Đổi mật khẩu hay email thì thu hồi session và refresh token.
+- **Không có cửa hông.** Nếu `/v2/auth/login` bắt MFA, kiểm tra cả `/v1/auth/login` và endpoint chỉ dành cho mobile — một lỗ hổng API9 hiện ra dưới dạng sự cố API2.
+
+## API3 — BOPLA: mass assignment chiều vào, lộ dữ liệu chiều ra
+
+Bản 2023 gộp mass assignment và excessive data exposure thành một rủi ro. Đó là câu hỏi phân quyền đặt ở mức từng field: *người này có được ghi property này không, và có được thấy nó không?*
+
+### Mass assignment
+
+```ts
+// users.controller.ts — có lỗ hổng
+@Patch("me")
+updateMe(@CurrentActor() actor: Actor, @Body() body: any) {
+  // body = { "displayName": "Di", "role": "admin", "emailVerified": true }
+  return this.prisma.user.update({ where: { id: actor.id }, data: body });
+}
+```
+
+Cách sửa là mỗi use case một DTO và một pipe toàn cục từ chối mọi thứ bạn không khai báo:
+
+```ts
+// app.module.ts — APP_PIPE áp dụng cả trong e2e test, khác với useGlobalPipes trong main.ts
+{
+  provide: APP_PIPE,
+  useValue: new ValidationPipe({
+    whitelist: true, // bỏ property không khai báo...
+    forbidNonWhitelisted: true, // ...hoặc tốt hơn, từ chối luôn request
+    transform: true,
+  }),
+}
+```
+
+Mình thích từ chối hơn là lặng lẽ bỏ: một lỗi 400 ghi "property role should not exist" hiện lên trong log và test, nên bạn nhận ra client — hay kẻ tấn công — đang gửi field lạ. Ba cái bẫy mình gặp hoài:
+
+- **Object lồng nhau thiếu `@ValidateNested()` và `@Type()`.** Property chỉ có `@IsObject()` sẽ đi qua nguyên khối, bên trong chứa key gì cũng được. Whitelist chỉ hoạt động với class mà nó nhìn vào được.
+- **Một DTO cho create, update và admin.** `PartialType(CreateUserDto)` lặng lẽ thừa hưởng `role` nếu create có field đó. Dẫn xuất bằng `OmitType` / `PickType`, và cho endpoint admin DTO riêng.
+- **Spread DTO thẳng vào ORM.** Với model nhạy cảm, map tường minh (`data: { displayName: dto.displayName }`). Ba dòng code sống sót qua mọi lần sửa DTO sau này.
+
+### Lộ dữ liệu quá mức
+
+Chiều ngược lại: trả về cả entity rồi tin frontend chỉ hiển thị vài field. JSON vẫn mang `passwordHash`, `mfaSecret` hay `internalNotes`, và dev tools đọc JSON rất tốt. Thứ tự ưu tiên của mình: **chỉ select những gì response cần** ngay ở query (dữ liệu không load thì không lộ), **map sang một response type tường minh**, và giữ `ClassSerializerInterceptor` làm lưới an toàn mặc định từ chối:
+
+```ts
+// users/dto/user.response.ts
+@Exclude()
+export class UserResponse {
+  @Expose() id!: string;
+  @Expose() displayName!: string;
+  @Expose({ groups: ["staff"] }) email!: string; // phân quyền ở mức property
+}
+
+// users.controller.ts
+@Get(":id")
+@SerializeOptions({ type: UserResponse, excludeExtraneousValues: true })
+findOne(@CurrentActor() actor: Actor, @Param("id", ParseUUIDPipe) id: string) {
+  return this.users.forActor(actor).findProfile(id);
+}
+```
+
+`@Exclude()` ở mức class cộng `excludeExtraneousValues` nghĩa là cột thêm vào năm sau vẫn bị ẩn cho tới khi có người chủ động expose. Điểm cần nhớ: serializer chỉ làm việc này khi biết class đích. Một plain object trả về mà không có `type` sẽ đi qua nguyên vẹn — đó là cách một codebase "có serializer rồi" vẫn rò rỉ.
+
+## API4 — Unrestricted Resource Consumption
+
+API nào cũng có giới hạn; câu hỏi là bạn chọn nó, hay database chọn hộ lúc 3 giờ sáng. Rủi ro này không chỉ là tần suất request, mà còn là kích thước payload, kích thước trang, thao tác tốn kém, và — ngày càng nhiều — tiền: SMS, email, token LLM, API bên thứ ba tính phí theo lượt gọi.
+
+### Rate limit với @nestjs/throttler
+
+```ts
+// app.module.ts
+ThrottlerModule.forRootAsync({
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    throttlers: [
+      { name: "burst", ttl: 1_000, limit: 20 }, // ttl tính bằng mili giây
+      { name: "sustained", ttl: 60_000, limit: 300 },
+    ],
+    // Storage dùng chung (@nest-lab/throttler-storage-redis), nếu không mỗi replica đếm riêng
+    storage: new ThrottlerStorageRedisService(config.getOrThrow("REDIS_URL")),
+  }),
+}),
+// providers: JwtAuthGuard trước để có req.user, rồi throttler, rồi policies
+```
+
+```ts
+// throttling/actor-throttler.guard.ts
+@Injectable()
+export class ActorThrottlerGuard extends ThrottlerGuard {
+  protected async getTracker(req: Record<string, any>): Promise<string> {
+    return req.user?.id ? `user:${req.user.id}` : `ip:${req.ip}`;
+  }
+}
+
+// auth.controller.ts — chặt hơn nhiều ở chỗ cần chặt
+@Public()
+@Throttle({ burst: { limit: 3, ttl: 10_000 }, sustained: { limit: 10, ttl: 15 * 60_000 } })
+@Post("login")
+login(@Body() dto: LoginDto) { /* ... */ }
+```
+
+Bài học production: sau load balancer, `req.ip` là IP của balancer trừ khi bạn đặt `trust proxy` của Express đúng số hop (`app.set("trust proxy", 1)`). Đặt quá dễ dãi thì kẻ tấn công đổi `X-Forwarded-For` để có bucket mới cho mỗi request. Sai theo chiều nào thì giới hạn theo IP cũng vô nghĩa.
+
+### Giới hạn theo chi phí
+
+Đếm request coi `GET /me` và `POST /reports/export` là ngang nhau. Với API có vài thao tác đắt, mình thêm một token bucket mà mỗi route tự khai báo chi phí:
+
+```ts
+export const Cost = Reflector.createDecorator<number>();
+
+@Injectable()
+export class CostLimitGuard implements CanActivate {
+  constructor(private reflector: Reflector, private buckets: TokenBuckets) {}
+
+  async canActivate(ctx: ExecutionContext) {
+    const cost = this.reflector.get(Cost, ctx.getHandler()) ?? 1;
+    const req = ctx.switchToHttp().getRequest();
+    // 1.000 đơn vị mỗi tenant, nạp lại trong một giờ; script Lua atomic trong Redis
+    const { allowed, remaining } = await this.buckets.take(`cost:${req.user.tenantId}`, cost);
+    ctx.switchToHttp().getResponse().setHeader("X-Cost-Remaining", String(remaining));
+    if (!allowed) throw new HttpException("Quota exceeded", HttpStatus.TOO_MANY_REQUESTS);
+    return true;
+  }
+}
+
+// reports.controller.ts
+@Cost(200)
+@Post("reports/export")
+export(@CurrentActor() actor: Actor, @Body() dto: ExportDto) { /* ... */ }
+```
+
+`TokenBuckets.take` là một script Lua ngắn: đọc số token và timestamp từ một hash, nạp lại theo thời gian đã trôi, trừ chi phí nếu đủ, ghi lại, đặt expiry. Hai chi tiết quan trọng: nó atomic, nên hai request đồng thời không thể cùng tiêu mấy token cuối; và nó dùng `redis.call('TIME')` thay vì đồng hồ của app server, nên các server lệch giờ không cãi nhau. Đếm theo tenant là quyết định sản phẩm: integration chạy loạn của một khách hàng không được làm hại mọi người khác.
+
+### Giới hạn kích thước và hình dạng
+
+Rẻ hơn rate limit, và thường bị thiếu hơn:
+
+```ts
+// common/dto/page.query.ts
+export class PageQuery {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) // cái trần cứu database của bạn
+  limit = 20;
+
+  @IsOptional() @IsString() @MaxLength(200)
+  cursor?: string;
+}
+```
+
+- **Kích thước body:** JSON parser của Express mặc định 100kb. Đừng nâng toàn cục chỉ vì một endpoint cần; nâng cho riêng route đó, hoặc upload thẳng lên object storage bằng presigned URL.
+- **Mảng và chuỗi trong DTO:** `@ArrayMaxSize()` và `@MaxLength()` cho mọi thứ. Body 100kb vẫn chứa được 20.000 ID trong một mệnh đề `IN`.
+- **Timeout:** một timeout interceptor cộng `statement_timeout` trong Postgres giới hạn thời gian một request được giữ tài nguyên.
+- **Thao tác đắt:** regex trên input người dùng (ReDoS), hash mật khẩu trên endpoint công khai, xử lý ảnh và PDF. Mỗi thứ cần một giới hạn tường minh hoặc một queue.
+- **Chi phí phía sau:** "gửi SMS xác minh" là endpoint mà *bạn* trả tiền. Giới hạn theo số điện thoại, tài khoản và IP, và cảnh báo theo số tiền chứ không chỉ theo số request.
+
+GraphQL làm chuyện này khó hơn vì một request có thể đắt tuỳ ý. Tối thiểu cần: giới hạn độ sâu (`graphql-depth-limit`) và giới hạn chi phí (`graphql-query-complexity`) dưới dạng validation rule, trần cho tham số danh sách, và chặn lạm dụng alias và batching — năm mươi mutation `login` dùng alias trong một HTTP request lướt qua rate limiter đếm theo request. Với client của chính bạn, persisted query giải quyết phần lớn vấn đề.
+
+## API5 — BFLA: guard và policy, mặc định từ chối
+
+Anh em của BOLA: không phải "bạn có xem được *đơn này* không" mà là "bạn có được gọi *chức năng này* không". Dạng kinh điển là endpoint admin được "bảo vệ" bằng việc UI không hiện nút: `@Delete(":id")` không kiểm tra gì vì "chỉ trang admin gọi thôi". Các biến thể: `GET` có kiểm tra nhưng `DELETE` cùng path thì không; route `/admin/...` tưởng gateway đã kiểm role; một phép kiểm `isAdmin` quên tenant, khiến admin của tenant A thao tác được trên tenant B.
+
+### Policy với CASL
+
+Mình thích CASL vì một bộ luật trả lời được cả "role này có được làm hành động này không?" lẫn "trên những bản ghi nào?":
+
+```ts
+// authz/ability.factory.ts
+type Action = "manage" | "read" | "update" | "delete" | "cancel" | "refund";
+type Subject = "Order" | "User" | "all";
+export type AppAbility = MongoAbility<[Action, Subject]>;
+
+@Injectable()
+export class AbilityFactory {
+  createFor(actor: Actor): AppAbility {
+    const { can, cannot, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+    const tenantId = actor.tenantId;
+
+    can("read", "Order", { tenantId, customerId: actor.id });
+    can("cancel", "Order", { tenantId, customerId: actor.id, status: "pending" });
+    can("update", "User", { id: actor.id });
+    if (actor.roles.includes("support")) {
+      can("read", "Order", { tenantId });
+      can("refund", "Order", { tenantId, totalCents: { $lte: 20_000 } });
+    }
+    if (actor.roles.includes("admin")) {
+      can("manage", "all", { tenantId }); // admin của tenant NÀY, không phải của mọi thứ
+      cannot("delete", "User", { id: actor.id });
+    }
+    return build();
+  }
+}
+```
+
+```ts
+// authz/policies.guard.ts
+export type PolicyHandler = (ability: AppAbility) => boolean;
+export const CheckPolicies = (...handlers: PolicyHandler[]) => SetMetadata(CHECK_POLICIES, handlers);
+
+@Injectable()
+export class PoliciesGuard implements CanActivate {
+  constructor(private reflector: Reflector, private abilities: AbilityFactory) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()])) return true;
+    const handlers = this.reflector.get<PolicyHandler[] | undefined>(CHECK_POLICIES, ctx.getHandler());
+    // Mặc định từ chối: route không khai báo policy là bug, không phải cửa mở.
+    if (!handlers) throw new ForbiddenException("No policy declared for this route");
+
+    const req = ctx.switchToHttp().getRequest();
+    req.ability = this.abilities.createFor(req.user);
+    return handlers.every((check) => check(req.ability));
+  }
+}
+
+// orders.controller.ts
+@Post(":id/refund")
+@CheckPolicies((ability) => ability.can("refund", "Order"))
+refund(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: RefundDto) {
+  return this.orders.refund(req.ability, id, dto);
+}
+```
+
+Guard trả lời câu hỏi ở mức kiểu ("actor này có hoàn tiền được *một* đơn nào đó không?"). Service kiểm tra trên bản ghi cụ thể, vì điều kiện như `totalCents` phụ thuộc vào dữ liệu: `ForbiddenError.from(ability).throwUnlessCan("refund", subject("Order", order))`. Nếu dùng Prisma, `@casl/prisma` biến chính bộ luật đó thành mệnh đề `where` (`accessibleBy(ability).Order`), để scoped repository và policy dùng chung một nguồn sự thật thay vì hai định nghĩa trôi dần khỏi nhau.
+
+### Test bắt mọi route phải khai báo policy
+
+Mặc định từ chối lúc chạy là tốt; CI đỏ còn tốt hơn:
+
+```ts
+// test/route-policies.spec.ts
+it("every route is public or declares a policy", async () => {
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule, DiscoveryModule] }).compile();
+  const reflector = moduleRef.get(Reflector);
+  const scanner = new MetadataScanner();
+  const offenders: string[] = [];
+
+  for (const { instance, metatype } of moduleRef.get(DiscoveryService).getControllers()) {
+    if (!instance || !metatype) continue;
+    const proto = Object.getPrototypeOf(instance);
+    for (const name of scanner.getAllMethodNames(proto)) {
+      const handler = proto[name];
+      if (Reflect.getMetadata(PATH_METADATA, handler) === undefined) continue; // không phải route
+      const isPublic = reflector.getAllAndOverride(IS_PUBLIC, [handler, metatype]);
+      if (!isPublic && !reflector.get(CHECK_POLICIES, handler)) offenders.push(`${metatype.name}.${name}`);
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+```
+
+Hai mươi dòng, và nó bắt được nhiều lỗi BFLA trong các team của mình hơn bất kỳ checklist review nào.
+
+## API6 — Business flow nhạy cảm
+
+Rủi ro mà mọi người thấy khó định vị nhất, vì về mặt kỹ thuật chẳng có gì hỏng. "Mua" thì mua, "mời bạn bè" thì mời. Vấn đề là bot làm việc đó nhanh hơn con người cả vạn lần: vét sạch một đợt hàng giới hạn để bán lại, cày điểm giới thiệu bằng tài khoản dùng một lần, giữ chỗ mọi ghế mà không trả tiền, đăng review hàng loạt.
+
+Nên cách sửa bắt đầu bằng một cuộc nói chuyện với bên sản phẩm — *luồng nào gây hại cho doanh nghiệp nếu bị tự động hoá?* — rồi bảo vệ các luồng đó bằng ngôn ngữ nghiệp vụ:
+
+- **Giới hạn đặt trong database,** không phải rate limit HTTP: "tối đa 2 sản phẩm mỗi khách mỗi đợt" là primary key trên `(drop_id, customer_id)` cộng `CHECK (quantity BETWEEN 1 AND 2)`. Race condition không thắng được constraint.
+- **Làm cho tự động hoá không có lãi:** thưởng giới thiệu sau khi có thanh toán đã xác minh, không phải sau khi đăng ký.
+- **Tạo ma sát đúng chỗ:** một challenge (Turnstile, hCaptcha) hoặc xác thực tăng cường ở bước nhạy cảm, không phải trên toàn site.
+- **Giữ chỗ có hạn,** và giới hạn số chỗ giữ đồng thời mỗi tài khoản.
+- **Chỉ số nghiệp vụ làm cảnh báo:** số checkout mỗi phút theo SKU, số đăng ký theo thiết bị. Lạm dụng hiện ra ở đó trước khi hiện ra ở tỉ lệ lỗi.
+
+### Idempotency key cho các luồng chuyển tiền
+
+Một vấn đề liên quan là lặp lại ngoài ý muốn: app mobile retry `POST /payments` sau khi timeout và khách bị trừ tiền hai lần. Lời giải chuẩn là header `Idempotency-Key` (có một IETF draft cho nó, và Stripe làm pattern này phổ biến). Interceptor của mình, lưu trong một bảng Postgres với khoá `(actor_id, key)`:
+
+```ts
+// idempotency/idempotency.interceptor.ts
+@Injectable()
+export class IdempotencyInterceptor implements NestInterceptor {
+  constructor(private store: IdempotencyStore, private reflector: Reflector) {}
+
+  async intercept(ctx: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
+    const req = ctx.switchToHttp().getRequest<AuthedRequest>();
+    const key = req.header("idempotency-key");
+    if (!key || key.length > 255) throw new BadRequestException("Idempotency-Key header required");
+
+    const hash = sha256(`${req.method} ${req.originalUrl} ${stableStringify(req.body)}`);
+    const claim = await this.store.claim(req.user.id, key, hash); // INSERT ... ON CONFLICT DO NOTHING
+
+    if (claim.kind === "existing") {
+      const row = claim.row;
+      if (row.requestHash !== hash) throw new UnprocessableEntityException("Key reused with a different request");
+      if (row.state === "in_progress") throw new ConflictException("Request with this key still in progress");
+      if (row.status >= 400) throw new HttpException(row.body, row.status); // phát lại lỗi dưới dạng lỗi
+      return of(row.body); // phát lại, không chạy lại
+    }
+
+    return next.handle().pipe(
+      mergeMap(async (body) => {
+        // Nest đặt status sau khi interceptor chạy, nên suy ra theo đúng cách Nest làm
+        const status = this.reflector.get<number>(HTTP_CODE_METADATA, ctx.getHandler()) ?? 201;
+        await this.store.complete(req.user.id, key, status, body);
+        return body;
+      }),
+      catchError(async (err) => {
+        // Lỗi phía client là kết quả cuối; lỗi server thì nhả key để retry chạy được
+        if (err instanceof HttpException && err.getStatus() < 500) {
+          await this.store.complete(req.user.id, key, err.getStatus(), err.getResponse());
+        } else {
+          await this.store.release(req.user.id, key);
+        }
+        throw err;
+      }),
+    );
+  }
+}
+```
+
+Key phải gắn theo actor (nếu không, key của người này có thể phát lại response của người khác), so hash của request, và xoá bản ghi sau khoảng một ngày. Idempotency không chặn được dân buôn vé, nhưng nó xoá sổ cả một lớp sự cố "hệ thống làm hai lần" khỏi những luồng quan trọng nhất.
+
+## API7 — SSRF: khi server đi fetch giùm kẻ tấn công
+
+Bất kỳ tính năng nào để server fetch một URL do người dùng cung cấp đều là ứng viên SSRF: webhook, "nhập từ URL", preview link, render PDF, "dùng OIDC provider của riêng bạn". Kẻ tấn công muốn server của bạn chạm tới chỗ họ không chạm được: metadata của cloud ở `169.254.169.254`, một service admin nội bộ, Redis trên localhost.
+
+```ts
+// có lỗ hổng
+const res = await fetch(dto.url); // http://169.254.169.254/latest/meta-data/... xin chào
+return { status: res.status, body: await res.text() }; // và bạn trả nó lại tận tay
+```
+
+Chặn `localhost` và IP private trong chuỗi URL sẽ thua DNS: `internal.attacker.example` phân giải ra `10.0.0.5`, hoặc ra IP public lúc bạn kiểm tra và IP private lúc bạn kết nối (DNS rebinding). Phép kiểm tra phải chạy **trên chính IP mà bạn kết nối tới**. Với undici, bạn có thể móc vào bước lookup của mỗi kết nối:
+
+```ts
+// net/safe-fetch.ts
+import dns from "node:dns";
+import ipaddr from "ipaddr.js";
+import { Agent, fetch } from "undici";
+
+// process() bóc IPv6 dạng IPv4-mapped như ::ffff:127.0.0.1
+const isPublic = (ip: string) => ipaddr.process(ip).range() === "unicast";
+
+const safeLookup = ((hostname: string, options: any, cb: any) => {
+  dns.lookup(hostname, { ...options, all: true }, (err, addrs: dns.LookupAddress[]) => {
+    if (err) return cb(err);
+    if (!addrs.length || !addrs.every((a) => isPublic(a.address))) {
+      return cb(Object.assign(new Error(`Blocked address for ${hostname}`), { code: "EBLOCKED" }));
+    }
+    options.all ? cb(null, addrs) : cb(null, addrs[0].address, addrs[0].family);
+  });
+}) as typeof dns.lookup;
+
+const agent = new Agent({ connect: { lookup: safeLookup, timeout: 5_000 } });
+
+export async function safeFetch(raw: string) {
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) {
+    throw new BadRequestException("URL not allowed");
+  }
+  const res = await fetch(url, { dispatcher: agent, redirect: "manual", signal: AbortSignal.timeout(10_000) });
+  if (res.status >= 300 && res.status < 400) throw new BadRequestException("Redirects are not followed");
+  return res; // bên gọi vẫn phải giới hạn kích thước body khi đọc
+}
+```
+
+Chỉ cho phép dải `unicast` là loại được private, loopback, link-local (chính là endpoint metadata), carrier-grade NAT, IPv6 unique-local và các dải tunnelling IPv6 chỉ bằng một dòng. Redirect bị từ chối vì một cú 302 sang `http://10.0.0.5` là kiểu vượt rào cổ điển nhất. Dù vậy, đây chỉ là một lớp:
+
+- **Kiểm soát egress mới là cách sửa thật.** Worker fetch URL nằm trong một vùng mạng chỉ ra được internet qua egress proxy, không có đường tới service nội bộ. Trên AWS, bắt buộc IMDSv2 để một GET thường không đọc được credential.
+- **Đừng trả lại thứ đã fetch.** Test webhook chỉ báo "đã gửi, 200", không trả body. SSRF "mù" kém hữu dụng hơn nhiều với kẻ tấn công.
+
+## API8 — Security Misconfiguration
+
+Mục "gom rác", và phần lớn là chuyện những giá trị mặc định không ai xem lại. Những gì mình kiểm tra trên mọi API NestJS:
+
+| Cấu hình sai | Mình đã gặp | Cách sửa |
+| --- | --- | --- |
+| Lỗi lộ nội tình | Filter tự viết trả `exception.message`, lộ tên bảng và cột của Prisma | Map các lỗi đã biết; còn lại là 500 chung chung kèm request ID |
+| Swagger trên production | `/docs` liệt kê mọi route nội bộ và admin | Chỉ mount ngoài prod, hoặc đặt sau auth |
+| CORS phản chiếu mọi origin | `origin: true, credentials: true` chép từ tutorial | Allowlist tường minh |
+| Health endpoint nói nhiều | `/health` trả version và connection string | Liveness chỉ nói `ok`; chi tiết đặt sau auth |
+| Thiếu header | Không có `nosniff`, không có HSTS | `helmet()` — rẻ, kể cả cho API JSON |
+| Lỗi lặp lại input | Lỗi validation nhắc lại cả secret | Trả tên field và thông báo, không trả giá trị |
+| `trust proxy` sai | Giới hạn và log chỉ thấy load balancer, hoặc tin header giả | Đúng số hop |
+
+Exception filter có sẵn của Nest thực ra khá dè dặt: lỗi không xác định thành `{"statusCode":500,"message":"Internal server error"}`. Những vụ rò rỉ mình gặp đều đến từ filter tự viết để "lỗi dễ hiểu hơn". Nếu muốn một format lỗi thống nhất, problem details theo RFC 9457 là lựa chọn tốt — bài lifecycle ở trên có filter đầy đủ. CORS có [bài riêng](/blog/cors-and-cross-origin-isolation), giải thích vì sao phản chiếu origin nguy hiểm và cách viết allowlist cho đúng.
+
+## API9 — Improper Inventory Management
+
+Bạn không bảo vệ được endpoint mà bạn không biết là mình có. Các sự cố ở đây giống nhau đến chán: `/v1` vẫn chạy "cho một app mobile cũ" mà không có những kiểm tra `/v2` đã có; một host `staging-api` chứa bản sao dữ liệu production; một endpoint nội bộ bị lộ qua route wildcard ở gateway; một integration với đối tác mà không ai nhớ đã cấp quyền.
+
+```ts
+// main.ts
+app.enableVersioning({ type: VersioningType.URI, defaultVersion: "2" });
+
+// orders.v1.controller.ts — adapter mỏng gọi CHÍNH các service của v2
+@Controller({ path: "orders", version: "1" })
+@UseInterceptors(new DeprecationInterceptor({ deprecatedAt: "2026-09-01", sunset: "2027-03-31" }))
+export class OrdersV1Controller {}
+```
+
+- **Version cũ gọi cùng service và repository,** nên bản vá áp dụng cho cả hai. Service v1 chép tay là nơi lỗ hổng sống mãi mãi.
+- **Sinh tài liệu OpenAPI trong CI và diff nó.** Route mới hiện ra thành diff của API contract mà reviewer không thể bỏ sót; test route-policy ở trên cũng là một phần của bản kiểm kê.
+- **Thông báo và đo việc khai tử:** header `Deprecation` (RFC 9745, một structured date như `@1788220800`) và `Sunset` (RFC 8594, một HTTP date), cộng metric về lượng dùng mỗi version. Khi traffic về 0, xoá code.
+- **Môi trường non-production có dữ liệu thật thì là production** về mặt bảo mật — hoặc tốt hơn, đừng cho nó dữ liệu thật.
+- **Gateway ở chế độ mặc định từ chối:** chỉ chuyển tiếp các route có trong bản kiểm kê đã công bố.
+
+## API10 — Unsafe Consumption of APIs
+
+Những dev không bao giờ tin request body lại vui vẻ tin JSON từ cổng thanh toán, API vận chuyển hay đối tác. Các hệ thống đó cũng bị xâm nhập, cấu hình sai, hoặc đơn giản là đổi format — và dữ liệu của họ chảy vào database, HTML và câu SQL của bạn.
+
+```ts
+// shipping/shipping.client.ts
+const Quote = z.object({
+  carrier: z.string().max(50),
+  amountCents: z.number().int().nonnegative().max(1_000_000),
+  currency: z.string().length(3),
+  trackingUrl: z.url().refine((u) => u.startsWith("https://"), "https only"), // sẽ nằm trong một href
+});
+
+const res = await fetch(`${this.baseUrl}/quotes`, {
+  method: "POST",
+  headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
+  body: JSON.stringify(input),
+  redirect: "error", // nhà cung cấp redirect bạn là một tín hiệu, không phải tiện ích
+  signal: AbortSignal.timeout(5_000),
+});
+const parsed = Quote.safeParse(await res.json());
+if (!res.ok || !parsed.success) throw new ShippingUnavailableError(res.status);
+return parsed.data; // key lạ bị bỏ, kiểu dữ liệu được đảm bảo
+```
+
+Webhook cũng đáng bị nghi ngờ như vậy. Verify chữ ký trên **byte thô** — đó là lý do bootstrap dùng `NestFactory.create(AppModule, { rawBody: true })`; JSON serialize lại sẽ không khớp:
+
+```ts
+// payments/webhooks.controller.ts
+@Public()
+@Post("webhooks/payments")
+@HttpCode(204)
+async handle(@Req() req: RawBodyRequest<Request>, @Headers("x-signature") sig = "", @Headers("x-timestamp") ts = "") {
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) throw new UnauthorizedException(); // NaN cũng bị loại
+  const expected = createHmac("sha256", this.secret).update(`${ts}.${req.rawBody!.toString("utf8")}`).digest();
+  const given = Buffer.from(sig, "hex");
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new UnauthorizedException();
+
+  const event = PaymentEvent.parse(JSON.parse(req.rawBody!.toString("utf8")));
+  await this.inbox.recordOnce(event.id, event); // nhà cung cấp gửi at-least-once
+}
+```
+
+So sánh constant-time, cửa sổ timestamp chống replay, khử trùng theo event ID. Với sự kiện giá trị cao, mình đi thêm một bước: coi webhook là một gợi ý, rồi gọi API của nhà cung cấp để lấy trạng thái chính thức trước khi hành động.
+
+## Testing: ma trận phân quyền trong e2e test
+
+Unit test chứng minh guard chạy đúng. Nó không chứng minh mọi route dùng guard đúng cách với dữ liệu thật. Cho việc đó, mình giữ một ma trận phân quyền — actor một trục, thao tác một trục — và chạy end-to-end trên database thật có dữ liệu mẫu của hai tenant:
+
+| Thao tác | anon | alice (chủ) | bob (cùng tenant) | support | admin | admin tenant khác |
+| --- | --- | --- | --- | --- | --- | --- |
+| `GET /orders/:aliceOrder` | 401 | 200 | 404 | 200 | 200 | 404 |
+| `POST /orders/:aliceOrder/cancel` | 401 | 204 | 404 | 403 | 204 | 404 |
+| `POST /orders/:aliceOrder/refund` | 401 | 403 | 403 | 201 | 201 | 404 |
+| `DELETE /users/:bob` | 401 | 403 | 403 | 403 | 204 | 404 |
+| `PATCH /users/me` kèm `role` | 401 | 400 | 400 | 400 | 400 | 400 |
+
+```ts
+// test/authz.e2e-spec.ts
+type ActorName = "anon" | "alice" | "bob" | "support" | "admin" | "otherAdmin";
+type Row = [string, "get" | "post" | "patch" | "delete", (f: Fixtures) => string, object | undefined, Record<ActorName, number>];
+
+const matrix: Row[] = [
+  ["read order", "get", (f) => `/v2/orders/${f.aliceOrder}`, undefined,
+    { anon: 401, alice: 200, bob: 404, support: 200, admin: 200, otherAdmin: 404 }],
+  ["refund order", "post", (f) => `/v2/orders/${f.aliceOrder}/refund`, { amountCents: 500 },
+    { anon: 401, alice: 403, bob: 403, support: 201, admin: 201, otherAdmin: 404 }],
+  ["mass-assign role", "patch", () => "/v2/users/me", { displayName: "x", role: "admin" },
+    { anon: 401, alice: 400, bob: 400, support: 400, admin: 400, otherAdmin: 400 }],
+];
+
+describe.each(matrix)("%s", (_name, method, path, body, expected) => {
+  it.each(Object.entries(expected))("as %s → %i", async (actor, status) => {
+    await fixtures.reset(); // refund và cancel làm thay đổi dữ liệu
+    let req = request(app.getHttpServer())[method](path(fixtures));
+    if (actor !== "anon") req = req.set("Authorization", `Bearer ${fixtures.tokens[actor as ActorName]}`);
+    await (body ? req.send(body) : req).expect(status);
+  });
+});
+```
+
+Điều làm ma trận này thực sự có giá trị:
+
+- **Cột "tenant khác" là bắt buộc.** Phần lớn rò rỉ xuyên tenant đi qua đường của admin và support, vì đó là chỗ scope được nới lỏng.
+- **Snapshot danh sách key của response** (không phải giá trị) cho endpoint đọc. Một `passwordHash` mới xuất hiện là API3, và test bắt được.
+- **Route mới thêm dòng trong cùng PR.** Cộng với test route-policy, route thiếu policy làm CI đỏ; route thiếu dòng trong ma trận bị nhắc trong review.
+- **Chạy trên stack thật.** Override auth guard "cho test dễ viết" là bỏ đi chính thứ bạn đang test.
+
+## Những lỗi mình thấy lặp đi lặp lại
+
+**Phân quyền là một câu `if` tuỳ chọn trong controller.** Scope thuộc về tầng dữ liệu, policy thuộc về guard toàn cục mặc định từ chối.
+
+**"Frontend đâu có hiện nút đó."** API chính là sản phẩm. Thứ gì nó chấp nhận, sẽ có người gửi.
+
+**Trông cậy gateway lo phân quyền.** Gateway giỏi xác thực, rate limit và định tuyến. Nó không biết đơn số 42 là của Alice.
+
+**`@Body() body: any`, hoặc không có `forbidNonWhitelisted`.** Mass assignment chỉ cách "không thể xảy ra" đúng một dòng cấu hình.
+
+**Trả thẳng entity của ORM.** Mọi cột thêm vào sau này mặc nhiên thành công khai.
+
+**Rate limit chỉ theo IP với `trust proxy` sai.** Hoặc mọi người chung một bucket, hoặc mỗi request một bucket. Đằng nào cũng là không giới hạn.
+
+**Fetch URL của người dùng bằng `fetch` trần.** DNS rebinding làm phép kiểm tra chuỗi vô dụng; hãy kiểm IP thực sự kết nối và kiểm soát egress.
+
+**Version cũ giữ bản sao logic riêng.** Vá ở v2, v1 vẫn thủng, mãi mãi.
+
+## Tóm tắt
+
+<Checklist>
+
+- Quyền sở hữu nằm ở tầng dữ liệu: scoped repository đưa tenant và chủ sở hữu vào mọi `where`, kể cả thao tác ghi và resource lồng nhau; object ngoài scope trả 404.
+- Xác thực là guard toàn cục mặc định từ chối, cố định algorithm, issuer và audience; endpoint login, reset, OTP giới hạn theo tài khoản và theo IP.
+- `ValidationPipe` với `whitelist` và `forbidNonWhitelisted`, mỗi use case một DTO, `@ValidateNested()` + `@Type()` cho object lồng nhau.
+- Response được định hình tường minh: `select` ở query, response type, serializer mặc định từ chối làm lưới an toàn.
+- Giới hạn trên mọi trục: tần suất (storage Redis dùng chung, `trust proxy` đúng), chi phí theo route, kích thước trang, body, độ dài mảng, timeout, chi phí phía sau.
+- Phân quyền mức chức năng qua policies guard CASL mặc định từ chối, cộng test CI bắt mọi route phải public hoặc khai báo policy.
+- Business flow nhạy cảm được xác định cùng bên sản phẩm và giới hạn bằng ngôn ngữ nghiệp vụ trong database; POST chuyển tiền bắt buộc idempotency key.
+- URL do người dùng cung cấp chỉ được fetch qua client kiểm tra IP thực kết nối, từ chối redirect, đứng sau egress proxy.
+- Bootstrap được siết: helmet, CORS allowlist, lỗi không lộ nội tình, không có Swagger công khai trên production.
+- Bản kiểm kê đáng tin: các version dùng chung service, OpenAPI được diff trong CI, header Deprecation/Sunset, version cũ thực sự bị xoá.
+- Response của bên thứ ba được kiểm bằng schema; webhook được verify trên body thô kèm cửa sổ timestamp và khử trùng.
+- Ma trận phân quyền trong e2e test có cột "tenant khác", chạy với đúng guard và pipe thật.
+
+</Checklist>

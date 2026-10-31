@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none" font-family="Inter, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F7FB"/>
+      <stop offset="1" stop-color="#EDEDF7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#000000" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#6B7280"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#7C3AED"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="675" rx="32" fill="url(#bg)"/>
+  <g opacity="0.45" stroke="#D8D8E8" stroke-width="2">
+    <path d="M0 112H1200M0 224H1200M0 336H1200M0 448H1200M0 560H1200"/>
+    <path d="M120 0V675M264 0V675M408 0V675M552 0V675M696 0V675M840 0V675M984 0V675M1128 0V675"/>
+  </g>
+
+  <text x="40" y="58" fill="#111827" font-size="32" font-weight="800">A slice of the clinic booking board</text>
+  <text x="40" y="92" fill="#4B5563" font-size="18">Time flows left to right. Dashed frames are the bounded contexts the board revealed.</text>
+
+  <!-- bounded contexts -->
+  <rect x="24" y="112" width="760" height="436" rx="22" fill="#FFFFFF" fill-opacity="0.55" stroke="#2F5BFF" stroke-width="2.5" stroke-dasharray="10 8"/>
+  <text x="44" y="140" fill="#2F5BFF" font-size="18" font-weight="700">Scheduling context</text>
+  <rect x="800" y="112" width="376" height="436" rx="22" fill="#FFFFFF" fill-opacity="0.55" stroke="#16A34A" stroke-width="2.5" stroke-dasharray="10 8"/>
+  <text x="820" y="140" fill="#16A34A" font-size="18" font-weight="700">Payments context</text>
+
+  <!-- Row A: actor + read model -->
+  <g filter="url(#shadow)">
+    <rect x="44" y="160" width="150" height="40" rx="6" fill="#FDE047"/>
+    <rect x="44" y="210" width="150" height="56" rx="6" fill="#86EFAC"/>
+  </g>
+  <text x="119" y="186" text-anchor="middle" fill="#111827" font-size="17" font-weight="700">Patient</text>
+  <text x="119" y="236" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">Available</text>
+  <text x="119" y="256" text-anchor="middle" fill="#111827" font-size="16" font-weight="600">slots</text>
+
+  <!-- Command: book -->
+  <g filter="url(#shadow)">
+    <rect x="224" y="166" width="150" height="96" rx="6" fill="#60A5FA"/>
+  </g>
+  <text x="299" y="208" text-anchor="middle" fill="#0B1F44" font-size="17" font-weight="700">Book</text>
+  <text x="299" y="230" text-anchor="middle" fill="#0B1F44" font-size="17" font-weight="700">appointment</text>
+
+  <!-- Aggregate -->
+  <g filter="url(#shadow)">
+    <rect x="404" y="156" width="150" height="116" rx="6" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+  </g>
+  <text x="479" y="206" text-anchor="middle" fill="#78350F" font-size="17" font-weight="700">Appointment</text>
+  <text x="479" y="230" text-anchor="middle" fill="#78350F" font-size="16">holds the rules</text>
+
+  <!-- Event: booked -->
+  <g filter="url(#shadow)">
+    <rect x="584" y="166" width="150" height="96" rx="6" fill="#FB923C"/>
+  </g>
+  <text x="659" y="208" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">Appointment</text>
+  <text x="659" y="230" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">booked</text>
+
+  <!-- Policy: request deposit -->
+  <g filter="url(#shadow)">
+    <rect x="820" y="166" width="150" height="96" rx="6" fill="#C4B5FD"/>
+  </g>
+  <text x="895" y="208" text-anchor="middle" fill="#2E1065" font-size="16" font-weight="700">Whenever booked,</text>
+  <text x="895" y="230" text-anchor="middle" fill="#2E1065" font-size="16" font-weight="700">request deposit</text>
+
+  <!-- External system -->
+  <g filter="url(#shadow)">
+    <rect x="1000" y="166" width="156" height="96" rx="6" fill="#F9A8D4"/>
+  </g>
+  <text x="1078" y="208" text-anchor="middle" fill="#500724" font-size="17" font-weight="700">Payment gateway</text>
+  <text x="1078" y="230" text-anchor="middle" fill="#500724" font-size="16">VNPay · MoMo</text>
+
+  <!-- Row A arrows -->
+  <path d="M196 214H218" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M376 214H398" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M556 214H578" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M736 214H814" stroke="#7C3AED" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowPurple)"/>
+  <path d="M972 214H994" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <!-- Row B: hotspot -->
+  <g filter="url(#shadow)">
+    <rect x="44" y="372" width="150" height="96" rx="6" fill="#F43F5E" transform="rotate(-5 119 420)"/>
+  </g>
+  <text x="119" y="414" text-anchor="middle" fill="#FFFFFF" font-size="16" font-weight="700" transform="rotate(-5 119 420)">Hold expires:</text>
+  <text x="119" y="436" text-anchor="middle" fill="#FFFFFF" font-size="16" font-weight="700" transform="rotate(-5 119 420)">10 or 15 min?</text>
+
+  <!-- Policy: confirm -->
+  <g filter="url(#shadow)">
+    <rect x="224" y="372" width="150" height="96" rx="6" fill="#C4B5FD"/>
+  </g>
+  <text x="299" y="414" text-anchor="middle" fill="#2E1065" font-size="16" font-weight="700">Whenever deposit</text>
+  <text x="299" y="436" text-anchor="middle" fill="#2E1065" font-size="16" font-weight="700">paid, confirm</text>
+
+  <!-- Command: confirm -->
+  <g filter="url(#shadow)">
+    <rect x="404" y="372" width="150" height="96" rx="6" fill="#60A5FA"/>
+  </g>
+  <text x="479" y="414" text-anchor="middle" fill="#0B1F44" font-size="17" font-weight="700">Confirm</text>
+  <text x="479" y="436" text-anchor="middle" fill="#0B1F44" font-size="17" font-weight="700">appointment</text>
+
+  <!-- Event: confirmed -->
+  <g filter="url(#shadow)">
+    <rect x="584" y="372" width="150" height="96" rx="6" fill="#FB923C"/>
+  </g>
+  <text x="659" y="414" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">Appointment</text>
+  <text x="659" y="436" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">confirmed</text>
+
+  <!-- Payments row B events -->
+  <g filter="url(#shadow)">
+    <rect x="820" y="372" width="150" height="96" rx="6" fill="#FB923C"/>
+    <rect x="1000" y="372" width="156" height="96" rx="6" fill="#FB923C"/>
+  </g>
+  <text x="895" y="414" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">Deposit</text>
+  <text x="895" y="436" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">failed</text>
+  <text x="1078" y="414" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">Deposit</text>
+  <text x="1078" y="436" text-anchor="middle" fill="#431407" font-size="17" font-weight="700">paid</text>
+
+  <!-- gateway to outcomes -->
+  <path d="M1078 264V366" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M1030 264L912 366" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <text x="1090" y="324" fill="#4B5563" font-size="16">IPN</text>
+
+  <!-- Row B arrows -->
+  <path d="M376 420H398" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M556 420H578" stroke="#6B7280" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <!-- Deposit paid crosses the boundary -->
+  <path d="M1078 470V506H299V476" stroke="#7C3AED" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowPurple)"/>
+  <text x="690" y="532" text-anchor="middle" fill="#7C3AED" font-size="16" font-weight="600">Deposit paid crosses the boundary as a published event, not a shared table</text>
+
+  <!-- legend -->
+  <rect x="24" y="566" width="1152" height="92" rx="18" fill="#FFFFFF" stroke="#E5E7EF" stroke-width="2"/>
+  <rect x="44" y="582" width="22" height="22" rx="4" fill="#FB923C"/>
+  <text x="76" y="599" fill="#111827" font-size="16" font-weight="600">Domain event (past tense)</text>
+  <rect x="330" y="582" width="22" height="22" rx="4" fill="#60A5FA"/>
+  <text x="362" y="599" fill="#111827" font-size="16" font-weight="600">Command (intent)</text>
+  <rect x="616" y="582" width="22" height="22" rx="4" fill="#FDE047"/>
+  <text x="648" y="599" fill="#111827" font-size="16" font-weight="600">Actor</text>
+  <rect x="902" y="582" width="22" height="22" rx="4" fill="#C4B5FD"/>
+  <text x="934" y="599" fill="#111827" font-size="16" font-weight="600">Policy (whenever... then)</text>
+  <rect x="44" y="620" width="22" height="22" rx="4" fill="#86EFAC"/>
+  <text x="76" y="637" fill="#111827" font-size="16" font-weight="600">Read model</text>
+  <rect x="330" y="620" width="22" height="22" rx="4" fill="#F9A8D4"/>
+  <text x="362" y="637" fill="#111827" font-size="16" font-weight="600">External system</text>
+  <rect x="616" y="620" width="22" height="22" rx="4" fill="#F43F5E"/>
+  <text x="648" y="637" fill="#111827" font-size="16" font-weight="600">Hotspot (open question)</text>
+  <rect x="902" y="620" width="22" height="22" rx="4" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+  <text x="934" y="637" fill="#111827" font-size="16" font-weight="600">Aggregate / constraint</text>
+</svg>

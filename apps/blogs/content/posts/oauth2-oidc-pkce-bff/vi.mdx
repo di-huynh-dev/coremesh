@@ -1,0 +1,774 @@
+---
+title: "OAuth 2.0 và OpenID Connect cho web app năm 2026: Authorization Code + PKCE, BFF và những lỗ hổng thật"
+excerpt: "Đi từng request HTTP của luồng authorization code + PKCE, phân biệt state, nonce, ID token và access token, vì sao implicit flow đã chết, và cách dựng Backend-for-Frontend trong Next.js để token không bao giờ xuống trình duyệt — kèm refresh rotation, logout và các lỗ hổng mình gặp thật."
+---
+
+<Lead>Lần đầu mình tích hợp "Login with Google" cho một SPA, mình copy một đoạn code từ blog, nhận `access_token` ngay trên URL fragment, nhét vào `localStorage`, và gọi API bằng... ID token, vì "nó cũng là JWT mà". Mọi thứ chạy. Mấy năm sau mình mới hiểu đoạn code đó sai ở gần như mọi bước. OAuth 2.0 và OpenID Connect không khó vì thuật toán, mà vì có quá nhiều tham số trông giống nhau nhưng bảo vệ những thứ khác nhau. Bài này là cách mình làm OAuth/OIDC cho web app ở thời điểm cuối 2026: authorization code + PKCE từng request một, state và nonce chặn cái gì, ba loại token khác nhau ra sao, vì sao implicit flow đã chết, và pattern Backend-for-Frontend (BFF) để token ở lại server — kèm code Next.js, refresh rotation, logout và những lỗ hổng mình đã thấy ngoài đời.</Lead>
+
+## Ai là ai: bốn vai trong OAuth và hai cái tên của OIDC
+
+Phần lớn nhầm lẫn về OAuth bắt nguồn từ việc không rõ ai đang nói chuyện với ai. Có bốn vai:
+
+- **Resource owner:** người dùng — người sở hữu dữ liệu và đồng ý cấp quyền.
+- **Client:** ứng dụng muốn truy cập dữ liệu thay mặt người dùng. Ở đây là web app của bạn.
+- **Authorization server (AS):** nơi người dùng đăng nhập và đồng ý, nơi phát token. Keycloak, Auth0, Okta, Microsoft Entra ID, Zitadel, hay Google.
+- **Resource server (RS):** API giữ dữ liệu, nhận access token và quyết định cho hay không.
+
+OAuth 2.0 bản chất là giao thức **ủy quyền** (authorization): client xin một access token để gọi API. Nó không nói gì về việc người dùng là ai. **OpenID Connect (OIDC)** là lớp **xác thực** (authentication) đặt lên trên: thêm scope `openid`, thêm ID token, thêm endpoint `userinfo` và discovery. Trong thuật ngữ OIDC, AS được gọi là **OpenID Provider (OP)** và client là **Relying Party (RP)**. Cùng một thứ, hai cái tên.
+
+Một phân loại nữa quan trọng không kém: **confidential client** và **public client**.
+
+- **Confidential client** giữ được bí mật — một server có `client_secret` hoặc private key để tự xác thực với AS.
+- **Public client** không giữ được bí mật — SPA chạy trong trình duyệt, app mobile. Mọi thứ trong bundle JavaScript đều là công khai.
+
+Cả bài này xoay quanh một ý: **SPA thuần là public client, và cách tốt nhất để bảo vệ nó là biến nó thành confidential client** bằng một backend nhỏ đứng giữa. Đó chính là BFF.
+
+## Authorization code + PKCE, từng request một
+
+Đây là luồng duy nhất mình dùng cho web app năm 2026. Mình đi qua từng request thật, vì khi debug bạn sẽ nhìn đúng những request này trong tab Network hoặc log của proxy.
+
+<Figure src="/blog/oauth2-oidc-pkce-bff-sequence.svg" alt="Sơ đồ tuần tự giữa bốn bên: trình duyệt, BFF Next.js, authorization server và API. Trình duyệt gọi /api/auth/login; BFF tạo code_verifier, state, nonce, lưu vào Redis rồi redirect tới /authorize kèm code_challenge; người dùng đăng nhập, AS redirect về /callback với code, state và iss; BFF gọi POST /token kèm code_verifier và client secret, nhận ID token, access token, refresh token và giữ chúng trong Redis; BFF chỉ trả cho trình duyệt một cookie __Host-sid HttpOnly; các request API sau đó đi qua BFF, BFF gắn Bearer access token khi gọi API" caption="Authorization code + PKCE qua BFF. Trình duyệt chỉ thấy code (dùng một lần, vô dụng nếu thiếu code_verifier) và một cookie session HttpOnly; mọi token nằm ở server." />
+
+### Bước 1: client chuẩn bị ba giá trị ngẫu nhiên
+
+Trước khi đẩy người dùng sang AS, client sinh ra:
+
+- **`code_verifier`**: chuỗi ngẫu nhiên entropy cao (43–128 ký tự). Giữ bí mật ở client.
+- **`state`**: chuỗi ngẫu nhiên để gắn callback với đúng phiên trình duyệt đã bắt đầu đăng nhập.
+- **`nonce`**: chuỗi ngẫu nhiên sẽ được AS nhét vào ID token.
+
+Từ `code_verifier`, client tính `code_challenge = BASE64URL(SHA256(code_verifier))`:
+
+```ts
+// lib/auth/pkce.ts — để hiểu cơ chế; thực tế dùng thư viện
+import { createHash, randomBytes } from "node:crypto";
+
+export function createPkcePair() {
+  const verifier = randomBytes(32).toString("base64url"); // 43 ký tự
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
+}
+```
+
+Luôn dùng method `S256`. Method `plain` (challenge bằng chính verifier) chỉ tồn tại cho môi trường không có SHA-256, tức là không phải môi trường của bạn.
+
+### Bước 2: redirect tới authorization endpoint
+
+```http
+GET /authorize?response_type=code
+  &client_id=dicode-web
+  &redirect_uri=https%3A%2F%2Fapp.example.com%2Fapi%2Fauth%2Fcallback
+  &scope=openid%20profile%20email%20offline_access%20orders%3Aread
+  &state=af0ifjsldkj3Kq9
+  &nonce=n-0S6_WzA2Mj
+  &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+  &code_challenge_method=S256 HTTP/1.1
+Host: id.example.com
+```
+
+(Xuống dòng cho dễ đọc; trên thực tế là một URL.) Để ý: chỉ `code_challenge` đi qua trình duyệt, còn `code_verifier` thì không. `offline_access` là scope OIDC để xin refresh token — nhiều AS yêu cầu nó, một số dùng cấu hình riêng.
+
+### Bước 3: AS redirect về callback với code
+
+Người dùng đăng nhập (mật khẩu, passkey, MFA — việc của AS), đồng ý, và AS trả về:
+
+```http
+HTTP/1.1 302 Found
+Location: https://app.example.com/api/auth/callback?code=SplxlOBeZQQYbYS6WxSbIA&state=af0ifjsldkj3Kq9&iss=https%3A%2F%2Fid.example.com
+```
+
+`code` là một giá trị dùng một lần, sống rất ngắn (thường dưới một phút). Tham số `iss` đến từ RFC 9207 — AS cho client biết ai vừa phát code này, để chống mix-up attack (nói ở dưới). Client phải kiểm tra `state` khớp với giá trị đã lưu **trước khi** làm gì khác.
+
+### Bước 4: đổi code lấy token qua back-channel
+
+Đây là request server-to-server, không qua trình duyệt:
+
+```http
+POST /oauth/token HTTP/1.1
+Host: id.example.com
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic ZGljb2RlLXdlYjpzM2NyM3Q=
+
+grant_type=authorization_code&code=SplxlOBeZQQYbYS6WxSbIA&redirect_uri=https%3A%2F%2Fapp.example.com%2Fapi%2Fauth%2Fcallback&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+```
+
+AS tính lại `SHA256(code_verifier)`, so với `code_challenge` đã nhận ở bước 2, kiểm tra `redirect_uri` giống hệt, xác thực client, rồi trả:
+
+```json
+{
+  "access_token": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 300,
+  "refresh_token": "8xLOxBtZp8.Qm9oLWdyZWVu...",
+  "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjIwMjYtMTAifQ...",
+  "scope": "openid profile email offline_access orders:read"
+}
+```
+
+Kèm header `Cache-Control: no-store`. Từ đây client có ba token, mỗi cái một vai — phần sau sẽ tách bạch.
+
+### PKCE thực sự chặn cái gì
+
+PKCE (RFC 7636) ban đầu được thiết kế cho app mobile: trên điện thoại, một app độc có thể đăng ký cùng custom URL scheme và **chặn được code** trên đường redirect. Không có PKCE, code bị chặn là đổi được lấy token. Có PKCE, kẻ chặn code không có `code_verifier` nên code vô dụng.
+
+Nhưng PKCE còn chặn một thứ quan trọng hơn với web app: **authorization code injection**. Kẻ tấn công lấy được một code của nạn nhân (qua log, qua Referer, qua open redirect) rồi tiêm nó vào callback của *chính phiên mình*, để client đổi code đó và đăng nhập kẻ tấn công vào tài khoản nạn nhân. Với PKCE, code bị ràng buộc với `code_verifier` của phiên đã tạo ra nó — phiên của kẻ tấn công có verifier khác, nên lần đổi thất bại.
+
+Vì vậy RFC 9700 (OAuth 2.0 Security Best Current Practice, xuất bản 01/2025) khuyến nghị PKCE cho **mọi** client, kể cả confidential client có `client_secret`. Còn OAuth 2.1 (vẫn đang là draft của IETF nhưng đã ổn định về nội dung) biến PKCE thành bắt buộc cho authorization code flow.
+
+## state, nonce và PKCE: ba tham số, ba mối đe doạ
+
+Ba giá trị ngẫu nhiên này trông giống nhau nên rất hay bị coi là thay thế được cho nhau. Không phải vậy:
+
+| Tham số | Ai kiểm tra | Kiểm tra ở đâu | Chặn được gì |
+| --- | --- | --- | --- |
+| `state` | Client | Callback, so với giá trị gắn với phiên trình duyệt | CSRF trên callback: kẻ tấn công ép trình duyệt nạn nhân hoàn tất một luồng đăng nhập do kẻ tấn công khởi tạo (login CSRF) |
+| `nonce` | Client | Claim `nonce` bên trong ID token | ID token bị replay hoặc tiêm vào một phiên khác |
+| `code_verifier` | AS | Token endpoint, so với `code_challenge` | Code bị chặn hoặc bị tiêm vào phiên khác |
+| `iss` (response) | Client | Callback, so với AS mà client đã chọn | Mix-up attack khi client nói chuyện với nhiều AS |
+
+Vài điều thực tế:
+
+- **`state` phải gắn với trình duyệt**, không chỉ "có tồn tại trong Redis". Nếu bạn chỉ kiểm tra `state` có trong store, kẻ tấn công tự bắt đầu luồng, lấy `state` hợp lệ của mình và đưa link callback cho nạn nhân. Mình gắn bằng một cookie ngắn hạn chứa `state` (hoặc một transaction id), và callback yêu cầu cookie khớp query.
+- **RFC 9700 cho phép dựa vào PKCE để chống CSRF** nếu client chắc chắn AS hỗ trợ PKCE. Mình vẫn giữ `state` vì nó rẻ, và vì mình dùng nó làm khoá cho transaction (verifier, nonce, `returnTo`).
+- **Transaction chỉ được dùng một lần.** Dùng `GETDEL` trong Redis hay xoá cookie ngay khi callback xử lý, để cùng một callback URL không chạy lại được.
+
+<Callout type="warning" title="Cookie transaction và SameSite">
+  Callback là một điều hướng top-level **từ domain của AS** về app của bạn. Cookie `SameSite=Strict` sẽ **không** được gửi kèm điều hướng cross-site này, nên callback luôn thấy "thiếu state". Cookie transaction cần `SameSite=Lax`. Nếu AS dùng `response_mode=form_post` (POST về callback) thì kể cả `Lax` cũng không đủ và bạn phải dùng `SameSite=None; Secure` cho riêng cookie đó.
+</Callout>
+
+## ID token, access token, refresh token: đừng nhầm vai
+
+Ba token, ba người nhận khác nhau. Đây là bảng mình vẽ lên bảng trắng mỗi khi onboard người mới:
+
+| | ID token | Access token | Refresh token |
+| --- | --- | --- | --- |
+| **Dành cho** | Client (RP) | Resource server (API) | Authorization server |
+| **`aud`** | `client_id` của bạn | Định danh API, ví dụ `https://api.example.com` | Không áp dụng — thường là chuỗi opaque |
+| **Định dạng** | Luôn là JWT có chữ ký | JWT (RFC 9068) hoặc opaque, tuỳ AS | Opaque với client |
+| **Trả lời câu hỏi** | "Ai vừa đăng nhập, lúc nào, bằng cách nào?" | "Request này được phép làm gì?" | "Cho tôi access token mới" |
+| **Client có nên đọc nội dung không?** | Có — phải validate | Không — coi như hộp đen | Không |
+| **Gửi tới API?** | Không bao giờ | Có, trong `Authorization` | Không bao giờ |
+
+Một ID token sau khi decode trông như sau:
+
+```json
+{
+  "iss": "https://id.example.com",
+  "sub": "248289761001",
+  "aud": "dicode-web",
+  "exp": 1792000000,
+  "iat": 1791999700,
+  "auth_time": 1791999690,
+  "nonce": "n-0S6_WzA2Mj",
+  "sid": "08a5019c-17e1-4977-8f42-65a12843ea02",
+  "amr": ["pwd", "mfa"],
+  "email": "di@example.com"
+}
+```
+
+Client phải validate: chữ ký với khoá từ JWKS của AS, `iss` khớp chính xác, `aud` chứa `client_id` của mình, `exp` chưa qua, `nonce` khớp transaction. Thư viện OIDC tử tế làm hết việc này — vấn đề thường nằm ở chỗ người ta *bỏ qua* thư viện và tự `JSON.parse(atob(...))`. Chi tiết về validate JWT mình viết riêng trong bài [JWT và những cái bẫy](/blog/jwt-pitfalls-and-key-rotation).
+
+### Vì sao SPA không được dùng ID token để gọi API
+
+Đây là lỗi mình gặp nhiều nhất khi review SPA. Lý do không chỉ là "spec nói vậy":
+
+1. **Sai audience.** ID token có `aud` là `client_id` của frontend. Một API chấp nhận nó nghĩa là API đang chấp nhận token phát cho *một ứng dụng khác*. Nếu một app khác cùng tenant cũng lấy được ID token có cùng `aud` (ví dụ app dùng chung client), nó gọi được API của bạn. Đây là dạng confused deputy kinh điển.
+2. **Không có scope.** ID token nói "đây là Dĩ", không nói "Dĩ cho phép app này đọc đơn hàng". API mất hoàn toàn khả năng phân quyền theo scope và consent.
+3. **Vòng đời khác.** ID token mô tả một sự kiện đăng nhập; nó không được thiết kế để refresh, thu hồi hay ràng buộc với người gửi.
+4. **Lộ PII không cần thiết.** ID token thường chứa email, tên — gửi kèm mọi request API nghĩa là chúng nằm trong log của mọi proxy trên đường đi.
+
+Nếu API của bạn cần biết người dùng là ai, access token đã có `sub`. Nếu cần thêm thông tin, API tự gọi `userinfo` hoặc tra DB của mình.
+
+<Callout type="tip" title="Định danh người dùng bằng iss + sub, không phải email">
+  `sub` chỉ duy nhất trong phạm vi một issuer, và email thì có thể thay đổi hoặc không được xác minh. Lớp lỗi "nOAuth" công bố năm 2023 đến từ đúng chỗ này: app tìm user theo claim `email` từ một tenant đa người thuê, mà người dùng tự sửa được email đó. Khoá ngoại của bảng user nên là cặp `(iss, sub)`.
+</Callout>
+
+## Implicit flow đã chết, và ROPC cũng vậy
+
+Năm 2015, SPA dùng implicit flow (`response_type=token`): AS trả access token thẳng trong URL fragment, không có bước đổi code. Lý do khi đó là trình duyệt chưa hỗ trợ CORS tốt để gọi token endpoint. Lý do đó đã biến mất từ lâu, còn các vấn đề thì ở lại:
+
+- **Token nằm trong URL.** Fragment vào lịch sử trình duyệt, bị mọi script trên trang đọc được, và có thể bị một open redirect giữ nguyên fragment chuyển sang domain khác.
+- **Không có cách ràng buộc token với client.** Không có PKCE, không có xác thực client, không phát hiện được token bị tiêm.
+- **Không có refresh token**, nên SPA phải dùng iframe ẩn với `prompt=none` để gia hạn — thứ mà chính sách chặn cookie bên thứ ba của trình duyệt đã làm vỡ.
+
+RFC 9700 nói rõ: implicit grant **SHOULD NOT** được dùng, và Resource Owner Password Credentials (ROPC — client tự nhận username/password) **MUST NOT** được dùng. OAuth 2.1 bỏ hẳn cả hai khỏi đặc tả.
+
+| Cách làm | Token ở đâu | XSS lấy được gì | Ghi chú |
+| --- | --- | --- | --- |
+| Implicit flow | URL fragment, rồi JS | Access token, sống tới khi hết hạn | Đã bị loại bỏ |
+| Code + PKCE ngay trong SPA | Bộ nhớ JS / Web Worker | Access token, refresh token, hoặc tự chạy luồng mới | Chấp nhận được, nhưng XSS vẫn rất đắt |
+| Code + PKCE qua BFF | Server (Redis/DB) | Chỉ dùng được session khi tab còn mở | Lựa chọn mặc định của mình |
+
+Hàng thứ hai cần nói thêm. Tài liệu "OAuth 2.0 for Browser-Based Applications" của nhóm OAuth tại IETF phân tích rằng dù bạn giấu token trong Web Worker hay closure, một XSS vẫn có thể **tự khởi động một luồng authorization mới** trong iframe ẩn, nhận code, và đổi lấy token mới hoàn toàn — vì nó chạy trong origin của bạn với đúng `client_id` và `redirect_uri`. Không có cách giấu token nào thắng được kẻ tấn công đang ngồi trong origin. Thứ duy nhất làm được là **không để token ở đó**.
+
+## Backend-for-Frontend: token ở lại server
+
+Ý tưởng BFF rất đơn giản: một backend nhỏ, cùng origin với SPA, đóng vai **confidential client**. Nó chạy luồng OAuth, giữ mọi token, và cấp cho trình duyệt một **cookie session HttpOnly** bình thường. Mọi request API của SPA đi qua BFF, BFF gắn access token rồi chuyển tiếp.
+
+Những gì bạn được:
+
+- Token không bao giờ chạm tới JavaScript. XSS vẫn nguy hiểm (nó gửi request qua BFF được khi tab còn mở), nhưng không *lấy* được token mang đi nơi khác dùng nhiều ngày.
+- Client xác thực với AS bằng secret hoặc `private_key_jwt`, nên AS có thể cấp refresh token dài hơn với sự tin tưởng cao hơn.
+- Refresh, rotation, logout đều nằm ở một chỗ trên server, dễ quan sát và dễ sửa.
+
+Cái giá: một hop mạng thêm, một store session (Redis), và BFF trở thành một thành phần cần vận hành. Với Next.js, BFF chính là route handler trong cùng app, nên cái giá thấp hơn bạn nghĩ.
+
+### Cấu hình client với openid-client
+
+Mình dùng `openid-client` v6 của Filip Skokan — thư viện được OpenID Foundation chứng nhận, API dạng hàm, chạy trên Node và edge runtime.
+
+```ts
+// lib/auth/oidc.ts
+import * as client from "openid-client";
+
+let configPromise: Promise<client.Configuration> | undefined;
+
+export function oidcConfig(): Promise<client.Configuration> {
+  // Discovery một lần cho cả process; reset nếu lỗi để lần sau thử lại
+  configPromise ??= client
+    .discovery(
+      new URL(process.env.OIDC_ISSUER!),
+      process.env.OIDC_CLIENT_ID!,
+      process.env.OIDC_CLIENT_SECRET!,
+    )
+    .catch((err) => {
+      configPromise = undefined;
+      throw err;
+    });
+  return configPromise;
+}
+
+// Luôn dựng từ cấu hình, không bao giờ từ request.url (sau proxy nó là URL nội bộ)
+export const REDIRECT_URI = `${process.env.APP_ORIGIN}/api/auth/callback`;
+export const SCOPES = "openid profile email offline_access orders:read";
+
+export const cookieBase = {
+  httpOnly: true,
+  secure: true,
+  path: "/",
+  sameSite: "lax" as const,
+};
+```
+
+### Session store trong Redis
+
+```ts
+// lib/auth/session-store.ts
+import { randomBytes } from "node:crypto";
+import Redis from "ioredis";
+
+export const redis = new Redis(process.env.REDIS_URL!);
+
+export type Session = {
+  iss: string;
+  sub: string;
+  sid?: string; // sid từ IdP — cần cho back-channel logout
+  idToken: string;
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number; // epoch ms của access token
+};
+
+const ABSOLUTE_TTL_S = 60 * 60 * 12;
+
+export async function createSession(data: Session): Promise<string> {
+  const id = randomBytes(32).toString("base64url");
+  const tx = redis.multi().set(`sess:${id}`, JSON.stringify(data), "EX", ABSOLUTE_TTL_S);
+  // Chỉ mục ngược sid -> các session của BFF, để logout từ IdP tìm được
+  if (data.sid) tx.sadd(`idp-sid:${data.sid}`, id).expire(`idp-sid:${data.sid}`, ABSOLUTE_TTL_S);
+  await tx.exec();
+  return id;
+}
+
+export async function readSession(id: string): Promise<Session | null> {
+  const raw = await redis.get(`sess:${id}`);
+  return raw ? (JSON.parse(raw) as Session) : null;
+}
+
+export async function writeSession(id: string, data: Session) {
+  await redis.set(`sess:${id}`, JSON.stringify(data), "KEEPTTL");
+}
+
+export async function destroySession(id: string) {
+  await redis.del(`sess:${id}`);
+}
+```
+
+ID session là 256 bit ngẫu nhiên; cookie chỉ chứa ID đó. Nếu bạn muốn khỏi phụ thuộc Redis, có thể mã hoá cả session vào cookie (kiểu iron-session), nhưng refresh token rotation trở nên khó vì cookie cũ có thể bị gửi lại — mình chọn store phía server.
+
+### Route đăng nhập
+
+```ts
+// app/api/auth/login/route.ts
+import { NextResponse, type NextRequest } from "next/server";
+import * as client from "openid-client";
+import { cookieBase, oidcConfig, REDIRECT_URI, SCOPES } from "@/lib/auth/oidc";
+import { redis } from "@/lib/auth/session-store";
+import { safeReturnTo } from "@/lib/auth/return-to";
+
+export async function GET(request: NextRequest) {
+  const config = await oidcConfig();
+
+  const codeVerifier = client.randomPKCECodeVerifier();
+  const codeChallenge = await client.calculatePKCECodeChallenge(codeVerifier);
+  const state = client.randomState();
+  const nonce = client.randomNonce();
+  const returnTo = safeReturnTo(request.nextUrl.searchParams.get("returnTo"));
+
+  // Transaction sống 10 phút, khoá theo state, chỉ dùng được một lần
+  await redis.set(
+    `authtx:${state}`,
+    JSON.stringify({ codeVerifier, nonce, returnTo, issuer: config.serverMetadata().issuer }),
+    "EX",
+    600,
+  );
+
+  const authorizeUrl = client.buildAuthorizationUrl(config, {
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPES,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    state,
+    nonce,
+  });
+
+  const res = NextResponse.redirect(authorizeUrl);
+  // Gắn transaction với trình duyệt này — Lax để đi kèm điều hướng từ AS về
+  res.cookies.set("__Host-authtx", state, { ...cookieBase, maxAge: 600 });
+  return res;
+}
+```
+
+`safeReturnTo` quan trọng hơn vẻ ngoài của nó — mình nói ở phần lỗ hổng:
+
+```ts
+// lib/auth/return-to.ts
+export function safeReturnTo(input: string | null): string {
+  // Chỉ cho phép đường dẫn tương đối cùng origin; chặn //evil.com và /\evil.com
+  if (!input || !input.startsWith("/") || input.startsWith("//") || input.includes("\\")) {
+    return "/";
+  }
+  const url = new URL(input, process.env.APP_ORIGIN);
+  return url.origin === process.env.APP_ORIGIN ? url.pathname + url.search : "/";
+}
+```
+
+### Route callback
+
+```ts
+// app/api/auth/callback/route.ts
+import { NextResponse, type NextRequest } from "next/server";
+import * as client from "openid-client";
+import { cookieBase, oidcConfig, REDIRECT_URI } from "@/lib/auth/oidc";
+import { createSession, redis } from "@/lib/auth/session-store";
+import { logger } from "@/lib/logger";
+
+type AuthTx = { codeVerifier: string; nonce: string; returnTo: string; issuer: string };
+
+export async function GET(request: NextRequest) {
+  const state = request.nextUrl.searchParams.get("state");
+  const boundState = request.cookies.get("__Host-authtx")?.value;
+  if (!state || !boundState || state !== boundState) {
+    return new Response("Phiên đăng nhập không hợp lệ", { status: 400 });
+  }
+
+  // GETDEL: transaction bị tiêu thụ ngay, callback không chạy lại được
+  const raw = await redis.getdel(`authtx:${state}`);
+  if (!raw) return new Response("Phiên đăng nhập đã hết hạn", { status: 400 });
+  const tx = JSON.parse(raw) as AuthTx;
+
+  const config = await oidcConfig();
+  // Dựng lại URL từ REDIRECT_URI cấu hình sẵn: redirect_uri gửi tới /token phải giống hệt
+  const callbackUrl = new URL(REDIRECT_URI + request.nextUrl.search);
+
+  let tokens: Awaited<ReturnType<typeof client.authorizationCodeGrant>>;
+  try {
+    tokens = await client.authorizationCodeGrant(config, callbackUrl, {
+      pkceCodeVerifier: tx.codeVerifier,
+      expectedState: state,
+      expectedNonce: tx.nonce,
+      idTokenExpected: true,
+    });
+  } catch (err) {
+    // Không log callbackUrl: nó chứa code
+    logger.warn({ reason: err instanceof Error ? err.message : "unknown" }, "oidc callback failed");
+    return new Response("Đăng nhập thất bại", { status: 400 });
+  }
+
+  const claims = tokens.claims()!;
+  const sessionId = await createSession({
+    iss: claims.iss,
+    sub: claims.sub,
+    sid: typeof claims.sid === "string" ? claims.sid : undefined,
+    idToken: tokens.id_token!,
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token,
+    expiresAt: Date.now() + (tokens.expires_in ?? 300) * 1000,
+  });
+
+  // 303 về trang sạch: URL có code không ở lại thanh địa chỉ hay lịch sử
+  const res = NextResponse.redirect(new URL(tx.returnTo, process.env.APP_ORIGIN), 303);
+  // Xoá cookie __Host- phải kèm đủ Secure + Path=/, nếu không trình duyệt bỏ qua Set-Cookie
+  res.cookies.set("__Host-authtx", "", { ...cookieBase, maxAge: 0 });
+  res.cookies.set("__Host-sid", sessionId, { ...cookieBase, maxAge: 60 * 60 * 12 });
+  res.headers.set("Referrer-Policy", "no-referrer");
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+```
+
+`authorizationCodeGrant` kiểm tra `state`, gửi `code_verifier`, validate ID token (chữ ký, `iss`, `aud`, `exp`, `nonce`) và kiểm tra tham số `iss` trong response nếu AS khai báo hỗ trợ RFC 9207. Đó là lý do mình không tự viết đoạn này.
+
+### Proxy API: chỗ dễ biến thành open proxy
+
+```ts
+// app/api/bff/[...path]/route.ts
+import type { NextRequest } from "next/server";
+import { getFreshSession } from "@/lib/auth/session";
+
+const API_ORIGIN = process.env.API_ORIGIN!;
+const ALLOWED_ROOTS = new Set(["orders", "invoices", "profile"]);
+
+async function proxy(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  // CSRF: request thay đổi state phải đến từ chính origin của mình
+  if (request.method !== "GET" && request.headers.get("sec-fetch-site") !== "same-origin") {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  const { path } = await ctx.params;
+  // Chặn SSRF: chỉ những resource đã biết, không có "..", không có segment rỗng
+  if (!ALLOWED_ROOTS.has(path[0]) || path.some((p) => p === ".." || p === "." || p === "")) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
+  const sid = request.cookies.get("__Host-sid")?.value;
+  const session = sid ? await getFreshSession(sid) : null;
+  if (!session) return Response.json({ error: "unauthenticated" }, { status: 401 });
+
+  const target = new URL(`/${path.map(encodeURIComponent).join("/")}`, API_ORIGIN);
+  target.search = request.nextUrl.search;
+
+  const upstream = await fetch(target, {
+    method: request.method,
+    headers: {
+      authorization: `Bearer ${session.accessToken}`,
+      accept: "application/json",
+      "content-type": request.headers.get("content-type") ?? "application/json",
+    },
+    body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
+    cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  // Không chuyển tiếp cookie của trình duyệt sang API, không trả Set-Cookie của API về trình duyệt
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      "content-type": upstream.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+export { proxy as GET, proxy as POST, proxy as PUT, proxy as PATCH, proxy as DELETE };
+```
+
+Ba quyết định có chủ đích ở đây: allow-list cho path (không thì BFF thành công cụ SSRF có kèm access token), kiểm tra `Sec-Fetch-Site` cho request thay đổi state (cookie session đi kèm tự động, nên CSRF quay lại là vấn đề — xem thêm [bài bảo mật frontend](/blog/frontend-security-in-practice)), và không bao giờ chuyển nguyên header từ trình duyệt sang API.
+
+### Phiên bản NestJS
+
+Nếu BFF của bạn là một service NestJS riêng (ví dụ frontend là Vite SPA), các mảnh ghép giống hệt: controller `login`/`callback` dùng `openid-client`, một guard nạp session, và một controller proxy. Với NestJS 11 chạy Express 5, wildcard route phải có tên:
+
+```ts
+// bff/bff-proxy.controller.ts
+import { All, Controller, Req, Res, UseGuards } from "@nestjs/common";
+import type { Request, Response } from "express";
+import { BffSessionGuard, type SessionRequest } from "./bff-session.guard";
+import { ApiProxyService } from "./api-proxy.service";
+
+@Controller("bff")
+@UseGuards(BffSessionGuard) // đọc __Host-sid, refresh nếu cần, gắn req.bffSession
+export class BffProxyController {
+  constructor(private readonly api: ApiProxyService) {}
+
+  @All("*path")
+  async forward(@Req() req: Request & SessionRequest, @Res() res: Response) {
+    const upstream = await this.api.forward(req, req.bffSession.accessToken);
+    res.status(upstream.status).type(upstream.headers.get("content-type") ?? "json");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  }
+}
+```
+
+Guard và cách tổ chức session trong NestJS mình đã viết chi tiết ở bài [auth NestJS với passkey và session](/blog/nestjs-auth-passkeys-sessions); BFF chỉ khác ở chỗ session giữ token của IdP thay vì tự phát token.
+
+## Refresh token: rotation, reuse detection và race condition
+
+### Phía authorization server
+
+Refresh token sống lâu nên là mục tiêu béo bở. RFC 9700 yêu cầu refresh token của public client phải hoặc **ràng buộc với người gửi** (DPoP, mTLS), hoặc **rotation**: mỗi lần dùng, AS phát refresh token mới và vô hiệu cái cũ. Nếu cái cũ xuất hiện lại, AS không biết ai là người thật, ai là kẻ trộm — nên nó thu hồi **cả họ token** (family) sinh ra từ lần đăng nhập đó. Nếu bạn tự xây AS hoặc tự quản lý refresh token, cơ chế family và cách lưu hash mình đã trình bày đầy đủ trong bài [NestJS auth](/blog/nestjs-auth-passkeys-sessions).
+
+Với BFF, refresh token nằm trên server của bạn, là confidential client — nhiều AS cho phép tắt rotation trong trường hợp này. Mình vẫn bật, vì một bản dump Redis bị lộ khi đó sẽ tự lộ diện ngay lần refresh kế tiếp.
+
+### Phía BFF: hai request cùng refresh
+
+Đây là bug production mình gặp thật: dashboard mở ra bắn 6 request song song đúng lúc access token vừa hết hạn. Cả 6 cùng thấy token hết hạn, cả 6 cùng gọi refresh với **cùng một** refresh token. Request đầu thành công và nhận token mới; 5 request sau dùng token cũ — AS coi đó là **reuse**, thu hồi cả family, và người dùng bị đá ra màn hình đăng nhập giữa chừng. Người dùng báo "app tự logout ngẫu nhiên", và log phía AS ghi "refresh token reuse detected" như thể đang bị tấn công.
+
+Cách sửa là single-flight theo session:
+
+```ts
+// lib/auth/session.ts
+import { setTimeout as sleep } from "node:timers/promises";
+import * as client from "openid-client";
+import { oidcConfig } from "./oidc";
+import { destroySession, readSession, redis, writeSession, type Session } from "./session-store";
+
+const SKEW_MS = 30_000; // refresh sớm 30 giây, tránh token hết hạn trên đường bay
+
+const isFresh = (s: Session) => s.expiresAt - SKEW_MS > Date.now();
+
+export async function getFreshSession(id: string): Promise<Session | null> {
+  const session = await readSession(id);
+  if (!session) return null;
+  if (isFresh(session)) return session;
+  if (!session.refreshToken) return null;
+
+  const lockKey = `lock:refresh:${id}`;
+  const acquired = await redis.set(lockKey, "1", "PX", 10_000, "NX");
+
+  if (!acquired) {
+    // Một request khác đang refresh: chờ nó xong rồi đọc lại
+    for (let i = 0; i < 25; i++) {
+      await sleep(200);
+      const latest = await readSession(id);
+      if (!latest) return null;
+      if (isFresh(latest)) return latest;
+    }
+    return null;
+  }
+
+  try {
+    const tokens = await client.refreshTokenGrant(await oidcConfig(), session.refreshToken);
+    const next: Session = {
+      ...session,
+      accessToken: tokens.access_token,
+      // Có rotation thì luôn có token mới; không có thì giữ cái cũ
+      refreshToken: tokens.refresh_token ?? session.refreshToken,
+      expiresAt: Date.now() + (tokens.expires_in ?? 300) * 1000,
+    };
+    await writeSession(id, next);
+    return next;
+  } catch (err) {
+    if (err instanceof client.ResponseBodyError && err.error === "invalid_grant") {
+      // Refresh token hết hạn hoặc bị thu hồi: phiên này chấm dứt
+      await destroySession(id);
+      return null;
+    }
+    throw err;
+  } finally {
+    await redis.del(lockKey);
+  }
+}
+```
+
+Lock ở Redis chứ không ở bộ nhớ process, vì BFF thường chạy nhiều instance. Nhiều AS thương mại còn có "grace period" hay "reuse interval" vài giây, trong đó refresh token cũ vẫn được chấp nhận — hữu ích như lưới an toàn, nhưng đừng dựa vào nó thay cho single-flight.
+
+<Callout type="note">
+  **Lỗi mạng giữa chừng là trường hợp khó nhất.** Nếu AS đã rotate nhưng response bị mất trên đường về, BFF vẫn giữ refresh token cũ — lần sau dùng nó là "reuse". Không có lời giải hoàn hảo; grace period của AS là thứ giúp nhiều nhất ở đây. Đây cũng là lý do mình đặt timeout và retry cẩn thận cho chính request refresh: retry ngay lập tức với cùng token thường an toàn trong grace period, retry sau một phút thì không.
+</Callout>
+
+## Redirect URI: so khớp chính xác, không wildcard
+
+AS chỉ gửi code về `redirect_uri` đã đăng ký. Nếu cách so khớp lỏng lẻo, code bay tới nơi khác. Các kiểu cấu hình mình từng thấy:
+
+- **Wildcard subdomain**: `https://*.example.com/callback`. Một subdomain bị chiếm (bản ghi DNS trỏ tới dịch vụ đã huỷ, preview deployment của một PR từ fork) là nhận được code.
+- **So khớp tiền tố**: đăng ký `https://app.example.com/` và AS chấp nhận mọi URL bắt đầu bằng chuỗi đó. Kẻ tấn công dùng `https://app.example.com/redirect?to=https://evil.example` — kết hợp với một open redirect trong app, code đi theo sang domain kẻ tấn công.
+- **Bỏ qua query string**: AS chỉ so path, kẻ tấn công thêm tham số làm thay đổi hành vi trang callback.
+
+RFC 9700 yêu cầu **so khớp chuỗi chính xác** (exact string matching), với một ngoại lệ duy nhất là cổng của địa chỉ loopback cho app native. OAuth 2.1 cũng vậy. Hệ quả thực tế: mỗi môi trường (local, staging, production) đăng ký URI riêng, preview deployment dùng một client riêng hoặc không có login thật, và đừng bao giờ bật tuỳ chọn "allow wildcard" trong console của IdP chỉ vì tiện.
+
+## Logout: khó hơn bạn nghĩ
+
+Khi người dùng bấm "Đăng xuất", có ít nhất ba phiên khác nhau đang sống:
+
+1. **Session của BFF** — cookie `__Host-sid` và bản ghi Redis.
+2. **Session SSO ở IdP** — cookie của IdP trên domain của nó. Nếu không kết thúc, lần bấm "Đăng nhập" kế tiếp sẽ vào thẳng mà không hỏi gì.
+3. **Session ở các app khác** dùng chung IdP.
+
+Xoá cookie của mình chỉ giải quyết được (1). Đây là những gì mình làm cho đủ cả ba.
+
+### RP-Initiated Logout
+
+OpenID Connect RP-Initiated Logout 1.0 định nghĩa `end_session_endpoint` (có trong discovery). BFF xoá session của mình, thu hồi refresh token, rồi chuyển người dùng sang IdP:
+
+```ts
+// app/api/auth/logout/route.ts
+import { NextResponse, type NextRequest } from "next/server";
+import * as client from "openid-client";
+import { cookieBase, oidcConfig } from "@/lib/auth/oidc";
+import { destroySession, readSession } from "@/lib/auth/session-store";
+
+export async function POST(request: NextRequest) {
+  if (request.headers.get("sec-fetch-site") !== "same-origin") {
+    return new Response(null, { status: 403 }); // chặn logout CSRF
+  }
+
+  const config = await oidcConfig();
+  const sid = request.cookies.get("__Host-sid")?.value;
+  let next = new URL("/signed-out", process.env.APP_ORIGIN);
+
+  if (sid) {
+    const session = await readSession(sid);
+    await destroySession(sid);
+    if (session?.refreshToken) {
+      // RFC 7009 — best effort, không chặn logout nếu IdP chậm
+      await client.tokenRevocation(config, session.refreshToken).catch(() => undefined);
+    }
+    if (session && config.serverMetadata().end_session_endpoint) {
+      next = client.buildEndSessionUrl(config, {
+        id_token_hint: session.idToken,
+        post_logout_redirect_uri: `${process.env.APP_ORIGIN}/signed-out`,
+      });
+    }
+  }
+
+  const res = NextResponse.redirect(next, 303);
+  res.cookies.set("__Host-sid", "", { ...cookieBase, maxAge: 0 });
+  return res;
+}
+```
+
+Logout là `POST` từ một `form` bình thường (không phải `fetch`), để trình duyệt thực sự điều hướng sang IdP. `post_logout_redirect_uri` cũng phải đăng ký trước và so khớp chính xác, giống redirect URI.
+
+### Back-Channel Logout
+
+Khi người dùng đăng xuất ở một app khác, hoặc admin khoá tài khoản ở IdP, bạn muốn session BFF cũng chết. OpenID Connect Back-Channel Logout 1.0 cho phép IdP gọi thẳng server của bạn với một `logout_token` (một JWT):
+
+```ts
+// app/api/auth/backchannel-logout/route.ts
+import { createRemoteJWKSet, jwtVerify } from "jose";
+import { redis } from "@/lib/auth/session-store";
+
+const jwks = createRemoteJWKSet(new URL(process.env.OIDC_JWKS_URI!));
+const BCL_EVENT = "http://schemas.openid.net/event/backchannel-logout";
+
+export async function POST(request: Request) {
+  const form = await request.formData();
+  const logoutToken = form.get("logout_token");
+  if (typeof logoutToken !== "string") return new Response(null, { status: 400 });
+
+  try {
+    const { payload } = await jwtVerify(logoutToken, jwks, {
+      issuer: process.env.OIDC_ISSUER,
+      audience: process.env.OIDC_CLIENT_ID,
+      algorithms: ["RS256", "ES256"],
+      maxTokenAge: "2m",
+    });
+
+    const events = payload.events as Record<string, unknown> | undefined;
+    if (!events || !(BCL_EVENT in events)) throw new Error("not a logout token");
+    if ("nonce" in payload) throw new Error("logout token must not contain nonce");
+    if (!payload.sid && !payload.sub) throw new Error("missing sid and sub");
+
+    // Chống replay: jti chỉ được xử lý một lần
+    const fresh = await redis.set(`bcl-jti:${payload.jti}`, "1", "EX", 600, "NX");
+    if (!fresh) return new Response(null, { status: 200, headers: { "Cache-Control": "no-store" } });
+
+    if (typeof payload.sid === "string") {
+      const ids = await redis.smembers(`idp-sid:${payload.sid}`);
+      if (ids.length) await redis.del(...ids.map((id) => `sess:${id}`), `idp-sid:${payload.sid}`);
+    }
+    // Nếu chỉ có sub: xoá mọi session của user (cần thêm chỉ mục sub -> session)
+
+    return new Response(null, { status: 200, headers: { "Cache-Control": "no-store" } });
+  } catch {
+    return new Response(null, { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
+}
+```
+
+Đây là lý do `createSession` ở trên lưu chỉ mục `idp-sid`. Endpoint này phải truy cập được từ IdP (cẩn thận với firewall chặn inbound), và không cần cookie hay CSRF check — tính xác thực đến từ chữ ký của logout token.
+
+Còn **front-channel logout** (IdP nhúng iframe tới từng app để xoá cookie) thì mình tránh: chính sách chặn cookie bên thứ ba của trình duyệt khiến iframe đó thường không mang theo cookie của app, nên nó thất bại trong im lặng.
+
+## DPoP: khi bearer token là chưa đủ
+
+Bearer token đúng như tên gọi: ai *cầm* nó là dùng được. DPoP (RFC 9449, Demonstrating Proof of Possession) ràng buộc token với một cặp khoá của client:
+
+1. Client tạo cặp khoá (trong trình duyệt là khoá WebCrypto non-extractable).
+2. Mỗi request tới token endpoint và API kèm header `DPoP` — một JWT nhỏ ký bằng private key, chứa method (`htm`), URL (`htu`), thời điểm (`iat`), `jti` và hash của access token (`ath`).
+3. AS phát token có claim `cnf.jkt` = thumbprint của public key. API từ chối token nếu proof không ký bằng đúng khoá đó.
+
+```http
+GET /orders HTTP/1.1
+Host: api.example.com
+Authorization: DPoP eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCJ9...
+DPoP: eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIn19...
+```
+
+Token bị lộ qua log hay qua một proxy sẽ vô dụng nếu thiếu private key. Nhưng hãy trung thực về giới hạn: trong SPA, XSS không lấy được khoá non-extractable nhưng vẫn **gọi được hàm ký** khi tab còn mở. DPoP thu hẹp thiệt hại tương tự cách BFF làm, chứ không thay thế BFF. Chỗ mình thấy DPoP đáng giá nhất là giữa BFF và API hoặc giữa các service, nơi bạn muốn token rò rỉ ra log không dùng lại được — hoặc mTLS-bound token (RFC 8705) nếu hạ tầng của bạn đã có mTLS.
+
+## Những lỗ hổng mình thấy ngoài đời
+
+### Open redirect biến thành rò rỉ code
+
+Kịch bản: redirect URI đăng ký lỏng lẻo, và app có endpoint `/go?url=...` chuyển hướng tự do. Kẻ tấn công dựng link authorize với `redirect_uri=https://app.example.com/go?url=https://evil.example`. AS chấp nhận vì tiền tố khớp, code tới `/go`, rồi trình duyệt mang theo code sang `evil.example` (trong query hoặc qua `Referer`). Không cần lỗ hổng nào ở AS — chỉ cần hai cấu hình "tiện lợi" gặp nhau.
+
+Phòng thủ: exact redirect URI ở AS, và `returnTo`/`next` trong app chỉ nhận đường dẫn tương đối như hàm `safeReturnTo` ở trên. Mình cũng kiểm tra cả `returnTo` sau logout.
+
+### Mix-up attack
+
+Khi client hỗ trợ nhiều AS ("Login with A", "Login with B"), và một trong số đó độc hại hoặc bị chiếm, kẻ tấn công có thể khiến client gửi code lấy từ AS thật tới **token endpoint của AS giả** — vì callback không cho client biết code đến từ đâu. Phòng thủ: lưu issuer mong đợi trong transaction (như trường `issuer` ở route login) và kiểm tra tham số `iss` trong response (RFC 9207); hoặc dùng redirect URI khác nhau cho từng AS. Nếu bạn chỉ có một IdP, rủi ro này nhỏ — nhưng nó xuất hiện ngay khi ai đó thêm "Login with GitHub" vào app.
+
+### Code injection
+
+Như đã nói ở phần PKCE: code bị lộ (qua log, qua Referer) được tiêm vào phiên của kẻ tấn công. PKCE và `nonce` là hai lớp chặn. Mình từng thấy một client "có PKCE" nhưng lưu `code_verifier` theo `state` toàn cục thay vì gắn với trình duyệt — tức là bất kỳ ai cầm `state` + `code` đều hoàn tất được luồng. Gắn transaction với cookie của trình duyệt là bắt buộc.
+
+### Token và code rò rỉ qua Referer và log
+
+Đây là loại "nhàm chán" nhưng phổ biến nhất:
+
+- **Trang callback tải tài nguyên bên thứ ba** (analytics, font, ảnh) trong khi URL còn `?code=...`. Header `Referer` mang code đi. Sửa: callback không render HTML, chỉ xử lý rồi trả `303` về URL sạch, kèm `Referrer-Policy: no-referrer`.
+- **Access log và APM ghi full URL.** Nginx, load balancer, Sentry breadcrumbs, OpenTelemetry span attribute `url.full` đều ghi query string. Lọc `code`, `state`, `id_token_hint` ở tầng log, hoặc tắt ghi query cho route callback.
+- **Token trong query string.** `?access_token=...` khi gọi API — RFC 6750 cho phép nhưng mọi tài liệu bảo mật đều khuyên tránh. Không bao giờ dùng.
+- **Log toàn bộ response của token endpoint** khi debug, rồi quên xoá. Mình đã thấy refresh token sống trong Elasticsearch 30 ngày như vậy.
+
+### Không validate gì cả
+
+Một API "xác thực" bằng cách decode JWT và đọc `sub`, không kiểm tra chữ ký vì "token đến từ IdP mà". Hoặc kiểm tra chữ ký nhưng không kiểm tra `aud`, nên token phát cho bất kỳ app nào trong cùng tenant đều dùng được. Hoặc dùng endpoint `common` của một IdP đa tenant mà không kiểm tra `iss` thuộc tenant nào. Phần này mình đi sâu trong bài [JWT và những cái bẫy](/blog/jwt-pitfalls-and-key-rotation).
+
+## Những sai lầm mình hay thấy trong code review
+
+- **Dùng ID token làm bearer token gọi API.** Gửi access token, và cho API kiểm tra `aud` của chính nó.
+- **Tự viết luồng OAuth bằng `fetch`.** Mỗi bước có một kiểm tra nhỏ dễ quên. Dùng thư viện được chứng nhận (`openid-client`, hoặc thư viện chính thức của IdP).
+- **`state` chỉ được kiểm tra "có tồn tại".** Phải gắn với trình duyệt và dùng một lần.
+- **`redirect_uri` dựng từ `request.url`.** Sau reverse proxy nó thành `http://10.0.3.7:3000/...`, token endpoint từ chối, và ai đó "sửa" bằng cách nới lỏng cấu hình AS.
+- **Refresh không có single-flight.** Logout ngẫu nhiên, log reuse detection giả.
+- **Logout chỉ xoá cookie local.** Lần đăng nhập sau vào thẳng không hỏi, trên máy tính dùng chung đó là lỗ hổng thật.
+- **Xin scope "cho chắc".** Access token có `admin:*` vì một màn hình cần nó một lần. Scope là thứ giới hạn thiệt hại khi token lộ.
+- **Lưu token trong `localStorage`** vì "BFF phức tạp quá". Với Next.js, BFF là bốn route handler.
+
+## Đọc thêm
+
+- [RFC 9700 — OAuth 2.0 Security Best Current Practice](https://www.rfc-editor.org/rfc/rfc9700.html): tài liệu nên đọc đầu tiên.
+- [RFC 7636 — PKCE](https://www.rfc-editor.org/rfc/rfc7636.html), [RFC 9207 — Authorization Server Issuer Identification](https://www.rfc-editor.org/rfc/rfc9207.html), [RFC 9449 — DPoP](https://www.rfc-editor.org/rfc/rfc9449.html).
+- [The OAuth 2.1 Authorization Framework (IETF draft)](https://datatracker.ietf.org/doc/draft-ietf-oauth-v2-1/) và [OAuth 2.0 for Browser-Based Applications](https://datatracker.ietf.org/doc/draft-ietf-oauth-browser-based-apps/).
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), [Back-Channel Logout 1.0](https://openid.net/specs/openid-connect-backchannel-1_0.html).
+- [openid-client](https://github.com/panva/openid-client) và [jose](https://github.com/panva/jose) của Filip Skokan.
+
+## Tóm tắt
+
+<Checklist>
+
+- Web app dùng authorization code + PKCE (`S256`) cho mọi client; không dùng implicit, không dùng ROPC.
+- `state` gắn với trình duyệt qua cookie `SameSite=Lax` và dùng một lần; `nonce` được kiểm tra trong ID token; `iss` trong response được so với issuer mong đợi.
+- ID token dành cho client, access token dành cho API, refresh token chỉ gửi về AS. Không gửi ID token tới API; định danh người dùng bằng `(iss, sub)`.
+- SPA đi qua BFF: token nằm trong Redis, trình duyệt chỉ có cookie `__Host-sid` `HttpOnly; Secure; SameSite=Lax`, proxy có allow-list path và kiểm tra `Sec-Fetch-Site`.
+- `redirect_uri` và `post_logout_redirect_uri` so khớp chính xác, dựng từ cấu hình chứ không từ `request.url`; mọi `returnTo` chỉ nhận đường dẫn tương đối.
+- Bật refresh token rotation, và refresh trong BFF bằng single-flight lock theo session, refresh sớm với một khoảng skew.
+- Logout xoá session BFF, thu hồi refresh token, gọi `end_session_endpoint`, và nhận back-channel logout theo `sid`.
+- Callback trả `303` về URL sạch với `Referrer-Policy: no-referrer`; log không bao giờ ghi `code`, token hay full URL của callback.
+- Cân nhắc DPoP hoặc mTLS cho token giữa BFF và API khi token rò rỉ qua log là rủi ro thật.
+
+</Checklist>

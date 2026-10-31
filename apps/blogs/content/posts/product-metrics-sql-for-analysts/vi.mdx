@@ -1,0 +1,894 @@
+---
+title: "Phân tích sản phẩm bằng SQL: định nghĩa metric, tracking plan, funnel, cohort retention và A/B test không tự lừa mình"
+excerpt: "Từ định nghĩa metric chính xác đến từng tử số, mẫu số và cửa sổ thời gian, qua tracking plan và danh tính người dùng, tới SQL PostgreSQL thật cho funnel, cohort retention, DAU/WAU/MAU, window function, múi giờ Asia/Ho_Chi_Minh và A/B test có kiểm tra SRM."
+---
+
+<Lead>Lần đầu mình thấy hai dashboard trong cùng một công ty báo hai con số "người dùng hoạt động" lệch nhau gần gấp đôi, mình tưởng có bug trong SQL. Hoá ra không có dòng SQL nào sai cả: một bên đếm mọi lần mở app, kể cả khi push notification đánh thức app chạy nền; bên kia đếm người có ít nhất một hành động thật. Cả hai đều "đúng", và cả công ty đã tranh luận ba tuần về một thứ không ai từng định nghĩa. Bài này là cách mình làm phân tích sản phẩm dựa trên dữ liệu sao cho con số đứng vững khi bị chất vấn: định nghĩa metric đến từng tử số, mẫu số và cửa sổ thời gian; thiết kế tracking plan và danh tính người dùng; rồi SQL PostgreSQL thật cho funnel, cohort retention, DAU/WAU/MAU, window function, múi giờ, dedup event — và những cái bẫy thống kê khiến người thông minh rút ra kết luận sai, kể cả trong A/B test.</Lead>
+
+## Metric mơ hồ là một loại bug
+
+Kỹ sư quen coi bug là thứ nằm trong code. Nhưng trong phân tích, bug nguy hiểm nhất thường nằm trong **định nghĩa**: "active" là gì, "conversion" tính trên người hay trên phiên, "tháng 9" là tháng 9 theo giờ nào. SQL chỉ làm đúng điều bạn nói; nếu điều bạn nói mơ hồ, hai người viết hai câu SQL đều chạy được và trả về hai con số khác nhau.
+
+Dấu hiệu một metric đang mơ hồ:
+
+- Hai người cùng hỏi "conversion tuần này bao nhiêu?" mà phải hỏi lại "conversion nào?".
+- Con số trên dashboard thay đổi khi bạn đổi timezone của tài khoản BI.
+- Không ai trả lời được metric này **có thể bị đẩy lên mà sản phẩm tệ đi không** — và nếu có thì ai đang canh chừng chuyện đó.
+- Metric được định nghĩa trong đầu một người, hoặc trong một câu SQL dài 200 dòng nằm trong tool BI mà không ai dám sửa.
+
+Mình coi định nghĩa metric giống như một API contract: có tên, có chủ sở hữu, có đặc tả chính xác, có version, và thay đổi phải được thông báo. Phần còn lại của bài xây trên nguyên tắc đó.
+
+## Hệ thống metric: north star, input metric và guardrail
+
+Một con số đơn lẻ không điều khiển được sản phẩm. Mình dùng ba tầng, ví dụ cho một sàn thương mại điện tử nhỏ bán đồ gia dụng.
+
+### North star: giá trị người dùng nhận được
+
+North star metric là con số phản ánh **giá trị khách hàng thực sự nhận được**, đồng thời đi cùng chiều với doanh thu dài hạn. Với sàn của mình: *số người mua có ít nhất một đơn hoàn tất và không bị hoàn tiền trong tuần* (weekly active buyers). Không phải GMV — GMV tăng được bằng cách đẩy vài đơn hàng giá trị lớn hoặc giảm giá lỗ vốn. Không phải số lượt truy cập — traffic tăng được bằng quảng cáo rác.
+
+Tiêu chí mình dùng để chọn north star:
+
+1. **Đo giá trị, không đo hoạt động.** "Đơn không bị hoàn" tốt hơn "đơn được đặt" vì đơn bị hoàn là giá trị âm.
+2. **Đội sản phẩm tác động được** trong vòng vài tuần, không phải vài năm.
+3. **Khó gian lận một cách vô hại.** Nếu cách dễ nhất để tăng nó là làm điều tốt cho khách, nó là north star tốt.
+
+### Input metric: cần gạt mà các team thực sự kéo
+
+North star di chuyển chậm và bị ảnh hưởng bởi mọi thứ. Các team làm việc với **input metric** — những con số họ tác động trực tiếp và có quan hệ nhân quả hợp lý với north star:
+
+- Tỉ lệ người xem sản phẩm thêm vào giỏ (team discovery).
+- Tỉ lệ checkout hoàn tất trong 7 ngày (team checkout).
+- Tỉ lệ người mua lần đầu quay lại mua trong 30 ngày (team CRM).
+- Số người mua mới mỗi tuần (team acquisition).
+
+### Guardrail: thứ không được phép xấu đi
+
+Guardrail là metric bạn **không cố tăng** nhưng **không được để giảm** trong lúc tối ưu thứ khác. Thiếu guardrail, mọi tối ưu cục bộ đều có vẻ thành công:
+
+| Tầng | Ví dụ | Ai sở hữu | Tốc độ thay đổi |
+| --- | --- | --- | --- |
+| North star | Weekly active buyers (đơn không bị hoàn) | Lãnh đạo sản phẩm | Chậm, theo tuần/tháng |
+| Input | Checkout conversion 7 ngày | Team checkout | Nhanh, phản ứng với release |
+| Input | Repeat purchase 30 ngày | Team CRM | Trung bình, có độ trễ 30 ngày |
+| Guardrail | Tỉ lệ hoàn tiền | Ops + sản phẩm | Có độ trễ, cần theo dõi liên tục |
+| Guardrail | Ticket hỗ trợ trên 1.000 đơn | Support | Nhanh |
+| Guardrail | LCP p75 trang sản phẩm | Frontend | Nhanh |
+| Guardrail | Tỉ lệ huỷ đăng ký email | CRM | Nhanh |
+
+Ví dụ thật mình từng gặp: một thay đổi làm nút "Mua ngay" nổi bật hơn đẩy checkout conversion lên rõ rệt, nhưng tỉ lệ hoàn tiền cũng tăng theo vì người dùng bấm nhầm. Không có guardrail hoàn tiền, thí nghiệm đó đã được ghi nhận là thắng.
+
+### Mẫu định nghĩa metric
+
+Đây là template mình bắt mọi metric quan trọng phải điền trước khi lên dashboard. Nó sống trong repo, review qua PR như code:
+
+```yaml
+# metrics/checkout_conversion_7d.yaml
+name: checkout_conversion_7d
+version: 2
+owner: team-checkout
+description: >
+  Trong những người bắt đầu checkout, bao nhiêu phần trăm hoàn tất
+  ít nhất một đơn trong vòng 7 ngày kể từ lần bắt đầu checkout đầu tiên.
+unit: user                      # đơn vị phân tích: user, không phải session hay order
+numerator:
+  count: distinct user_id
+  condition: >
+    có sự kiện order_completed với occurred_at trong
+    [first_checkout_started_at, first_checkout_started_at + 7 days)
+denominator:
+  count: distinct user_id
+  condition: có sự kiện checkout_started đầu tiên nằm trong kỳ báo cáo
+time_window:
+  cohort_by: first_checkout_started_at
+  grain: week
+  week_start: monday
+  timezone: Asia/Ho_Chi_Minh
+  maturity: 7 days              # cohort chỉ "chốt" sau 7 ngày; trước đó hiển thị là tạm tính
+exclusions:
+  - internal_users
+  - bot_traffic
+  - orders.status = 'test'
+guardrails: [refund_rate_14d, support_tickets_per_1k_orders]
+source_of_truth: analytics.events_clean, analytics.orders
+changelog:
+  - v2 (2026-09-15): đổi từ cửa sổ 24h sang 7 ngày; dữ liệu cũ được tính lại.
+```
+
+Mỗi dòng ở đây trả lời một câu hỏi mà, nếu bỏ trống, sẽ có người tự trả lời theo cách khác:
+
+- **unit** quyết định mọi thứ phía sau. Conversion theo user và theo session có thể chênh nhau vài lần, và cả hai đều hợp lệ — miễn là không trộn.
+- **Cửa sổ thời gian gắn với ai.** "Đơn trong tuần này / checkout trong tuần này" là tỉ lệ của hai tập người khác nhau. Gắn cửa sổ vào thời điểm checkout của *chính người đó* thì tử số luôn là tập con của mẫu số.
+- **maturity** ngăn cái bẫy phổ biến nhất: tuần hiện tại luôn trông tệ vì người checkout hôm qua chưa có đủ 7 ngày để mua.
+- **changelog** để khi con số nhảy bậc, người đọc biết đó là do định nghĩa đổi chứ không phải sản phẩm đổi.
+
+<Callout type="tip" title="Viết định nghĩa bằng lời trước, SQL sau">
+  Nếu bạn không viết được định nghĩa thành một câu tiếng Việt rõ ràng mà người ngoài team hiểu được, SQL của bạn đang mã hoá một sự mơ hồ. Mình thường đưa câu định nghĩa cho một PM và một kỹ sư đọc riêng, rồi hỏi họ sẽ đếm thế nào với ba trường hợp biên: người checkout hai lần, người mua bằng tài khoản khác, đơn bị huỷ sau 5 phút.
+</Callout>
+
+## Tracking plan: dữ liệu tốt bắt đầu từ lúc ghi
+
+Không câu SQL nào cứu được dữ liệu thu thập sai. Tracking plan là tài liệu đặc tả mọi event: tên, khi nào bắn, thuộc tính gì, kiểu gì, ai sở hữu. Nó cũng nên sống trong repo và được validate tự động.
+
+### Quy ước đặt tên
+
+Quy ước mình dùng: **`object_action`, snake_case, động từ ở dạng đã xảy ra**. `order_completed`, `cart_item_added`, `checkout_started`, `product_viewed`. Lý do:
+
+- Sắp xếp theo tên thì các event cùng object nằm cạnh nhau.
+- Động từ quá khứ nhắc rằng event là **sự thật đã xảy ra**, không phải ý định. `order_completed` bắn khi server xác nhận đơn, không phải khi người dùng bấm nút.
+- Không nhét giá trị vào tên: `filter_applied` với thuộc tính `filter_type`, không phải `price_filter_applied`, `brand_filter_applied`, ... cho tới 40 event.
+
+| Nên | Không nên | Vì sao |
+| --- | --- | --- |
+| `order_completed` | `Purchase`, `buy_click` | Một chuẩn đặt tên; phân biệt sự thật với cú click |
+| `filter_applied` + `filter_type` | `price_filter_applied` | Tên event không phình theo dữ liệu |
+| `total_vnd` (bigint) | `total` (string "1.250.000đ") | Đơn vị nằm trong tên, kiểu số tính toán được |
+| `checkout_started` bắn một lần mỗi lần vào checkout | bắn mỗi lần re-render | Event phải gắn với hành vi, không với vòng đời component |
+
+### Thuộc tính và schema
+
+Mỗi event có hai loại thuộc tính: **thuộc tính chung** (do SDK tự gắn: `event_id`, `anonymous_id`, `user_id`, `occurred_at`, `platform`, `app_version`) và **thuộc tính riêng** của event. Mình giữ thuộc tính riêng trong `jsonb` nhưng validate theo schema ở tầng ingestion:
+
+```ts
+// tracking/events.ts
+import { z } from "zod";
+
+export const events = {
+  product_viewed: z.object({
+    product_id: z.string(),
+    category_id: z.string(),
+    price_vnd: z.number().int().nonnegative(),
+    source: z.enum(["search", "category", "recommendation", "direct"]),
+  }),
+  cart_item_added: z.object({
+    product_id: z.string(),
+    quantity: z.number().int().positive(),
+    price_vnd: z.number().int().nonnegative(),
+  }),
+  checkout_started: z.object({
+    cart_id: z.string(),
+    item_count: z.number().int().positive(),
+    subtotal_vnd: z.number().int().nonnegative(),
+  }),
+  // Bắn từ server sau khi đơn được ghi — không bắn từ client
+  order_completed: z.object({
+    order_id: z.string(),
+    total_vnd: z.number().int().nonnegative(),
+    payment_method: z.enum(["card", "cod", "wallet", "bank_transfer"]),
+  }),
+} as const;
+
+export type EventName = keyof typeof events;
+```
+
+Validate ở ingestion có nghĩa là event sai schema bị đưa vào một bảng cách ly kèm lỗi, thay vì lặng lẽ đi vào kho dữ liệu với `price_vnd = "120k"`. Một alert khi tỉ lệ event bị cách ly tăng đột biến bắt được rất nhiều release làm hỏng tracking.
+
+<Callout type="warning" title="Event quan trọng nên bắn từ server">
+  Event từ client bị chặn bởi ad blocker, mất khi mạng chập chờn, bắn trùng khi người dùng bấm hai lần, và có thể bị giả mạo. Với những event là nền của doanh thu — `order_completed`, `subscription_renewed`, `refund_issued` — hãy bắn từ server ngay sau khi giao dịch commit, hoặc tốt hơn là tính thẳng từ bảng `orders`. Event client dùng cho hành vi duyệt (xem, cuộn, bấm), nơi mất vài phần trăm vẫn chấp nhận được.
+</Callout>
+
+### Danh tính: anonymous_id, user_id và việc gộp
+
+Người dùng duyệt web khi chưa đăng nhập (chỉ có `anonymous_id` lưu trong cookie), rồi đăng nhập hoặc đăng ký (có `user_id`). Nếu không gộp hai danh tính này, funnel của bạn sẽ cho thấy "người xem sản phẩm" và "người đặt hàng" là hai nhóm người gần như không giao nhau.
+
+Cách mình làm: lúc đăng nhập, client gửi một event `identity_linked` mang cả `anonymous_id` lẫn `user_id`; pipeline ghi vào bảng ánh xạ.
+
+```sql
+-- Một anonymous_id ánh xạ tới tối đa một user: lần liên kết đầu tiên thắng.
+CREATE TABLE identity_map (
+  anonymous_id    text PRIMARY KEY,
+  user_id         bigint      NOT NULL,
+  first_linked_at timestamptz NOT NULL
+);
+
+INSERT INTO identity_map (anonymous_id, user_id, first_linked_at)
+SELECT anonymous_id, user_id, MIN(occurred_at)
+FROM events
+WHERE event_name = 'identity_linked'
+GROUP BY anonymous_id, user_id
+ON CONFLICT (anonymous_id) DO NOTHING;
+```
+
+Câu `INSERT` trên có một điểm yếu cố ý giữ lại để bàn: nếu trong cùng một lô có hai `user_id` khác nhau cho một `anonymous_id` (máy tính dùng chung trong gia đình), `ON CONFLICT DO NOTHING` sẽ giữ một trong hai một cách không xác định. Bản production nên chọn rõ ràng bằng `DISTINCT ON (anonymous_id) ... ORDER BY anonymous_id, MIN(occurred_at)`. Và quyết định "lần đầu thắng" là một quy tắc nghiệp vụ, không phải chân lý: máy dùng chung sẽ gán hành vi của người này cho người kia. Mình chấp nhận sai số đó và ghi rõ trong tài liệu, thay vì giả vờ danh tính là hoàn hảo.
+
+## Nền móng SQL: bảng event sạch
+
+Mọi phân tích phía sau đọc từ một view sạch, không đọc bảng event thô. Bảng thô:
+
+```sql
+CREATE TABLE events (
+  event_id     uuid        NOT NULL,          -- sinh ở client/server, dùng để dedup
+  event_name   text        NOT NULL,
+  anonymous_id text,
+  user_id      bigint,
+  occurred_at  timestamptz NOT NULL,          -- đồng hồ của thiết bị
+  received_at  timestamptz NOT NULL DEFAULT now(),
+  platform     text,
+  app_version  text,
+  properties   jsonb       NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX ON events (event_name, occurred_at);
+CREATE INDEX ON events (user_id, occurred_at);
+```
+
+### Dedup event
+
+Event bị gửi trùng là bình thường: SDK retry khi không nhận được phản hồi, app offline gửi lại cả lô, người dùng bấm hai lần. Nếu client sinh `event_id` một lần và giữ nguyên qua các lần retry, dedup là chuyện đơn giản:
+
+```sql
+-- Cách portable: ROW_NUMBER
+SELECT *
+FROM (
+  SELECT e.*,
+         ROW_NUMBER() OVER (PARTITION BY e.event_id ORDER BY e.received_at) AS rn
+  FROM events e
+) t
+WHERE t.rn = 1;
+
+-- Cách riêng của PostgreSQL: DISTINCT ON, thường gọn và nhanh hơn
+SELECT DISTINCT ON (event_id) *
+FROM events
+ORDER BY event_id, received_at;
+```
+
+Nếu không có `event_id` (dữ liệu cũ, hoặc nguồn bên thứ ba), bạn phải dedup "mờ": cùng user, cùng tên event, cùng thuộc tính chính, cách nhau dưới vài giây. Cách đó luôn có trade-off — gộp nhầm hai lần thêm vào giỏ thật sự liên tiếp — nên mình chỉ áp cho những event mà trùng lặp gây hại nhiều hơn gộp nhầm, và ghi lại ngưỡng đã chọn.
+
+### View events_clean
+
+```sql
+CREATE MATERIALIZED VIEW events_clean AS
+WITH dedup AS (
+  SELECT DISTINCT ON (event_id) *
+  FROM events
+  ORDER BY event_id, received_at
+)
+SELECT
+  d.event_id,
+  d.event_name,
+  COALESCE(d.user_id, m.user_id) AS user_id,
+  d.anonymous_id,
+  -- Đồng hồ thiết bị có thể chạy sai: không tin thời điểm ở tương lai
+  CASE WHEN d.occurred_at > d.received_at + INTERVAL '5 minutes'
+       THEN d.received_at
+       ELSE d.occurred_at
+  END AS occurred_at,
+  d.received_at,
+  d.platform,
+  d.properties
+FROM dedup d
+LEFT JOIN identity_map m ON m.anonymous_id = d.anonymous_id
+WHERE NOT EXISTS (
+  SELECT 1 FROM internal_users iu
+  WHERE iu.user_id = COALESCE(d.user_id, m.user_id)
+);
+
+CREATE UNIQUE INDEX ON events_clean (event_id);
+CREATE INDEX ON events_clean (event_name, occurred_at);
+CREATE INDEX ON events_clean (user_id, occurred_at);
+-- Unique index cho phép REFRESH MATERIALIZED VIEW CONCURRENTLY
+```
+
+Ba quyết định đáng nói:
+
+- **Dùng `occurred_at` hay `received_at`?** `occurred_at` phản ánh hành vi thật (app offline gửi event muộn vài giờ), nhưng đồng hồ thiết bị có thể sai. Mình dùng `occurred_at` và chỉ chặn trường hợp rõ ràng vô lý là thời điểm ở tương lai.
+- **Loại người dùng nội bộ** ở một chỗ duy nhất. Nhân viên test checkout trên production mỗi ngày đủ để làm méo conversion của một sản phẩm nhỏ.
+- **Event muộn** làm số liệu của hôm qua thay đổi sau khi đã báo cáo. Đó là lý do metric có `maturity`, và dashboard nên đánh dấu những ngày còn "tạm tính".
+
+## Múi giờ: Asia/Ho_Chi_Minh và những cái bẫy
+
+Kiểu `timestamptz` trong PostgreSQL lưu một thời điểm tuyệt đối (bên trong là UTC) và chỉ hiển thị theo setting `TimeZone` của session. Điều đó rất tốt cho lưu trữ, và rất nguy hiểm cho báo cáo, vì mọi phép "lấy ngày" đều ngầm dùng timezone của session — thứ phụ thuộc vào tool BI, driver, hay máy của người chạy query.
+
+### Bẫy 1: ép kiểu sang date theo timezone của session
+
+```sql
+-- ❌ Kết quả phụ thuộc vào SET TimeZone của session
+SELECT occurred_at::date AS day, COUNT(*) FROM events_clean GROUP BY 1;
+
+-- ✅ Tường minh: đổi sang giờ địa phương rồi mới lấy ngày
+SELECT (occurred_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day, COUNT(*)
+FROM events_clean
+GROUP BY 1;
+
+-- ✅ Hoặc dạng ba tham số của date_trunc (PostgreSQL 12 trở lên),
+--    trả về timestamptz là nửa đêm theo giờ Việt Nam
+SELECT date_trunc('day', occurred_at, 'Asia/Ho_Chi_Minh') AS day_start, COUNT(*)
+FROM events_clean
+GROUP BY 1;
+```
+
+Nếu connection của tool BI để UTC, một đơn đặt lúc 6 giờ 30 sáng ngày 1/9 giờ Việt Nam là 23 giờ 30 ngày 31/8 theo UTC — và nó rơi vào báo cáo tháng 8. Mọi đơn từ nửa đêm tới trước 7 giờ sáng đều bị dời sang ngày hôm trước. Với một sàn có nhiều đơn đêm khuya, biểu đồ theo ngày sẽ lệch một cách có hệ thống mà không ai nhận ra.
+
+### Bẫy 2: chiều của AT TIME ZONE
+
+`AT TIME ZONE` làm hai việc ngược nhau tuỳ kiểu đầu vào:
+
+| Biểu thức | Đầu vào | Kết quả | Ý nghĩa |
+| --- | --- | --- | --- |
+| `ts_tz AT TIME ZONE 'Asia/Ho_Chi_Minh'` | `timestamptz` | `timestamp` (không tz) | "Thời điểm này, đồng hồ ở Sài Gòn chỉ mấy giờ?" |
+| `ts AT TIME ZONE 'Asia/Ho_Chi_Minh'` | `timestamp` (không tz) | `timestamptz` | "Giờ đồng hồ này ở Sài Gòn là thời điểm tuyệt đối nào?" |
+
+Cái thứ hai là cách đúng để viết mốc thời gian cho bộ lọc:
+
+```sql
+-- Toàn bộ tháng 9/2026 theo giờ Việt Nam, khoảng nửa mở [start, end)
+WITH params AS (
+  SELECT TIMESTAMP '2026-09-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS start_at,
+         TIMESTAMP '2026-10-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS end_at
+)
+SELECT COUNT(*)
+FROM events_clean e, params p
+WHERE e.event_name = 'order_completed'
+  AND e.occurred_at >= p.start_at
+  AND e.occurred_at <  p.end_at;
+```
+
+Hai điều nữa trong ví dụ trên: so sánh **trực tiếp trên cột** `occurred_at` để index được dùng (bọc cột trong hàm ở `WHERE` thường khiến index bị bỏ qua), và dùng **khoảng nửa mở** thay vì `BETWEEN '2026-09-01' AND '2026-09-30'` — cách sau bỏ sót gần trọn ngày cuối tháng vì `'2026-09-30'` nghĩa là nửa đêm đầu ngày 30.
+
+<Callout type="danger" title="Đừng viết 'UTC+7'">
+  Trong `AT TIME ZONE` và setting `TimeZone`, PostgreSQL hiểu chuỗi dạng `'UTC+7'` theo quy ước POSIX, nơi số dương nghĩa là **phía tây** Greenwich. Nghĩa là `'UTC+7'` thực ra là UTC−7, lệch 14 tiếng so với ý bạn. Luôn dùng tên vùng IANA như `'Asia/Ho_Chi_Minh'`. Việt Nam không có giờ mùa hè nên bạn ít bị cắn, nhưng nếu sản phẩm mở rộng sang thị trường có DST, tên vùng là cách duy nhất để ngày có 23 hoặc 25 giờ được xử lý đúng.
+</Callout>
+
+### Bẫy 3: tuần bắt đầu từ thứ mấy
+
+`date_trunc('week', ...)` theo ISO 8601: tuần bắt đầu thứ Hai. `EXTRACT(DOW ...)` trả về 0 cho Chủ nhật, còn `EXTRACT(ISODOW ...)` trả về 7 cho Chủ nhật. Nếu team marketing báo cáo theo tuần bắt đầu Chủ nhật còn team sản phẩm theo ISO, hai con số "tuần trước" sẽ không bao giờ khớp. Chọn một, ghi vào định nghĩa metric (`week_start: monday`), xong.
+
+### Lịch nền: đừng để ngày trống biến mất
+
+`GROUP BY` ngày chỉ trả về những ngày có dữ liệu. Ngày không có đơn nào biến mất khỏi kết quả, biểu đồ nối thẳng hai điểm hai bên, và moving average tính trên "7 dòng" thực ra trải dài 9 ngày. Luôn join vào một lịch nền:
+
+```sql
+SELECT DATE '2026-09-01' + i AS day
+FROM generate_series(0, 29) AS i;
+```
+
+Mình dùng `generate_series` trên số nguyên rồi cộng vào `date` (phép `date + integer` cho ra `date`) để tránh việc `generate_series` nhận tham số `date` cộng `interval` bị PostgreSQL chọn bản `timestamptz` và kéo timezone của session vào thêm một lần nữa.
+
+## DAU, WAU, MAU và stickiness
+
+### "Active" nghĩa là gì
+
+Trước khi đếm, quyết định **hành động nào làm một người trở thành active**. `app_opened` gần như luôn là lựa chọn tệ: push notification, widget, prefetch nền đều có thể sinh ra nó. Với sàn của mình, active = có ít nhất một trong các event `product_viewed`, `search_performed`, `cart_item_added`, `order_completed`. Đặt danh sách này vào một chỗ:
+
+```sql
+CREATE VIEW active_user_days AS
+SELECT DISTINCT
+  user_id,
+  (occurred_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day
+FROM events_clean
+WHERE user_id IS NOT NULL
+  AND event_name IN ('product_viewed', 'search_performed', 'cart_item_added', 'order_completed');
+```
+
+Ở đây mình chỉ đếm người đã có `user_id` (bao gồm cả anonymous đã được gộp). Muốn tính cả khách vãng lai, đếm `COALESCE(user_id::text, anonymous_id)` — nhưng khi đó một người dùng hai trình duyệt chưa đăng nhập sẽ bị đếm hai lần, và bạn cần ghi rõ điều đó.
+
+### Rolling WAU và MAU
+
+`COUNT(DISTINCT ...)` không dùng được như window function trong PostgreSQL, và số distinct **không cộng được**: tổng DAU của 7 ngày không phải WAU, vì một người active 5 ngày bị đếm 5 lần. Cách đúng là với mỗi ngày, đếm distinct user trong cửa sổ trượt kết thúc ở ngày đó:
+
+```sql
+WITH days AS (
+  SELECT DATE '2026-09-01' + i AS day
+  FROM generate_series(0, 29) AS i
+)
+SELECT
+  d.day,
+  COUNT(DISTINCT a.user_id) FILTER (WHERE a.day = d.day)     AS dau,
+  COUNT(DISTINCT a.user_id) FILTER (WHERE a.day > d.day - 7) AS wau,
+  COUNT(DISTINCT a.user_id)                                  AS mau_28d,
+  ROUND(
+    COUNT(DISTINCT a.user_id) FILTER (WHERE a.day = d.day)::numeric
+      / NULLIF(COUNT(DISTINCT a.user_id), 0),
+    3
+  ) AS stickiness_dau_mau
+FROM days d
+LEFT JOIN active_user_days a
+  ON a.day >  d.day - 28
+ AND a.day <= d.day
+GROUP BY d.day
+ORDER BY d.day;
+```
+
+Mình dùng cửa sổ 28 ngày thay vì "tháng" vì 28 ngày chứa đúng bốn lần mỗi thứ trong tuần — MAU 30 ngày dao động theo số cuối tuần rơi vào cửa sổ. Với bảng lớn, câu này nặng vì mỗi ngày quét lại 28 ngày dữ liệu; khi đó mình tính sẵn bảng `active_user_days` dạng materialized và chỉ tính lại các ngày gần đây.
+
+### Stickiness: đọc thế nào cho đúng
+
+DAU/MAU trả lời: *trong những người active tháng này, trung bình một ngày có bao nhiêu phần trăm quay lại?* Con số 0,5 nghĩa là người dùng điển hình active khoảng nửa số ngày. Nhưng hai lưu ý:
+
+- **Stickiness phụ thuộc bản chất sản phẩm.** App nhắn tin và app đặt vé máy bay không nên so với nhau. Một sàn đồ gia dụng có stickiness thấp là bình thường; thứ đáng theo dõi là xu hướng của chính nó.
+- **Tỉ lệ có thể tăng vì mẫu số giảm.** Nếu bạn ngừng chạy quảng cáo, người dùng hời hợt biến mất, MAU giảm, và stickiness "cải thiện" mà không ai dùng sản phẩm nhiều hơn. Luôn đọc tỉ lệ cùng với tử số và mẫu số của nó.
+
+## Funnel: chuyển đổi giữa các bước
+
+Funnel trả lời "người ta rơi ở đâu". Có nhiều cách định nghĩa, và mỗi cách trả lời một câu hỏi khác:
+
+| Lựa chọn | Phương án A | Phương án B | Mình dùng khi |
+| --- | --- | --- | --- |
+| Đơn vị | Theo user | Theo session | User cho quyết định mua cân nhắc nhiều ngày; session cho flow ngắn như đăng ký |
+| Thứ tự | Bắt buộc đúng thứ tự | Chỉ cần có event | Thứ tự bắt buộc, nếu không "mua trước rồi mới xem" vẫn được tính |
+| Cửa sổ | Gắn với bước đầu tiên của từng người | Theo lịch (cùng tuần) | Gắn với từng người, để tử số luôn là tập con mẫu số |
+| Tỉ lệ | Giữa hai bước liền kề | So với bước đầu | Cả hai: bước liền kề để tìm chỗ rò, tổng thể để báo cáo |
+
+Funnel theo user, đúng thứ tự, cửa sổ 7 ngày tính từ lần xem sản phẩm đầu tiên trong tháng 9:
+
+```sql
+WITH params AS (
+  SELECT TIMESTAMP '2026-09-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS start_at,
+         TIMESTAMP '2026-10-01' AT TIME ZONE 'Asia/Ho_Chi_Minh' AS end_at,
+         INTERVAL '7 days' AS conv_window
+),
+s1 AS (  -- bước 1: lần xem sản phẩm đầu tiên trong kỳ
+  SELECT e.user_id, MIN(e.occurred_at) AS t1
+  FROM events_clean e, params p
+  WHERE e.event_name = 'product_viewed'
+    AND e.occurred_at >= p.start_at AND e.occurred_at < p.end_at
+    AND e.user_id IS NOT NULL
+  GROUP BY e.user_id
+),
+s2 AS (  -- bước 2: thêm vào giỏ sau t1, trong cửa sổ
+  SELECT s1.user_id, s1.t1, MIN(e.occurred_at) AS t2
+  FROM s1
+  CROSS JOIN params p
+  LEFT JOIN events_clean e
+    ON e.user_id = s1.user_id
+   AND e.event_name = 'cart_item_added'
+   AND e.occurred_at >= s1.t1
+   AND e.occurred_at <  s1.t1 + p.conv_window
+  GROUP BY s1.user_id, s1.t1
+),
+s3 AS (  -- bước 3: bắt đầu checkout sau t2
+  SELECT s2.user_id, s2.t1, s2.t2, MIN(e.occurred_at) AS t3
+  FROM s2
+  CROSS JOIN params p
+  LEFT JOIN events_clean e
+    ON e.user_id = s2.user_id
+   AND e.event_name = 'checkout_started'
+   AND e.occurred_at >= s2.t2
+   AND e.occurred_at <  s2.t1 + p.conv_window
+  GROUP BY s2.user_id, s2.t1, s2.t2
+),
+s4 AS (  -- bước 4: hoàn tất đơn sau t3
+  SELECT s3.user_id, s3.t1, s3.t2, s3.t3, MIN(e.occurred_at) AS t4
+  FROM s3
+  CROSS JOIN params p
+  LEFT JOIN events_clean e
+    ON e.user_id = s3.user_id
+   AND e.event_name = 'order_completed'
+   AND e.occurred_at >= s3.t3
+   AND e.occurred_at <  s3.t1 + p.conv_window
+  GROUP BY s3.user_id, s3.t1, s3.t2, s3.t3
+)
+SELECT
+  COUNT(*)  AS viewed,
+  COUNT(t2) AS added_to_cart,
+  COUNT(t3) AS started_checkout,
+  COUNT(t4) AS ordered,
+  ROUND(100.0 * COUNT(t2) / NULLIF(COUNT(*), 0), 1)  AS view_to_cart_pct,
+  ROUND(100.0 * COUNT(t3) / NULLIF(COUNT(t2), 0), 1) AS cart_to_checkout_pct,
+  ROUND(100.0 * COUNT(t4) / NULLIF(COUNT(t3), 0), 1) AS checkout_to_order_pct,
+  ROUND(100.0 * COUNT(t4) / NULLIF(COUNT(*), 0), 2)  AS overall_pct
+FROM s4;
+```
+
+Những chi tiết nhỏ nhưng quyết định:
+
+- **Điều kiện của bảng bên phải nằm trong `ON`, không nằm trong `WHERE`.** Viết `WHERE e.event_name = 'cart_item_added'` sau một `LEFT JOIN` sẽ loại mọi dòng `NULL` — tức loại chính những người rơi khỏi funnel. Funnel khi đó báo 100% ở mọi bước, và mình đã thấy dashboard như vậy chạy hàng tháng.
+- **`COUNT(t2)` chứ không phải `COUNT(*)`**: `COUNT(cột)` bỏ qua `NULL`, nên nó đếm đúng người đã qua bước đó.
+- **`100.0 *` ở đầu**: trong PostgreSQL, `integer / integer` là phép chia nguyên. `COUNT(t2) / COUNT(*)` trả về 0 cho mọi tỉ lệ nhỏ hơn 1.
+- **Lấy MIN ở mỗi bước** nghĩa là mình đo "lần sớm nhất có thể đi tiếp". Người xem, bỏ đi, ba ngày sau quay lại và mua vẫn được tính là chuyển đổi, đúng với hành vi mua đồ gia dụng.
+- **Cohort tháng 9 chưa chốt cho tới ngày 8/10**: người xem sản phẩm ngày 30/9 còn 7 ngày để mua. Chạy query này ngày 2/10 sẽ cho số thấp hơn thực tế.
+
+Để tìm chỗ rò, mình cắt funnel theo `platform`, `source` của lần xem đầu tiên, hay khách mới/cũ — nhưng luôn nhìn cỡ mẫu của từng lát cắt trước khi nhìn tỉ lệ. Một lát 40 người với conversion 15% không nói lên điều gì.
+
+<Figure src="/blog/product-metrics-sql-for-analysts-funnel-cohort.svg" alt="Hai bảng cạnh nhau. Bên trái là funnel bốn bước theo user trong 30 ngày: product_viewed 10.000 người, cart_item_added 3.200 người với tỉ lệ bước 32%, checkout_started 1.400 người với tỉ lệ bước 43,8%, order_completed 980 người với tỉ lệ bước 70%, chuyển đổi tổng thể 9,8%. Bên phải là ma trận cohort retention theo tuần: năm cohort đăng ký từ tuần 31/8 đến tuần 28/9, cột tuần 0 đến tuần 5, ô càng đậm retention càng cao, tuần 0 luôn 100%, tuần 1 khoảng 40 đến 47%, các ô ở góc dưới phải tô xám vì chưa quan sát được" caption="Funnel cho biết người dùng rơi ở bước nào; cohort cho biết họ có quay lại không. Số liệu minh hoạ. Đọc cohort theo cột từ trên xuống để so các cohort ở cùng tuổi, và đừng coi ô xám là 0%." />
+
+## Cohort retention
+
+Retention tổng ("bao nhiêu phần trăm người dùng quay lại") gần như vô nghĩa khi sản phẩm đang tăng trưởng: người mới luôn chiếm tỉ trọng lớn và kéo con số xuống, hoặc lên. Cohort tách người dùng theo **thời điểm bắt đầu** để so những người ở cùng "tuổi".
+
+### Ma trận cohort theo tuần
+
+```sql
+WITH cohorts AS (
+  SELECT
+    user_id,
+    date_trunc('week', signed_up_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS cohort_week
+  FROM users
+  WHERE signed_up_at >= TIMESTAMP '2026-08-31' AT TIME ZONE 'Asia/Ho_Chi_Minh'
+),
+activity AS (
+  SELECT DISTINCT
+    user_id,
+    date_trunc('week', day::timestamp)::date AS active_week
+  FROM active_user_days
+),
+cohort_size AS (
+  SELECT cohort_week, COUNT(*) AS users
+  FROM cohorts
+  GROUP BY cohort_week
+),
+current_week AS (
+  SELECT date_trunc('week', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS wk
+)
+SELECT
+  c.cohort_week,
+  cs.users AS cohort_users,
+  (a.active_week - c.cohort_week) / 7 AS week_n,
+  COUNT(DISTINCT a.user_id) AS retained,
+  ROUND(100.0 * COUNT(DISTINCT a.user_id) / cs.users, 1) AS retention_pct
+FROM cohorts c
+JOIN cohort_size cs USING (cohort_week)
+JOIN activity a
+  ON a.user_id = c.user_id
+ AND a.active_week >= c.cohort_week
+CROSS JOIN current_week cw
+WHERE a.active_week < cw.wk          -- bỏ tuần hiện tại, chưa kết thúc
+GROUP BY c.cohort_week, cs.users, week_n
+ORDER BY c.cohort_week, week_n;
+```
+
+`date - date` trong PostgreSQL trả về số ngày (integer), nên chia 7 cho ra chỉ số tuần. Để xoay thành ma trận cho dễ đọc:
+
+```sql
+-- Giả sử câu trên được đặt tên là retention_long
+SELECT
+  cohort_week,
+  cohort_users,
+  MAX(retention_pct) FILTER (WHERE week_n = 0) AS w0,
+  MAX(retention_pct) FILTER (WHERE week_n = 1) AS w1,
+  MAX(retention_pct) FILTER (WHERE week_n = 2) AS w2,
+  MAX(retention_pct) FILTER (WHERE week_n = 3) AS w3,
+  MAX(retention_pct) FILTER (WHERE week_n = 4) AS w4,
+  MAX(retention_pct) FILTER (WHERE week_n = 5) AS w5
+FROM retention_long
+GROUP BY cohort_week, cohort_users
+ORDER BY cohort_week;
+```
+
+### Đọc ma trận cohort
+
+- **Đọc theo cột** để so sánh các cohort ở cùng tuổi: tuần 1 của cohort tháng 9 có tốt hơn cohort tháng 8 không? Đây là nơi bạn thấy tác động của onboarding mới.
+- **Đọc theo hàng** để thấy hình dạng đường cong: nó có phẳng lại không? Đường retention phẳng lại ở một mức trên 0 nghĩa là có một nhóm người dùng tìm thấy giá trị lâu dài. Đường tiếp tục rơi về 0 là vấn đề product-market fit, không phải vấn đề tối ưu.
+- **Ô trống không phải 0%.** Cohort tuần trước chưa có tuần 3. Một biểu đồ "retention trung bình tuần 3" tính cả những cohort chưa đủ tuổi như 0 sẽ kéo tụt mọi thứ. Trong SQL trên, những ô đó đơn giản là không có dòng, và `FILTER` trả về `NULL` — đúng ý nghĩa.
+
+### Classic, rolling và cách định nghĩa "quay lại"
+
+Có hai cách định nghĩa retention tuần N mà mình hay thấy bị trộn:
+
+- **Classic (bounded):** active **trong đúng** tuần N. Câu SQL ở trên là kiểu này.
+- **Rolling (unbounded):** active **trong tuần N hoặc bất kỳ lúc nào sau đó**. Con số luôn cao hơn classic, phù hợp sản phẩm dùng không đều như du lịch hay mua sắm theo mùa.
+
+Cả hai đều hợp lệ. Thứ không hợp lệ là báo cáo rolling tháng này rồi so với classic tháng trước. Lại là chuyện định nghĩa metric.
+
+Một chi tiết nữa: trong hình minh hoạ, tuần 0 là 100% vì đăng ký được tính là active. Danh sách event của `active_user_days` ở trên không có đăng ký, nên với SQL trên tuần 0 sẽ dưới 100% — và con số đó là một metric activation đáng theo dõi riêng: bao nhiêu người mới làm được một việc có giá trị ngay trong tuần đầu.
+
+## Window function: công cụ hằng ngày của analyst
+
+Window function tính toán trên một "cửa sổ" các dòng liên quan mà không gộp chúng lại như `GROUP BY`. Năm pattern mình dùng gần như mỗi tuần.
+
+### ROW_NUMBER: đơn đầu tiên và thứ tự mua
+
+```sql
+SELECT
+  user_id,
+  order_id,
+  created_at,
+  total_vnd,
+  ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at, order_id) AS order_seq
+FROM orders
+WHERE status = 'completed';
+```
+
+`order_seq = 1` là đơn đầu tiên; tỉ lệ người có `order_seq = 2` trong 30 ngày sau đơn đầu là repeat purchase rate. Thêm `order_id` vào `ORDER BY` để thứ tự **xác định** khi hai đơn có cùng `created_at` — nếu không, chạy hai lần có thể ra hai kết quả.
+
+### LAG: khoảng cách giữa hai đơn và tăng trưởng tuần
+
+```sql
+WITH weekly AS (
+  SELECT
+    date_trunc('week', created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS week,
+    SUM(total_vnd) AS revenue_vnd
+  FROM orders
+  WHERE status = 'completed'
+  GROUP BY 1
+)
+SELECT
+  week,
+  revenue_vnd,
+  LAG(revenue_vnd) OVER (ORDER BY week) AS prev_week_vnd,
+  ROUND(
+    100.0 * (revenue_vnd - LAG(revenue_vnd) OVER (ORDER BY week))
+      / NULLIF(LAG(revenue_vnd) OVER (ORDER BY week), 0),
+    1
+  ) AS wow_pct
+FROM weekly
+ORDER BY week;
+```
+
+Và khoảng cách giữa hai đơn liên tiếp của cùng một người, nền tảng để chọn thời điểm gửi email nhắc mua lại:
+
+```sql
+SELECT
+  user_id,
+  created_at,
+  created_at - LAG(created_at) OVER (PARTITION BY user_id ORDER BY created_at) AS gap
+FROM orders
+WHERE status = 'completed';
+```
+
+Cẩn thận: `LAG` lấy dòng trước **trong kết quả**, không phải tuần trước **theo lịch**. Nếu một tuần không có doanh thu, nó không có dòng, và `LAG` so tuần này với tuần trước nữa. Lại một lý do để join lịch nền.
+
+### Running total và đường cong LTV theo cohort
+
+```sql
+SELECT
+  day,
+  revenue_vnd,
+  SUM(revenue_vnd) OVER (
+    PARTITION BY date_trunc('month', day)
+    ORDER BY day
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  ) AS month_to_date_vnd
+FROM daily_revenue;
+```
+
+Cùng kỹ thuật với `PARTITION BY cohort_week ORDER BY week_n` cho ra doanh thu cộng dồn trên mỗi người theo tuổi cohort — đường cong LTV mà team marketing cần để biết được phép chi bao nhiêu cho một khách hàng mới.
+
+### Moving average 7 ngày
+
+```sql
+SELECT
+  day,
+  dau,
+  ROUND(AVG(dau) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 0) AS dau_7d_avg
+FROM daily_dau     -- đã join lịch nền, ngày không có ai active có dau = 0
+ORDER BY day;
+```
+
+`ROWS BETWEEN 6 PRECEDING` nghĩa là "6 dòng trước", không phải "6 ngày trước". Chỉ đúng khi mỗi ngày có đúng một dòng.
+
+### Sessionization: LAG cộng running sum
+
+Chia event thành phiên với ngưỡng 30 phút không hoạt động:
+
+```sql
+WITH ordered AS (
+  SELECT
+    user_id,
+    event_id,
+    occurred_at,
+    LAG(occurred_at) OVER (PARTITION BY user_id ORDER BY occurred_at, event_id) AS prev_at
+  FROM events_clean
+  WHERE user_id IS NOT NULL
+),
+flagged AS (
+  SELECT *,
+    CASE WHEN prev_at IS NULL OR occurred_at - prev_at > INTERVAL '30 minutes'
+         THEN 1 ELSE 0 END AS is_new_session
+  FROM ordered
+)
+SELECT
+  user_id,
+  event_id,
+  occurred_at,
+  SUM(is_new_session) OVER (
+    PARTITION BY user_id
+    ORDER BY occurred_at, event_id
+    ROWS UNBOUNDED PRECEDING
+  ) AS session_seq
+FROM flagged;
+```
+
+<Callout type="note" title="Frame mặc định là RANGE, không phải ROWS">
+  Khi có `ORDER BY` mà không ghi frame, PostgreSQL dùng `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, tức là gộp cả các dòng **cùng giá trị** sắp xếp. Hai event có cùng `occurred_at` sẽ nhận cùng running sum, và tổng cộng dồn "nhảy" hai bậc một lúc. Ghi rõ `ROWS` và thêm một cột phá hoà như `event_id` để kết quả xác định.
+</Callout>
+
+## Những cái bẫy khiến người thông minh kết luận sai
+
+SQL đúng chưa đủ. Phần lớn sai lầm mình thấy trong phân tích là sai lầm suy luận trên con số đúng.
+
+### Nghịch lý Simpson
+
+Conversion tổng thể giảm từ tháng 8 sang tháng 9, cả team hoảng. Nhưng cắt theo nền tảng:
+
+| | Tháng 8: lượt truy cập | Tháng 8: đơn | Tháng 8: CR | Tháng 9: lượt truy cập | Tháng 9: đơn | Tháng 9: CR |
+| --- | --- | --- | --- | --- | --- | --- |
+| Desktop | 8.000 | 480 | 6,0% | 3.000 | 195 | 6,5% |
+| Mobile | 2.000 | 40 | 2,0% | 7.000 | 175 | 2,5% |
+| **Tổng** | **10.000** | **520** | **5,2%** | **10.000** | **370** | **3,7%** |
+
+Cả desktop lẫn mobile đều **tăng** conversion, nhưng tổng **giảm** — vì cơ cấu traffic dịch mạnh sang mobile, nơi conversion vốn thấp hơn (ví dụ một chiến dịch TikTok). Kết luận "sản phẩm tệ đi" là sai; kết luận đúng là "traffic mới chủ yếu là mobile, và mobile vẫn là điểm yếu". Hai kết luận dẫn tới hai việc rất khác nhau.
+
+Cách phòng: mỗi khi một tỉ lệ tổng thay đổi, hãy cắt theo vài chiều cơ cấu lớn nhất (nền tảng, nguồn traffic, khách mới/cũ) và kiểm tra **cơ cấu mẫu số** có đổi không trước khi kết luận về hiệu suất.
+
+### Survivorship bias
+
+"Người dùng tính năng wishlist có retention 90 ngày cao gấp ba người không dùng. Hãy ép mọi người dùng wishlist!" Vấn đề: người dùng wishlist là những người đã gắn bó đủ lâu để khám phá ra nó. Quan hệ nhân quả có thể chạy ngược chiều — họ ở lại rồi mới dùng wishlist, chứ không phải dùng wishlist nên ở lại.
+
+Phiên bản khác của cùng cái bẫy: phân tích "khách hàng tốt nhất của chúng ta có gì chung" chỉ nhìn những người còn ở lại, bỏ qua những người có cùng đặc điểm nhưng đã rời đi. Cách phòng: định nghĩa nhóm **tại thời điểm bắt đầu** (ví dụ người dùng wishlist trong 7 ngày đầu) rồi theo dõi về sau, và nhớ rằng đó vẫn chỉ là tương quan. Muốn biết nhân quả, chạy thí nghiệm.
+
+### Trộn đơn vị
+
+- **Tử số theo user, mẫu số theo session**: "320 người mua / 12.000 phiên" không phải conversion của ai cả.
+- **Tiền**: gross hay net sau giảm giá và hoàn tiền, có VAT không, VND hay USD, đơn vị nhỏ nhất hay không. Mình đặt đơn vị vào tên cột (`total_vnd`) và không bao giờ cộng hai cột tiền khác nguồn mà chưa kiểm tra định nghĩa.
+- **Hai nguồn dữ liệu**: phiên từ công cụ web analytics, đơn từ database. Chúng có cách loại bot khác nhau, timezone khác nhau, cách định nghĩa phiên khác nhau. Tỉ lệ giữa hai nguồn như vậy có thể lệch chục phần trăm mà không có gì sai cả.
+
+### Trung bình của các tỉ lệ
+
+Hai ngày: ngày 1 có 2 lượt truy cập, 1 đơn (50%); ngày 2 có 1.000 lượt, 90 đơn (9%). Trung bình hai tỉ lệ là 29,5%. Tỉ lệ gộp là 91 / 1.002, khoảng 9,1%. Trung bình của các tỉ lệ cho ngày có 2 lượt truy cập trọng số ngang ngày có 1.000 lượt.
+
+Quy tắc của mình: **tính tỉ lệ từ tổng tử số chia tổng mẫu số**, trừ khi bạn có lý do rõ ràng muốn mỗi nhóm có trọng số bằng nhau (ví dụ "conversion trung bình của một cửa hàng điển hình" trên sàn, nơi mỗi cửa hàng là một đơn vị quan tâm). Và khi đó, nói rõ trong tên metric.
+
+Cùng họ với bẫy này: **trung bình làm mờ phân phối**. Giá trị đơn trung bình bị kéo bởi vài đơn hàng sỉ; thời gian giao hàng trung bình che đi 5% đơn trễ một tuần. Báo cáo median và p90 cùng với mean.
+
+### Hồi quy về trung bình
+
+Bạn chọn ra 10 danh mục có conversion tệ nhất tuần trước, làm gì đó với chúng, và tuần này chúng cải thiện. Phần lớn sự cải thiện đó có thể sẽ xảy ra dù bạn không làm gì: những danh mục tệ nhất tuần trước một phần là do xui, và xui không lặp lại đều đặn. Đây là lý do "trước và sau" không thay thế được nhóm đối chứng.
+
+## A/B test: những điều cơ bản không được làm sai
+
+A/B test là cách duy nhất mình tin để trả lời câu hỏi nhân quả "thay đổi này có làm metric tốt lên không". Nhưng nó cũng dễ tạo ra những kết luận sai trông rất khoa học.
+
+### Đơn vị ngẫu nhiên hoá và đơn vị metric
+
+Ngẫu nhiên hoá theo **user** (ổn định qua các phiên và thiết bị nếu có thể), và metric chính cũng nên tính theo user: "tỉ lệ user có đơn trong 7 ngày sau khi vào thí nghiệm". Nếu bạn chia theo user nhưng đo "conversion theo session", các session của cùng một người không độc lập với nhau, và công thức sai số chuẩn thông thường đánh giá thấp độ bất định — bạn sẽ thấy "có ý nghĩa thống kê" nhiều hơn thực tế. Metric dạng tỉ lệ có mẫu số không phải đơn vị ngẫu nhiên hoá cần delta method hoặc bootstrap theo user.
+
+Chỉ tính những người **thực sự tiếp xúc** với thay đổi: nếu thí nghiệm nằm ở trang checkout, gán variant khi người dùng tới checkout, hoặc phân tích chỉ những người đã tới checkout ở **cả hai** nhánh. Đưa cả người chưa bao giờ thấy trang checkout vào làm loãng hiệu ứng.
+
+### Cỡ mẫu: trực giác trước, calculator sau
+
+Công thức xấp xỉ cho metric dạng tỉ lệ, với mức ý nghĩa 5% hai phía và power 80%:
+
+```text
+n mỗi nhánh ≈ 16 × p × (1 − p) / δ²
+
+p = conversion hiện tại, δ = chênh lệch tuyệt đối nhỏ nhất muốn phát hiện (MDE)
+
+Ví dụ: p = 5%, muốn phát hiện tăng 10% tương đối, tức δ = 0,5 điểm phần trăm
+n ≈ 16 × 0,05 × 0,95 / 0,005² = 0,76 / 0,000025 ≈ 30.400 người mỗi nhánh
+
+Muốn phát hiện δ = 1 điểm phần trăm: ≈ 7.600 người mỗi nhánh
+```
+
+Điều quan trọng nhất cần nhớ: **cỡ mẫu tỉ lệ nghịch với bình phương MDE**. Muốn phát hiện hiệu ứng nhỏ bằng một nửa, cần gấp bốn lần người. Với một sản phẩm chỉ có 2.000 người mới đi vào thí nghiệm mỗi tuần, phát hiện thay đổi 0,5 điểm phần trăm trên nền 5% cần khoảng 60.000 người, tức khoảng 30 tuần. Phép tính này nên được làm **trước** khi thiết kế thí nghiệm — nó thường cho thấy bạn chỉ nên test những thay đổi đủ lớn để có hiệu ứng lớn.
+
+Chạy thí nghiệm **trọn tuần** (7, 14, 21 ngày) để cân bằng hiệu ứng ngày trong tuần, và cẩn thận với hiệu ứng mới lạ: người dùng cũ bấm vào thứ mới vì nó mới, không phải vì nó tốt hơn.
+
+### SRM: kiểm tra trước khi nhìn kết quả
+
+Sample Ratio Mismatch: bạn thiết kế chia 50/50 nhưng nhận được 50.400 và 49.200. Trông có vẻ gần, nhưng kiểm định chi bình phương cho thấy điều này gần như không thể xảy ra do ngẫu nhiên:
+
+```sql
+WITH assignment AS (
+  SELECT DISTINCT ON (user_id) user_id, variant, assigned_at
+  FROM experiment_assignments
+  WHERE experiment_key = 'checkout_one_page'
+  ORDER BY user_id, assigned_at
+),
+counts AS (
+  SELECT variant, COUNT(*)::numeric AS observed
+  FROM assignment
+  GROUP BY variant
+),
+expected AS (
+  -- Tỉ lệ thiết kế: 50/50
+  SELECT variant, (SELECT SUM(observed) FROM counts) * 0.5 AS expected
+  FROM counts
+)
+SELECT
+  SUM((c.observed - e.expected) ^ 2 / e.expected) AS chi_square,
+  -- 2 nhánh = 1 bậc tự do; 10.83 ứng với p = 0.001
+  SUM((c.observed - e.expected) ^ 2 / e.expected) > 10.83 AS srm_detected
+FROM counts c
+JOIN expected e USING (variant);
+```
+
+Với 50.400 và 49.200: kỳ vọng mỗi nhánh 49.800, chi bình phương = 2 × 600² / 49.800 ≈ 14,5, vượt xa ngưỡng 10,83. Mình dùng ngưỡng chặt p nhỏ hơn 0,001 cho SRM vì kiểm tra này chạy trên mọi thí nghiệm và mình không muốn báo động giả.
+
+**Khi có SRM, không đọc kết quả.** SRM nghĩa là có thứ gì đó loại người dùng khỏi một nhánh không ngẫu nhiên: variant mới crash trên một số máy nên không ghi được event gán nhánh, redirect làm mất tracking, bot bị lọc khác nhau, cache CDN phục vụ một nhánh nhiều hơn. Bất kỳ nguyên nhân nào trong số đó cũng làm hai nhóm không còn so sánh được — và chênh lệch metric có thể hoàn toàn do nó.
+
+### Đọc kết quả: z-test và khoảng tin cậy
+
+```sql
+WITH assignment AS (
+  SELECT DISTINCT ON (user_id) user_id, variant, assigned_at
+  FROM experiment_assignments
+  WHERE experiment_key = 'checkout_one_page'
+    AND assigned_at < now() - INTERVAL '7 days'   -- chỉ những người đã đủ 7 ngày
+  ORDER BY user_id, assigned_at
+),
+outcome AS (
+  SELECT
+    a.variant,
+    EXISTS (
+      SELECT 1 FROM events_clean e
+      WHERE e.user_id = a.user_id
+        AND e.event_name = 'order_completed'
+        AND e.occurred_at >= a.assigned_at
+        AND e.occurred_at <  a.assigned_at + INTERVAL '7 days'
+    ) AS converted
+  FROM assignment a
+),
+ab AS (
+  SELECT
+    COUNT(*) FILTER (WHERE variant = 'control')                 AS n_a,
+    COUNT(*) FILTER (WHERE variant = 'control' AND converted)   AS x_a,
+    COUNT(*) FILTER (WHERE variant = 'treatment')               AS n_b,
+    COUNT(*) FILTER (WHERE variant = 'treatment' AND converted) AS x_b
+  FROM outcome
+),
+rates AS (
+  SELECT *,
+    x_a::numeric / n_a AS p_a,
+    x_b::numeric / n_b AS p_b,
+    (x_a + x_b)::numeric / (n_a + n_b) AS p_pool
+  FROM ab
+)
+SELECT
+  n_a, n_b,
+  ROUND(p_a, 4) AS p_a,
+  ROUND(p_b, 4) AS p_b,
+  ROUND(p_b - p_a, 4) AS diff,
+  ROUND((p_b - p_a) / sqrt(p_pool * (1 - p_pool) * (1.0 / n_a + 1.0 / n_b)), 2) AS z,
+  ROUND((p_b - p_a) - 1.96 * sqrt(p_a * (1 - p_a) / n_a + p_b * (1 - p_b) / n_b), 4) AS ci95_low,
+  ROUND((p_b - p_a) + 1.96 * sqrt(p_a * (1 - p_a) / n_a + p_b * (1 - p_b) / n_b), 4) AS ci95_high
+FROM rates;
+```
+
+`|z|` lớn hơn 1,96 tương ứng p-value hai phía nhỏ hơn 0,05. Nhưng mình đọc **khoảng tin cậy** trước p-value: "B tăng conversion từ 0,1 đến 0,9 điểm phần trăm" cho người ra quyết định nhiều thông tin hơn "p = 0,03". Và nó buộc bạn đối diện câu hỏi: kể cả cận dưới, hiệu ứng này có đáng chi phí bảo trì của tính năng không?
+
+Những điều p-value **không** nói: nó không phải xác suất B tốt hơn A, và "không có ý nghĩa thống kê" không có nghĩa là "không có hiệu ứng" — có thể chỉ là thí nghiệm không đủ người để thấy nó.
+
+### Vấn đề nhìn trộm (peeking)
+
+Kịch bản quen thuộc: dashboard thí nghiệm cập nhật mỗi ngày, ai đó thấy p-value xuống dưới 0,05 vào ngày thứ 4 và đề nghị dừng sớm "vì đã thắng". Vấn đề: ngưỡng 5% chỉ đúng khi bạn nhìn **một lần**, tại cỡ mẫu đã định trước. Mỗi lần nhìn và sẵn sàng dừng là thêm một cơ hội để nhiễu ngẫu nhiên vượt ngưỡng. Nhìn hằng ngày trong vài tuần và dừng ngay lần đầu thấy "có ý nghĩa" đẩy tỉ lệ dương tính giả lên cao hơn 5% nhiều lần, kể cả khi A và B giống hệt nhau.
+
+Các cách xử lý trung thực:
+
+1. **Cố định cỡ mẫu và thời gian từ trước**, nhìn dashboard để phát hiện sự cố (SRM, crash, guardrail sụp) nhưng chỉ ra quyết định về metric chính khi đủ mẫu.
+2. **Dùng phương pháp được thiết kế cho việc nhìn liên tục**: group sequential test với ranh giới dừng chặt ở các lần nhìn sớm (kiểu O'Brien-Fleming), hoặc always-valid p-value / khoảng tin cậy tuần tự mà nhiều nền tảng thí nghiệm hiện nay cung cấp. Chúng cho phép dừng sớm có kiểm soát, đổi lại cần nhiều mẫu hơn một chút nếu chạy hết.
+3. **Dừng sớm vì guardrail thì luôn được phép**: nếu tỉ lệ lỗi thanh toán tăng vọt, tắt thí nghiệm ngay, không cần ý nghĩa thống kê.
+
+<Callout type="warning" title="Một metric chính, khai báo trước">
+  Nếu bạn nhìn 20 metric và báo cáo cái nào "có ý nghĩa", trung bình bạn sẽ tìm thấy khoảng một cái dù thay đổi không có tác dụng gì. Khai báo metric chính và các guardrail trong tài liệu thí nghiệm **trước khi** bắt đầu; mọi metric khác là khám phá, cần một thí nghiệm khác để xác nhận. Cắt kết quả theo 10 phân khúc rồi kể câu chuyện về phân khúc thắng cũng là cùng một cái bẫy.
+</Callout>
+
+Hai kỹ thuật nâng cao đáng biết tên khi bạn đã vững phần cơ bản: **CUPED** dùng dữ liệu trước thí nghiệm của từng user để giảm phương sai, giúp cần ít mẫu hơn; và **delta method** để tính sai số chuẩn đúng cho metric tỉ lệ như doanh thu trên mỗi phiên khi ngẫu nhiên hoá theo user.
+
+## Những lỗi mình hay gặp
+
+**"Active" là `app_opened`.** Push notification và hoạt động nền thổi phồng DAU. Định nghĩa active bằng hành động có giá trị.
+
+**Cộng DAU thành WAU, cộng WAU thành MAU.** Distinct count không cộng được. Tính lại trên cửa sổ.
+
+**Chia nguyên.** `COUNT(a) / COUNT(b)` trong PostgreSQL trả về 0. Nhân `100.0` hoặc ép `::numeric` trước khi chia.
+
+**Điều kiện trong `WHERE` sau `LEFT JOIN`.** Biến left join thành inner join và xoá đúng những người bạn muốn đếm là đã rơi khỏi funnel.
+
+**Báo cáo tuần chưa kết thúc và cohort chưa đủ tuổi.** Tuần hiện tại luôn trông như đang sụp đổ. Đánh dấu dữ liệu tạm tính, hoặc không hiển thị.
+
+**Timezone của session BI.** Một connection để UTC dời mọi hoạt động từ nửa đêm tới 7 giờ sáng sang ngày hôm trước.
+
+**Đổi tracking không version.** Đổi tên event, đổi thời điểm bắn, thêm một màn hình gọi lại cùng event — và đường biểu đồ nhảy bậc mà không ai biết tại sao. Tracking plan có changelog, dashboard có chú thích ngày thay đổi.
+
+**Đọc kết quả A/B test trước khi kiểm tra SRM, và dừng ngay khi thấy xanh.** Hai thói quen này đã tạo ra nhiều "thắng lợi" không bao giờ lặp lại được hơn mọi lỗi SQL cộng lại.
+
+**Câu SQL 200 dòng chỉ sống trong tool BI.** Không review, không test, không version. Đưa logic metric vào view hoặc model trong repo (dbt hoặc đơn giản là các file SQL), để dashboard chỉ còn `SELECT` từ đó.
+
+## Tóm tắt
+
+<Checklist>
+
+- Mọi metric quan trọng có định nghĩa viết thành văn: đơn vị, tử số, mẫu số, cửa sổ thời gian gắn với từng người, timezone, ngày đầu tuần, exclusion, maturity, chủ sở hữu và changelog.
+- Chọn một north star đo giá trị khách hàng nhận được, vài input metric mà các team tác động trực tiếp, và guardrail cho mọi tối ưu.
+- Tracking plan trong repo: tên `object_action` dạng quá khứ, thuộc tính có kiểu và đơn vị, validate ở ingestion; event doanh thu bắn từ server.
+- Có chiến lược danh tính rõ ràng: `anonymous_id`, `user_id`, bảng ánh xạ, và ghi lại sai số chấp nhận.
+- Phân tích đọc từ `events_clean`: dedup theo `event_id`, gộp danh tính, loại người dùng nội bộ, chặn timestamp ở tương lai.
+- Luôn dùng `AT TIME ZONE 'Asia/Ho_Chi_Minh'` hoặc `date_trunc` ba tham số; lọc bằng khoảng nửa mở trên cột gốc; không bao giờ viết `'UTC+7'`; join lịch nền cho ngày trống.
+- WAU/MAU tính lại trên cửa sổ trượt, không cộng DAU; đọc stickiness cùng tử số và mẫu số.
+- Funnel: đúng thứ tự, cửa sổ gắn với bước đầu, điều kiện trong `ON`, `COUNT(cột)`, nhân `100.0` trước khi chia, chờ cohort chốt.
+- Cohort: đọc theo cột, ô chưa quan sát là `NULL` chứ không phải 0, phân biệt classic với rolling retention.
+- Window function: thêm cột phá hoà để kết quả xác định, ghi rõ frame `ROWS`, nhớ `LAG` là dòng trước chứ không phải ngày trước.
+- Trước khi kết luận: kiểm tra cơ cấu mẫu số (Simpson), nhóm được định nghĩa tại thời điểm bắt đầu (survivorship), đơn vị nhất quán, tỉ lệ tính từ tổng.
+- A/B test: tính cỡ mẫu trước, ngẫu nhiên hoá và đo theo user, chạy trọn tuần, kiểm tra SRM trước khi đọc kết quả, một metric chính khai báo trước, đọc khoảng tin cậy, không dừng sớm nếu không dùng phương pháp tuần tự.
+
+</Checklist>

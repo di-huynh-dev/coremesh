@@ -1,0 +1,691 @@
+---
+title: "Type-Level TypeScript for API Contracts You Can't Misuse"
+excerpt: "Conditional types and infer, key remapping, template literal types that turn \"/users/:id/posts/:postId\" into typed params, a fetch client derived from a route map, typed errors, branded IDs, satisfies and const type parameters, a Zod bridge so the types aren't lies — and when to stop."
+---
+
+<Lead>Most API bugs I've debugged on the frontend weren't clever. A path param in the wrong order. A `userId` passed where a `postId` belonged. A `POST` body sent to a route that had been renamed two sprints ago. A `404` handled as if it were a network error. TypeScript can make every one of those a red squiggle instead of a production incident — but not with interfaces sprinkled over `fetch`. It takes a little type-level machinery: conditional types and `infer`, template literal types that read a path string, mapped types that build a client from a route map, and a runtime bridge so the types describe what actually arrives. This post builds that client end to end, explains each piece of machinery as it's needed, and is honest about the bill: compile time, error messages nobody can read, and where I stop.</Lead>
+
+## What "impossible to misuse" actually means
+
+If you haven't read [TypeScript patterns that pay off](/blog/typescript-patterns-that-pay-off), start there: it covers discriminated unions, exhaustive `switch` with `never`, `as const`, `satisfies` and branded types at the everyday level. This post assumes all of that and goes a layer down — into types that *compute* other types.
+
+An API contract has more parts than a response interface:
+
+| Part of the contract | Typical misuse | Machinery that prevents it |
+| --- | --- | --- |
+| Which endpoints exist | Typo in a path, calling a removed route | Literal keys from a route map |
+| Path params | Missing `:postId`, swapped IDs | Template literal types + branded IDs |
+| Query and body | Sending a body to a `GET`, a wrong field name | Conditional argument types |
+| Success response | Reading a field that doesn't exist | `z.infer` from the response schema |
+| Error responses | Treating 404 like a network failure | Discriminated union of errors per route |
+| The data itself | Server changed the shape; types still say otherwise | Runtime validation at the boundary |
+
+The goal is a single declaration per endpoint — method, path, schemas — from which **every** type the caller sees is derived. No hand-written `GetUserPostParams` interface that can drift. When someone changes the path, every caller that no longer fits stops compiling.
+
+<Figure src="/blog/typescript-type-level-api-contracts-flow.svg" alt="Pipeline diagram in six steps. Step 1, defineRoutes with a const type parameter, keeps the path literal /users/:id/posts/:postId and the method GET. Step 2, a template literal type with infer, recursively extracts the union id or postId. Step 3, a mapped type turns that union into an object type, or the route's param schema supplies branded UserId and PostId. Step 4, key remapping turns route names into endpoint keys like GET /users/:id/posts/:postId. Step 5, conditional types make params required only when the path has placeholders and body allowed only when a schema exists. Step 6, the typed call api.call with params returns ApiResult of Post or NotFound. A strip at the bottom shows the Zod bridge: the response schema produces the Post type via z.infer, and the same schema runs safeParse at runtime, producing a contract error on drift." caption="One literal in the route map feeds every type at the call site. The Zod schema that produces the response type is the same one that checks the response at runtime." />
+
+## Conditional types and `infer`: pattern matching on types
+
+A conditional type is an `if` that runs in the compiler: `T extends U ? X : Y`. The interesting part is that `U` can be a *pattern* with holes, and `infer` names the holes.
+
+```ts
+type ElementOf<T> = T extends readonly (infer E)[] ? E : never;
+type FirstArg<F> = F extends (first: infer A, ...rest: any[]) => unknown ? A : never;
+
+type E1 = ElementOf<string[]>; // string
+type A1 = FirstArg<(id: number, opts: object) => void>; // number
+```
+
+### Distribution: the rule that surprises everyone once
+
+When the checked type is a **naked type parameter** and you pass a union, the conditional runs once per member and the results are unioned:
+
+```ts
+type ToArray<T> = T extends unknown ? T[] : never;
+type D1 = ToArray<string | number>; // string[] | number[]
+
+// Wrap both sides in a tuple to turn distribution off.
+type ToArrayAll<T> = [T] extends [unknown] ? T[] : never;
+type D2 = ToArrayAll<string | number>; // (string | number)[]
+```
+
+Distribution is usually what you want — it's how `Exclude` and `Extract` work. But it has one consequence you'll hit in API types: `never` is the empty union, so distributing over it produces `never` without ever evaluating your branches. A naive "does this route have params?" check silently breaks:
+
+```ts
+type HasParamsNaive<Names> = Names extends never ? false : true;
+type H1 = HasParamsNaive<never>; // never — not false!
+
+type HasParams<Names> = [Names] extends [never] ? false : true;
+type H2 = HasParams<never>; // false
+```
+
+Remember `[X] extends [never]`. We'll need it in a minute.
+
+### `infer` with constraints, and parsing numbers out of strings
+
+Since TypeScript 4.7 an `infer` can carry a constraint, and since 4.8, inferring into `number` from a template literal actually produces a number literal:
+
+```ts
+type StatusOf<S extends string> = S extends `${infer N extends number} ${string}` ? N : never;
+type S1 = StatusOf<"404 Not Found">; // 404 (a number literal, not "404")
+
+type StatusClass<S extends number> = `${S}` extends `2${string}`
+  ? "success"
+  : `${S}` extends `4${string}`
+    ? "client-error"
+    : `${S}` extends `5${string}`
+      ? "server-error"
+      : "other";
+
+type C1 = StatusClass<409>; // "client-error"
+```
+
+That last trick — converting a number to a string with a template literal so you can pattern match on it — is the kind of thing that's fun in a blog post and should be used sparingly in a codebase. Hold that thought for the cost section.
+
+## Template literal types: typing params from a path
+
+Here's the centrepiece. Given `"/users/:id/posts/:postId"`, I want `{ id: string; postId: string }` — derived, not declared.
+
+```ts
+// contracts/path-params.ts
+export type PathParamNames<P extends string> =
+  P extends `${string}:${infer Name}/${infer Rest}`
+    ? Name | PathParamNames<`/${Rest}`>
+    : P extends `${string}:${infer Name}`
+      ? Name
+      : never;
+
+/** Flattens intersections so editor hovers show a plain object. */
+export type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
+export type PathParams<P extends string> = Simplify<{ [K in PathParamNames<P>]: string }>;
+```
+
+Walking through it for `"/users/:id/posts/:postId"`:
+
+1. The first pattern needs "anything, a colon, a name, a slash, the rest". Template literal inference matches each placeholder as *lazily* as possible from the left: `${string}` takes `/users/`, `Name` takes `id` (up to the next `/`), `Rest` takes `posts/:postId`.
+2. We union `"id"` with a recursive call on `/posts/:postId`.
+3. In the recursive call there's no `/` after the last name, so the first pattern fails and the second matches: `Name` is `postId`.
+4. Result: `"id" | "postId"`. The mapped type turns that union into keys.
+
+```ts
+type T1 = PathParamNames<"/users/:id/posts/:postId">; // "id" | "postId"
+type T2 = PathParams<"/users/:id/posts/:postId">; // { id: string; postId: string }
+type T3 = PathParams<"/health">; // {}
+type T4 = PathParams<string>; // {}  ← remember this one
+```
+
+`T4` is the trap. If the path has been widened to `string` anywhere upstream, there are no names to find, the params object becomes `{}`, and the compiler happily lets every call through without params. The type machinery is only as good as the literal you feed it — which is why a whole section below is about keeping literals literal.
+
+<Callout type="tip" title="Why Simplify">
+Without `Simplify`, hovering a derived type shows the recipe: `{ [K in PathParamNames<"/users/:id/posts/:postId">]: string } & { signal?: AbortSignal }`. With it, you see the dish: `{ id: string; postId: string; signal?: AbortSignal }`. The trailing `& {}` nudges the compiler to evaluate eagerly. It's the cheapest DX improvement in this whole post.
+</Callout>
+
+### Optional and catch-all segments
+
+Real routers have `:slug?` and `*rest`. You can extend the pattern — match `:${infer Name}?` first and put it into an optional key — but every extension is another branch evaluated for every path. I support exactly the syntax our backend uses (named, required segments) and nothing else. If the backend adds optional segments, the type gets a new branch and a type test the same day.
+
+## The route map and the typed client
+
+Now the route map: one entry per endpoint, with Zod schemas for everything that crosses the wire.
+
+```ts
+// contracts/route.ts
+import type { z } from "zod";
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+export type RouteDef = {
+  method: HttpMethod;
+  path: string;
+  params?: z.ZodObject;
+  query?: z.ZodObject;
+  body?: z.ZodType;
+  response: z.ZodType;
+  errors?: { [status: number]: z.ZodType };
+};
+
+export type RouteMap = Record<string, RouteDef>;
+
+export function defineRoutes<const R extends RouteMap>(routes: R): R {
+  return routes;
+}
+```
+
+```ts
+// contracts/routes.ts
+import { z } from "zod";
+import { defineRoutes } from "./route";
+
+export const UserId = z.uuid().brand<"UserId">();
+export type UserId = z.infer<typeof UserId>;
+export const PostId = z.uuid().brand<"PostId">();
+export type PostId = z.infer<typeof PostId>;
+
+export const Post = z.object({
+  id: PostId,
+  authorId: UserId,
+  title: z.string(),
+  slug: z.string(),
+  publishedAt: z.iso.datetime().nullable(),
+});
+export type Post = z.infer<typeof Post>;
+
+const NotFound = z.object({ code: z.literal("not_found"), resource: z.string() });
+const SlugTaken = z.object({ code: z.literal("slug_taken"), slug: z.string() });
+
+export const routes = defineRoutes({
+  getUserPost: {
+    method: "GET",
+    path: "/users/:id/posts/:postId",
+    params: z.object({ id: UserId, postId: PostId }),
+    response: Post,
+    errors: { 404: NotFound },
+  },
+  listUserPosts: {
+    method: "GET",
+    path: "/users/:id/posts",
+    query: z.object({
+      cursor: z.string().optional(),
+      limit: z.number().int().max(100).optional(),
+    }),
+    response: z.object({ items: z.array(Post), nextCursor: z.string().nullable() }),
+  },
+  createPost: {
+    method: "POST",
+    path: "/users/:id/posts",
+    body: z.object({ title: z.string().min(1), slug: z.string().regex(/^[a-z0-9-]+$/) }),
+    response: Post,
+    errors: { 404: NotFound, 409: SlugTaken },
+  },
+  health: {
+    method: "GET",
+    path: "/health",
+    response: z.object({ ok: z.literal(true) }),
+  },
+});
+```
+
+### Conditional argument types
+
+The call signature has to answer three questions per route: are params required, is there a query (and is it optional), is a body allowed? Each is a small conditional type:
+
+```ts
+// contracts/client-types.ts
+import type { z } from "zod";
+import type { PathParamNames, PathParams, Simplify } from "./path-params";
+import type { RouteDef } from "./route";
+
+// A param schema (with brands) wins over plain strings derived from the path.
+type ParamsOf<R extends RouteDef> =
+  R extends { params: infer S extends z.ZodType } ? z.output<S> : PathParams<R["path"]>;
+
+type ParamsArg<R extends RouteDef> =
+  [PathParamNames<R["path"]>] extends [never] ? {} : { params: ParamsOf<R> };
+
+type QueryArg<R extends RouteDef> =
+  R extends { query: infer Q extends z.ZodType }
+    ? {} extends z.input<Q>
+      ? { query?: z.input<Q> } // every field optional → the whole query is optional
+      : { query: z.input<Q> }
+    : {};
+
+type BodyArg<R extends RouteDef> =
+  R extends { body: infer B extends z.ZodType } ? { body: z.input<B> } : {};
+
+export type CallArgs<R extends RouteDef> = Simplify<
+  ParamsArg<R> & QueryArg<R> & BodyArg<R> & { signal?: AbortSignal }
+>;
+
+// When nothing is required, the argument itself becomes optional: api.health()
+export type ArgsTuple<R extends RouteDef> =
+  {} extends CallArgs<R> ? [args?: CallArgs<R>] : [args: CallArgs<R>];
+```
+
+A few deliberate choices:
+
+- **`z.input` for what the caller sends, `z.output` for what the caller receives.** They differ whenever a schema has defaults or transforms. Mixing them up is a classic way to make types lie in a subtle direction.
+- **`{} extends X`** is the idiom for "every property of `X` is optional". It's the same check, flipped, that makes `api.health()` callable with no arguments.
+- **Body is absent from the type unless there's a schema.** Because the argument is a fresh object literal, passing `body` to a `GET` is an excess-property error, not a silently ignored field.
+
+### Mapped types with key remapping
+
+The client by name is a plain mapped type over the route map. The second view — calling by `"METHOD /path"` — uses key remapping with `as`, which lets a mapped type compute new keys:
+
+```ts
+// contracts/client-types.ts (continued)
+import type { RouteMap } from "./route";
+
+export type Client<R extends RouteMap> = {
+  [K in keyof R]: (...args: ArgsTuple<R[K]>) => Promise<ResultOf<R[K]>>;
+};
+
+type EndpointKey<D extends RouteDef> = `${D["method"]} ${D["path"]}`;
+
+export type Endpoints<R extends RouteMap> = {
+  [K in keyof R as EndpointKey<R[K]>]: R[K];
+};
+
+// Key remapping can also filter: map a key to never and it disappears.
+export type ReadEndpoints<R extends RouteMap> = {
+  [K in keyof Endpoints<R> as K extends `GET ${string}` ? K : never]: Endpoints<R>[K];
+};
+
+/** Look up an endpoint and remind the compiler it's still a RouteDef. */
+export type At<R extends RouteMap, E extends keyof Endpoints<R>> = Extract<Endpoints<R>[E], RouteDef>;
+```
+
+`Endpoints<typeof routes>` has keys `"GET /users/:id/posts/:postId"`, `"GET /users/:id/posts"`, `"POST /users/:id/posts"` and `"GET /health"`. Those keys are greppable, match what the backend logs, and autocomplete in the editor. `ReadEndpoints` is what I hand to prefetching code, which should never be able to trigger a `POST`.
+
+The `Extract` in `At` is a small admission: after remapping, the compiler no longer proves the values are `RouteDef`, so you restate it. You'll find a few of these seams in any type-level code.
+
+### The runtime underneath
+
+Type-level APIs have a recognisable shape: **a safe surface over a small, cast-heavy core**. The core is ordinary code that treats everything as `RouteDef`; the casts are concentrated in one file you test thoroughly.
+
+```ts
+// contracts/client.ts
+import type { ApiResult } from "./results";
+import type { ArgsTuple, At, Client, Endpoints, ResultOf } from "./client-types";
+import type { RouteDef, RouteMap } from "./route";
+
+type ClientOptions = {
+  baseUrl: string;
+  fetch?: typeof fetch;
+  headers?: () => Record<string, string>;
+};
+
+type AnyArgs = {
+  params?: Record<string, string>;
+  query?: Record<string, unknown>;
+  body?: unknown;
+  signal?: AbortSignal;
+};
+
+export function createClient<R extends RouteMap>(routes: R, options: ClientOptions) {
+  const run = (def: RouteDef, args: AnyArgs = {}) => request(def, args, options);
+
+  // The cast is honest about what it is: runtime shape built dynamically, type asserted once.
+  const byName = Object.fromEntries(
+    Object.entries(routes).map(([name, def]) => [name, (args?: AnyArgs) => run(def, args)]),
+  ) as unknown as Client<R>;
+
+  const byEndpoint = new Map(Object.values(routes).map((def) => [`${def.method} ${def.path}`, def]));
+
+  function call<E extends keyof Endpoints<R> & string>(
+    endpoint: E,
+    ...args: ArgsTuple<At<R, E>>
+  ): Promise<ResultOf<At<R, E>>> {
+    const def = byEndpoint.get(endpoint);
+    if (!def) throw new Error(`Unknown endpoint: ${endpoint}`);
+    return run(def, args[0] as AnyArgs) as Promise<ResultOf<At<R, E>>>;
+  }
+
+  // The one name a route can't have is "call".
+  return Object.assign(byName, { call });
+}
+
+function buildPath(template: string, params: Record<string, string>): string {
+  return template.replace(/:(\w+)/g, (_, name: string) => {
+    const value = params[name];
+    if (value === undefined) throw new Error(`Missing path param "${name}" in ${template}`);
+    return encodeURIComponent(value);
+  });
+}
+
+async function request(def: RouteDef, args: AnyArgs, options: ClientOptions): Promise<ApiResult<unknown, unknown>> {
+  const params = (def.params ? def.params.parse(args.params) : (args.params ?? {})) as Record<string, string>;
+  // Relative join: a leading "/" would drop any path prefix in baseUrl.
+  const base = options.baseUrl.endsWith("/") ? options.baseUrl : `${options.baseUrl}/`;
+  const url = new URL(buildPath(def.path, params).replace(/^\//, ""), base);
+
+  if (def.query && args.query) {
+    for (const [key, value] of Object.entries(def.query.parse(args.query))) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+  }
+  const body = def.body ? JSON.stringify(def.body.parse(args.body)) : undefined;
+
+  let res: Response;
+  try {
+    res = await (options.fetch ?? fetch)(url, {
+      method: def.method,
+      headers: { ...(body ? { "content-type": "application/json" } : {}), ...options.headers?.() },
+      body,
+      signal: args.signal,
+    });
+  } catch (cause) {
+    if (args.signal?.aborted) return { ok: false, error: { kind: "aborted" } };
+    return { ok: false, error: { kind: "network", cause } };
+  }
+
+  const json: unknown = res.status === 204 ? undefined : await res.json().catch(() => undefined);
+
+  if (res.ok) {
+    const parsed = def.response.safeParse(json);
+    return parsed.success
+      ? { ok: true, data: parsed.data }
+      : { ok: false, error: { kind: "contract", status: res.status, issues: parsed.error.issues } };
+  }
+
+  const declared = def.errors?.[res.status]?.safeParse(json);
+  if (declared?.success) return { ok: false, error: { kind: "http", status: res.status, body: declared.data } };
+  return { ok: false, error: { kind: "unexpected", status: res.status, body: json } };
+}
+```
+
+The `baseUrl` handling in there is a scar, not a style choice. `new URL("/users/1", "https://example.com/api/")` resolves to `https://example.com/users/1` — the leading slash makes the path absolute and the `/api` prefix disappears. Our staging environment served the API under a prefix and production didn't; the bug only existed in staging, which made for an entertaining afternoon.
+
+## Discriminated unions for responses and errors
+
+`fetch` gives you two failure channels — a thrown error and a non-2xx status — and most wrappers collapse them into one `throw`. Then every `catch` block has to guess what happened. I return a value instead, and make the error a discriminated union where each route's declared errors are part of the type:
+
+```ts
+// contracts/results.ts
+import type { z } from "zod";
+
+export type TransportError =
+  | { kind: "network"; cause: unknown }
+  | { kind: "aborted" }
+  | { kind: "unexpected"; status: number; body: unknown }
+  | { kind: "contract"; status: number; issues: z.ZodError["issues"] };
+
+export type ApiResult<T, E> = { ok: true; data: T } | { ok: false; error: E | TransportError };
+```
+
+```ts
+// contracts/client-types.ts (continued)
+export type ResponseOf<R extends RouteDef> = z.output<R["response"]>;
+
+// Mapped type indexed by its own keys: the standard way to turn a record into a union.
+export type DeclaredErrors<R extends RouteDef> =
+  R extends { errors: infer E extends Record<number, z.ZodType> }
+    ? { [S in keyof E & number]: { kind: "http"; status: S; body: z.output<E[S]> } }[keyof E & number]
+    : never;
+
+export type ResultOf<R extends RouteDef> = ApiResult<ResponseOf<R>, DeclaredErrors<R>>;
+```
+
+For `createPost`, `DeclaredErrors` is `{ kind: "http"; status: 404; body: { code: "not_found"; resource: string } } | { kind: "http"; status: 409; body: { code: "slug_taken"; slug: string } }`. Narrow on `kind`, then on `status`, and the body type follows:
+
+```tsx
+// app/posts/new/actions.ts
+const result = await api.createPost({ params: { id: userId }, body: { title, slug } });
+
+if (!result.ok) {
+  const { error } = result;
+  switch (error.kind) {
+    case "http":
+      if (error.status === 409) return { fieldErrors: { slug: `"${error.body.slug}" is taken` } };
+      return { formError: "This author no longer exists." }; // only 404 is left
+    case "contract":
+      reportContractDrift("createPost", error.issues);
+      return { formError: "Something went wrong. Please try again." };
+    case "network":
+    case "aborted":
+    case "unexpected":
+      return { formError: "Couldn't reach the server." };
+    default:
+      return assertNever(error);
+  }
+}
+
+redirect(`/posts/${result.data.slug}`);
+```
+
+Add a `422` to `createPost`'s `errors` and nothing breaks — but the `if (error.status === 409)` fall-through comment above becomes a lie, which is why I prefer a nested `switch (error.status)` with its own `assertNever` for routes whose errors drive UI. The [basics post](/blog/typescript-patterns-that-pay-off) covers the exhaustive-switch pattern itself.
+
+<Callout type="note" title="Why not just throw?">
+Exceptions are fine for "this should never happen". Expected outcomes — not found, conflict, validation failed — are part of the contract, and a return type is the only place the compiler can see them. If your data layer (TanStack Query, a Server Action) wants a throw, unwrap at that boundary with one helper that throws a typed error. Don't let `catch (e: unknown)` be where the contract ends.
+</Callout>
+
+## Branded types for IDs
+
+The basics post introduced brands as a way to keep a `userId` out of an `orderId`'s seat. In an API client they earn their keep at one specific spot: **path params, where every value is a string and order is easy to get wrong**.
+
+```ts
+const userId: UserId = session.userId;
+const postId: PostId = params.postId;
+
+api.getUserPost({ params: { id: userId, postId } }); // ✅
+
+// @ts-expect-error — a UserId can't sit in the postId slot
+api.getUserPost({ params: { id: userId, postId: userId } });
+
+// @ts-expect-error — plain strings aren't IDs until they've been validated
+api.getUserPost({ params: { id: "8c1f…", postId: "a9d2…" } });
+```
+
+Where do branded values come from? From **parsing**, never from `as`. Zod's `.brand()` gives you a schema whose output type carries the brand, so the only way to get a `PostId` is to run it through `PostId.parse()` (at a route boundary, from a form, from a URL segment) or to receive it in an already-validated response. If I see `as PostId` in a review outside of a test fixture, that's a comment.
+
+There's a second, cheaper brand when your IDs have prefixes — Stripe-style `usr_…`, `post_…`:
+
+```ts
+type UserKey = `usr_${string}`;
+type PostKey = `post_${string}`;
+
+function loadUser(id: UserKey) {}
+loadUser("usr_8f2k"); // ✅
+// @ts-expect-error
+loadUser("post_19a"); // wrong prefix, caught with zero runtime cost
+```
+
+Template literal brands work on literals for free, but a `string` from JSON still needs a type guard or a schema (`z.string().startsWith("usr_")` plus a cast in the one place that validated it) — the compiler can't check a prefix on a value it can't see.
+
+## `satisfies` and `const` type parameters: keeping literals literal
+
+Everything above depends on the route map preserving `"/users/:id/posts/:postId"` as a literal type. This is where most hand-rolled attempts quietly fail, and the rules are subtle enough to spell out.
+
+```ts
+const def = { method: "GET", path: "/users/:id", response: User };
+
+// 1. Annotation: you get exactly the annotated type back.
+const a: RouteMap = { getUser: def };
+type PathA = (typeof a)["getUser"]["path"]; // string → PathParams = {} → no params required!
+
+// 2. satisfies: checked against RouteMap, inferred type kept… but widened.
+const b = { getUser: { method: "GET", path: "/users/:id", response: User } } satisfies RouteMap;
+type MethodB = (typeof b)["getUser"]["method"]; // "GET"   (contextual type is a union of literals)
+type PathB = (typeof b)["getUser"]["path"]; //     string  (contextual type is plain string)
+
+// 3. as const satisfies: literal, readonly, and checked.
+const c = { getUser: { method: "GET", path: "/users/:id", response: User } } as const satisfies RouteMap;
+type PathC = (typeof c)["getUser"]["path"]; // "/users/:id"
+```
+
+Case 2 is the one that bites. `satisfies` keeps the *inferred* type, but inference for a mutable property widens a string literal to `string` unless the contextual type itself contains literal types. `method` survives because `HttpMethod` is a union of literals; `path` doesn't, because `RouteDef["path"]` is `string`.
+
+A `const` type parameter (TypeScript 5.0) gives you case 3 without asking every caller to remember `as const`:
+
+```ts
+export function defineRoutes<const R extends RouteMap>(routes: R): R {
+  return routes;
+}
+```
+
+Two caveats from using it in anger:
+
+- **It only applies to literals written inline in the call.** `defineRoutes(someObject)` infers from the variable's already-widened type. That's why the route map is always written directly inside `defineRoutes(...)`.
+- **Array-typed constraints should be `readonly`.** `const` inference produces readonly tuples; if the constraint says `string[]`, the readonly tuple doesn't satisfy it and inference falls back to the constraint. Write `readonly string[]` in constraints you intend to use with `const`.
+
+And a cheap guard that turns the silent failure into a loud one:
+
+```ts
+type LiteralPath<P extends string> = string extends P
+  ? "❌ path was widened to string — declare routes inside defineRoutes()"
+  : P;
+```
+
+Use it in `ParamsArg` and a widened path produces an error message that tells you exactly what happened, instead of a client that accepts anything.
+
+## The runtime bridge: Zod so the types aren't lies
+
+Everything so far is compile time. The server doesn't read your types. When the backend renames `publishedAt` to `published_at`, a client whose `Post` type was written by hand keeps compiling, keeps rendering `undefined`, and nobody finds out until a user screenshots it.
+
+The fix is that **the type and the check are the same object**. `Post` is a Zod schema; `z.infer<typeof Post>` is the type; `request()` runs `Post.safeParse()` on every success response. If the shape drifts, the client returns `{ kind: "contract" }` with the exact issues, and that goes to error tracking with the route name. You find out from a dashboard, not from a screenshot.
+
+### input vs output, and transforms
+
+Zod schemas have two types: what goes in and what comes out. They only differ when a schema transforms — and that's exactly where people get confused:
+
+```ts
+const Event = z.object({
+  at: z.iso.datetime().transform((s) => new Date(s)),
+  tags: z.array(z.string()).default([]),
+});
+
+type EventIn = z.input<typeof Event>; //  { at: string; tags?: string[] }
+type EventOut = z.output<typeof Event>; // { at: Date; tags: string[] }
+```
+
+The rule in the client: **bodies and queries use `z.input`** (what you're allowed to send before parsing) and **responses use `z.output`** (what you get after). Using `Date` in a request body type when the wire format is a string is how you end up sending `"[object Object]"`.
+
+### What validation costs, and where to share schemas
+
+Parsing isn't free. For typical JSON responses (a few KB) the cost is negligible next to the network. For a 5 MB export endpoint, validating every row on the main thread is a real jank risk; I either validate a sample, validate in a worker, or mark that route as trusted with a comment explaining why. Make that an explicit decision per route, not a global "validation off in production" flag — that flag is how types become lies again.
+
+In our monorepo the schemas live in a shared contracts package. The NestJS backend validates incoming bodies with the same `body` schemas, and the frontend validates responses with the same `response` schemas. It's not end-to-end type safety by magic — it's one source of truth checked on both sides of the wire. If you'd rather not be tied to Zod, Standard Schema is a common interface that Zod, Valibot and ArkType implement; a client written against it can accept any of them.
+
+### Hand-rolled vs the existing tools
+
+I'm not arguing you should write this yourself. Sometimes you should; often a library already does it:
+
+| Approach | Source of truth | Non-TS backend | Runtime validation | When I'd pick it |
+| --- | --- | --- | --- | --- |
+| Hand-rolled route map (this post) | Shared Zod schemas | Yes, with discipline | Yes, same schemas | Small surface, you own both sides, want full control |
+| ts-rest | Contract object with schemas | Yes | Yes | Same idea, maintained for you, with server adapters |
+| tRPC | Server procedure definitions | No | Input yes, output optional | TypeScript on both ends, RPC style is acceptable |
+| OpenAPI + openapi-typescript / openapi-fetch | The OpenAPI document | Yes | Not by default | Backend in another language, or a public API |
+| Hono RPC client | Hono route definitions | No | Via validators | Backend already on Hono |
+
+The value of building it once by hand — even if you then adopt a library — is that you understand what the library's types are doing when their error messages show up.
+
+## The cost side: compile time, unreadable errors, when to stop
+
+Type-level code is code. It runs in every developer's editor on every keystroke and in CI on every push, and when it fails it fails with messages written by the compiler, not by you.
+
+### Measure before you guess
+
+```bash
+# How much work is the checker doing, and where?
+npx tsc --noEmit --extendedDiagnostics
+
+# Per-file and per-type trace you can load into a profiler
+npx tsc --noEmit --generateTrace ./trace
+npx @typescript/analyze-trace ./trace
+```
+
+`--extendedDiagnostics` reports instantiation counts and check time. When a change to a "small" utility type moves those numbers noticeably, that's the signal. `analyze-trace` points at the specific expressions that are hot. The Go-based native compiler makes checking dramatically faster, but it changes the constant, not the complexity — an exponential type is still exponential.
+
+### Recursion has limits
+
+Recursive conditional types are capped. Hit the cap and you get error 2589, "Type instantiation is excessively deep and possibly infinite", usually far away from the type that caused it. Tail-recursive conditional types — where the recursive call is the entire result of a branch — are allowed to go much deeper, so for anything that recurses over long inputs, use an accumulator:
+
+```ts
+type PathParamNamesTR<P extends string, Acc extends string = never> =
+  P extends `${string}:${infer Name}/${infer Rest}`
+    ? PathParamNamesTR<`/${Rest}`, Acc | Name> // tail position
+    : P extends `${string}:${infer Name}`
+      ? Acc | Name
+      : Acc;
+```
+
+For URL paths with two or three params, this doesn't matter. For types that parse SQL or recurse into deeply nested JSON, it's the difference between working and 2589.
+
+### Errors humans can read
+
+The worst cost isn't CPU, it's the junior engineer staring at forty lines of nested conditional types because they passed `limit: "20"`. Things that help:
+
+- **`Simplify`** at every public boundary, so hovers and errors show plain objects.
+- **Named intermediate types** instead of one giant inline expression. Errors mention names, and names explain intent.
+- **Literal-string error types**, like `LiteralPath` above, for the misuse you can predict.
+- **`NoInfer`** (TypeScript 5.4) when a generic should be inferred from one argument and only *checked* against another — it stops the compiler from widening the type parameter to accommodate a mistake.
+- **Type tests.** `expectTypeOf` in Vitest (or `@ts-expect-error` lines in a `.test-d.ts` file) pins down both what should compile and what shouldn't. Type-level code without type tests is untested code.
+
+```ts
+// contracts/client.test-d.ts
+import { expectTypeOf, test } from "vitest";
+
+test("route params are derived from the path", () => {
+  expectTypeOf<PathParams<"/users/:id/posts/:postId">>().toEqualTypeOf<{ id: string; postId: string }>();
+  expectTypeOf<PathParams<"/health">>().toEqualTypeOf<{}>();
+});
+
+test("health takes no arguments, createPost requires a body", () => {
+  expectTypeOf(api.health).parameters.toEqualTypeOf<[args?: { signal?: AbortSignal }]>();
+  // @ts-expect-error — body is required
+  api.createPost({ params: { id: userId } });
+});
+```
+
+### When I stop
+
+My rules, learned by overshooting:
+
+1. **Type the contract, not the implementation.** The public surface of the client deserves machinery. The internals get `RouteDef` and a few casts.
+2. **If a runtime test is simpler, write the runtime test.** We once had a type that checked, at compile time, that every route's `params` schema had exactly the keys of its path placeholders. It worked. Its error message was unreadable and it noticeably slowed the editor. We replaced it with a ten-line unit test that iterates the route map — same guarantee, readable failure, zero editor cost.
+3. **One person must be able to explain every type in under a minute.** If only the author can maintain it, it's a liability on the day they go on holiday.
+4. **Budget the recursion.** Paths, yes. A full URL-pattern parser with optional groups, regex constraints and wildcards, no.
+5. **Prefer generated types for big external surfaces.** For a third-party API with two hundred endpoints, generate from OpenAPI; don't hand-maintain clever types for it.
+
+```ts
+// contracts/routes.test.ts — the runtime test that replaced a type
+import { expect, test } from "vitest";
+import { routes } from "./routes";
+
+test("param schemas match path placeholders", () => {
+  for (const [name, def] of Object.entries(routes)) {
+    const fromPath = [...def.path.matchAll(/:(\w+)/g)].map((m) => m[1]).sort();
+    const fromSchema = "params" in def && def.params ? Object.keys(def.params.shape).sort() : fromPath;
+    expect(fromSchema, name).toEqual(fromPath);
+  }
+});
+```
+
+<Callout type="warning" title="A type that lies is worse than no type">
+`any` at least looks dangerous. A precise-looking type for data nobody validated looks safe, gets trusted, and fails far from its cause. Every derived type in this post bottoms out in a schema that actually runs. If you take one thing away: never let a response type exist without the check that makes it true.
+</Callout>
+
+## Mistakes I see in code review
+
+**Annotating the route map with `: RouteMap`.** Every path becomes `string`, every params type becomes `{}`, and the client accepts anything. Use `defineRoutes` or `as const satisfies`.
+
+**`as` at the call site to "fix" a type error.** `api.getUserPost({ params } as any)` turns off the exact check that was trying to help. If the type is wrong, fix the contract; if the data is unvalidated, parse it.
+
+**Response types without runtime validation.** A hand-written `interface Post` for a `fetch` result is a comment that the compiler pretends to believe.
+
+**Confusing `z.input` and `z.output`.** Sending a `Date` where the wire wants a string, or reading a field that a `.default()` was supposed to fill in.
+
+**Distribution surprises.** A `T extends never` check that returns `never`, or a conditional applied to a union that you expected to see as a whole. Reach for `[T] extends [...]` when in doubt.
+
+**Brands created with `as` all over the codebase.** If anyone can write `as PostId`, the brand proves nothing. Brands come from parsing.
+
+**Cleverness without type tests.** The first refactor of an untested type-level utility is when you discover it never rejected anything.
+
+**Throwing for expected errors.** A 409 is part of the contract; a `catch (e: unknown)` loses it. Return it in a discriminated union and let the compiler enforce handling.
+
+## Further reading
+
+- [TypeScript Handbook: Conditional Types](https://www.typescriptlang.org/docs/handbook/2/conditional-types.html), [Mapped Types](https://www.typescriptlang.org/docs/handbook/2/mapped-types.html) and [Template Literal Types](https://www.typescriptlang.org/docs/handbook/2/template-literal-types.html).
+- TypeScript release notes for 4.7 (`infer` constraints), 4.9 (`satisfies`), 5.0 (`const` type parameters) and 5.4 (`NoInfer`).
+- [TypeScript wiki: Performance](https://github.com/microsoft/TypeScript/wiki/Performance) — tracing and keeping checks fast.
+- [Zod](https://zod.dev) — `z.infer`, `z.input`, `z.output`, `.brand()`.
+- [Standard Schema](https://standardschema.dev) — a common interface across validation libraries.
+- [TypeScript patterns that pay off](/blog/typescript-patterns-that-pay-off) — the everyday patterns this post builds on.
+
+## Summary
+
+<Checklist>
+
+- Declare each endpoint once — method, literal path, Zod schemas for params, query, body, response and errors — and derive every caller-facing type from that declaration.
+- Extract path params with a recursive template literal type; wrap public types in `Simplify` so hovers and errors read like plain objects.
+- Use `[X] extends [never]` for "is this empty?" checks; remember conditional types distribute over naked type parameters.
+- Make arguments conditional: params only when the path has placeholders, query optional when all its fields are, body only when a schema exists, and no argument at all when nothing is required.
+- Build the client with mapped types; use key remapping for endpoint-keyed access and for filtering (for example, read-only endpoints).
+- Return a discriminated union: per-route declared errors plus transport errors (`network`, `aborted`, `unexpected`, `contract`), and handle them exhaustively.
+- Brand IDs through schemas, never through `as`; consider template literal prefixes when your IDs have them.
+- Keep literals literal with `defineRoutes<const R>` or `as const satisfies`; add a guard that errors when a path has widened to `string`.
+- Validate every response with the same schema that produced its type; use `z.input` for what you send and `z.output` for what you receive.
+- Measure with `--extendedDiagnostics` and traces, write type tests, prefer a runtime test when it's simpler, and stop when the types need more explaining than the code they protect.
+
+</Checklist>

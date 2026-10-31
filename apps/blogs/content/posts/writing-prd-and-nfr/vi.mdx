@@ -1,0 +1,451 @@
+---
+title: "Viết PRD mà dev ước lượng được, QA test được: cấu trúc, requirement kiểm thử được và NFR đo được"
+excerpt: "Một PRD tốt không dài, nó rõ. Bài này đi qua cấu trúc PRD, cách viết requirement kiểm thử được, NFR đo được theo ISO 25010 (hiệu năng p95, SLO, bảo mật, Nghị định 13 và luật dữ liệu cá nhân, WCAG 2.2 AA), truy vết từ mục tiêu đến test, kèm một PRD mẫu hoàn chỉnh."
+---
+
+<Lead>PRD tệ nhất mình từng nhận có một dòng mà mình vẫn nhớ: "Trang thanh toán phải nhanh, thân thiện với người dùng và bảo mật." Ba dev ước lượng từ hai tuần đến ba tháng — và cả ba đều đúng, vì mỗi người hiểu "nhanh" theo một kiểu. QA không viết được test nào cho câu đó. Đến ngày release, cả team ngồi tranh cãi xem 3 giây có tính là "nhanh" không. Từ đó mình học được rằng PRD không thất bại vì thiếu ý tưởng, mà vì thiếu những con số, những ranh giới và những câu mà người khác có thể kiểm chứng. Bài này là cách mình viết — và review — một PRD mà engineering ước lượng được, QA test được, và sáu tháng sau vẫn còn đúng: cấu trúc, cách viết requirement kiểm thử được, NFR dưới dạng đo được, truy vết từ mục tiêu đến test, và một PRD mẫu hoàn chỉnh để bạn copy.</Lead>
+
+## PRD để làm gì, và không để làm gì
+
+PRD (Product Requirements Document) trả lời ba câu hỏi: **vì sao** chúng ta làm việc này, **làm cái gì**, và **làm sao biết là đã thành công**. Nó không trả lời *làm thế nào* — đó là việc của design doc hay RFC do engineering viết.
+
+Mình đánh giá một PRD bằng ba bài kiểm tra rất thực dụng:
+
+- **Bài kiểm tra ước lượng:** đưa cho hai dev đọc độc lập, ước lượng của họ có chênh nhau quá hai lần không? Nếu có, phạm vi đang mơ hồ.
+- **Bài kiểm tra QA:** với mỗi requirement, QA có viết được ít nhất một test case pass/fail rõ ràng không?
+- **Bài kiểm tra "sáu tháng sau":** một người mới vào team đọc PRD có hiểu vì sao feature hoạt động như hiện tại không — kể cả những thứ cố tình *không* làm?
+
+Một PRD cũng có nhiều người đọc, mỗi người đọc phần khác nhau. Viết với ý thức đó giúp bạn biết phần nào cần chính xác đến từng con số:
+
+| Người đọc | Đọc kỹ phần | Cần gì từ PRD |
+| --- | --- | --- |
+| Lãnh đạo, stakeholder | Vấn đề, mục tiêu, chỉ số thành công | Lý do đầu tư, kỳ vọng đo được |
+| Designer | Người dùng, user flow, phạm vi | Ai dùng, trong bối cảnh nào, ràng buộc gì |
+| Engineering | Phạm vi, FR, NFR, câu hỏi mở | Đủ chi tiết để ước lượng và thiết kế |
+| QA | FR, acceptance criteria, NFR | Thứ kiểm chứng được, kể cả trường hợp lỗi |
+| Pháp chế, bảo mật | Dữ liệu, quyền riêng tư, NFR bảo mật | Dữ liệu gì, mục đích gì, lưu bao lâu |
+| Vận hành, CSKH | Rollout, user flow, câu hỏi mở | Khi nào bật, ai bị ảnh hưởng, rollback thế nào |
+
+## Giải phẫu một PRD
+
+Đây là cấu trúc mình dùng cho hầu hết feature cỡ vừa (hai đến tám tuần công). Feature nhỏ hơn thì gộp bớt; dự án lớn hơn thì tách thành nhiều PRD theo phần.
+
+<Figure src="/blog/writing-prd-and-nfr-traceability.svg" alt="Bên trái là một PRD gồm mười phần: vấn đề và bối cảnh, mục tiêu và phi mục tiêu, người dùng, chỉ số thành công, phạm vi, user flow, functional requirements, non-functional requirements theo ISO 25010, câu hỏi mở, rollout và rủi ro. Mục tiêu nối tới thẻ Goal G1 'giảm no-show cho lịch đặt online'; functional và non-functional requirements nối tới thẻ Requirement FR-01 / NFR-04 'nhắc lúc 24h và 2h, không có dữ liệu sức khoẻ trong SMS'; chỉ số thành công nối tới thẻ Metric M1. Bên phải là chuỗi truy vết từ trên xuống: Goal được tinh chỉnh thành Requirement, được hiện thực bằng User story BK-142, được kiểm chứng bằng Test case TC-142-3, được chứng minh ở production bằng Metric M1, và một mũi tên đứt nét quay ngược từ Metric về Goal để xem lại sau khi ra mắt. Mỗi thẻ có người chịu trách nhiệm: PM, BA và Eng, Team, QA, Data." caption="Mỗi requirement truy ngược lên một mục tiêu và truy xuống một test; chỉ số ở production khép vòng lặp bằng cách trả lời câu hỏi: mục tiêu có thực sự dịch chuyển không?" />
+
+| Phần | Trả lời câu hỏi | Lỗi hay gặp |
+| --- | --- | --- |
+| 1. Vấn đề và bối cảnh | Chuyện gì đang sai, với ai, bằng chứng đâu? | Viết giải pháp thay vì vấn đề |
+| 2. Mục tiêu / phi mục tiêu | Thành công trông thế nào? Cố tình không làm gì? | Thiếu phi mục tiêu, scope phình dần |
+| 3. Người dùng | Ai dùng, trong bối cảnh nào, giỏi công nghệ đến đâu? | "Người dùng" chung chung |
+| 4. Chỉ số thành công | Đo bằng gì, baseline bao nhiêu, mục tiêu bao nhiêu, khi nào đo? | Chỉ số không có baseline, hoặc không đo được |
+| 5. Phạm vi | Trong v1 có gì, không có gì? | Chỉ liệt kê "có", không liệt kê "không" |
+| 6. User flow | Đường đi chính và các nhánh lỗi | Chỉ vẽ happy path |
+| 7. Functional requirements | Hệ thống phải làm gì, có ID, kiểm thử được | Từ ngữ mơ hồ, gộp nhiều yêu cầu một câu |
+| 8. Non-functional requirements | Hệ thống phải làm tốt đến mức nào | Không có, hoặc "nhanh, an toàn" |
+| 9. Câu hỏi mở | Điều chưa biết, ai trả lời, hạn khi nào | Giấu đi để PRD trông "xong" |
+| 10. Rollout và rủi ro | Bật thế nào, cho ai, rollback ra sao | Bỏ qua hoàn toàn |
+
+### Vấn đề trước, giải pháp sau
+
+Phần đầu tiên là phần bị viết sai nhiều nhất. "Chúng ta cần gửi nhắc lịch qua Zalo" là giải pháp. Vấn đề là: "Tỷ lệ bệnh nhân không đến với lịch đặt online cao gấp đôi lịch đặt qua điện thoại, và lễ tân mất hai giờ mỗi chiều gọi điện nhắc lịch." Viết vấn đề trước cho phép người đọc — kể cả dev — đề xuất giải pháp tốt hơn. Có thể vấn đề nằm ở chỗ bệnh nhân đặt lịch quá xa ngày khám, và giải pháp là giới hạn cửa sổ đặt lịch chứ không phải nhắc nhiều hơn.
+
+Bằng chứng có thể là số liệu, ticket CSKH, ghi chú phỏng vấn người dùng, hay kết quả một buổi [Event Storming](/blog/event-storming-domain-modeling). Không có bằng chứng thì ghi rõ "giả định", và biến nó thành câu hỏi mở.
+
+### Mục tiêu, phi mục tiêu và chỉ số thành công
+
+Mục tiêu nói về kết quả, không nói về output. "Ra mắt tính năng nhắc lịch" là output; "giảm tỷ lệ no-show" là kết quả. Mỗi mục tiêu nên gắn với ít nhất một chỉ số có **baseline, mục tiêu, cửa sổ đo và nguồn dữ liệu**.
+
+Phi mục tiêu (non-goals) là phần mình coi trọng gần ngang mục tiêu. Nó là công cụ chống scope creep hiệu quả nhất: khi ai đó hỏi "sao không cho dời lịch luôn?", câu trả lời đã có sẵn, kèm lý do.
+
+Chỉ số nên có ba loại:
+
+- **Chỉ số chính:** thứ mục tiêu muốn dịch chuyển (tỷ lệ no-show).
+- **Chỉ số dẫn dắt:** thứ thay đổi sớm hơn và giải thích được chỉ số chính (tỷ lệ bệnh nhân bấm xác nhận).
+- **Guardrail:** thứ không được phép xấu đi (tỷ lệ huỷ nhận tin, số khiếu nại, chi phí SMS).
+
+## Viết requirement kiểm thử được
+
+Một requirement kiểm thử được khi hai người khác nhau, đọc độc lập, đưa ra cùng một kết luận pass/fail cho cùng một hành vi. Phần lớn requirement thất bại bài kiểm tra này vì vài từ quen thuộc.
+
+### Những từ mình cấm trong PRD
+
+| Từ mơ hồ | Vì sao có vấn đề | Thay bằng |
+| --- | --- | --- |
+| "nhanh", "mượt", "tức thì" | Không có ngưỡng, không biết đo ở đâu | "p95 thời gian phản hồi API ≤ 300ms ở 50 req/s" |
+| "thân thiện", "trực quan", "dễ dùng" | Ý kiến, không phải yêu cầu | Tiêu chí cụ thể: "hoàn thành trong ≤ 2 bước", đạt WCAG 2.2 AA, test usability với 5 người |
+| "v.v.", "và các trường hợp khác" | Phạm vi mở vô hạn; dev đoán, QA đoán khác | Liệt kê đầy đủ, hoặc ghi rõ "chỉ các trường hợp trên" |
+| "hỗ trợ", "xử lý" | Hỗ trợ đến mức nào? Xử lý ra sao? | Động từ cụ thể: "hiển thị", "từ chối với mã lỗi", "gửi lại tối đa 3 lần" |
+| "an toàn", "bảo mật" | Chống lại cái gì? | Mối đe doạ cụ thể và biện pháp: "token ngẫu nhiên ≥ 128 bit, hết hạn lúc giờ khám" |
+| "thời gian thực" | 100ms hay 1 phút? | "hiển thị trên dashboard trong vòng 60 giây" |
+| "nên", "có thể" | Bắt buộc hay tuỳ chọn? | "phải" cho bắt buộc; tuỳ chọn thì đưa vào phần ưu tiên thấp |
+| "và/hoặc" | Hai yêu cầu hay một? | Tách thành hai requirement |
+| "người dùng" (chung chung) | Bệnh nhân? Lễ tân? Admin? | Vai trò cụ thể |
+| "phù hợp", "hợp lý" | Ai quyết định thế nào là hợp lý? | Ngưỡng hoặc quy tắc cụ thể |
+
+Mình để bảng này ngay trong template PRD của team. Nó không làm ai viết hay hơn, nhưng làm reviewer có cớ để hỏi.
+
+### Dùng mẫu câu EARS
+
+EARS (Easy Approach to Requirements Syntax) là một bộ mẫu câu đơn giản do Alistair Mavin và đồng nghiệp ở Rolls-Royce đề xuất. Mình không bắt cả team theo nghiêm ngặt, nhưng nó là cách nhanh nhất để biến một câu mơ hồ thành câu kiểm thử được:
+
+| Mẫu | Cấu trúc | Ví dụ |
+| --- | --- | --- |
+| Luôn đúng | Hệ thống phải ... | Hệ thống phải lưu thời gian theo UTC và hiển thị theo giờ Việt Nam |
+| Theo sự kiện | Khi [sự kiện], hệ thống phải ... | Khi lịch hẹn được xác nhận và còn hơn 24 giờ, hệ thống phải lên lịch nhắc lúc T−24h |
+| Theo trạng thái | Trong khi [trạng thái], hệ thống phải ... | Trong khi bệnh nhân đã huỷ nhận tin Zalo, hệ thống phải chỉ dùng SMS |
+| Hành vi không mong muốn | Nếu [điều kiện lỗi], thì hệ thống phải ... | Nếu Zalo báo gửi thất bại, thì hệ thống phải gửi SMS trong vòng 5 phút |
+| Tuỳ chọn | Ở nơi có [tính năng], hệ thống phải ... | Ở chi nhánh bật thu cọc, trang huỷ phải hiển thị quy định giữ cọc trước khi xác nhận |
+
+Mẫu "hành vi không mong muốn" đặc biệt có giá trị: nó buộc người viết nghĩ về đường lỗi, thứ chiếm phần lớn effort thật nhưng thường vắng mặt trong PRD.
+
+### Một requirement, một ID, một điều
+
+- **Mỗi requirement có ID ổn định** (`FR-01`, `NFR-04`). Không đánh lại số khi xoá — đánh dấu "đã bỏ" để link cũ không trỏ nhầm.
+- **Mỗi requirement nói một điều.** Câu có "và" nối hai hành vi thường nên tách thành hai.
+- **Có ưu tiên** (Must/Should/Could, hoặc P0/P1/P2) để khi thời gian không đủ, team biết cắt cái gì mà không cần họp.
+- **Acceptance criteria viết dạng Given/When/Then**, đủ cụ thể để QA chuyển thành test gần như nguyên văn:
+
+```text
+FR-02  Nhắc lịch lúc T−2h
+  Given lịch hẹn lúc 15:00 ngày 10/10, trạng thái "đã xác nhận"
+    And bệnh nhân chưa phản hồi nhắc lịch T−24h
+  When đồng hồ hệ thống đến 13:00 ngày 10/10
+  Then bệnh nhân nhận đúng một tin nhắc qua Zalo trong khoảng 13:00–13:05
+
+  Given cùng lịch hẹn, nhưng bệnh nhân đã bấm "Huỷ" từ tin T−24h
+  When đồng hồ đến 13:00
+  Then không có tin nào được gửi
+```
+
+## NFR chuyên sâu: dùng ISO 25010 làm checklist
+
+Non-functional requirement là nơi PRD thường trống trơn nhất, và cũng là nơi gây ra nhiều incident nhất. Vấn đề không phải người viết không quan tâm, mà là không biết bắt đầu từ đâu. Mình dùng mô hình chất lượng sản phẩm của **ISO/IEC 25010** làm checklist: đi qua từng đặc tính, tự hỏi "feature này có rủi ro gì ở đây không?", và chỉ viết NFR cho những chỗ có câu trả lời.
+
+Bản 2023 của chuẩn có chín đặc tính (một số tên khác bản 2011 mà nhiều tài liệu vẫn dùng — "usability" thành "interaction capability", "portability" thành "flexibility", và thêm "safety"):
+
+| Đặc tính | Câu hỏi để hỏi | Dạng đo được |
+| --- | --- | --- |
+| Functional suitability | Có làm đúng và đủ không? | Thường đã nằm trong FR và acceptance criteria |
+| Performance efficiency | Nhanh đến đâu, tốn bao nhiêu tài nguyên? | p95/p99 latency ở tải X; LCP ở p75 |
+| Compatibility | Chạy cùng hệ thống, trình duyệt nào? | Ma trận trình duyệt/thiết bị; phiên bản API |
+| Interaction capability | Ai cũng dùng được không? | WCAG 2.2 AA; tỷ lệ hoàn thành tác vụ |
+| Reliability | Hỏng thì sao? Có mất dữ liệu không? | SLO; RPO/RTO; hành vi khi phụ thuộc bên ngoài lỗi |
+| Security | Chống lại ai, cái gì? | Biện pháp cụ thể; mức OWASP ASVS |
+| Maintainability | Sửa, test, mở rộng có dễ không? | Ngưỡng coverage cho module mới; cấu hình không cần deploy |
+| Flexibility | Thay đổi môi trường, quy mô thì sao? | Mức tải thiết kế, ví dụ gấp 3 lần hiện tại |
+| Safety | Có gây hại cho người hay tài sản không? | Hành vi an toàn khi lỗi (fail-safe) |
+
+Với hệ thống y tế, tài chính hay bất cứ thứ gì đụng đến dữ liệu cá nhân, mình thêm hai mục mà ISO 25010 không tách riêng nhưng thực tế luôn cần: **privacy** (quyền riêng tư, tuân thủ pháp luật) và **observability** (thấy được hệ thống đang làm gì).
+
+### Hiệu năng: percentile, tải và nơi đo
+
+Một NFR hiệu năng đo được cần đủ bốn thứ: **chỉ số, percentile, ngưỡng, điều kiện**.
+
+- "API nhanh" → "p95 thời gian phản hồi phía server của `POST /reminders/:token/confirm` ≤ 300ms ở 50 req/s duy trì 10 phút."
+- "Trang load nhanh" → "LCP ≤ 2,5 giây ở p75, đo bằng RUM trên thiết bị di động thật."
+
+Vì sao percentile mà không phải trung bình? Trung bình giấu đuôi dài: 95% request mất 100ms và 5% mất 4 giây cho trung bình khoảng 300ms, trông ổn — nhưng một trong hai mươi người dùng đang chờ 4 giây. Ngưỡng 2,5 giây ở p75 cho LCP là ngưỡng "tốt" của Core Web Vitals, nên dùng luôn thay vì tự chế.
+
+Điều kiện quan trọng không kém: đo ở server hay ở client, mạng 4G hay wifi văn phòng, tải bao nhiêu. Và NFR tốt nhất là NFR được kiểm tra tự động:
+
+```js
+// load/reminder-confirm.k6.js
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    steady: { executor: "constant-arrival-rate", rate: 50, timeUnit: "1s", duration: "10m", preAllocatedVUs: 100 },
+  },
+  thresholds: {
+    // NFR-01: p95 ≤ 300ms, lỗi dưới 0,1%
+    http_req_duration: ["p(95)<300"],
+    http_req_failed: ["rate<0.001"],
+  },
+};
+
+export default function () {
+  const token = __ENV.TEST_TOKEN;
+  const res = http.post(`${__ENV.BASE_URL}/reminders/${token}/confirm`);
+  check(res, { "status is 200": (r) => r.status === 200 });
+}
+```
+
+Khi threshold không đạt, k6 trả exit code khác 0 — CI đỏ, và NFR-01 không còn là một dòng chữ trong tài liệu.
+
+### Tính sẵn sàng: SLO thay vì "luôn hoạt động"
+
+"Hệ thống phải luôn hoạt động" là yêu cầu không ai đáp ứng được và không ai kiểm chứng được. Thay bằng SLO (Service Level Objective) gồm:
+
+- **SLI** — đo cái gì, chính xác: "tỷ lệ request hợp lệ tới trang nhắc lịch trả về không phải 5xx và trong dưới 1 giây".
+- **Mục tiêu**: 99,9%.
+- **Cửa sổ**: 30 ngày trượt.
+
+99,9% trong 30 ngày tương đương khoảng 43 phút được phép "hỏng". Con số đó là **error budget** — team dùng nó để quyết định khi nào được deploy mạnh tay, khi nào phải dừng lại sửa ổn định. Ghi SLO vào PRD buộc cuộc thảo luận "cần 99,99% không?" xảy ra trước khi build, khi nó còn rẻ. Mỗi số 9 thêm vào thường tốn kém hơn đáng kể về kiến trúc và vận hành.
+
+Đừng quên SLO cho những thứ không phải request: "99,5% tin nhắc được gửi trong vòng 10 phút so với thời điểm lên lịch" là một SLO cho job nền, và với feature nhắc lịch, nó quan trọng hơn uptime của trang web.
+
+### Bảo mật: mối đe doạ cụ thể, biện pháp cụ thể
+
+NFR bảo mật tốt bắt đầu từ câu "ai có thể làm gì sai?". Với một link nhắc lịch không cần đăng nhập:
+
+- Đoán được token → xem/huỷ lịch hẹn người khác → token ngẫu nhiên ít nhất 128 bit, chỉ gắn với một lịch hẹn, hết hạn lúc giờ khám.
+- Link bị chuyển tiếp → người khác huỷ hộ → trang chỉ hiển thị thông tin tối thiểu; hành động huỷ cần một bước xác nhận.
+- Dò token hàng loạt → giới hạn tần suất theo IP, cảnh báo khi tỷ lệ token không hợp lệ tăng đột biến.
+- Token nằm trong log, trong header `Referer` → không log URL đầy đủ, `Referrer-Policy: no-referrer` trên trang này.
+
+Với hệ thống lớn, tham chiếu một mức của OWASP ASVS (Application Security Verification Standard) giúp tránh phải liệt kê lại hàng trăm yêu cầu cơ bản; PRD chỉ cần ghi những gì *đặc thù* cho feature.
+
+### Quyền riêng tư: Nghị định 13/2023 và luật dữ liệu cá nhân
+
+Ở Việt Nam, Nghị định 13/2023/NĐ-CP về bảo vệ dữ liệu cá nhân (hiệu lực từ 1/7/2023) là khung pháp lý toàn diện đầu tiên, và từ 1/1/2026 Luật Bảo vệ dữ liệu cá nhân có hiệu lực, nâng nhiều quy định lên tầm luật kèm văn bản hướng dẫn mới. Mình không phải luật sư, và PRD không phải chỗ diễn giải luật — nhưng PRD *là* chỗ biến các nguyên tắc thành yêu cầu mà team build được. Những thứ mình luôn hỏi:
+
+- **Dữ liệu gì, có nhạy cảm không?** Thông tin sức khoẻ thuộc nhóm dữ liệu cá nhân nhạy cảm, với yêu cầu chặt hơn. Một tin SMS ghi "lịch khám chuyên khoa tâm thần" là đang tiết lộ dữ liệu sức khoẻ cho bất kỳ ai cầm điện thoại.
+- **Mục đích và sự đồng ý:** dữ liệu được thu cho mục đích nào, người dùng đồng ý ở đâu, có tách khỏi đồng ý nhận marketing không?
+- **Quyền của chủ thể dữ liệu:** người dùng rút đồng ý, yêu cầu xoá thế nào, hệ thống thực hiện trong bao lâu?
+- **Lưu bao lâu:** log gửi tin có số điện thoại giữ bao lâu, sau đó xoá hay ẩn danh?
+- **Đánh giá tác động:** feature có làm thay đổi hồ sơ đánh giá tác động xử lý dữ liệu cá nhân của doanh nghiệp không?
+- **Sự cố:** có quy trình phát hiện và thông báo vi phạm trong thời hạn luật định (Nghị định 13 quy định 72 giờ) không?
+- **Chuyển dữ liệu ra nước ngoài:** nhà cung cấp SMS, analytics có xử lý dữ liệu ở nước ngoài không?
+
+<Callout type="warning" title="Hỏi pháp chế, nhưng mang theo câu hỏi cụ thể">
+
+Câu "feature này có tuân thủ Nghị định 13 không?" gần như không trả lời được. Câu "chúng tôi gửi số điện thoại, giờ khám và tên chi nhánh cho nhà cung cấp SMS X, lưu log 90 ngày, dựa trên sự đồng ý lúc đặt lịch — như vậy có đủ không?" thì trả lời được trong một buổi. Phần privacy của PRD chính là bản nháp của câu hỏi đó. Và vì văn bản hướng dẫn luật mới vẫn đang được ban hành, luôn hỏi pháp chế bản nào đang áp dụng.
+
+</Callout>
+
+### Accessibility: WCAG 2.2 AA và những tiêu chí cụ thể
+
+"Dễ tiếp cận" không kiểm thử được; "đạt WCAG 2.2 mức AA" thì được. WCAG 2.2 trở thành khuyến nghị của W3C vào tháng 10/2023 và thêm vài tiêu chí rất thực tế cho mobile:
+
+- **2.5.8 Target Size (Minimum):** vùng bấm tối thiểu 24×24 CSS pixel (hoặc đủ khoảng cách). Mình thường đặt 44×44 cho nút chính trong PRD vì người dùng là người lớn tuổi.
+- **2.4.11 Focus Not Obscured (Minimum):** phần tử đang focus không bị header dính hay banner cookie che hết.
+- **3.3.8 Accessible Authentication (Minimum):** không bắt người dùng giải câu đố nhận thức để đăng nhập; cho phép dán mật khẩu, dùng trình quản lý mật khẩu.
+- **3.3.7 Redundant Entry:** không bắt nhập lại thông tin đã nhập trong cùng một quy trình.
+- **2.5.7 Dragging Movements:** mọi thao tác kéo thả phải có cách thay thế bằng bấm.
+
+Trong PRD, mình liệt kê mức chuẩn chung và nhấn mạnh vài tiêu chí rủi ro cao nhất cho feature cụ thể đó, kèm cách kiểm chứng: axe tự động trong CI cộng kiểm thử thủ công bằng TalkBack/VoiceOver cho luồng chính.
+
+### Khả năng mở rộng và observability
+
+**Mở rộng** nên được viết bằng con số tải dự kiến và hệ số dự phòng: "thiết kế cho gấp 3 lần số lịch hẹn ngày cao điểm hiện tại; ở mức đó, toàn bộ tin T−24h vẫn được gửi trong 10 phút". Một con số giúp engineering quyết định có cần hàng đợi, có cần chia batch, có đụng rate limit của nhà cung cấp không — đây là chỗ mà một câu trong PRD quyết định cả kiến trúc của [job nền](/blog/nestjs-background-jobs-bullmq).
+
+**Observability** là NFR mình thấy bị bỏ quên nhiều nhất, dù nó là thứ duy nhất cho bạn biết các NFR khác có đang đạt không. Viết nó như yêu cầu:
+
+- Metric nào phải có (số tin đã lên lịch, đã gửi, đã nhận, thất bại theo kênh).
+- Cảnh báo nào, ngưỡng nào, gửi cho ai.
+- Dashboard nào phục vụ chỉ số thành công trong phần 4.
+- Trace ID xuyên suốt từ scheduler đến lời gọi nhà cung cấp.
+
+Nếu một chỉ số thành công không có metric hay event tương ứng trong NFR observability, bạn sẽ ra mắt mà không đo được nó. Mình đã thấy điều này xảy ra nhiều hơn mình muốn thừa nhận.
+
+## Truy vết: từ mục tiêu đến requirement, story, test và metric
+
+Traceability nghe có vẻ là thứ của ngành hàng không hay y tế, nhưng phiên bản nhẹ của nó cực kỳ hữu ích cho mọi team: **mỗi requirement trỏ lên một mục tiêu, và trỏ xuống ít nhất một story và một test.** Requirement không trỏ lên mục tiêu nào là ứng viên để cắt. Requirement không có test là rủi ro chưa được kiểm soát.
+
+| Mục tiêu | Requirement | Story | Test | Metric |
+| --- | --- | --- | --- | --- |
+| G1 Giảm no-show | FR-01 Nhắc T−24h và T−2h | BK-140 | TC-140-1..4 | M1 tỷ lệ no-show |
+| G1 Giảm no-show | FR-05 Xác nhận / huỷ từ link | BK-142 | TC-142-1..5 | M2 tỷ lệ phản hồi |
+| G2 Giảm việc gọi tay | FR-08 Danh sách chưa phản hồi | BK-145 | TC-145-1..2 | M3 số cuộc gọi lễ tân |
+| G1, G3 | NFR-02 Gửi xong trong 10 phút | BK-141 | k6 + TC-141-3 | SLO gửi tin |
+| — (tuân thủ) | NFR-04 Không có dữ liệu sức khoẻ trong tin | BK-140 | TC-140-5 | — |
+
+Bạn không cần công cụ đắt tiền. Cách mình làm: ID của requirement xuất hiện trong ticket, trong tên test, và trong tag của test. Playwright hỗ trợ tag trực tiếp trong khai báo test:
+
+```ts
+// e2e/reminder-link.spec.ts
+import { expect, test } from "@playwright/test";
+
+test("BK-142: bệnh nhân xác nhận từ link nhắc lịch", { tag: ["@FR-05", "@FR-06"] }, async ({ page }) => {
+  await page.goto(`/r/${process.env.TEST_REMINDER_TOKEN}`);
+  await expect(page.getByRole("heading", { name: "Lịch khám của bạn" })).toBeVisible();
+  // NFR-04: trang không hiển thị chuyên khoa hay tên bác sĩ
+  await expect(page.getByText(/chuyên khoa|bác sĩ/i)).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Tôi sẽ đến" }).click();
+  await expect(page.getByRole("status")).toHaveText("Cảm ơn bạn đã xác nhận");
+});
+```
+
+Chạy riêng test của một requirement bằng `npx playwright test --grep @FR-05`. Và một script nhỏ trong CI báo những requirement chưa có test nào:
+
+```ts
+// scripts/trace-check.ts
+import { readFileSync } from "node:fs";
+import { Glob } from "bun";
+
+const ID = /\b(?:FR|NFR)-\d{2}\b/g;
+const prd = readFileSync("docs/prd/appointment-reminders.md", "utf8");
+const required = new Set(prd.match(ID) ?? []);
+
+const covered = new Set<string>();
+for await (const file of new Glob("{e2e,src,load}/**/*.{spec,test,k6}.{ts,js}").scan(".")) {
+  for (const id of readFileSync(file, "utf8").match(ID) ?? []) covered.add(id);
+}
+
+const missing = [...required].filter((id) => !covered.has(id)).sort();
+if (missing.length) {
+  console.error(`Requirement chưa có test: ${missing.join(", ")}`);
+  process.exit(1);
+}
+console.log(`Đủ ${required.size} requirement đều có ít nhất một test.`);
+```
+
+Script này thô — nó chỉ kiểm tra *có* test nhắc đến ID, không kiểm tra test đó tốt. Nhưng nó bắt được trường hợp phổ biến nhất: một requirement được thêm vào PRD tuần trước và không ai viết test cho nó.
+
+## Một PRD mẫu rút gọn: nhắc lịch khám qua Zalo/SMS
+
+Đây là bản rút gọn của một PRD thật mà mình đã đổi tên và số liệu. Các con số trong mẫu là minh hoạ — điều quan trọng là *dạng* của chúng.
+
+### Bối cảnh, mục tiêu và chỉ số
+
+**Trạng thái:** Đã duyệt · **Chủ sở hữu:** PM Đặt lịch · **Cập nhật:** 05/10/2026 · **Design doc:** RFC-031
+
+**Vấn đề.** Lịch đặt online có tỷ lệ không đến cao hơn rõ rệt so với lịch đặt qua điện thoại (số liệu ba tháng gần nhất trong dashboard Đặt lịch). Mỗi chi nhánh, lễ tân dành phần lớn buổi chiều gọi nhắc lịch cho ngày hôm sau. Khung giờ bị bỏ trống không được bán lại vì không ai biết trước bệnh nhân sẽ không đến.
+
+**Mục tiêu.**
+
+- **G1** — Giảm tỷ lệ no-show của lịch đặt online xuống ngang mức lịch đặt qua điện thoại trong 3 tháng sau khi ra mắt toàn chuỗi.
+- **G2** — Giảm ít nhất một nửa thời gian lễ tân gọi nhắc lịch.
+- **G3** — Khung giờ bị huỷ trước 2 giờ được đặt lại.
+
+**Phi mục tiêu (v1).** Không dời lịch từ link (chỉ xác nhận hoặc huỷ; dời lịch dẫn về trang đặt lịch). Không nhắc cho khách vãng lai. Không gửi nội dung marketing trong tin nhắc. Không hỗ trợ email.
+
+**Chỉ số.**
+
+| ID | Chỉ số | Loại | Baseline | Mục tiêu | Nguồn |
+| --- | --- | --- | --- | --- | --- |
+| M1 | Tỷ lệ no-show, lịch online, theo tuần | Chính | Lấy từ 12 tuần trước ra mắt | Ngang lịch điện thoại | Bảng `appointments` |
+| M2 | % tin nhắc có phản hồi (xác nhận hoặc huỷ) | Dẫn dắt | Chưa có | ≥ 50% | Event `ReminderResponded` |
+| M3 | Số cuộc gọi nhắc lịch của lễ tân mỗi ngày | Chính (G2) | Khảo sát 2 tuần | Giảm ≥ 50% | Log tổng đài |
+| M4 | Tỷ lệ huỷ nhận tin Zalo | Guardrail | — | ≤ 2% | Webhook ZNS |
+
+### Người dùng, phạm vi và luồng
+
+**Người dùng.** Bệnh nhân (nhiều người trên 50 tuổi, dùng Zalo thành thạo hơn app riêng); lễ tân (xem ai chưa phản hồi); quản lý chi nhánh (xem chỉ số).
+
+**Trong phạm vi.** Tin nhắc T−24h và T−2h; trang link xác nhận/huỷ; fallback SMS; danh sách "chưa phản hồi" cho lễ tân; dashboard chỉ số.
+
+**Luồng chính.** Lịch hẹn được xác nhận → hệ thống lên lịch hai tin nhắc → T−24h bệnh nhân nhận tin Zalo → bấm link → bấm "Tôi sẽ đến" hoặc "Huỷ lịch" → lễ tân thấy trạng thái trên dashboard.
+
+**Nhánh lỗi.** Zalo gửi thất bại → SMS. Bệnh nhân không phản hồi → T−2h nhắc lại; T−3h tên xuất hiện trong danh sách "chưa phản hồi" của lễ tân. Link hết hạn → trang hướng dẫn gọi hotline. Lịch hẹn bị dời sau khi đã lên lịch nhắc → huỷ nhắc cũ, lên lịch mới.
+
+### Functional requirements
+
+| ID | Ưu tiên | Requirement |
+| --- | --- | --- |
+| FR-01 | Must | Khi lịch hẹn được xác nhận và còn hơn 24 giờ, hệ thống phải gửi tin nhắc lúc T−24h và T−2h (sai số tối đa 5 phút). |
+| FR-02 | Must | Nếu bệnh nhân đã huỷ từ tin T−24h, hệ thống không được gửi tin T−2h. |
+| FR-03 | Must | Hệ thống phải gửi qua Zalo ZNS trước; nếu ZNS báo thất bại hoặc không có trạng thái đã gửi sau 5 phút, hệ thống phải gửi SMS. |
+| FR-04 | Must | Khi lịch hẹn bị dời hoặc huỷ, hệ thống phải huỷ các tin nhắc chưa gửi của lịch hẹn đó trong vòng 1 phút. |
+| FR-05 | Must | Link trong tin phải mở trang hiển thị chi nhánh, ngày giờ khám và hai nút "Tôi sẽ đến", "Huỷ lịch", không yêu cầu đăng nhập. |
+| FR-06 | Must | Khi bệnh nhân bấm "Tôi sẽ đến", trạng thái "đã xác nhận đến" phải hiển thị trên dashboard lễ tân trong vòng 60 giây. |
+| FR-07 | Must | Khi bệnh nhân bấm "Huỷ lịch", hệ thống phải hiển thị quy định giữ cọc áp dụng (nếu có) và chỉ huỷ sau khi bệnh nhân xác nhận lần hai. |
+| FR-08 | Should | Lúc T−3h, lịch hẹn chưa có phản hồi phải xuất hiện trong danh sách "chưa phản hồi" của chi nhánh. |
+| FR-09 | Should | Bệnh nhân phải có thể tắt nhận tin Zalo từ trang link; khi đó chỉ dùng SMS. |
+| FR-10 | Could | Quản lý chi nhánh có thể xem M1–M3 theo chi nhánh và theo tuần. |
+
+### Non-functional requirements
+
+| ID | Đặc tính | Requirement | Cách kiểm chứng |
+| --- | --- | --- | --- |
+| NFR-01 | Performance | API xác nhận/huỷ: p95 ≤ 300ms phía server ở 50 req/s. Trang link: LCP ≤ 2,5 giây ở p75 trên di động (RUM). | k6 trong CI; dashboard RUM |
+| NFR-02 | Scalability | Ở mức gấp 3 lần số lịch hẹn ngày cao điểm hiện tại, toàn bộ tin T−24h được gửi trong 10 phút kể từ thời điểm lên lịch, không vượt rate limit của nhà cung cấp. | Load test môi trường staging |
+| NFR-03 | Reliability | SLO: 99,9% request hợp lệ tới trang link thành công trong 30 ngày; 99,5% tin nhắc gửi đúng cửa sổ. Mỗi cửa sổ nhắc gửi tối đa một tin cho mỗi lịch hẹn, kể cả khi job chạy lại. | SLO dashboard; TC-142-3 |
+| NFR-04 | Privacy | Nội dung tin và trang link không chứa chuyên khoa, tên bác sĩ, dịch vụ hay chẩn đoán; chỉ thương hiệu, chi nhánh, giờ khám, link. Log gửi tin có số điện thoại giữ 90 ngày rồi xoá. Tắt nhận tin có hiệu lực trong 1 giờ. Pháp chế xác nhận cơ sở xử lý dữ liệu và cập nhật hồ sơ đánh giá tác động trước khi ra mắt. | Review template; TC-140-5; job xoá log |
+| NFR-05 | Security | Token ngẫu nhiên ≥ 128 bit, gắn một lịch hẹn, hết hạn lúc giờ khám. Giới hạn 10 req/phút/IP cho endpoint token. Không log URL có token; `Referrer-Policy: no-referrer`. Hành động huỷ dùng `POST`. | Unit test; security review |
+| NFR-06 | Accessibility | Trang link đạt WCAG 2.2 AA; nút chính tối thiểu 44×44 CSS px; dùng được ở mức zoom 200%; luồng chính kiểm thử với TalkBack và VoiceOver. | axe trong CI; kiểm thử thủ công |
+| NFR-07 | Observability | Metric: tin đã lên lịch/đã gửi/thất bại theo kênh; phản hồi theo loại. Cảnh báo khi tỷ lệ gửi thành công dưới 95% trong 30 phút. Trace ID từ scheduler đến lời gọi nhà cung cấp. | Review dashboard trước ra mắt |
+| NFR-08 | Compatibility | Trang link chạy trên 2 phiên bản gần nhất của Chrome Android, Safari iOS 17 trở lên, và trình duyệt trong app Zalo. | Ma trận test thủ công |
+
+### Câu hỏi mở và rollout
+
+| # | Câu hỏi | Người trả lời | Hạn |
+| --- | --- | --- | --- |
+| Q1 | Template ZNS cần duyệt trước bao lâu? | Vận hành | 10/10 |
+| Q2 | Bệnh nhân đã xác nhận ở T−24h có cần tin T−2h không? | PM + lễ tân trưởng | 12/10 |
+| Q3 | Câu chữ về giữ cọc khi huỷ muộn đã được pháp chế duyệt chưa? | Pháp chế | 15/10 |
+| Q4 | Ngân sách SMS tối đa mỗi tháng? | Tài chính | 15/10 |
+
+**Rollout.** Feature flag theo chi nhánh. Pilot 2 chi nhánh trong 2 tuần, so M1 với 2 chi nhánh tương đương chưa bật. Tiêu chí mở rộng: M1 cải thiện, M4 trong ngưỡng, không có sự cố privacy. Kill switch tắt toàn bộ việc gửi tin trong 1 phút; khi tắt, lễ tân quay lại gọi điện như cũ. Đào tạo lễ tân dùng danh sách "chưa phản hồi" trước ngày pilot.
+
+**Rủi ro.** Nhà cung cấp ZNS thay đổi chính sách template; bệnh nhân lớn tuổi không quen bấm link; tin nhắc rơi vào giờ nghỉ — mọi tin T−24h cho lịch sáng sớm sẽ được gửi vào buổi tối hôm trước, cần chốt khung giờ "không làm phiền".
+
+## PRD, RFC, ADR: ai viết gì
+
+Một nguồn tranh cãi kinh điển là PRD "lấn sân" sang thiết kế kỹ thuật, hoặc ngược lại, dev phải tự đoán yêu cầu từ một design doc. Ranh giới mình dùng:
+
+| Tài liệu | Trả lời | Người viết chính | Người review | Khi nào |
+| --- | --- | --- | --- | --- |
+| PRD / spec | Vì sao, làm gì, thành công là gì | PM hoặc BA | Eng lead, design, QA, pháp chế khi cần | Trước khi ước lượng |
+| RFC / design doc | Làm thế nào, các phương án, trade-off | Engineer | Eng khác, đôi khi PM cho phần ảnh hưởng phạm vi | Sau khi PRD ổn định phần FR/NFR |
+| ADR | Quyết định kiến trúc nào, vì sao, đánh đổi gì | Engineer | Tech lead | Khi có quyết định khó đảo ngược |
+| Test plan | Kiểm chứng thế nào, môi trường, dữ liệu test | QA | Eng, PM | Song song với RFC |
+| Runbook | Vận hành, cảnh báo, rollback | Engineer, SRE | On-call | Trước khi ra mắt |
+
+NFR là vùng chồng lấn: PRD nói *mức chất lượng nào* là đủ cho nghiệp vụ ("tin nhắc phải đến trong 10 phút"), RFC nói *làm sao đạt được* (hàng đợi, batch, rate limit). Nếu PM không chắc nên đặt ngưỡng bao nhiêu, cứ viết con số tốt nhất mình đoán và đánh dấu là câu hỏi mở cho engineering — một con số sai để mọi người phản bác tốt hơn nhiều so với không có con số nào.
+
+## Quy trình review
+
+PRD không được "duyệt" một lần. Mình chia review thành các vòng nhỏ, mỗi vòng một câu hỏi:
+
+1. **Review vấn đề (sớm, ngắn):** chỉ phần 1–4. Người đọc đồng ý đây là vấn đề đáng giải và cách đo hợp lý chưa? Rất nhiều PRD nên dừng ở đây.
+2. **Review giải pháp:** phạm vi, flow, FR. Design và eng lead tham gia. Câu hỏi: có cách đơn giản hơn đạt cùng mục tiêu không?
+3. **Review khả năng ước lượng (eng):** mỗi FR/NFR có đủ chi tiết để ước lượng không? Dev đánh dấu từng dòng mơ hồ bằng comment.
+4. **Review khả năng kiểm thử (QA):** mỗi requirement có ít nhất một test pass/fail không? QA viết ID test case ngay trong comment.
+5. **Review tuân thủ (khi cần):** bảo mật, pháp chế với phần dữ liệu cá nhân.
+
+Review bất đồng bộ bằng comment trên tài liệu, rồi một buổi họp 30 phút chỉ để giải quyết các comment chưa thống nhất. Đừng đọc PRD trong họp. Đầu ra của cả quy trình là PRD đạt "definition of ready": không còn câu hỏi mở nào chặn việc ước lượng phần Must.
+
+<Callout type="tip" title="Câu hỏi mình hỏi trong mọi buổi review PRD">
+
+"Nếu chúng ta chỉ có một nửa thời gian, phần nào sẽ bị cắt?" Nếu PRD không trả lời được nhờ cột ưu tiên, nó chưa sẵn sàng. Và "Làm sao chúng ta biết feature này thất bại?" — nếu không ai trả lời được, phần chỉ số thành công chưa xong.
+
+</Callout>
+
+## Giữ tài liệu sống
+
+PRD chết nhanh nhất vào ngày sprint đầu tiên bắt đầu: quyết định được đưa ra trong Slack, ticket, buổi standup — và không bao giờ quay về tài liệu. Ba tháng sau, PRD mô tả một sản phẩm không tồn tại. Những gì mình làm để tránh:
+
+- **Header trạng thái** ở đầu tài liệu: Nháp → Đang review → Đã duyệt → Đang build → Đã ra mắt → Lưu trữ. Ai đọc cũng biết mức độ tin cậy.
+- **Changelog ngắn** ở cuối: ngày, thay đổi gì, vì sao, ai quyết. Không cần chi tiết, chỉ cần dấu vết.
+- **Quyết định trong Slack phải về PRD.** Quy tắc của team: thay đổi phạm vi hay requirement chưa được ghi vào PRD thì coi như chưa được quyết.
+- **Ticket link về requirement ID**, không copy nội dung. Copy là cách nhanh nhất để có hai phiên bản sự thật.
+- **Sau ra mắt, cập nhật "as-built":** những gì thực tế khác với kế hoạch, kết quả chỉ số so với mục tiêu. Đây là phần giá trị nhất cho người đọc sáu tháng sau, và cho PRD tiếp theo.
+- **Lưu trữ đúng lúc:** khi feature được thay thế, đánh dấu PRD là lưu trữ và trỏ tới tài liệu mới, đừng xoá.
+
+## Những lỗi mình hay gặp
+
+**PRD là danh sách giải pháp.** "Thêm nút X, thêm màn hình Y" không có phần vấn đề. Team build đúng thứ được yêu cầu và không giải quyết được gì.
+
+**Không có phi mục tiêu.** Mọi thứ không bị loại trừ rõ ràng đều sẽ được ai đó yêu cầu "tiện thể làm luôn".
+
+**NFR copy từ PRD trước.** "99,99% uptime, phản hồi dưới 100ms" cho một trang nội bộ năm người dùng. NFR phải xuất phát từ rủi ro của feature này, không phải từ template.
+
+**Chỉ số không có baseline.** "Tăng tỷ lệ chuyển đổi" — từ bao nhiêu? Không có baseline thì không bao giờ biết đã thành công chưa.
+
+**Câu hỏi mở bị giấu.** PRD trông "hoàn chỉnh" nhưng mọi người đều biết chưa ai quyết chính sách hoàn tiền. Viết nó ra kèm người chịu trách nhiệm và hạn; câu hỏi mở được ghi rõ là dấu hiệu của PRD trung thực, không phải PRD yếu.
+
+**Viết một mình rồi "bàn giao".** PRD tốt nhất mình từng đọc được viết cùng một dev và một QA từ bản nháp đầu. Họ hỏi những câu mà người viết không nghĩ tới, và họ hiểu tài liệu vì họ đã góp phần viết nó.
+
+**Đặc tả UI bằng chữ.** Ba trang mô tả vị trí từng nút. Hãy link tới design và chỉ viết hành vi, quy tắc và trường hợp lỗi mà design không thể hiện được.
+
+## Tóm tắt
+
+<Checklist>
+
+- PRD trả lời vì sao, làm gì và làm sao biết thành công; "làm thế nào" để cho RFC/design doc.
+- Viết vấn đề trước giải pháp, kèm bằng chứng; giả định thì ghi rõ là giả định.
+- Mỗi mục tiêu có chỉ số với baseline, mục tiêu, cửa sổ đo và nguồn dữ liệu; thêm chỉ số dẫn dắt và guardrail.
+- Ghi rõ phi mục tiêu để chống scope creep.
+- Cấm từ mơ hồ ("nhanh", "thân thiện", "v.v."); dùng mẫu EARS, mỗi requirement một ID, một điều, một mức ưu tiên.
+- Acceptance criteria dạng Given/When/Then, có cả nhánh lỗi.
+- Đi qua ISO/IEC 25010 như checklist NFR, cộng privacy và observability; mỗi NFR có chỉ số, ngưỡng, điều kiện và cách kiểm chứng.
+- Hiệu năng bằng percentile ở tải cụ thể; tính sẵn sàng bằng SLO và error budget; accessibility bằng WCAG 2.2 AA.
+- Với dữ liệu cá nhân: liệt kê dữ liệu, mục đích, đồng ý, thời gian lưu, đánh giá tác động; hỏi pháp chế bằng câu hỏi cụ thể theo Nghị định 13 và luật hiện hành.
+- Truy vết mục tiêu → requirement → story → test → metric bằng ID trong ticket, tên test và tag; kiểm tra tự động requirement chưa có test.
+- Review theo vòng: vấn đề, giải pháp, ước lượng, kiểm thử, tuân thủ; đạt "definition of ready" trước khi ước lượng.
+- Giữ PRD sống: header trạng thái, changelog, quyết định phải quay về tài liệu, cập nhật "as-built" sau ra mắt.
+
+</Checklist>
