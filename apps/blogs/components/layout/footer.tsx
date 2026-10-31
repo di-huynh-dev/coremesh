@@ -96,6 +96,11 @@ export function Footer() {
                 </Link>
               </li>
               <li>
+                <Link href={`/${locale}/tags`} className="hover:text-white">
+                  {tNav("tags")}
+                </Link>
+              </li>
+              <li>
                 <Link href={`/${locale}#about`} className="hover:text-white">
                   {tNav("about")}
                 </Link>

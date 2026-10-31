@@ -16,7 +16,8 @@
     "tools": "Tools",
     "series": "Series",
     "reading": "Reading",
-    "readingBadge": "You have saved or unfinished posts"
+    "readingBadge": "You have saved or unfinished posts",
+    "tags": "Tags"
   },
   "search": {
     "title": "Search articles",
@@ -384,5 +385,17 @@
     "privacy": "Stored only in this browser. No account, nothing is sent anywhere.",
     "clear": "Clear all history",
     "clearConfirm": "Clear your reading history and saved posts in this browser?"
+  },
+  "tags": {
+    "title": "Tags",
+    "lead": "Every subject with at least two posts. Pick a tag to see everything written about it, newest first.",
+    "breadcrumb": "Tags",
+    "posts": "{count, plural, one {# post} other {# posts}}",
+    "tagTitle": "Posts tagged #{tag}",
+    "tagDescription": "{count, plural, one {# post} other {# posts}} tagged #{tag} on DiCodeWeb, from fundamentals to production, newest first.",
+    "updated": "Updated {date}",
+    "postsTitle": "Posts",
+    "related": "Related tags",
+    "all": "All tags"
   }
 }

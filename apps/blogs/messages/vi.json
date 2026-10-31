@@ -16,7 +16,8 @@
     "tools": "Công cụ",
     "series": "Chuỗi bài",
     "reading": "Góc đọc",
-    "readingBadge": "Có bài đã lưu hoặc đang đọc dở"
+    "readingBadge": "Có bài đã lưu hoặc đang đọc dở",
+    "tags": "Thẻ"
   },
   "search": {
     "title": "Tìm bài viết",
@@ -384,5 +385,17 @@
     "privacy": "Chỉ lưu trong trình duyệt này. Không tài khoản, không có gì được gửi đi.",
     "clear": "Xoá toàn bộ lịch sử",
     "clearConfirm": "Xoá toàn bộ lịch sử đọc và danh sách đã lưu trên trình duyệt này?"
+  },
+  "tags": {
+    "title": "Thẻ",
+    "lead": "Mọi chủ đề đã có từ hai bài trở lên. Chọn một thẻ để xem tất cả bài viết về nó, mới nhất trước.",
+    "breadcrumb": "Thẻ",
+    "posts": "{count} bài",
+    "tagTitle": "Bài viết về #{tag}",
+    "tagDescription": "{count} bài viết gắn thẻ #{tag} trên DiCodeWeb, từ nền tảng đến production, mới nhất trước.",
+    "updated": "Cập nhật {date}",
+    "postsTitle": "Bài viết",
+    "related": "Thẻ liên quan",
+    "all": "Tất cả thẻ"
   }
 }

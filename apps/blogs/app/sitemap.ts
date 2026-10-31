@@ -2,6 +2,7 @@ import { locales } from "@/intl.config";
 import { ROLE_MAP_IDS } from "@/lib/content/role-maps";
 import { getGuides } from "@/lib/content/guides";
 import { getAllSeries, getSeries } from "@/lib/content/series";
+import { getAllTags, getTag } from "@/lib/content/tags";
 import { TOOLS } from "@/lib/content/tools";
 import type { BlogLocale } from "@/lib/content/types";
 import { localizedAlternates, postLocales } from "@/lib/seo";
@@ -23,6 +24,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       { path: "", changeFrequency: "weekly" as const, priority: 1 },
       { path: "/blog", changeFrequency: "weekly" as const, priority: 0.8 },
       { path: "/series", changeFrequency: "weekly" as const, priority: 0.8 },
+      { path: "/tags", changeFrequency: "weekly" as const, priority: 0.6 },
       { path: "/roadmap", changeFrequency: "monthly" as const, priority: 0.8 },
       ...ROLE_MAP_IDS.map((id) => ({
         path: `/roadmap/${id}`,
@@ -78,5 +80,20 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   );
 
-  return [...pages, ...series, ...posts];
+  const tags = locales.flatMap((locale) =>
+    getAllTags(locale).map((item) => ({
+      url: `${SITE_URL}/${locale}/tags/${item.tag}`,
+      lastModified: new Date(item.updated),
+      changeFrequency: "weekly" as const,
+      priority: 0.5,
+      alternates: {
+        languages: languages(
+          `/tags/${item.tag}`,
+          locales.filter((l) => getTag(item.tag, l) !== undefined),
+        ),
+      },
+    })),
+  );
+
+  return [...pages, ...series, ...tags, ...posts];
 }

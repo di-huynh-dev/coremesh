@@ -40,7 +40,7 @@ function readSources(): SeriesSource[] {
   return (parseYaml(fs.readFileSync(SERIES_FILE, "utf8")) ?? []) as SeriesSource[];
 }
 
-function dominantTopic(posts: BlogPostSummary[]): BlogTopic {
+export function dominantTopic(posts: BlogPostSummary[]): BlogTopic {
   const counts = new Map<BlogTopic, number>();
   posts.forEach((post) => counts.set(post.topic, (counts.get(post.topic) ?? 0) + 1));
   // Ties go to the earliest part: Map keeps insertion order.

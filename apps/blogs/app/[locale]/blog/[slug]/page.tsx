@@ -14,6 +14,7 @@ import { CodeCopy } from "@/components/blog/code-copy";
 import { mdxComponents } from "@/components/blog/mdx-components";
 import { renderMdx } from "@/lib/content/mdx";
 import { getSeriesForPost } from "@/lib/content/series";
+import { getTagPageSet, tagHref } from "@/lib/content/tags";
 import { topicAccent } from "@/lib/topic-style";
 import { getAdjacentPosts, getAllPosts, getPostBySlug, getRelatedPosts } from "@repo/content/posts";
 import { type BlogPostSummary } from "@/lib/content/types";
@@ -114,6 +115,7 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
   const related = getRelatedPosts(post, locale);
   const inSeries = getSeriesForPost(post.slug, locale);
   const nextInSeries = inSeries?.series.posts[inSeries.index + 1];
+  const tagPages = getTagPageSet(locale);
 
   const url = `${SITE_URL}/${locale}/blog/${post.slug}`;
   const topicTitle = tTopics(`${post.topic}.title`);
@@ -285,7 +287,7 @@ export default async function BlogPostPage({ params }: BlogPostPageProps) {
                   {post.tags.map((tag) => (
                     <Link
                       key={tag}
-                      href={`/${locale}/blog?q=${encodeURIComponent(tag)}`}
+                      href={tagHref(tag, locale, tagPages)}
                       className="rounded-full border border-line px-3 py-1 font-mono text-xs text-soft transition-colors hover:border-ink/30 hover:text-ink"
                     >
                       #{tag}
